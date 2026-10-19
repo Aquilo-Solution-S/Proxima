@@ -244,7 +244,7 @@ pub trait WriteSession: Send {
     /// system authority) and resolved the named flavor's schemas; the backend
     /// expands the selection to whole series plus every series whose rows
     /// reference it, refuses anything outside the owner or those schemas, and
-    /// erases. Cold objects are enqueued here and destroyed after
+    /// erases. Blob objects are enqueued here and destroyed after
     /// [`Self::commit`].
     ///
     /// # Errors

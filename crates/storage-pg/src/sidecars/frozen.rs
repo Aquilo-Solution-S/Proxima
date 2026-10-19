@@ -171,7 +171,7 @@ impl PgSidecarRegistryFrozen {
         }
     }
 
-    /// Distinct memory sidecar tables (core + flavor), for forget/hydrate.
+    /// Distinct memory sidecar tables (core + flavor), for forget/restore.
     #[must_use]
     pub fn memory_sidecar_tables(&self) -> Vec<&str> {
         let mut tables: Vec<&str> = self
@@ -268,17 +268,17 @@ impl PgSidecarRegistryFrozen {
     /// authorization question, not an integrity one, and it already sits
     /// behind a registry handle only the host context holds.
     ///
-    /// Hydrate restores sidecar rows generically from the cold dump, so it
+    /// Restore finds the sidecar rows where the forget left them, so it
     /// cannot go through `PgSidecarWriter::insert_memory_sidecar`. It
-    /// re-derives the projection from the restored row instead — the same
+    /// re-derives the projection from the kept row instead — the same
     /// statement, run against a row that is already there.
     ///
     /// `lexical_language` is a RESTORE input, not a write's declaration,
     /// which is why this path takes one where the write path does not and
     /// why `None` here is the deployment default rather than a refusal:
-    /// the cold record carries no stamp, so there is no writer's choice
-    /// left to honour or to refuse for. Carrying it through a
-    /// forget/hydrate cycle is a cold-format change.
+    /// restore passes the language stamped on the memory row, and a caller
+    /// with no stamp has no writer's choice left to honour or to refuse
+    /// for.
     ///
     /// `schema_id` is the RESTORED ROW's, and it selects the entry as well as
     /// filling the bind. `entries` is keyed by `(schema_id, version, kind)`, so

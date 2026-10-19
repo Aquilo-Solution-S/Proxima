@@ -2254,7 +2254,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         // nothing. The debt below is an owned object's, the one kind left.
         assert!(
             memory_plan.is_empty(),
-            "erasing a memory owes no cold object"
+            "erasing a memory owes the object store nothing"
         );
         let key = "objects/refused".to_owned();
         let backend: String = sqlx::query_scalar(
@@ -2302,7 +2302,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
 /// worth nothing, so this asserts the shipped behaviour they claim, in both
 /// directions:
 ///
-/// - a cool leaves the receipt and REWINDS the head to the surviving
+/// - a forget leaves the receipt and REWINDS the head to the surviving
 ///   newest `t`;
 /// - an erase of the last version removes the receipt and takes the head
 ///   with it.
@@ -2362,13 +2362,13 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
             "the head names the newest version"
         );
 
-        // ── `ForgetRule::Keep` on ingest_keys: cooling the NEWEST version
+        // ── `ForgetRule::Keep` on ingest_keys: forgetting the NEWEST version
         // leaves its receipt behind. ────────────────────────────────────
         pg.forget_memory(&permit, second.memory_id).await?;
         assert_eq!(
             receipts(t2).await?,
             1,
-            "cooling a version does not un-admit it: `ingest_keys` stay, exactly as \
+            "forgetting a version does not un-admit it: `ingest_keys` stay, exactly as \
              core_forget's own wire description says"
         );
 

@@ -105,7 +105,7 @@ pub struct SeriesEraseReceipt {
     pub referencing_series: u64,
     /// Cited blobs no remaining admission cites.
     pub blobs_removed: u64,
-    /// Cold objects enqueued in `cold_purge_pending`; destroyed after commit.
+    /// Objects enqueued in `cold_purge_pending`; destroyed after commit.
     pub cold_objects_pending: u64,
     /// Memories outside the erase whose `origins[]` or `refs[]` name an
     /// erased `t`. The graph is diminished, not refused.

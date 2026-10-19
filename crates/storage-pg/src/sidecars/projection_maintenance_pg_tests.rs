@@ -756,9 +756,9 @@ async fn an_undeclared_sidecar_row_is_caught_and_the_finding_says_there_is_no_re
 ///
 /// This is the direction `assert_memory_declares_sidecar` cannot see. Its
 /// check runs on the sidecar row, so a write that inserts no sidecar row at
-/// all passes it — and the memory it leaves behind cools into a cold object
-/// whose sidecar dump can never equal its own stamp, so forget refuses and
-/// hydration is impossible forever.
+/// all passes it — and the memory it leaves behind declares sidecar data it
+/// does not have, which every read, export and transfer then comes up short
+/// of.
 #[tokio::test]
 async fn a_stamp_with_no_row_is_refused_at_commit() {
     with_db("proxima_presence_write", async |pg| {

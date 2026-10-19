@@ -262,8 +262,8 @@ fn vector_expr(language: LanguagePolicy, text: &str) -> Result<String, StorageEr
 /// and no caller can influence what it stamps.
 ///
 /// The `COALESCE` arm is reached by two writers only: a write that asked
-/// for the deployment configuration by name, and a hydrate rebuild, whose
-/// cold record carries no stamp. A write that named no language at all
+/// for the deployment configuration by name, and a projection rebuild that
+/// was handed no language. A write that named no language at all
 /// never reaches this statement — see
 /// `PgSidecarWriter::insert_memory_sidecar`.
 const LANGUAGE_BIND: &str = "COALESCE($2::regconfig, proxima_core.lexical_config())";

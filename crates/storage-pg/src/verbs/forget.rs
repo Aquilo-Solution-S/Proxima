@@ -35,8 +35,8 @@ impl ColdObjectStore for MemoryColdStore {
 }
 
 /// The rows a lifecycle call may reach: one owner's, of every stored Memory
-/// kind up to the permit's write limit. Forget and hydration run in platform
-/// scope, so this is where the rule narrows their rows.
+/// kind up to the permit's write limit. Forget and restore see rows in
+/// either state, so this is where the rule narrows their rows.
 #[derive(Debug, Clone)]
 pub(crate) struct Reach {
     owner_id: Uuid,
@@ -66,14 +66,14 @@ pub(crate) fn kinds_within(limit: proxima_core::AccessKind) -> Vec<&'static str>
     .collect()
 }
 
-/// Owner-pinned sidecars do not take part in forget/hydrate at all.
+/// Owner-pinned sidecars do not take part in forget/restore at all.
 ///
 /// They are not the Memory's data: they belong to the owner that acted, and
-/// after a transfer that is not the owner doing the forgetting. Cooling them
-/// into the Memory's cold object would let the receiving owner delete — or,
-/// via a cold-object erase, permanently destroy — another owner's audit
-/// trail. They simply stay in the hot table, which is safe because they hold
-/// no foreign key into `memory`.
+/// after a transfer that is not the owner doing the forgetting. Hiding them
+/// with the Memory would let the receiving owner hide — or, by erasing the
+/// Memory, destroy — another owner's audit trail. They simply stay where
+/// they are and stay visible, which is safe because they hold no foreign key
+/// into `memory`.
 ///
 /// The same predicate decides which stamps get a presence trigger: an
 /// owner-pinned stamp is a record of a past write, not a claim about the
@@ -83,7 +83,7 @@ fn is_owner_pinned(sidecars: &PgSidecarRegistryFrozen, table: &str) -> bool {
     sidecars.is_owner_pinned_memory_sidecar_table(table)
 }
 
-/// Cold objects a committed erase still owes the object store.
+/// Blob objects a committed erase still owes the object store.
 ///
 /// An erase marks each locator in `proxima_core.cold_purge_pending` inside the
 /// transaction that deletes its upload row, and destroys the object only
@@ -143,7 +143,7 @@ pub struct ColdPurgeOutcome {
     pub pending: bool,
 }
 
-/// Destroy the cold objects a committed erase marked pending, clearing each
+/// Destroy the objects a committed erase marked pending, clearing each
 /// mark as its object goes.
 ///
 /// Best effort by construction: the erase is already committed, so a refusing
@@ -194,7 +194,7 @@ pub(crate) async fn purge_cold_objects_after_commit_with_platform(
                 tracing::warn!(
                     %error,
                     key,
-                    "cold object outlives its committed erase; the purge-pending mark stays for retry"
+                    "object outlives its committed erase; the purge-pending mark stays for retry"
                 );
             }
         }
@@ -564,7 +564,7 @@ async fn run_forget_legs(
 /// generated `DELETE ... WHERE <key> = $1` does not carry.
 const ERASE_MEMORY_EXPLICIT: &[&str] = &["proxima_core.memory", "proxima_core.ingest_keys"];
 
-/// Every memory-keyed surface a forget KEEPS (its rows outlive a cool) and
+/// Every memory-keyed surface a forget KEEPS (its rows outlive a forget) and
 /// owner erase deletes by key, minus the ones [`erase_memory`] deletes
 /// explicitly. A hard erase of one admission owes these rows the same
 /// delete owner erase gives them, and reading the set off the declarations
@@ -963,7 +963,7 @@ async fn erase_memory_in_lifecycle(
         .map_err(map_err)?;
     // The captured publication, if this Fact had one. Hand-written for the
     // same reason as the receipt above: the row carries no foreign key into
-    // `memory` (it must outlive `forget`'s delete of the hot row), so the
+    // `memory` (it must outlive a delete of the memory row), so the
     // generated memory-dependent legs do not reach it. Erasing a single
     // admission destroys its captured payload — an undelivered event is
     // still this owner's content, and compliance erasure is the one and
@@ -1018,7 +1018,7 @@ async fn erase_memory_in_lifecycle(
 /// Goal references are not foreign keys. Erased evidence resolves as
 /// unavailable; source-scoped erasure leaves the Goal row intact.
 ///
-/// Returns the number of admissions erased and the cold objects the erase
+/// Returns the number of admissions erased and the objects the erase
 /// still owes the object store; see [`erase_memory`] for why the caller
 /// commits first.
 ///

@@ -1159,7 +1159,7 @@ impl<'a> UnitOfWork<'a> {
         Ok(())
     }
 
-    /// Cool one owned memory `t` in this transaction.
+    /// Forget one owned memory `t` in this transaction: mark it forgotten.
     ///
     /// Delegated one-shot forget is [`Engine::forget_memory`] (generic
     /// [`crate::EngineAuthority`]). This path is `AuthzContext` only.
@@ -1193,7 +1193,7 @@ impl<'a> UnitOfWork<'a> {
     /// foreign key joins it: a reference to erased data is erased with it.
     /// The effect per version is the physical erase the owner erase runs —
     /// sidecars, embeddings, heads, captured publications, the erase witness
-    /// — and a cited blob goes with its last citer. Cold objects are enqueued
+    /// — and a cited blob goes with its last citer. Blob objects are enqueued
     /// here and destroyed after [`Self::commit`].
     ///
     /// Admission, all before the first delete:

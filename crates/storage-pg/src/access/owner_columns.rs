@@ -1522,7 +1522,7 @@ fn access_kind(stored: &str) -> Result<AccessKind, StorageError> {
 ///
 /// Sidecars follow the memory unless their surface declares `RetainAtSource`.
 /// Such rows retain their own owner and are excluded from generated transfer
-/// statements and the forget/hydrate cycle.
+/// statements and the forget/restore cycle.
 ///
 /// Cited `blob` rows move when no other live series under a different owner
 /// still cites them. Embeddings / jobs follow the transferred `t`s so ANN
@@ -1667,7 +1667,7 @@ const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1
 /// owner fences (the caller), every series handle, then every series `t`.
 ///
 /// The handle lock is what closes the only growth edge. Append, forget,
-/// hydrate, and erase all take it before changing membership, so once it is
+/// restore, and erase all take it before changing membership, so once it is
 /// held the sorted `t` set cannot grow behind the transfer. The membership
 /// reread after the `t` locks remains mandatory: it turns an unexpected
 /// writer that crossed this boundary into `Retryable` before any transfer
@@ -1698,7 +1698,7 @@ async fn lock_series_membership(
         return Ok(expected);
     }
 
-    // The handle lock prevents append/forget/hydrate/erase from changing the
+    // The handle lock prevents append/forget/restore/erase from changing the
     // series while these lifecycle locks are acquired. The helper sorts and
     // deduplicates, so crossed transfers share one order for every `t`.
     crate::verbs::forget::lock_forget_memories_tx(tx, &expected).await?;
@@ -2326,7 +2326,7 @@ fn dedupe_lookup_sql(
 /// One referring column repointed from the old row to the new one,
 /// generated from the surface's declared `remaps`.
 ///
-/// Scoped by `handle` and not by owner: the hot rows have not changed hands
+/// Scoped by `handle` and not by owner: the memory rows have not changed hands
 /// at this point in the transfer; they change hands in the generated re-home
 /// later in the same transaction. Scoping by owner here
 /// would remap nothing or everything depending on the order.

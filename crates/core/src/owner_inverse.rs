@@ -36,7 +36,7 @@ pub struct OwnerSurfaces {
     transfer_legs: BTreeMap<&'static str, TransferLeg>,
     forget_legs: BTreeMap<&'static str, ForgetLeg>,
     host_lifecycle: Vec<HostStateLifecycleSurface>,
-    /// Keyed by the rendered schema id, so the forget/hydrate lane looks a
+    /// Keyed by the rendered schema id, so the forget/restore lane looks a
     /// declaration up without rendering every `SchemaRef` on every call. The
     /// value is already in table order.
     cascaded_details: BTreeMap<String, Vec<CascadedDetail>>,
@@ -66,10 +66,10 @@ pub enum OwnerSurfacesError {
 }
 
 /// A contract-declared `MemoryT` detail relation whose rows are removed by the
-/// parent sidecar's `ON DELETE CASCADE`. The storage forget lane uses this
-/// declaration to preserve the rows in the cold record before deleting the
-/// parent; keeping the schema identity here prevents a detail table shared by
-/// two payload schemas from being attributed to the wrong cold object.
+/// parent sidecar's `ON DELETE CASCADE`. A forget keeps these rows with the
+/// forgotten memory and owner erase removes them through the cascade;
+/// keeping the schema identity here prevents a detail table shared by two
+/// payload schemas from being attributed to the wrong memory schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CascadedDetail {
     pub schema: SchemaRef,

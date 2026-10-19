@@ -1091,8 +1091,8 @@ impl CounterRule {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ForgetRule {
-    /// Kept with the forgotten memory row and hidden with it (before #488
-    /// it was dumped into a cold record, then deleted).
+    /// Kept with the forgotten memory row and hidden with it. The name is
+    /// historical (#488 kept it); nothing is dumped.
     DumpThenDelete,
     /// Deleted with the memory, not preserved.
     DeleteWithMemory,
@@ -1121,8 +1121,8 @@ pub enum ForgetLeg {
     /// Deleted for the forgotten `t` and not preserved: derived state a
     /// restore recomputes, or a queue entry with nothing to restore.
     Deleted { key_column: &'static str },
-    /// Deleted with the memory by a constraint that already proves it, with
-    /// no cold payload. Hydrate does not restore this derived relation.
+    /// Deleted with the memory by a constraint that already proves it.
+    /// Restore does not rebuild this derived relation.
     Cascaded { via: DbConstraint },
     /// Untouched, with the reason stated.
     Kept { why: &'static str },

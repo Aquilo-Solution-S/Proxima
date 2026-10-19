@@ -515,7 +515,7 @@ impl WriteSession for PgWriteSession {
                 tracing::warn!(
                     attempted = outcome.attempted,
                     failed = outcome.failed,
-                    "series erase committed; cold objects remain queued for \
+                    "series erase committed; blob objects remain queued for \
                      maintain-storage --retry-cold-object-purges"
                 );
             }

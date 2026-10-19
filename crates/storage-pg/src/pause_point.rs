@@ -16,7 +16,7 @@ pub(crate) const AFTER_SERIES_MINT: &str = "after-series-mint";
 pub(crate) const BEFORE_GROUP_LOCK: &str = "before-group-lock";
 
 /// In an owner export, after the snapshot transaction committed and before
-/// any cold object is read. Keyed by the owner id.
+/// the bundle is assembled. Keyed by the owner id.
 pub(crate) const AFTER_EXPORT_SNAPSHOT: &str = "after-export-snapshot";
 
 type Armed = (&'static str, Uuid, Arc<Barrier>, Arc<Barrier>);

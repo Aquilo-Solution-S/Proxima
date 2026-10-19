@@ -14,13 +14,12 @@
 //!    it. [`PRESENCE_TRIGGER_FUNCTION`], `definitions/triggers.sql`,
 //!    and the reason this module is not two halves any more.
 //!
-//! Direction 3 is not symmetry for its own sake. A stamp with no row cools
-//! into a cold object whose sidecar dump can never equal its own stamp, so
-//! the Memory forgets and then cannot be hydrated, permanently, with no
-//! error at the moment the damage is done —
+//! Direction 3 is not symmetry for its own sake. A stamp with no row leaves
+//! the Memory declaring sidecar data it does not have, so every read, export
+//! and transfer that follows its stamps is short of it, with no error at the
+//! moment the damage is done —
 //! `PgSidecarRegistryFrozen::integrity_check` could not even find it, since
-//! it only ever asked direction 2. Forget now refuses such a row at cool
-//! time (`dump_stamped_sidecars`); this refuses it at the transaction that
+//! it only ever asked direction 2. This refuses it at the transaction that
 //! creates it, which is the only place the operator still has the
 //! information to fix it.
 //!
@@ -312,10 +311,10 @@ pub const DELETE_GUARD_FUNCTION_NAME: &str = "proxima_core.assert_row_not_still_
 /// out from under its stamp.
 ///
 /// This is the same corruption [`PRESENCE_TRIGGER_FUNCTION`] refuses at
-/// `INSERT`, arrived at by `DELETE` instead. A stamp whose row is gone cools
-/// into a cold object whose dump can never equal its own stamp, so the Memory
-/// forgets and can never be hydrated — and unlike the insert case there is no
-/// repair, because the row's bytes are gone. `integrity_check` can name the
+/// `INSERT`, arrived at by `DELETE` instead. A stamp whose row is gone
+/// leaves the Memory declaring sidecar data that no longer exists — and
+/// unlike the insert case there is no repair, because the row's bytes are
+/// gone. `integrity_check` can name the
 /// damage; nothing can undo it. That asymmetry is the argument for refusing
 /// the `DELETE` rather than reporting it.
 ///
@@ -361,11 +360,10 @@ BEGIN
             'memory % still declares % in memory.sidecar_tables, so the row it declares there may not be deleted',
             memory_t, surface
             USING ERRCODE = '23503',
-                  HINT = 'a stamp whose row was deleted cools into a cold object whose '
-                         || 'sidecar dump cannot equal its own stamp, so the Memory forgets '
-                         || 'and can never be hydrated, and the row is gone so nothing can '
-                         || 'repair it; delete the memory row in the same transaction, which '
-                         || 'is what forget and owner erase do';
+                  HINT = 'a stamp whose row was deleted leaves the Memory declaring '
+                         || 'sidecar data that is gone, so its reads, export and transfer '
+                         || 'come up short and nothing can repair it; delete the memory row '
+                         || 'in the same transaction, which is what owner erase does';
     END IF;
     RETURN NULL;
 END;
@@ -467,9 +465,9 @@ BEGIN
             'memory % declares % in memory.sidecar_tables with no row in that table',
             NEW.t, surface
             USING ERRCODE = '23503',
-                  HINT = 'a stamp with no row cools into a cold object whose sidecar dump '
-                         || 'cannot equal its own stamp, so the Memory forgets and can never '
-                         || 'be hydrated; write through Engine::unit_of_work, which stamps '
+                  HINT = 'a stamp with no row leaves the Memory declaring sidecar data '
+                         || 'it does not have, so its reads, export and transfer come up '
+                         || 'short; write through Engine::unit_of_work, which stamps '
                          || 'exactly the tables the write inserts into, in the same '
                          || 'transaction';
     END IF;
@@ -831,9 +829,8 @@ pub enum IntegrityFinding {
     /// Sidecar rows whose memory row does not declare the table they are
     /// in. Forget, owner erase and owner export cannot see them.
     UndeclaredSidecarRows { sidecar_table: String, rows: i64 },
-    /// Memory rows that declare a table they have no row in. They cool into
-    /// a cold object whose dump cannot equal its own stamp, so they can
-    /// never be hydrated back.
+    /// Memory rows that declare a table they have no row in: their reads,
+    /// export and transfer come up short of what the stamp declares.
     MissingStampedSidecarRows { sidecar_table: String, rows: i64 },
 }
 

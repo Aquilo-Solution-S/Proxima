@@ -1127,7 +1127,8 @@ impl PgStorage {
             .and_then(|registered| registered.lifecycle.clone()))
     }
 
-    /// Replace the forget/hydrate object store (S3 in the host).
+    /// Replace the object store erase purges blob objects from (S3 in the
+    /// host).
     #[must_use]
     pub fn with_cold(mut self, cold: Arc<dyn proxima_core::ColdObjectStore>) -> Self {
         self.cold = cold;

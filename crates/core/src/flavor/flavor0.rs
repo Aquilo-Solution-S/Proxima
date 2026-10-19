@@ -558,9 +558,8 @@ const KERNEL_SURFACES: &[Surface] = &[
         key: KeyShape::Custom(&["handle"]),
         owner_column: Some("owner_id"),
         transfer: TransferRule::Follow,
-        // Keyed on the series handle with no FK to the head: forget deletes
-        // the head when a series cools completely, and the position must
-        // survive that. Owner erase deletes it with the series it counts,
+        // Keyed on the series handle with no FK to the head: the position
+        // must survive anything that rewrites or drops the head. Owner erase deletes it with the series it counts,
         // through its bespoke leg.
         erase: EraseRule::ByOwner,
         export: ExportRule::DerivedFrom {
@@ -568,7 +567,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "a delivery position, not owner data; the exported events carry it",
         },
         forget: ForgetRule::Keep {
-            why: "the position must outlive a forget so a hydrated series never reuses \
+            why: "the position must outlive a forget so a restored series never reuses \
                   one; only owner erase removes it",
         },
         lexical_language_column: None,
@@ -591,7 +590,8 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "export must not disclose historical erasure metadata",
         },
         forget: ForgetRule::Keep {
-            why: "forget is a reversible cool transition and creates no witness",
+            why: "forget only marks the memory, restore clears the mark, and neither \
+                  creates a witness",
         },
         lexical_language_column: None,
         counter: CounterRule::Uncounted {
@@ -687,10 +687,10 @@ const KERNEL_SURFACES: &[Surface] = &[
         erase: EraseRule::ByKey,
         export: ExportRule::Rows,
         forget: ForgetRule::Keep {
-            why: "cooling a version does not un-admit it: the receipt proves this owner \
-                  accepted this (source, ingest_key) and stays until the version is \
-                  erased, which is what keeps a re-ingest of the same key idempotent \
-                  across a cool",
+            why: "forgetting a version does not un-admit it: the receipt proves this \
+                  owner accepted this (source, ingest_key) and stays until the version \
+                  is erased, which is what lets a re-ingest of the same key answer \
+                  that it is forgotten instead of writing it again",
         },
         lexical_language_column: None,
         counter: CounterRule::Counted("receipts"),
@@ -710,8 +710,8 @@ const KERNEL_SURFACES: &[Surface] = &[
         erase: EraseRule::ByKey,
         export: ExportRule::Rows,
         forget: ForgetRule::Keep {
-            why: "an other-store origin outlives the cool of the memory it describes; \
-                  hydrate finds it again",
+            why: "an other-store origin stays with the forgotten memory it describes, \
+                  hidden with it; a restore shows it again",
         },
         lexical_language_column: None,
         counter: CounterRule::Counted("external_origins"),
@@ -744,14 +744,15 @@ const KERNEL_SURFACES: &[Surface] = &[
                   transport envelope naming this installation",
         },
         forget: ForgetRule::Keep {
-            why: "cooling a Fact does not un-commit the event captured with it: the \
-                  record is a promise already made to consumers, and dropping it here \
-                  would lose a committed event to an unrelated lifecycle operation",
+            why: "the generic forget leg leaves the record alone: forget's own outbox \
+                  step cancels a forgotten Fact's undelivered lanes, and the record when \
+                  no lane is left, while what consumers already received stays \
+                  delivered; restore does not re-enqueue",
         },
         lexical_language_column: None,
         counter: CounterRule::Counted("publications"),
-        // Deliberately NO FK to memory: the row must outlive `forget`'s
-        // delete of the hot row. Completeness rests on owner_id -> owners,
+        // Deliberately NO FK to memory: the row must outlive an erase of
+        // the memory row until its own leg runs. Completeness rests on owner_id -> owners,
         // exactly as the other owner-pinned surfaces do for the same reason.
         completeness: Some(DbConstraint {
             relation: "proxima_core.publication_outbox",
@@ -780,8 +781,9 @@ const KERNEL_SURFACES: &[Surface] = &[
                   from; it carries no content of its own",
         },
         forget: ForgetRule::Keep {
-            why: "cooling a Fact does not un-commit its captured event, nor that event's \
-                  delivery lanes",
+            why: "the generic forget leg leaves the lanes alone: forget's own outbox \
+                  step deletes a forgotten Fact's undelivered lanes and keeps the \
+                  delivered ones",
         },
         lexical_language_column: None,
         counter: CounterRule::Uncounted {
@@ -806,7 +808,7 @@ const KERNEL_SURFACES: &[Surface] = &[
                   owner export content",
         },
         forget: ForgetRule::Keep {
-            why: "cooling or pruning does not change original publication identity",
+            why: "forgetting or pruning does not change original publication identity",
         },
         lexical_language_column: None,
         counter: CounterRule::Counted("publication_origins"),
@@ -835,7 +837,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         erase: EraseRule::ByOwner,
         export: ExportRule::Allowlist(&["blob_id", "schema_id", "content_hash"]),
         forget: ForgetRule::Keep {
-            why: "the citation outlives the cooling of the Fact that names it",
+            why: "the citation outlives a forget of the Fact that names it",
         },
         lexical_language_column: None,
         counter: CounterRule::Counted("blobs"),
@@ -1019,8 +1021,7 @@ const KERNEL_SURFACES: &[Surface] = &[
                   membership list of every group they belong to",
         },
         forget: ForgetRule::Keep {
-            why: "an access relation, not a memory: no forget reaches it and no \
-                  cold record carries it",
+            why: "an access relation, not a memory: no forget reaches it",
         },
         lexical_language_column: None,
         counter: CounterRule::Uncounted {
@@ -1041,7 +1042,7 @@ const KERNEL_SURFACES: &[Surface] = &[
             why: "edge rows are access topology, not owner content",
         },
         forget: ForgetRule::Keep {
-            why: "group topology is independent of memory cooling",
+            why: "group topology is independent of forgetting memories",
         },
         lexical_language_column: None,
         counter: CounterRule::Uncounted {

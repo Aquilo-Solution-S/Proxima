@@ -53,7 +53,9 @@ pub trait MemoryAuthoringPort: Send + Sync {
         memory_ids: &[MemoryId],
     ) -> Result<Vec<MemoryKindRow>, StorageError>;
 
-    /// Cool one memory `t`: PUT cold object, stub and delete hot contents.
+    /// Forget one memory `t`: mark its row `forgotten_at`, so owner reads stop
+    /// seeing it, and delete what search and embedding rebuild. The payload
+    /// stays in place for a restore; no object store is involved.
     async fn forget_memory(
         &self,
         permit: &OwnerWritePermit,

@@ -915,7 +915,12 @@ def check_lifecycle_guc(findings: list[Finding]) -> None:
 
 
 COLD_VOCABULARY = re.compile(
-    r"cooled|hydrate_memor|COLD_FORMAT|cold_object_key|\"cold/",
+    r"cooled|hydrate_memor|COLD_FORMAT|cold_object_key|\"cold/"
+    # Prose of the removed path (#488 review r2): a memory no longer cools,
+    # has no cold object, record, payload or dump, and no hot copy. Plain
+    # "hydrate" stays allowed: search hydrates bodies and snippets.
+    r"|\bcool(?:s|ing)?\b|\bcold objects?\b|\bhot (?:contents|table|rows?)\b"
+    r"|\bcold (?:record|payload|dump|path)s?\b",
     re.IGNORECASE,
 )
 
@@ -1048,8 +1053,8 @@ async fn ingest_fact_atomic(
         failures.append("memory census: a platform callee module was not put in the census")
     cold_fixture = ROOT / "scripts/fixtures/architecture-guardrails/cold_vocabulary.rs"
     cold_hits = [line for line, _text in cold_vocabulary_hits(cold_fixture.read_text(encoding="utf-8"))]
-    if cold_hits != [3, 4, 5, 6, 7]:
-        failures.append(f"cold vocabulary: expected lines 3-7 flagged and the purge port names allowed, got {cold_hits}")
+    if cold_hits != [3, 4, 5, 6, 7, 8, 9, 10, 11]:
+        failures.append(f"cold vocabulary: expected lines 3-11 flagged and the purge port names and search hydration allowed, got {cold_hits}")
     if failures:
         for failure in failures:
             print(f"self-test failed: {failure}: {rel}", file=sys.stderr)

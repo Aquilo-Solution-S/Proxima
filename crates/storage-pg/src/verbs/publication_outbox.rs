@@ -44,9 +44,10 @@ use crate::error::{internal, map_err};
 /// value, and the table's trigger refuses to let it go back.
 ///
 /// The counter is its own row rather than a column of `memory_head`, because
-/// forget deletes the head when a series has no hot row left and hydrate
-/// recreates it from scratch. A position kept on the head restarted at 1
-/// after that and reused positions consumers had already seen (#476).
+/// before #488 forget deleted the head when a series had no live row left
+/// and recreated it from scratch on the way back. A position kept on the
+/// head restarted at 1 after that and reused positions consumers had
+/// already seen (#476).
 ///
 /// # Errors
 ///

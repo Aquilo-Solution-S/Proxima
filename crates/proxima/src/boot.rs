@@ -413,7 +413,7 @@ fn wire_cold_store(
     let configured_bucket = configured_bucket.unwrap_or_default();
     if ColdObjectStore::backend(&cold) != configured_bucket {
         return Err(ProximaError::Config(format!(
-            "cold object store reports backend {:?} but cited uploads publish to \
+            "object purge store reports backend {:?} but cited uploads publish to \
              bucket {configured_bucket:?}; the purge queue and the object store \
              must name one backend",
             ColdObjectStore::backend(&cold),
