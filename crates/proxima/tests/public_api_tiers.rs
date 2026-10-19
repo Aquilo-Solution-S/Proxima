@@ -1090,16 +1090,11 @@ fn host_api_names_global_and_owner_reconcile_outcomes() {
         filename: "handbuch.pdf".to_owned(),
     };
 
-    let outcome = CitedBlobReconcileOutcome {
-        rows_scanned: 1,
-        objects_scanned: 0,
-        missing_objects: 1,
-        missing_sample: vec![missing],
-        orphan_objects: 0,
-        orphan_sample: Vec::new(),
-        foreign_locators: 0,
-        foreign_sample: Vec::new(),
-    };
+    // `#[non_exhaustive]`: a host starts from the default and sets fields.
+    let mut outcome = CitedBlobReconcileOutcome::default();
+    outcome.rows_scanned = 1;
+    outcome.missing_objects = 1;
+    outcome.missing_sample = vec![missing];
     assert!(!outcome.is_intact());
     assert_eq!(outcome.missing_sample[0].filename, "handbuch.pdf");
 

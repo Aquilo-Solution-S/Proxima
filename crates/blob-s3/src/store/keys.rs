@@ -21,6 +21,9 @@ use uuid::Uuid;
 /// Bucket-wide prefix for completed cited blobs.
 pub(super) const CANONICAL_OBJECT_PREFIX: &str = "objects/";
 
+/// Bucket-wide prefix for in-flight transfer keys.
+pub(super) const PENDING_OBJECT_PREFIX: &str = "pending/";
+
 /// In-flight bytes for one upload. The upload id already names exactly one
 /// `blob_uploads` row.
 pub(super) fn pending_object_key(upload_id: Uuid) -> String {

@@ -86,7 +86,9 @@ Maintenance:
                            change log on an explicit horizon. Cron-safe
   maintain-blobs           One reconcile pass over the S3 bucket: report
                            artefacts whose object is gone, objects no row
-                           claims, and rows naming another store. Read-only
+                           claims, and rows naming another store. Deletes
+                           and repairs nothing directly; owes a canonical
+                           object only an aborted or expired upload implies
 
 Endpoint:
   http://127.0.0.1:31415/mcp
@@ -136,9 +138,11 @@ pub const MAINTAIN_BLOBS_USAGE: &str = "\
 Usage: proxima-mcp maintain-blobs [OPTIONS]
 
 One reconcile pass over the configured S3 bucket and the rows that name it.
-READ-ONLY: it deletes nothing and repairs nothing, because the direction that
+It deletes nothing and repairs nothing directly, because the direction that
 matters cannot be repaired from here — the bytes are gone, and only a bucket
-version or a backup still has them.
+version or a backup still has them. One exception: it records purge debt for
+a canonical object only an aborted or expired upload implies (counted as
+newly-owed), and the drain removes it.
 
 Reports three separate numbers, which are three different problems:
   missing   an artefact the corpus claims to hold whose object is absent.
@@ -481,6 +485,12 @@ mod tests {
     #[test]
     fn maintain_blobs_help_flag_returns_help() {
         let err = parse_maintain_blobs_args(["--help".to_string()]).expect_err("help");
+        assert!(MAINTAIN_BLOBS_USAGE.contains("deletes nothing and repairs nothing directly"));
+        assert!(MAINTAIN_BLOBS_USAGE.contains(
+            "records purge debt for\na canonical object only an aborted or expired upload implies"
+        ));
+        assert!(!MAINTAIN_BLOBS_USAGE.contains("READ-ONLY"));
+        assert!(!USAGE.contains("Read-only"));
         assert!(err.is_help());
     }
 

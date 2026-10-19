@@ -15,7 +15,7 @@
 //! guarded against — which is the same trade `sweep_orphan_embedding_rows`
 //! makes for crash residue.
 //!
-//! IT REPORTS AND DELETES NOTHING, deliberately. The dangerous direction
+//! IT DELETES AND REPAIRS NOTHING DIRECTLY, deliberately. The dangerous direction
 //! cannot be repaired here in any case — the bytes are gone, and only a
 //! source that still has them (a bucket version, a backup, the original
 //! upload) can restore one. Re-uploading the same content selects the new
@@ -23,7 +23,14 @@
 //! and still is not: an object with no row may be an upload that committed
 //! its bytes microseconds ago and has not yet committed its row, so a
 //! sweep that deleted on sight would race every concurrent upload it
-//! passed. An operator acts on this report; the report does not act.
+//! passed. An operator acts on this report.
+//!
+//! One exception, and it deletes nothing itself: a canonical object that
+//! only an aborted or expired upload implies was put after that upload
+//! ended, so no upload can still commit a row for it. The global reconcile
+//! records purge debt for it (`newly_owed_objects`), under the owner and key
+//! fences and after checking that no live row implies it, and the drain
+//! removes it.
 
 use std::sync::Arc;
 
@@ -55,6 +62,7 @@ pub struct CitedBlobMissingObject {
 
 /// What one pass over the bucket and the table found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CitedBlobReconcileOutcome {
     /// Live completed uploads examined: this store's bucket and minted keys.
     pub rows_scanned: u64,
@@ -64,11 +72,26 @@ pub struct CitedBlobReconcileOutcome {
     pub missing_objects: u64,
     /// Newest completed losses first, bounded by [`MAX_RECONCILE_SAMPLE`].
     pub missing_sample: Vec<CitedBlobMissingObject>,
-    /// Objects no completed row claims, including superseded rows: cost and
-    /// retention, not correctness. An aborted
-    /// upload, a dropped database, an owner erased from Postgres alone.
+    /// Canonical objects no upload row claims and no purge debt owes: cost
+    /// and retention, not correctness. A dropped database, an owner erased
+    /// from Postgres alone. Every pending or completed row of this store
+    /// claims the canonical object its id implies, whatever key it records,
+    /// so a staged upload's object is never reported here.
     pub orphan_objects: u64,
     pub orphan_sample: Vec<String>,
+    /// Listed objects, canonical or transfer, that this store owes purge
+    /// debt for. Not orphans: the drain removes them. Includes
+    /// `newly_owed_objects`.
+    pub owed_objects: u64,
+    /// Canonical objects only an aborted or expired upload implies, listed
+    /// with no debt: bytes a stage put after the upload ended. This pass
+    /// enqueued purge debt for each, so the drain removes them.
+    pub newly_owed_objects: u64,
+    /// Transfer keys (`pending/<id>`) no in-flight upload claims: the upload
+    /// completed, ended or was erased and the bytes stayed. Erasing the row
+    /// owes them; with no row left, delete them by hand.
+    pub stale_transfer_objects: u64,
+    pub stale_transfer_sample: Vec<String>,
     /// Live uploads naming another bucket or a key not minted for their upload.
     ///
     /// NOT COUNTED AS MISSING, because the cause is different and so is the

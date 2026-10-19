@@ -51,6 +51,9 @@ mod implied_keys;
 #[path = "blob_roundtrip_pg/expiry_sweep.rs"]
 mod expiry_sweep;
 
+#[path = "blob_roundtrip_pg/reconcile_claims.rs"]
+mod reconcile_claims;
+
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.

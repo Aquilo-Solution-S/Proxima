@@ -1,6 +1,6 @@
 //! One pass over the bucket and the table, reporting where they disagree.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use proxima_core::authz::SystemAuthority;
 use proxima_core::storage_ports::{
@@ -15,7 +15,10 @@ use uuid::Uuid;
 
 use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
-use super::keys::{CANONICAL_OBJECT_PREFIX, locator_was_minted_here};
+use super::keys::{
+    CANONICAL_OBJECT_PREFIX, PENDING_OBJECT_PREFIX, canonical_object_key, locator_was_minted_here,
+    pending_object_key,
+};
 use super::live_upload::with_live_blob_upload;
 use super::port::blob_error_to_storage;
 
@@ -54,12 +57,23 @@ impl LiveUploadRow {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-struct CompletedClaimRow {
-    bucket: String,
-    object_store: String,
-    object_key: String,
+struct ClaimRow {
+    owner_id: Uuid,
     upload_id: Uuid,
     mounted_from_upload_id: Option<Uuid>,
+    /// Pending or completed: the upload may still publish, or did publish,
+    /// its canonical object.
+    live: bool,
+    /// Still pending and inside its TTL: its transfer key is in flight.
+    in_flight: bool,
+}
+
+/// A canonical object only ended uploads imply: the upload id the key is
+/// derived from, and an owner one of those uploads belongs to.
+#[derive(Debug, Clone, Copy)]
+struct EndedClaim {
+    implied: Uuid,
+    owner_id: Uuid,
 }
 
 #[async_trait::async_trait]
@@ -108,24 +122,37 @@ impl CitedBlobStore {
         // silently report intact artefacts as missing. A set has no such
         // failure mode. The cost is one key per object in memory: ~120
         // bytes each, so a shelf of 52,000 artefacts is about 6 MB.
-        // `pending/` deliberately is not swept: in-flight uploads have no
-        // completed `blob_uploads` row yet and would appear orphaned.
+        // `pending/` is listed too: a transfer key no in-flight upload
+        // claims is stale, reported apart from canonical orphans.
         let mut objects = self.list_keys(CANONICAL_OBJECT_PREFIX).await?;
+        let mut transfers = self.list_keys(PENDING_OBJECT_PREFIX).await?;
         let objects_scanned = objects.len() as u64;
 
-        let mut outcome = CitedBlobReconcileOutcome {
-            objects_scanned,
-            ..CitedBlobReconcileOutcome::default()
-        };
+        let mut outcome = CitedBlobReconcileOutcome::default();
+        outcome.objects_scanned = objects_scanned;
 
-        // Superseded uploads still claim present bytes. This separate pass
-        // does not check availability or add samples: only the upload ordinary
-        // reads resolve determines whether a citation is missing.
-        // Keys move from `objects` to `claimed`, keeping both sets together
-        // bounded by the original bucket listing.
+        // Every pending or completed row of this store claims the canonical
+        // object its id implies, whatever its recorded key: a staged
+        // pending row, a crash-window row still recording its transfer key.
+        // An aborted or expired row claims nothing: its end already owed
+        // both keys, so a canonical object it alone implies was put after
+        // that debt drained, and this pass owes it again. Only an in-flight
+        // row claims its transfer key.
+        // This pass checks no availability and adds no samples: only the
+        // upload ordinary reads resolve decides whether a citation is
+        // missing. Keys move from `objects` to `claimed`, keeping both sets
+        // together bounded by the original bucket listing.
         let mut claimed: BTreeSet<String> = BTreeSet::new();
-        self.claim_completed_objects(&mut objects, &mut claimed)
+        let ended = self
+            .claim_row_keys(&mut objects, &mut transfers, &mut claimed)
             .await?;
+        // A key that already has purge debt with this store is owed, not
+        // orphaned: the drain will remove it.
+        outcome.owed_objects = self.drop_owed_keys(&mut objects, &mut transfers).await?;
+        outcome.newly_owed_objects = self.owe_ended_objects(&mut objects, ended).await?;
+        outcome.owed_objects = outcome
+            .owed_objects
+            .saturating_add(outcome.newly_owed_objects);
 
         let mut after = None;
         loop {
@@ -191,6 +218,8 @@ impl CitedBlobStore {
 
         outcome.orphan_objects = objects.len() as u64;
         outcome.orphan_sample = objects.into_iter().take(MAX_RECONCILE_SAMPLE).collect();
+        outcome.stale_transfer_objects = transfers.len() as u64;
+        outcome.stale_transfer_sample = transfers.into_iter().take(MAX_RECONCILE_SAMPLE).collect();
         Ok(outcome)
     }
 
@@ -289,54 +318,164 @@ impl CitedBlobStore {
             .map_err(|err| StorageError::Unavailable(err.to_string()))
     }
 
-    /// Claim every completed, locally minted locator, including superseded
-    /// uploads. Missing historical keys have no effect on live availability.
-    async fn claim_completed_objects(
+    /// Claim every key a live upload row of this store implies: the
+    /// canonical object for a pending or completed row, the transfer key for
+    /// an in-flight one. Returns the listed canonical objects only ended
+    /// rows imply.
+    async fn claim_row_keys(
         &self,
         objects: &mut BTreeSet<String>,
+        transfers: &mut BTreeSet<String>,
         claimed: &mut BTreeSet<String>,
-    ) -> Result<(), StorageError> {
+    ) -> Result<BTreeMap<String, EndedClaim>, StorageError> {
+        let mut ended: BTreeMap<String, EndedClaim> = BTreeMap::new();
         let mut after: Option<Uuid> = None;
         loop {
             let mut tx = self.begin_reconcile_transaction().await?;
-            let page = sqlx::query_as::<_, CompletedClaimRow>(
-                "SELECT bucket, object_store, object_key, upload_id, mounted_from_upload_id
+            let page = sqlx::query_as::<_, ClaimRow>(
+                "SELECT owner_id, upload_id, mounted_from_upload_id,
+                        status IN ('pending', 'completed') AS live,
+                        (status = 'pending' AND expires_at > now()) AS in_flight
                    FROM proxima_core.blob_uploads
-                  WHERE status = 'completed'
+                  WHERE object_store = $3 AND bucket = $4
                     AND ($1::uuid IS NULL OR upload_id > $1)
                   ORDER BY upload_id
                   LIMIT $2",
             )
             .bind(after)
             .bind(ROW_PAGE)
+            .bind(self.store_id.as_str())
+            .bind(&self.config.bucket)
             .fetch_all(&mut *tx)
             .await
-            .map_err(|err| {
-                StorageError::Unavailable(format!("read completed cited blob claims: {err}"))
-            })?;
+            .map_err(|err| StorageError::Unavailable(format!("read cited blob claims: {err}")))?;
             tx.commit()
                 .await
                 .map_err(|err| StorageError::Unavailable(err.to_string()))?;
 
             for row in &page {
                 after = Some(row.upload_id);
-                if row.object_store == self.store_id.as_str()
-                    && row.bucket == self.config.bucket
-                    && locator_was_minted_here(
-                        &row.object_key,
-                        row.upload_id,
-                        row.mounted_from_upload_id,
-                    )
-                    && objects.remove(&row.object_key)
-                {
-                    claimed.insert(row.object_key.clone());
+                let implied = row.mounted_from_upload_id.unwrap_or(row.upload_id);
+                let canonical = canonical_object_key(implied);
+                if row.live {
+                    ended.remove(&canonical);
+                    if objects.remove(&canonical) {
+                        claimed.insert(canonical);
+                    }
+                } else if objects.contains(&canonical) {
+                    ended.entry(canonical).or_insert(EndedClaim {
+                        implied,
+                        owner_id: row.owner_id,
+                    });
+                }
+                if row.in_flight {
+                    transfers.remove(&pending_object_key(row.upload_id));
                 }
             }
             if page.len() < usize::try_from(ROW_PAGE).unwrap_or(usize::MAX) {
                 break;
             }
         }
-        Ok(())
+        Ok(ended)
+    }
+
+    /// Owe each listed canonical object that only ended uploads imply and no
+    /// debt already covers, and count them. Each is decided in its own
+    /// transaction, in the erase's lock order: owner fence, then the key.
+    /// Under the key fence the claim is checked again, so an object a live
+    /// row now implies is never owed.
+    async fn owe_ended_objects(
+        &self,
+        objects: &mut BTreeSet<String>,
+        ended: BTreeMap<String, EndedClaim>,
+    ) -> Result<u64, StorageError> {
+        use proxima_storage_pg::access::owner_columns as columns;
+
+        let mut owed = 0_u64;
+        for (key, claim) in ended {
+            if !objects.contains(&key) {
+                continue;
+            }
+            let mut tx = self.begin_reconcile_transaction().await?;
+            columns::lock_owner_fence_shared_tx(&mut tx, &OwnerId::from(claim.owner_id)).await?;
+            columns::lock_object_keys_tx(&mut tx, std::slice::from_ref(&key)).await?;
+            let inserted = sqlx::query(
+                "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+                 SELECT $1, $2, $3
+                  WHERE EXISTS (
+                        SELECT 1 FROM proxima_core.blob_uploads
+                         WHERE owner_id = $2 AND object_store = $3
+                           AND status IN ('aborted', 'expired')
+                           AND ((upload_id = $4 AND mounted_from_upload_id IS NULL)
+                                OR mounted_from_upload_id = $4))
+                    AND NOT EXISTS (
+                        SELECT 1 FROM proxima_core.blob_uploads
+                         WHERE object_store = $3
+                           AND status IN ('pending', 'completed')
+                           AND ((upload_id = $4 AND mounted_from_upload_id IS NULL)
+                                OR mounted_from_upload_id = $4))
+                 ON CONFLICT (object_store, object_key) DO NOTHING",
+            )
+            .bind(&key)
+            .bind(claim.owner_id)
+            .bind(self.store_id.as_str())
+            .bind(claim.implied)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| {
+                StorageError::Unavailable(format!("owe an ended upload's object: {err}"))
+            })?
+            .rows_affected();
+            tx.commit()
+                .await
+                .map_err(|err| StorageError::Unavailable(err.to_string()))?;
+            if inserted == 1 {
+                objects.remove(&key);
+                owed += 1;
+            }
+        }
+        Ok(owed)
+    }
+
+    /// Remove every listed key this store owes purge debt for, and count
+    /// them.
+    async fn drop_owed_keys(
+        &self,
+        objects: &mut BTreeSet<String>,
+        transfers: &mut BTreeSet<String>,
+    ) -> Result<u64, StorageError> {
+        let mut owed = 0_u64;
+        let mut after = String::new();
+        loop {
+            let mut tx = self.begin_reconcile_transaction().await?;
+            let page: Vec<String> = sqlx::query_scalar(
+                "SELECT object_key FROM proxima_core.cold_purge_pending
+                  WHERE object_store = $1 AND object_key COLLATE \"C\" > $2
+                  ORDER BY object_key COLLATE \"C\"
+                  LIMIT $3",
+            )
+            .bind(self.store_id.as_str())
+            .bind(&after)
+            .bind(ROW_PAGE)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|err| StorageError::Unavailable(format!("read purge debt: {err}")))?;
+            tx.commit()
+                .await
+                .map_err(|err| StorageError::Unavailable(err.to_string()))?;
+            for key in &page {
+                if objects.remove(key) || transfers.remove(key) {
+                    owed += 1;
+                }
+            }
+            match page.last() {
+                Some(last) if page.len() == usize::try_from(ROW_PAGE).unwrap_or(usize::MAX) => {
+                    after.clone_from(last);
+                }
+                _ => break,
+            }
+        }
+        Ok(owed)
     }
 
     /// Does exactly this key resolve? `head_object` rather than a listing:

@@ -95,9 +95,30 @@ pub(super) struct Fixture {
 }
 
 pub(super) async fn fixture(versioned: bool) -> Fixture {
+    fixture_in(bucket(versioned).await).await
+}
+
+/// A fixture over a bucket of the test's own, so a whole-bucket listing
+/// sees only what the test wrote.
+pub(super) async fn fixture_in_own_bucket() -> Fixture {
+    let base = s3_config_for_dev();
+    let config = S3RuntimeConfig {
+        bucket: format!("prx-own-{}", Uuid::now_v7().simple()),
+        ..base
+    };
+    config
+        .client()
+        .create_bucket()
+        .bucket(&config.bucket)
+        .send()
+        .await
+        .expect("create the test's own bucket");
+    fixture_in(config).await
+}
+
+async fn fixture_in(config: S3RuntimeConfig) -> Fixture {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
-    let config = bucket(versioned).await;
     let store = CitedBlobStore::new(
         pg.clone_pool_for_backend(),
         config.clone(),

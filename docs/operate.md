@@ -159,7 +159,13 @@ does not replay table inserts.
 
 After restoring either store, run `proxima-mcp maintain-blobs`. It reports
 missing referenced objects and unclaimed objects; it does not repair or delete
-them. Restore missing objects from the backup before serving affected reads.
+them, with one exception. Every pending or completed upload row claims the
+canonical object its id implies, whatever key it records, so a staged upload's
+object is never an orphan. A canonical object that only an aborted or expired
+upload implies was put after that upload ended. The command owes it as purge
+debt and counts it as `newly-owed`, and the drain removes it. Objects with purge
+debt are reported as `owed` (the drain removes them), and transfer keys under
+`pending/` that no in-flight upload claims as `stale-transfers`. Restore missing objects from the backup before serving affected reads.
 Embeddings can be rebuilt from retained content; lost content cannot.
 
 ## External deletion and publication

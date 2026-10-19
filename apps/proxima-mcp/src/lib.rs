@@ -280,11 +280,14 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
     let outcome = outcome?;
 
     println!(
-        "reconcile-blobs: rows={} objects={} missing={} orphans={} foreign={}",
+        "reconcile-blobs: rows={} objects={} missing={} orphans={} owed={} newly-owed={} stale-transfers={} foreign={}",
         outcome.rows_scanned,
         outcome.objects_scanned,
         outcome.missing_objects,
         outcome.orphan_objects,
+        outcome.owed_objects,
+        outcome.newly_owed_objects,
+        outcome.stale_transfer_objects,
         outcome.foreign_locators,
     );
     // The samples are what an operator acts on, and they are bounded by
@@ -297,6 +300,9 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
     }
     for orphan in &outcome.orphan_sample {
         println!("  orphan: {orphan}");
+    }
+    for stale in &outcome.stale_transfer_sample {
+        println!("  stale-transfer: {stale}");
     }
     for foreign in &outcome.foreign_sample {
         println!("  foreign: {foreign}");
