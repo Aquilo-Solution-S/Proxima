@@ -450,6 +450,52 @@ REVOKE ALL ON FUNCTION proxima_core.goal_pin_target_checks() FROM PUBLIC;
 
 -- Group functions
 
+-- The authenticated subject's authority projection is distinct from memory
+-- owner reach. VOLATILE gives the query after a lock wait a fresh snapshot.
+CREATE OR REPLACE FUNCTION proxima_core.read_subject_authority(p_subject uuid)
+ RETURNS TABLE(group_id uuid, read_ceiling proxima_core.access_ceiling,
+               write_ceiling proxima_core.access_ceiling, manage boolean)
+ LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+ SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+AS $function$
+DECLARE
+    previous_subject text := current_setting('app.authority_subject', true);
+BEGIN
+    IF current_setting('app.proxima_scope', true) IS DISTINCT FROM 'owner'
+       OR p_subject IS NULL
+       OR NULLIF(current_setting('app.subject', true), '')::uuid IS DISTINCT FROM p_subject
+    THEN
+        RAISE EXCEPTION USING ERRCODE = '42501',
+            MESSAGE = 'authority reads require the authenticated subject';
+    END IF;
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION USING ERRCODE = '25001',
+            MESSAGE = 'authority reads require READ COMMITTED';
+    END IF;
+    -- Membership writers take owner-kind before rebuilding the projection.
+    -- The latter fence covers an empty projection and inherited memberships.
+    PERFORM pg_advisory_xact_lock_shared(
+        hashtextextended('proxima-owner-kind:' || p_subject::text, 0));
+    PERFORM pg_advisory_xact_lock_shared(
+        hashtextextended('proxima-group-projection:' || p_subject::text, 0));
+    PERFORM set_config('app.authority_subject', p_subject::text, true);
+    IF EXISTS (SELECT 1 FROM proxima_core.owners o
+                WHERE o.owner_id = p_subject AND o.kind = 'group') THEN
+        RAISE EXCEPTION USING ERRCODE = '42501',
+            MESSAGE = 'authority subject must be a person';
+    END IF;
+    RETURN QUERY
+        SELECT m.group_id, m.read_ceiling, m.write_ceiling, m.manage
+          FROM proxima_core.group_role_projection m
+         WHERE m.member_user_id = p_subject
+         ORDER BY m.group_id;
+    PERFORM set_config('app.authority_subject', COALESCE(previous_subject, ''), true);
+EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('app.authority_subject', COALESCE(previous_subject, ''), true);
+    RAISE;
+END
+$function$;
+
 CREATE OR REPLACE FUNCTION proxima_core.group_edge_before_write()
  RETURNS trigger
  LANGUAGE plpgsql

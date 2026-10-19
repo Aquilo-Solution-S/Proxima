@@ -4,8 +4,9 @@ use proxima_core::StorageError;
 use proxima_core::storage_ports::{
     HostStateReply, HostStateRequest, HostStateWritePermit, StateSurfaceName,
 };
-use sqlx::{Postgres, Transaction};
 use std::sync::Arc;
+
+use super::PgHostStateSession;
 
 /// Trusted host/backend code that mutates declared state surfaces on the
 /// write session's live transaction.
@@ -29,8 +30,8 @@ pub trait PgHostStateParticipant: Send + Sync {
         None
     }
 
-    /// Run `request` on `tx`. The session has already checked participant
-    /// id and declared tables; SQL must stamp the permit's owner.
+    /// Run `request` on `session`. The write session has already checked the
+    /// participant id and declared tables; SQL must stamp the permit's owner.
     ///
     /// # Errors
     ///
@@ -39,7 +40,7 @@ pub trait PgHostStateParticipant: Send + Sync {
     /// will not commit.
     async fn apply(
         &self,
-        tx: &mut Transaction<'_, Postgres>,
+        session: &mut PgHostStateSession<'_, '_>,
         permit: &HostStateWritePermit,
         request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError>;

@@ -1794,7 +1794,7 @@ mod tests {
 
         async fn apply(
             &self,
-            _tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+            _session: &mut proxima_storage_pg::PgHostStateSession<'_, '_>,
             _permit: &proxima_core::storage_ports::HostStateWritePermit,
             _request: proxima_core::storage_ports::HostStateRequest,
         ) -> Result<proxima_core::storage_ports::HostStateReply, proxima_core::StorageError>

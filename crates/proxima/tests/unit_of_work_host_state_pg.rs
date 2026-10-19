@@ -1317,7 +1317,6 @@ mod dispatcher {
         HostStateWritePermit, PgCommandDispatcher, StateSurfaceName,
     };
     use proxima_core::{MemoryId, StorageError};
-    use sqlx::{Postgres, Transaction};
 
     use super::host_state_fixture::{
         AUXILIARY_TABLE, EXECUTION_TABLE, PARTICIPANT, WIDENED_TABLES,
@@ -1398,10 +1397,11 @@ mod dispatcher {
     impl HostStateHandler<RecordAuxiliary> for RecordHandler {
         async fn handle(
             &self,
-            tx: &mut Transaction<'_, Postgres>,
+            session: &mut proxima_storage_pg::PgHostStateSession<'_, '_>,
             permit: &HostStateWritePermit,
             command: AgreedCommand<RecordAuxiliary>,
         ) -> Result<HostStateOutcome<u64>, StorageError> {
+            let tx = session.transaction();
             self.0.fetch_add(1, Ordering::SeqCst);
             let owner_id = permit.owner().into_inner();
             let inserted = sqlx::query(
@@ -1428,10 +1428,11 @@ mod dispatcher {
     impl HostStateHandler<CountExecutions> for CountHandler {
         async fn handle(
             &self,
-            tx: &mut Transaction<'_, Postgres>,
+            session: &mut proxima_storage_pg::PgHostStateSession<'_, '_>,
             permit: &HostStateWritePermit,
             _command: AgreedCommand<CountExecutions>,
         ) -> Result<HostStateOutcome<i64>, StorageError> {
+            let tx = session.transaction();
             self.0.fetch_add(1, Ordering::SeqCst);
             let owner_id = permit.owner().into_inner();
             let rows = sqlx::query_scalar(

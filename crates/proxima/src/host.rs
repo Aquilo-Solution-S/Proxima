@@ -187,7 +187,11 @@ pub use proxima_storage_pg::{
 pub use proxima_storage_pg::{HnswIterativeScan, PgPoolConfig, PgTuning};
 /// Startup-registered participant that runs host-owned state SQL on the
 /// [`crate::UnitOfWork`] transaction. Host API only; Flavor SDK does not export it.
-pub use proxima_storage_pg::{PgHostStateLifecyclePort, PgHostStateParticipant};
+/// Its [`PgHostStateSession`] provides the live transaction and authenticated
+/// subject membership reads, returned as read-only [`SubjectMemberships`].
+pub use proxima_storage_pg::{
+    PgHostStateLifecyclePort, PgHostStateParticipant, PgHostStateSession, SubjectMemberships,
+};
 // `GoalWriteBuildError`'s variants carry this, so a host that matches on
 // them cannot bind the payload without being able to name its type. An
 // unnameable type in a public signature is the usual shape of an

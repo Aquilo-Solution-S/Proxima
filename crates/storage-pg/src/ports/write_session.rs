@@ -10,13 +10,129 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, ColdObjectStore, MemoryId, StorageError,
+    AuthorDerivedOutcome, AuthorDerivedRequest, ColdObjectStore, GroupId, MembershipRow, MemoryId,
+    Role, StorageError, UserId,
 };
 use sqlx::{Postgres, Transaction};
 
+use crate::access::owner_columns::PgAccessCeiling;
 use crate::error::internal;
 use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::{PgStorage, verbs};
+
+/// The live transaction of one admitted host-state callback.
+///
+/// Only the write session constructs this value, after checking the registered
+/// participant and its tables. [`Self::authority_memberships`] reads the
+/// authenticated subject stamped on that callback's permit; it takes no
+/// caller-selected subject or owner scope. Host-owned SQL uses
+/// [`Self::transaction`] and continues to stamp the permit's owner.
+///
+/// ```
+/// use proxima_storage_pg::PgHostStateSession;
+/// fn inspect(session: &PgHostStateSession<'_, '_>) { let _ = session; }
+/// ```
+///
+/// ```compile_fail
+/// # use proxima_core::storage_ports::HostStateWritePermit;
+/// # use proxima_storage_pg::PgHostStateSession;
+/// # use sqlx::{Postgres, Transaction};
+/// # fn forge<'session, 'connection>(tx: &'session mut Transaction<'connection, Postgres>, permit: &'session HostStateWritePermit) {
+/// PgHostStateSession { tx, permit };
+/// # }
+/// ```
+#[derive(Debug)]
+pub struct PgHostStateSession<'session, 'connection> {
+    tx: &'session mut Transaction<'connection, Postgres>,
+    permit: &'session HostStateWritePermit,
+}
+
+impl<'connection> PgHostStateSession<'_, 'connection> {
+    /// The unit's transaction for SQL against the callback's declared host tables.
+    pub fn transaction(&mut self) -> &mut Transaction<'connection, Postgres> {
+        self.tx
+    }
+
+    /// Read the authenticated subject's current memberships on this unit.
+    ///
+    /// The database holds the subject's membership projection fence until the
+    /// unit commits or rolls back. This grants no membership writes or memory
+    /// owner reach and requires a `READ COMMITTED` owner transaction.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a permit without an authenticated owner scope, an expired scope,
+    /// or a transaction that does not match the scope. Database and invalid-role
+    /// errors are returned as storage faults.
+    pub async fn authority_memberships(&mut self) -> Result<SubjectMemberships, StorageError> {
+        let scope = self.permit.authority_read_scope().ok_or_else(|| {
+            StorageError::ConstraintViolation(
+                "host-state authority reads require an authenticated owner scope".into(),
+            )
+        })?;
+        if scope.is_expired() {
+            return Err(StorageError::ConstraintViolation(
+                "host-state authority read scope has expired".into(),
+            ));
+        }
+        let subject = scope.subject();
+        let rows = sqlx::query_as::<_, (uuid::Uuid, PgAccessCeiling, PgAccessCeiling, bool)>(
+            "SELECT group_id, read_ceiling, write_ceiling, manage
+               FROM proxima_core.read_subject_authority($1)",
+        )
+        .bind(subject.into_inner())
+        .fetch_all(&mut **self.tx)
+        .await
+        .map_err(crate::error::map_err)?;
+        if scope.is_expired() {
+            return Err(StorageError::ConstraintViolation(
+                "host-state authority read scope has expired".into(),
+            ));
+        }
+        let memberships = rows
+            .into_iter()
+            .map(|(group, read, write, manage)| {
+                let role = Role::new(read.into(), write.into(), manage).map_err(|error| {
+                    StorageError::ConstraintViolation(format!(
+                        "group role projection contains an invalid role: {error}"
+                    ))
+                })?;
+                Ok(MembershipRow {
+                    group: GroupId::new(group),
+                    role,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        Ok(SubjectMemberships {
+            subject,
+            memberships,
+        })
+    }
+}
+
+/// A read-only snapshot of one authenticated subject's memberships.
+///
+/// Returned only by [`PgHostStateSession::authority_memberships`]. The read
+/// fence belongs to that unit of work and lasts until commit or rollback.
+#[derive(Debug)]
+pub struct SubjectMemberships {
+    subject: UserId,
+    memberships: Vec<MembershipRow>,
+}
+
+impl SubjectMemberships {
+    /// The authenticated subject whose memberships were resolved.
+    #[must_use]
+    pub const fn subject(&self) -> UserId {
+        self.subject
+    }
+
+    /// Every current group membership of [`Self::subject`].
+    #[must_use]
+    pub fn memberships(&self) -> &[MembershipRow] {
+        &self.memberships
+    }
+}
 
 struct PgWriteSession {
     store_number: u16,
@@ -447,7 +563,14 @@ impl WriteSession for PgWriteSession {
             .await?;
         registered
             .participant
-            .apply(&mut self.tx, permit, request)
+            .apply(
+                &mut PgHostStateSession {
+                    tx: &mut self.tx,
+                    permit,
+                },
+                permit,
+                request,
+            )
             .await
     }
 

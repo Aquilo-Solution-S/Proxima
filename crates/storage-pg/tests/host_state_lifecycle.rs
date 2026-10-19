@@ -635,7 +635,7 @@ impl PgHostStateParticipant for HostParticipant {
 
     async fn apply(
         &self,
-        _tx: &mut Transaction<'_, Postgres>,
+        _session: &mut proxima_storage_pg::PgHostStateSession<'_, '_>,
         _permit: &HostStateWritePermit,
         _request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError> {
@@ -666,7 +666,7 @@ impl PgHostStateParticipant for TableParticipant {
 
     async fn apply(
         &self,
-        _tx: &mut Transaction<'_, Postgres>,
+        _session: &mut proxima_storage_pg::PgHostStateSession<'_, '_>,
         _permit: &HostStateWritePermit,
         _request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError> {

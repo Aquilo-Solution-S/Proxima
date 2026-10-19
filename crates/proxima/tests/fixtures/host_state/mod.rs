@@ -245,7 +245,7 @@ impl PgHostStateParticipant for EmptyDescriptorParticipant {
 
     async fn apply(
         &self,
-        _tx: &mut Transaction<'_, Postgres>,
+        _session: &mut proxima_storage_pg::PgHostStateSession<'_, '_>,
         _permit: &HostStateWritePermit,
         _request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError> {
@@ -267,7 +267,7 @@ impl PgHostStateParticipant for DuplicateDescriptorParticipant {
 
     async fn apply(
         &self,
-        _tx: &mut Transaction<'_, Postgres>,
+        _session: &mut proxima_storage_pg::PgHostStateSession<'_, '_>,
         _permit: &HostStateWritePermit,
         _request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError> {
@@ -289,7 +289,7 @@ impl PgHostStateParticipant for UndeclaredDescriptorParticipant {
 
     async fn apply(
         &self,
-        _tx: &mut Transaction<'_, Postgres>,
+        _session: &mut proxima_storage_pg::PgHostStateSession<'_, '_>,
         _permit: &HostStateWritePermit,
         _request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError> {
@@ -433,10 +433,11 @@ impl PgHostStateParticipant for HostFixtureParticipant {
 
     async fn apply(
         &self,
-        tx: &mut Transaction<'_, Postgres>,
+        session: &mut proxima_storage_pg::PgHostStateSession<'_, '_>,
         permit: &HostStateWritePermit,
         request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError> {
+        let tx = session.transaction();
         self.callback_calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_before_sql.swap(false, Ordering::SeqCst) {
             return Err(StorageError::Internal(

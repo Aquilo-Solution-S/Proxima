@@ -10,7 +10,8 @@
 //! passes; the handler never sees the [`HostStateRequest`] envelope. An
 //! `AgreedCommand` is not bound to a permit: host code that keeps one and
 //! calls [`HostStateHandler::handle`] itself with another permit is outside
-//! that guarantee.
+//! that guarantee. The session always derives authority-read identity from its
+//! own sealed permit, independently of the separate SQL-stamping permit.
 use std::any::TypeId;
 use std::fmt;
 use std::marker::PhantomData;
@@ -23,9 +24,8 @@ use proxima_core::storage_ports::{
     HostStateReply, HostStateRequest, HostStateWritePermit, StateSurfaceName,
 };
 use proxima_core::{OwnerId, StorageError};
-use sqlx::{Postgres, Transaction};
 
-use super::{PgHostStateLifecyclePort, PgHostStateParticipant};
+use super::{PgHostStateLifecyclePort, PgHostStateParticipant, PgHostStateSession};
 
 /// Host SQL for one command type, run on the unit's live transaction.
 ///
@@ -36,8 +36,7 @@ use super::{PgHostStateLifecyclePort, PgHostStateParticipant};
 /// # use async_trait::async_trait;
 /// # use proxima_core::storage_ports::{HostStateCommand, HostStateOutcome, HostStateParticipantId, HostStateWritePermit, StateSurfaceName};
 /// # use proxima_core::{OwnerId, StorageError};
-/// # use proxima_storage_pg::{AgreedCommand, HostStateHandler};
-/// # use sqlx::{Postgres, Transaction};
+/// # use proxima_storage_pg::{AgreedCommand, HostStateHandler, PgHostStateSession};
 /// # struct Bump { owner: OwnerId }
 /// # impl HostStateCommand for Bump {
 /// #     const PARTICIPANT_ID: HostStateParticipantId = HostStateParticipantId::new("example");
@@ -51,7 +50,7 @@ use super::{PgHostStateLifecyclePort, PgHostStateParticipant};
 /// impl HostStateHandler<Bump> for BumpHandler {
 ///     async fn handle(
 ///         &self,
-///         _tx: &mut Transaction<'_, Postgres>,
+///         _session: &mut PgHostStateSession<'_, '_>,
 ///         _permit: &HostStateWritePermit,
 ///         _command: AgreedCommand<Bump>,
 ///     ) -> Result<HostStateOutcome<String>, StorageError> {
@@ -63,11 +62,11 @@ use super::{PgHostStateLifecyclePort, PgHostStateParticipant};
 /// Its parameter is an [`AgreedCommand`], which host code cannot construct, so
 /// every command a handler receives had its owners compared with a permit; the
 /// dispatcher passes that same permit. It still stamps `permit.owner()` and
-/// touches only the tables the command declares
-/// (`docs/host-integration.md`).
+/// touches only the tables the command declares through
+/// [`PgHostStateSession::transaction`] (`docs/host-integration.md`).
 #[async_trait]
 pub trait HostStateHandler<C: HostStateCommand>: Send + Sync + 'static {
-    /// Run `command` on `tx`.
+    /// Run `command` on `session`.
     ///
     /// # Errors
     ///
@@ -75,7 +74,7 @@ pub trait HostStateHandler<C: HostStateCommand>: Send + Sync + 'static {
     /// the unit of work as for any participant error.
     async fn handle(
         &self,
-        tx: &mut Transaction<'_, Postgres>,
+        session: &mut PgHostStateSession<'_, '_>,
         permit: &HostStateWritePermit,
         command: AgreedCommand<C>,
     ) -> Result<HostStateOutcome<C::Outcome>, StorageError>;
@@ -188,7 +187,7 @@ trait Route: Send + Sync {
     /// back untouched.
     async fn dispatch(
         &self,
-        tx: &mut Transaction<'_, Postgres>,
+        session: &mut PgHostStateSession<'_, '_>,
         permit: &HostStateWritePermit,
         request: HostStateRequest,
     ) -> Result<Routed, StorageError>;
@@ -220,7 +219,7 @@ where
 
     async fn dispatch(
         &self,
-        tx: &mut Transaction<'_, Postgres>,
+        session: &mut PgHostStateSession<'_, '_>,
         permit: &HostStateWritePermit,
         request: HostStateRequest,
     ) -> Result<Routed, StorageError> {
@@ -229,7 +228,7 @@ where
             Err(request) => return Ok(Routed::Unclaimed(request)),
         };
         let command = AgreedCommand::agree(command, permit.owner())?;
-        let outcome = self.handler.handle(tx, permit, command).await?;
+        let outcome = self.handler.handle(session, permit, command).await?;
         Ok(Routed::Handled(reply_for(outcome)))
     }
 }
@@ -260,8 +259,8 @@ fn reply_for<T: Send + 'static>(outcome: HostStateOutcome<T>) -> HostStateReply 
 /// use proxima_core::{OwnerId, StorageError};
 /// use proxima_storage_pg::{
 ///     AgreedCommand, CommandRegistrationError, HostStateHandler, PgCommandDispatcher,
+///     PgHostStateSession,
 /// };
-/// use sqlx::{Postgres, Transaction};
 ///
 /// const PARTICIPANT: HostStateParticipantId = HostStateParticipantId::new("example");
 /// const TABLES: &[StateSurfaceName] = &[StateSurfaceName::new("example.counter")];
@@ -291,7 +290,7 @@ fn reply_for<T: Send + 'static>(outcome: HostStateOutcome<T>) -> HostStateReply 
 /// impl HostStateHandler<Bump> for BumpHandler {
 ///     async fn handle(
 ///         &self,
-///         _tx: &mut Transaction<'_, Postgres>,
+///         _session: &mut PgHostStateSession<'_, '_>,
 ///         _permit: &HostStateWritePermit,
 ///         _command: AgreedCommand<Bump>,
 ///     ) -> Result<HostStateOutcome<u8>, StorageError> {
@@ -313,8 +312,7 @@ fn reply_for<T: Send + 'static>(outcome: HostStateOutcome<T>) -> HostStateReply 
 /// #     StateSurfaceName,
 /// # };
 /// # use proxima_core::{OwnerId, StorageError};
-/// # use proxima_storage_pg::{AgreedCommand, HostStateHandler, PgCommandDispatcher};
-/// # use sqlx::{Postgres, Transaction};
+/// # use proxima_storage_pg::{AgreedCommand, HostStateHandler, PgCommandDispatcher, PgHostStateSession};
 /// # const PARTICIPANT: HostStateParticipantId = HostStateParticipantId::new("example");
 /// # const TABLES: &[StateSurfaceName] = &[StateSurfaceName::new("example.counter")];
 /// # struct Bump { owner: OwnerId }
@@ -329,7 +327,7 @@ fn reply_for<T: Send + 'static>(outcome: HostStateOutcome<T>) -> HostStateReply 
 /// # impl HostStateHandler<Bump> for BumpHandler {
 /// #     async fn handle(
 /// #         &self,
-/// #         _tx: &mut Transaction<'_, Postgres>,
+/// #         _session: &mut PgHostStateSession<'_, '_>,
 /// #         _permit: &HostStateWritePermit,
 /// #         _command: AgreedCommand<Bump>,
 /// #     ) -> Result<HostStateOutcome<u8>, StorageError> {
@@ -454,12 +452,12 @@ impl PgHostStateParticipant for PgCommandDispatcher {
 
     async fn apply(
         &self,
-        tx: &mut Transaction<'_, Postgres>,
+        session: &mut PgHostStateSession<'_, '_>,
         permit: &HostStateWritePermit,
         mut request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError> {
         for route in &self.routes {
-            match route.dispatch(tx, permit, request).await? {
+            match route.dispatch(session, permit, request).await? {
                 Routed::Handled(reply) => return Ok(reply),
                 Routed::Unclaimed(unclaimed) => request = unclaimed,
             }
@@ -516,7 +514,7 @@ mod tests {
     impl<C: HostStateCommand<Outcome = ()>> HostStateHandler<C> for NoopHandler {
         async fn handle(
             &self,
-            _tx: &mut Transaction<'_, Postgres>,
+            _session: &mut PgHostStateSession<'_, '_>,
             _permit: &HostStateWritePermit,
             _command: AgreedCommand<C>,
         ) -> Result<HostStateOutcome<()>, StorageError> {

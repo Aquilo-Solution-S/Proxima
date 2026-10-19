@@ -158,6 +158,7 @@ pub struct HostStateWritePermit {
     participant_id: crate::storage_ports::HostStateParticipantId,
     tables: &'static [crate::storage_ports::StateSurfaceName],
     origin: HostStateWriteOrigin,
+    authority_read_scope: Option<OwnerScope>,
     _private: (),
 }
 
@@ -186,6 +187,7 @@ impl HostStateWritePermit {
             participant_id,
             tables,
             origin,
+            authority_read_scope: None,
             _private: (),
         }
     }
@@ -213,6 +215,36 @@ impl HostStateWritePermit {
     #[must_use]
     pub const fn origin(&self) -> HostStateWriteOrigin {
         self.origin
+    }
+
+    pub(crate) fn owner_authorized(
+        owner: OwnerId,
+        participant_id: crate::storage_ports::HostStateParticipantId,
+        tables: &'static [crate::storage_ports::StateSurfaceName],
+        authz: &crate::AuthzContext,
+    ) -> Self {
+        let mut permit = Self::new(
+            owner,
+            participant_id,
+            tables,
+            HostStateWriteOrigin::OwnerAuthorized {
+                principal: authz.principal(),
+            },
+        );
+        if authz.auth_path() == crate::AuthPath::HostBearer
+            && authz.verified_forwarded_owner().is_none()
+        {
+            permit.authority_read_scope = authz.owner_scope().cloned();
+        }
+        permit
+    }
+
+    /// Authenticated subject scope for transaction-local authority reads.
+    /// Maintenance, delegated and forwarded commands carry none. The scope
+    /// retains its existing memory limits; membership answers do not widen it.
+    #[must_use]
+    pub const fn authority_read_scope(&self) -> Option<&OwnerScope> {
+        self.authority_read_scope.as_ref()
     }
 
     /// Whether this request carries exactly the participant and table scope

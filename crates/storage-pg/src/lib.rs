@@ -94,7 +94,7 @@ pub use platform_scope::{PgPlatformScope, begin_migration_transaction};
 pub use pool_config::PgPoolConfig;
 pub use ports::{
     AgreedCommand, CommandRegistrationError, HostStateHandler, PgCommandDispatcher,
-    PgHostStateLifecyclePort, PgHostStateParticipant,
+    PgHostStateLifecyclePort, PgHostStateParticipant, PgHostStateSession, SubjectMemberships,
 };
 pub use rls_guard::assert_runtime_rls;
 pub use sidecars::{

@@ -253,9 +253,27 @@ creating another authority path.
 
 This capability only maintains the host's registered state. It does not grant
 Fact, Abstraction, Perspective, or Goal writes and does not bypass ordinary
-owner authorization. The callback is transaction-local and must honor the
-stamped owner and declared table scope. The participant and transaction-scoped capability types own this contract in
-rustdoc; lifecycle behavior is verified by the facade and storage PG tests.
+owner authorization. The callback receives a `PgHostStateSession`; use
+`session.transaction()` for host SQL and honor the stamped owner and declared
+table scope.
+
+An owner-authorized host command can call
+`session.authority_memberships().await?` to read the authenticated subject's
+complete current group memberships, including inherited roles, even when
+the memory unit selects only the subject's personal owner. The returned
+`SubjectMemberships` is an answer, not an owner authorization witness. The
+port takes no subject or authority-scope argument and grants no membership
+mutation or additional memory reach. Maintenance, delegated, and forwarded
+commands cannot use this reader.
+
+The reader holds the subject's existing projection fence shared until the
+unit commits or rolls back. Membership changes and nested-group changes
+that affect that subject hold it exclusively, including the first membership
+added to an empty projection. Reads require `READ COMMITTED`; a read after
+waiting observes the preceding writer's committed projection. Keep the unit
+short and do not hold it across network calls. The participant and
+transaction-scoped capability types own the API in rustdoc; facade PG tests
+exercise scope, atomicity, and both concurrency orders.
 
 ## Erase and export callbacks
 

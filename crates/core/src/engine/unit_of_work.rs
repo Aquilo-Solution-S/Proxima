@@ -870,13 +870,11 @@ impl<'a> UnitOfWork<'a> {
                         )
                     })?;
                 validate_host_state_command::<C>(self.engine, descriptor)?;
-                HostStateWritePermit::new(
+                HostStateWritePermit::owner_authorized(
                     *permit.owner_write_permit().owner(),
                     C::PARTICIPANT_ID,
                     C::TABLES,
-                    HostStateWriteOrigin::OwnerAuthorized {
-                        principal: authz.principal(),
-                    },
+                    authz,
                 )
             }
             UnitAuthorization::System(_) => {

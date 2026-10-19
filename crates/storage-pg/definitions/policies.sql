@@ -134,7 +134,11 @@ ALTER POLICY proxima_owner_write ON proxima_core.group_memberships USING ((group
 -- group_role_projection
 SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'proxima_core', 'group_role_projection', 'ownerless', NULL);
 
-ALTER POLICY proxima_owner_read ON proxima_core.group_role_projection USING ((group_id = ANY (COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[]))));
+ALTER POLICY proxima_owner_read ON proxima_core.group_role_projection USING (
+    group_id = ANY (COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))
+    OR (member_user_id = NULLIF(current_setting('app.authority_subject', true), '')::uuid
+        AND member_user_id = NULLIF(current_setting('app.subject', true), '')::uuid)
+);
 
 ALTER POLICY proxima_owner_write ON proxima_core.group_role_projection USING ((group_id = ANY (COALESCE((NULLIF(current_setting('app.manage_owner'::text, true), ''::text))::uuid[], '{}'::uuid[])))) WITH CHECK ((group_id = ANY (COALESCE((NULLIF(current_setting('app.manage_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]))));
 
@@ -230,6 +234,12 @@ SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'pr
 
 -- owners
 SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxima_core', 'owners', 'owner_id', 'owner_id');
+
+ALTER POLICY proxima_owner_read ON proxima_core.owners USING (
+    owner_id = ANY (COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))
+    OR (owner_id = NULLIF(current_setting('app.authority_subject', true), '')::uuid
+        AND owner_id = NULLIF(current_setting('app.subject', true), '')::uuid)
+);
 
 -- projection
 SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxima_core', 'projection', 'owner_id', 'owner_id');

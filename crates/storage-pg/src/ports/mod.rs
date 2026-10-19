@@ -18,6 +18,7 @@ pub use host_state_dispatch::{
     AgreedCommand, CommandRegistrationError, HostStateHandler, PgCommandDispatcher,
 };
 pub use host_state_lifecycle::PgHostStateLifecyclePort;
+pub use write_session::{PgHostStateSession, SubjectMemberships};
 
 fn validate_permit_owner(permit: &OwnerWritePermit, owner: &OwnerId) -> Result<(), StorageError> {
     if permit.owner() == owner {
