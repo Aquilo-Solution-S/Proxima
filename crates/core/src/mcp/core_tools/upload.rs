@@ -155,6 +155,28 @@ pub struct UploadCompleteOutput {
     /// `cited_object_id`, and `core/search_memories` finds the file by
     /// its name.
     pub fact: String,
+    /// Present (true) only when `fact` answers a replay of an upload Fact
+    /// that has been forgotten: nothing was written and it stays forgotten.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub forgotten: bool,
+}
+
+impl From<crate::engine::UploadCompleted> for UploadCompleteOutput {
+    fn from(completed: crate::engine::UploadCompleted) -> Self {
+        let outcome = completed.blob;
+        Self {
+            cited_object_id: outcome.cited_object_id,
+            schema: outcome.schema,
+            content_hash: outcome.content_hash,
+            sha256: outcome.sha256,
+            byte_len: outcome.byte_len,
+            mime: outcome.mime,
+            filename: outcome.filename,
+            idempotent_replay: outcome.idempotent_replay,
+            fact: completed.fact.memory_id.into_inner().to_string(),
+            forgotten: completed.fact.forgotten,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -270,18 +292,7 @@ impl McpTool for CoreUploadTool {
                             &[],
                         )
                         .await?;
-                    let outcome = completed.blob;
-                    Ok(CoreUploadOutput::Complete(UploadCompleteOutput {
-                        cited_object_id: outcome.cited_object_id,
-                        schema: outcome.schema,
-                        content_hash: outcome.content_hash,
-                        sha256: outcome.sha256,
-                        byte_len: outcome.byte_len,
-                        mime: outcome.mime,
-                        filename: outcome.filename,
-                        idempotent_replay: outcome.idempotent_replay,
-                        fact: completed.fact.memory_id.into_inner().to_string(),
-                    }))
+                    Ok(CoreUploadOutput::Complete(completed.into()))
                 }
                 CoreUploadArgs::Abort(args) => {
                     let (authz, owner) =
@@ -667,5 +678,37 @@ mod tests {
         )
         .expect_err("unknown action rejected");
         assert!(err.to_string().contains("prepare"), "got {err}");
+    }
+
+    /// #488 review r3: re-completing an upload whose Fact was forgotten
+    /// answers that Fact and says it is forgotten; a live one says nothing.
+    #[test]
+    fn a_completion_replaying_a_forgotten_upload_fact_says_forgotten() {
+        let completed = |forgotten: bool| crate::engine::UploadCompleted {
+            blob: crate::storage_ports::CitedBlobUploadCompleted {
+                cited_object_id: uuid::Uuid::nil().to_string(),
+                schema: "core/uploaded-blob-v1".into(),
+                content_hash: "00".into(),
+                sha256: "00".into(),
+                byte_len: 1,
+                mime: "text/plain".into(),
+                filename: "a.txt".into(),
+                idempotent_replay: true,
+            },
+            fact: crate::verbs::fact_ingest::FactIngestOutcome {
+                receipt_id: None,
+                memory_id: crate::MemoryId::new(uuid::Uuid::nil()),
+                handle: uuid::Uuid::nil(),
+                idempotent_replay: true,
+                cited_object_id: None,
+                forgotten,
+            },
+        };
+        let forgotten =
+            serde_json::to_value(UploadCompleteOutput::from(completed(true))).expect("serialize");
+        assert_eq!(forgotten["forgotten"], true, "{forgotten}");
+        let live =
+            serde_json::to_value(UploadCompleteOutput::from(completed(false))).expect("serialize");
+        assert!(live.get("forgotten").is_none(), "{live}");
     }
 }

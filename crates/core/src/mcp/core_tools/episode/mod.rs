@@ -172,6 +172,11 @@ pub struct EpisodeCommitOutput {
     pub stances: Vec<String>,
     pub goals: Vec<String>,
     pub bound: Vec<String>,
+    /// Replayed items whose memory has been forgotten (#488): each answers
+    /// with its handle above, nothing was written, and it stays forgotten.
+    /// Absent when none is.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub forgotten: Vec<String>,
 }
 
 struct Slot {
@@ -185,6 +190,7 @@ struct EpisodeSlots {
     remember: Vec<Slot>,
     derive: Option<Slot>,
     stance: Vec<Slot>,
+    forgotten: Vec<String>,
 }
 
 /// The one context every `episode_commit` write phase needs: the open
@@ -265,6 +271,7 @@ async fn episode_commit(
         stances: slots.stance.into_iter().map(|slot| slot.handle).collect(),
         goals,
         bound,
+        forgotten: slots.forgotten,
     })
 }
 
@@ -351,6 +358,9 @@ impl EpisodeWrite<'_> {
                 .map_err(|err| map_bound_fact_error(err, "remember", pin))?;
             reject_bound_replay(pin, outcome.idempotent_replay, "remember")?;
             let handle = outcome.memory_id.into_inner().to_string();
+            if outcome.forgotten {
+                self.slots.forgotten.push(handle.clone());
+            }
             if pin {
                 self.bound.push(handle.clone());
             }
@@ -432,6 +442,9 @@ impl EpisodeWrite<'_> {
             .map_err(|err| map_bound_derived_error(err, "derive", pin))?;
         reject_bound_replay(pin, outcome.idempotent_replay, "derive")?;
         let handle = outcome.memory_id.into_inner().to_string();
+        if outcome.forgotten {
+            self.slots.forgotten.push(handle.clone());
+        }
         if pin {
             self.bound.push(handle.clone());
         }
@@ -517,6 +530,9 @@ impl EpisodeWrite<'_> {
                 .map_err(|err| map_bound_derived_error(err, "stance", pin))?;
             reject_bound_replay(pin, outcome.idempotent_replay, "stance")?;
             let handle = outcome.memory_id.into_inner().to_string();
+            if outcome.forgotten {
+                self.slots.forgotten.push(handle.clone());
+            }
             if pin {
                 self.bound.push(handle.clone());
             }

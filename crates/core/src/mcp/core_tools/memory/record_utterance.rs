@@ -49,6 +49,10 @@ pub struct RecordUtteranceArgs {
 pub struct RecordUtteranceOutput {
     pub handle: String,
     pub idempotent_replay: bool,
+    /// Present (true) only on a replay of an utterance that has been
+    /// forgotten: the write was not repeated and the Fact stays forgotten.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub forgotten: bool,
 }
 
 #[derive(Debug)]
@@ -110,6 +114,7 @@ impl McpTool for RecordUtteranceTool {
             Ok(RecordUtteranceOutput {
                 handle: outcome.memory_id.into_inner().to_string(),
                 idempotent_replay: outcome.idempotent_replay,
+                forgotten: outcome.forgotten,
             })
         })
     }

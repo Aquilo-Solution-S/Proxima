@@ -976,3 +976,74 @@ async fn a_changed_remember_after_forget_continues_the_series_and_restore_keeps_
 fn handles_of(found: &serde_json::Value) -> Vec<String> {
     handles(found, "memories", "memory")
 }
+
+/// #488 review r3: every replay surface says when the memory it answers is
+/// forgotten, as `core_remember` and `core_derive` do: `core_record_utterance`
+/// carries `forgotten: true`, and `core_episode_commit` lists the replayed
+/// handles that are forgotten. (`core_upload` complete is pinned by a unit
+/// test: completing an upload needs an object store.)
+#[tokio::test]
+async fn utterance_and_episode_replays_say_the_memory_is_forgotten() {
+    let split_db = clone_split_core_db("proxima_replay_says_forgotten")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(split_db.runtime_url().to_owned())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let utterance = serde_json::json!({"speaker": "user", "conversation_id": "conv-r3",
+            "text": "utterneedle words", "idempotency_key": "utter-r3"});
+        let source = call(
+            "core_remember",
+            serde_json::json!({"title": "episode source", "body": "episode source", "tags": []}),
+        )
+        .await?["handle"]
+            .as_str()
+            .ok_or("handle")?
+            .to_owned();
+        let episode = serde_json::json!({
+            "derive": {"title": "episayneedle", "body": "episayneedle",
+                "source_handles": [source], "model_id": "test-model",
+                "idempotency_key": "episay-derive"},
+        });
+        let said = call("core_record_utterance", utterance.clone()).await?;
+        let said_handle = said["handle"].as_str().ok_or("handle")?.to_owned();
+        let committed = call("core_episode_commit", episode.clone()).await?;
+        let derived = committed["derived"].as_str().ok_or("derived")?.to_owned();
+        // Control: a live replay says nothing about forgetting.
+        let replay = call("core_record_utterance", utterance.clone()).await?;
+        assert!(replay.get("forgotten").is_none(), "{replay}");
+        let replay = call("core_episode_commit", episode.clone()).await?;
+        assert!(replay.get("forgotten").is_none(), "{replay}");
+
+        for handle in [&said_handle, &derived] {
+            call("core_forget", serde_json::json!({"memory": handle})).await?;
+        }
+        let replay = call("core_record_utterance", utterance).await?;
+        assert_eq!(replay["handle"], said_handle.as_str(), "{replay}");
+        assert_eq!(replay["idempotent_replay"], true, "{replay}");
+        assert_eq!(replay["forgotten"], true, "{replay}");
+        let replay = call("core_episode_commit", episode).await?;
+        assert_eq!(replay["derived"], derived.as_str(), "{replay}");
+        assert_eq!(
+            replay["forgotten"],
+            serde_json::json!([derived]),
+            "{replay}"
+        );
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("replays say forgotten");
+}
