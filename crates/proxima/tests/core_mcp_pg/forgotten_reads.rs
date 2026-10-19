@@ -409,3 +409,136 @@ async fn a_forgotten_memory_reads_as_absent_everywhere_and_unavailable_from_anot
     .await;
     result.expect("forgotten reads");
 }
+
+/// A well-formed local id that names nothing: `existing` with its random
+/// tail flipped, so the store number still says "this store".
+fn absent_local_id(existing: &str) -> Result<String, uuid::Error> {
+    let mut bytes = *existing.parse::<Uuid>()?.as_bytes();
+    for byte in &mut bytes[12..] {
+        *byte ^= 0xff;
+    }
+    Ok(Uuid::from_bytes(bytes).to_string())
+}
+
+/// What a caller observes of a refused call, with the one id it named
+/// replaced, so a forgotten id and an absent id compare equal iff the
+/// caller cannot tell them apart.
+fn observed(err: &proxima::CoreMcpError, id: &str) -> String {
+    format!("{err:?}").replace(id, "<id>")
+}
+
+/// Pin integrity accepts any memory row since #488 S13, so the trigger no
+/// longer stops a new write that names a forgotten memory. The owner scope
+/// the write resolves its sources in must: deriving from, or interpreting,
+/// a forgotten memory is refused exactly as naming an absent id is, also
+/// when a live source is named beside it.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one fixture, every citing write
+async fn a_new_write_cannot_cite_a_forgotten_memory() {
+    let split_db = clone_split_core_db("proxima_cite_forgotten")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(split_db.runtime_url().to_owned())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let handle = |made: serde_json::Value| -> Result<String, &'static str> {
+            Ok(made["handle"].as_str().ok_or("handle")?.to_owned())
+        };
+        let remember = |title: &'static str| {
+            call(
+                "core_remember",
+                serde_json::json!({"title": title, "body": title, "tags": []}),
+            )
+        };
+        let derive = |kind: &'static str, sources: Vec<String>, key: String| {
+            call(
+                "core_derive",
+                serde_json::json!({
+                    "kind": kind, "title": "cites", "body": "cites", "tags": [],
+                    "source_handles": sources, "model_id": "test-model",
+                    "idempotency_key": key,
+                }),
+            )
+        };
+        let interpret = |subjects: Vec<String>| {
+            call(
+                "core_interpret",
+                serde_json::json!({
+                    "claim": "about it", "confidence": 70,
+                    "subjects": subjects, "model_id": "test-model",
+                }),
+            )
+        };
+        let live = handle(remember("live fact").await?)?;
+        let fact = handle(remember("forgotten fact").await?)?;
+        let abstraction = handle(
+            derive(
+                "Abstraction",
+                vec![live.clone()],
+                "cite-forgotten-abstraction".into(),
+            )
+            .await?,
+        )?;
+        // Control: both are citable while live.
+        derive(
+            "Abstraction",
+            vec![fact.clone()],
+            "cite-control-fact".into(),
+        )
+        .await?;
+        derive(
+            "Perspective",
+            vec![abstraction.clone()],
+            "cite-control-abs".into(),
+        )
+        .await?;
+        interpret(vec![fact.clone()]).await?;
+
+        call("core_forget", serde_json::json!({"memory": fact})).await?;
+        call("core_forget", serde_json::json!({"memory": abstraction})).await?;
+
+        for (forgotten, kind) in [(&fact, "Abstraction"), (&abstraction, "Perspective")] {
+            let absent = absent_local_id(forgotten)?;
+            for (with_live, tag) in [(false, "alone"), (true, "beside-live")] {
+                let sources = |id: &str| {
+                    let mut sources = vec![id.to_owned()];
+                    if with_live && kind == "Abstraction" {
+                        sources.push(live.clone());
+                    }
+                    sources
+                };
+                let cited = derive(kind, sources(forgotten), format!("cite-{kind}-{tag}"))
+                    .await
+                    .expect_err("deriving from a forgotten memory is refused");
+                let missing = derive(kind, sources(&absent), format!("absent-{kind}-{tag}"))
+                    .await
+                    .expect_err("deriving from an absent memory is refused");
+                assert_eq!(observed(&cited, forgotten), observed(&missing, &absent));
+            }
+        }
+        let absent = absent_local_id(&fact)?;
+        let cited = interpret(vec![fact.clone(), live.clone()])
+            .await
+            .expect_err("interpreting a forgotten memory is refused");
+        let missing = interpret(vec![absent.clone(), live.clone()])
+            .await
+            .expect_err("interpreting an absent memory is refused");
+        assert_eq!(observed(&cited, &fact), observed(&missing, &absent));
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("cite forgotten");
+}

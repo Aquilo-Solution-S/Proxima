@@ -934,11 +934,14 @@ impl Engine {
         memory_ids
             .iter()
             .map(|memory_id| {
+                // The entry gate resolves a memory's home in either state,
+                // and owner reads hide a forgotten row, so an id that passed
+                // the gate but has no kind here is forgotten (or went away
+                // since). A new write must not cite it, and the refusal is
+                // the one an absent id gets: no hint that it exists, no
+                // invitation to retry.
                 by_id.get(memory_id).copied().ok_or_else(|| {
-                    ProtocolError::invalid_argument(
-                        "memory_id",
-                        "authorized memory is unavailable; refresh its row ID and retry",
-                    )
+                    ProtocolError::forbidden(super::pipeline::ENTRY_NOT_FOUND_MESSAGE)
                 })
             })
             .collect()
