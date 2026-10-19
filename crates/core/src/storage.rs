@@ -16,8 +16,11 @@ use crate::{
 };
 use crate::{EntityKind, MemoryId, MemoryOperatorKind, OwnerId, SchemaId, SchemaVersion};
 
+/// Deliberately NOT `#[non_exhaustive]`, like [`crate::ErrorCode`]: the
+/// three maps onto a caller's vocabulary (the engine's protocol error, the
+/// MCP error kind and REST's status table) match it with no wildcard arm, so
+/// a new variant is a compile error until someone chooses its rendering.
 #[derive(Debug, Clone, thiserror::Error)]
-#[non_exhaustive]
 pub enum StorageError {
     #[error("storage backend unavailable: {0}")]
     Unavailable(String),

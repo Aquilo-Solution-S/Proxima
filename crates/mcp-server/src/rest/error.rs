@@ -334,11 +334,11 @@ const fn storage_status(err: &StorageError) -> (StatusCode, &'static str, &'stat
                 "Internal error",
             ),
         },
-        // Retryable, Unavailable, Internal, MemoryIdCollision and
-        // SchemaResetRequired are server faults. `StorageError` is
-        // `#[non_exhaustive]`, so a variant this release does not know is one
-        // too until it is mapped.
-        _ => (
+        StorageError::Retryable(_)
+        | StorageError::Unavailable(_)
+        | StorageError::Internal(_)
+        | StorageError::MemoryIdCollision
+        | StorageError::SchemaResetRequired { .. } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "Internal error",
