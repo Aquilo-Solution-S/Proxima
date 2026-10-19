@@ -3,7 +3,7 @@
 
 use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportTarget, OwnerSurfaces};
 use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::{OwnerInversePort, OwnerWritePermit};
+use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerInversePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::query::EntityKind;
 use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
@@ -690,10 +690,10 @@ async fn export_carries_the_owners_content_rows() {
     result.expect("content export failed");
 }
 
-/// A forgotten memory's pins stay in the graph: edges come from cooled rows
-/// as well as hot ones (#478).
+/// A forgotten memory's pins stay in the graph: edges come from forgotten
+/// rows as well as live ones (#478; since #488 both are `memory` rows).
 #[tokio::test]
-async fn a_cooled_memorys_origins_and_refs_are_edges() {
+async fn a_forgotten_memorys_origins_and_refs_are_edges() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -724,15 +724,25 @@ async fn a_cooled_memorys_origins_and_refs_are_edges() {
             .await?
             .memory_id
             .into_inner();
-        pg.cool_legacy_for_tests(derived).await?;
+        let abstraction_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
+        MemoryAuthoringPort::forget_memory(&pg, &abstraction_permit, MemoryId::new(derived))
+            .await?;
 
         let auth =
             ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id: user });
         let bundle = pg
             .export_owner_bundle(&auth, &contract_sidecar_tables())
             .await?;
-        assert_eq!(bundle.count("proxima_core.cooled"), 1);
-        let from_cooled: Vec<(String, String)> = bundle
+        let forgotten_rows = bundle
+            .table("proxima_core.memory")
+            .iter()
+            .filter(|row| {
+                row["t"].as_str() == Some(derived.to_string().as_str())
+                    && !row["forgotten_at"].is_null()
+            })
+            .count();
+        assert_eq!(forgotten_rows, 1, "the forgotten row is in the bundle");
+        let from_forgotten: Vec<(String, String)> = bundle
             .edges
             .iter()
             .filter(|edge| edge["source_t"].as_str() == Some(derived.to_string().as_str()))
@@ -744,17 +754,17 @@ async fn a_cooled_memorys_origins_and_refs_are_edges() {
             })
             .collect();
         assert!(
-            from_cooled.contains(&("origin".to_owned(), origin.to_string())),
-            "the cooled memory's origin pin is an edge: {from_cooled:?}"
+            from_forgotten.contains(&("origin".to_owned(), origin.to_string())),
+            "the forgotten memory's origin pin is an edge: {from_forgotten:?}"
         );
         assert!(
-            from_cooled.contains(&("reference".to_owned(), referenced.to_string())),
-            "the cooled memory's ref pin is an edge: {from_cooled:?}"
+            from_forgotten.contains(&("reference".to_owned(), referenced.to_string())),
+            "the forgotten memory's ref pin is an edge: {from_forgotten:?}"
         );
         assert_eq!(bundle.count("edges"), bundle.edges.len());
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("cooled pin edges failed");
+    result.expect("forgotten pin edges failed");
 }

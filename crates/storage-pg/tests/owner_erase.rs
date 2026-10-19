@@ -52,6 +52,10 @@ struct RefusingDeleteCold {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for RefusingDeleteCold {
+    fn backend(&self) -> &'static str {
+        "bucket"
+    }
+
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
         self.inner.put(key, bytes).await
     }
@@ -658,8 +662,10 @@ async fn erase_personal_owner_drops_memory_keys_and_embeddings() {
     result.expect("owner erase failed");
 }
 
+/// #488: forget keeps the row, so an owner erase finds a forgotten memory in
+/// `memory` and hard-deletes it with its keys and content like any other.
 #[tokio::test]
-async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
+async fn erase_personal_owner_destroys_a_forgotten_memory_and_gcs_content() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -671,25 +677,29 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written = pg.ingest_fact_atomic(&permit, &draft(Some(("src", "k-cooled"))), None).await?;
+        let written = pg
+            .ingest_fact_atomic(&permit, &draft(Some(("src", "k-forgotten"))), None)
+            .await?;
         let t = written.memory_id.into_inner();
-        pg.cool_legacy_for_tests(written.memory_id.into_inner()).await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
         let keys_after_forget: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k-cooled'",
+            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k-forgotten'",
         )
         .fetch_one(pool)
         .await?;
         assert_eq!(keys_after_forget, 1, "forget leaves ingest_keys");
-        let cooled_before: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(cooled_before, 1);
+        let forgotten_before: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory
+              WHERE t = $1 AND forgotten_at IS NOT NULL",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(forgotten_before, 1, "forget keeps the row");
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
-            drop_event_id: "test-drop-cooled".into(),
+            drop_event_id: "test-drop-forgotten".into(),
         });
         let outcome = pg
             .erase_personal_owner(&auth, user, &contract_sidecar_tables())
@@ -698,28 +708,32 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
             matches!(outcome, OwnerEraseOutcome::Completed { .. }),
             "got {outcome:?}"
         );
-        let cooled_after: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+        let rows_after: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(cooled_after, 0, "owner erase must delete cooled stubs");
+        assert_eq!(rows_after, 0, "owner erase must delete a forgotten row");
         let content: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.content c
-              WHERE NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id)
-                AND NOT EXISTS (SELECT 1 FROM proxima_core.cooled k WHERE k.content_id = c.content_id)",
+              WHERE NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id)",
         )
         .fetch_one(pool)
         .await?;
         assert_eq!(content, 0, "unreferenced Content must be GC'd");
         let keys_after_erase: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k-cooled'",
+            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k-forgotten'",
         )
         .fetch_one(pool)
         .await?;
         assert_eq!(
             keys_after_erase, 0,
-            "owner erase must delete ingest_keys of cooled facts"
+            "owner erase must delete ingest_keys of forgotten facts"
+        );
+        assert_eq!(
+            pending_debts(pool).await?,
+            0,
+            "a forgotten memory owes the object store nothing"
         );
         let witness: Option<String> = sqlx::query_scalar(
             "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
@@ -730,13 +744,13 @@ async fn erase_personal_owner_destroys_cooled_and_gcs_content() {
         assert_eq!(
             witness.as_deref(),
             Some("fact"),
-            "owner erase hard-deletes a cooled Memory and records its kind witness"
+            "owner erase hard-deletes a forgotten Memory and records its kind witness"
         );
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("owner erase of cooled failed");
+    result.expect("owner erase of a forgotten memory failed");
 }
 
 #[tokio::test]
@@ -806,21 +820,17 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
     result.expect("owner blob erase failed");
 }
 
-/// Source scope can delete only blobs captured from its selected admissions.
-/// Surviving hot or cooled citations protect shared blobs, while an unrelated
-/// unreferenced completed upload is outside the source scope entirely.
+/// An erase that aborts after deleting a forgotten row leaves the row, still
+/// forgotten, and no witness: the whole erase is one transaction.
 #[tokio::test]
-async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
+async fn an_aborted_owner_erase_keeps_the_forgotten_row() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let cold = Arc::new(MemoryColdStore::default());
-        let pg = PgStorage::connect_for_tests(url.clone())
-            .await?
-            .with_cold(cold.clone());
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
@@ -829,24 +839,20 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
             .ingest_fact_atomic(&permit, &draft(Some(("src", "k-abort"))), None)
             .await?;
         let t = written.memory_id.into_inner();
-        pg.cool_legacy_for_tests(written.memory_id.into_inner())
-            .await?;
-        let key: String =
-            sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
 
+        // Refuse the last statement of the erase, after the memory delete,
+        // so everything before it must roll back with it.
         sqlx::raw_sql(
-            "CREATE FUNCTION public.refuse_cold_delete() RETURNS trigger
+            "CREATE FUNCTION public.refuse_memory_delete() RETURNS trigger
              LANGUAGE plpgsql AS $$
              BEGIN
-                 RAISE EXCEPTION 'injected cold delete refusal';
+                 RAISE EXCEPTION 'injected erase refusal';
              END
              $$;
-             CREATE TRIGGER refuse_cold_delete
-             BEFORE DELETE ON proxima_core.cooled
-             FOR EACH ROW EXECUTE FUNCTION public.refuse_cold_delete();",
+             CREATE TRIGGER refuse_memory_delete
+             AFTER DELETE ON proxima_core.memory
+             FOR EACH ROW EXECUTE FUNCTION public.refuse_memory_delete();",
         )
         .execute(pool)
         .await?;
@@ -858,29 +864,20 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
         let err = pg
             .erase_personal_owner(&auth, user, &contract_sidecar_tables())
             .await
-            .expect_err("the injected cold delete refusal aborts the erase");
+            .expect_err("the injected refusal aborts the erase");
         assert!(
-            err.to_string().contains("cold delete refusal"),
+            err.to_string().contains("injected erase refusal"),
             "got: {err}"
         );
 
-        assert!(
-            cold.get(&key).await.is_ok(),
-            "an aborted erase may not have destroyed the object"
-        );
-        let stub: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
-        assert_eq!(stub, 1, "the locator is back, so the bytes must be too");
-        let pending: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        let kept: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxima_core.memory
+              WHERE t = $1 AND forgotten_at IS NOT NULL",
         )
-        .bind(&key)
+        .bind(t)
         .fetch_one(pool)
         .await?;
-        assert_eq!(pending, 0, "the pending mark rolls back with the erase");
+        assert_eq!(kept, 1, "the forgotten row survives an aborted erase");
         let witness: Option<String> = sqlx::query_scalar(
             "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
         )
@@ -902,7 +899,9 @@ async fn an_aborted_owner_erase_keeps_the_cold_object_and_its_locator() {
 /// buckets and S3 object keys; a registered citation sidecar holds whatever the
 /// flavor's citation payload is. Nothing collected any of it — erase deletes no
 /// `owners` row, so the FKs never fired and the rows were immortal.
-
+///
+/// The committed erase destroys the objects it owes: an owned upload's
+/// object. A forgotten memory owes none since #488.
 #[tokio::test]
 async fn erase_personal_owner_purges_cold_objects_after_commit() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -911,7 +910,7 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let cold = Arc::new(MemoryColdStore::default());
+        let cold = Arc::new(BucketNamedCold::new("bucket"));
         let pg = PgStorage::connect_for_tests(url.clone())
             .await?
             .with_cold(cold.clone());
@@ -922,15 +921,9 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
         let written = pg
             .ingest_fact_atomic(&permit, &draft(Some(("src", "k-cold"))), None)
             .await?;
-        let t = written.memory_id.into_inner();
-        pg.cool_legacy_for_tests(written.memory_id.into_inner())
-            .await?;
-        let key: String =
-            sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
-                .bind(t)
-                .fetch_one(pool)
-                .await?;
-        assert!(cold.get(&key).await.is_ok(), "forget wrote the cold object");
+        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
+        let (_blob, key) = completed_blob_upload(pool, owner, 21).await?;
+        cold.put(&key, b"owned object").await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
@@ -940,20 +933,24 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
             .erase_personal_owner(&auth, user, &contract_sidecar_tables())
             .await?;
         assert!(
-            matches!(outcome, OwnerEraseOutcome::Completed { .. }),
+            matches!(
+                outcome,
+                OwnerEraseOutcome::Completed {
+                    cold_object_purge_pending: false,
+                    ..
+                }
+            ),
             "got {outcome:?}"
         );
         assert!(
             matches!(cold.get(&key).await, Err(StorageError::NotFound)),
-            "the committed erase destroys the cold object"
+            "the committed erase destroys the owned object"
         );
-        let pending: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
-        )
-        .bind(&key)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(pending, 0, "a destroyed object clears its pending mark");
+        assert_eq!(
+            pending_debts(pool).await?,
+            0,
+            "a destroyed object clears its pending mark, and the forgotten memory owed none"
+        );
         Ok(())
     }
     .await;
@@ -977,9 +974,9 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
-        pg.cool_legacy_for_tests(written.memory_id.into_inner())
-            .await?;
+        pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let (_blob, key) = completed_blob_upload(pool, owner, 22).await?;
+        cold.put(&key, b"owned object").await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
@@ -1000,8 +997,8 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         // journal row can.
         assert_eq!(pending_debts(pool).await?, 1);
         sqlx::query(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
-             VALUES ('cold/test-second-debt', $1)",
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+             VALUES ('objects/test-second-debt', $1, 'bucket')",
         )
         .bind(owner.into_inner())
         .execute(pool)
@@ -1025,7 +1022,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
 
         let retry_pg = PgStorage::connect_for_tests(url.clone())
             .await?
-            .with_cold(Arc::new(MemoryColdStore::default()));
+            .with_cold(Arc::new(BucketNamedCold::new("bucket")));
         let dry_run = retry_pg
             .retry_cold_object_purges(ColdPurgeRetryOptions {
                 batch_size: 1,
@@ -1250,12 +1247,10 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
     result.expect("backend-matched drain test failed");
 }
 
-/// The rollback half of the same rule, on the bulk path. An outside owner's Goal
-/// arming this owner's wake row makes the wake deletion trip the RESTRICT FK
-/// *after* the cooled rows are gone from the transaction, so the whole erase
-/// aborts. Nothing may have been destroyed in the object store by then: the
-/// `cooled` locator is back, so its bytes must be too.
-
+/// Source scope can delete only blobs captured from its selected admissions.
+/// Surviving live or forgotten citations protect shared blobs, while an
+/// unrelated unreferenced completed upload is outside the source scope
+/// entirely.
 #[tokio::test]
 async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -1283,13 +1278,7 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
         let shared_survivor = pg
             .ingest_fact_atomic(&permit, &shared_survivor, None)
             .await?;
-        pg.cool_legacy_for_tests(shared_survivor.memory_id.into_inner())
-            .await?;
-        let shared_cold_key: String =
-            sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
-                .bind(shared_survivor.memory_id.into_inner())
-                .fetch_one(pool)
-                .await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, shared_survivor.memory_id).await?;
         cold.put("objects/8", b"shared cited object").await?;
         cold.put("objects/9", b"target cited object").await?;
         cold.put(&unrelated_key, b"unrelated object").await?;
@@ -1336,7 +1325,7 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
         assert_eq!(
             rows_for_blob(pool, shared).await?,
             (1, 1, 1, 1),
-            "a surviving cooled citation must protect its shared blob"
+            "a surviving forgotten citation must protect its shared blob"
         );
         assert_eq!(
             rows_for_blob(pool, unrelated).await?,
@@ -1354,10 +1343,6 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
         assert!(
             cold.get(&unrelated_key).await.is_ok(),
             "the unrelated upload's object must survive"
-        );
-        assert!(
-            cold.get(&shared_cold_key).await.is_ok(),
-            "the surviving cooled admission's object must survive"
         );
         let pending_uploads: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.blob_uploads
@@ -1637,7 +1622,7 @@ async fn erase_source_scope_rewinds_head_to_remaining_t() {
 }
 
 #[tokio::test]
-async fn erase_source_scope_destroys_cooled_from_that_source() {
+async fn erase_source_scope_destroys_forgotten_from_that_source() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -1650,7 +1635,7 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
         let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let target = pg
-            .ingest_fact_atomic(&permit, &draft(Some(("src-cool", "k-cool"))), None)
+            .ingest_fact_atomic(&permit, &draft(Some(("src-forgotten", "k-forgotten-src"))), None)
             .await?;
         let other = pg
             .ingest_fact_atomic(&permit, &draft(Some(("src-keep", "k-keep"))), None)
@@ -1666,14 +1651,14 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
             user_id: user,
-            source_id: SourceId::new("src-cool"),
-            drop_event_id: "test-drop-cooled-src".into(),
+            source_id: SourceId::new("src-forgotten"),
+            drop_event_id: "test-drop-forgotten-src".into(),
         });
         let outcome = pg
             .erase_personal_source_scope(
                 &auth,
                 user,
-                &SourceId::new("src-cool"),
+                &SourceId::new("src-forgotten"),
                 &contract_sidecar_tables(),
             )
             .await?;
@@ -1681,14 +1666,14 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
             matches!(outcome, OwnerEraseOutcome::Completed { .. }),
             "got {outcome:?}"
         );
-        let cooled: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
+        let forgotten: i64 =
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
                 .bind(target.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(
-            cooled, 0,
-            "source-scope erase must select cooled by source_id"
+            forgotten, 0,
+            "source-scope erase must select a forgotten row by source_id"
         );
         let kept: i64 =
             sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
@@ -1697,7 +1682,7 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
                 .await?;
         assert_eq!(kept, 1, "other source must remain hot");
         let keys: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k-cool'",
+            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k-forgotten-src'",
         )
         .fetch_one(pool)
         .await?;
@@ -1733,7 +1718,7 @@ async fn erase_source_scope_destroys_cooled_from_that_source() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("source-scope cooled erase failed");
+    result.expect("source-scope forgotten erase failed");
 }
 
 /// Specialized person erasure removes their written relations and projected

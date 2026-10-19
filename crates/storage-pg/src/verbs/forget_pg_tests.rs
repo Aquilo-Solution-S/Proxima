@@ -2240,11 +2240,10 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         let pool = pg.pool_for_tests();
         let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
-        // A pre-#488 cooled row: the only state that still owes a cold purge.
-        let key = super::cool_legacy_for_tests(&pg, &MemoryColdStore::default(), t).await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
 
         let mut tx = pool.begin().await?;
-        let plan = erase_memory(
+        let memory_plan = erase_memory(
             &mut tx,
             &core_pg_sidecars(),
             &erase_context(surfaces()),
@@ -2252,7 +2251,28 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
             t,
         )
         .await?;
+        // #488: a forgotten memory keeps its row and owes the object store
+        // nothing. The debt below is an owned object's, the one kind left.
+        assert!(
+            memory_plan.is_empty(),
+            "erasing a memory owes no cold object"
+        );
+        let key = "objects/refused".to_owned();
+        let backend: String = sqlx::query_scalar(
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+             VALUES ($1, $2, $3)
+             RETURNING backend",
+        )
+        .bind(&key)
+        .bind(owner.into_inner())
+        .bind(FailDeleteCold.backend())
+        .fetch_one(tx.as_mut())
+        .await?;
         tx.commit().await?;
+        let plan = ColdPurgePlan::from_entries(vec![ColdPurgeEntry {
+            object_key: key.clone(),
+            backend,
+        }]);
 
         let platform = pg.platform_scope_for_host();
         let purged = purge_cold_objects_after_commit(pool, &platform, &FailDeleteCold, &plan).await;

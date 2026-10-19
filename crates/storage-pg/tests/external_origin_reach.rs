@@ -1,10 +1,10 @@
 //! #478 item 2: `proxima_core.memory_external_origin` is reached for hot AND
-//! cooled memories by every lifecycle verb, through the runtime role.
+//! forgotten memories by every lifecycle verb, through the runtime role.
 //!
 //! The table carries no owner column; its owner policy finds the owner
 //! through the memory it describes. The tables are FORCE ROW LEVEL SECURITY
 //! and the runtime role is NOBYPASSRLS, so a policy that only looks at hot
-//! `memory` rows hides a cooled memory's origins from every statement the
+//! `memory` rows hides a forgotten memory's origins from every statement the
 //! runtime runs — including the deletes an erase relies on. These tests run
 //! the verbs through `fresh_pg` (runtime role) and count with the admin pool.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
@@ -96,8 +96,8 @@ async fn origins_visible_to(
     Ok(n)
 }
 
-/// A hot memory with one origin and a COOLED memory with two, for `owner`.
-async fn hot_and_cooled(
+/// A hot memory with one origin and a FORGOTTEN memory with two, for `owner`.
+async fn hot_and_forgotten(
     pg: &PgStorage,
     permit: &OwnerWritePermit,
 ) -> Result<(Uuid, Uuid), Box<dyn std::error::Error>> {
@@ -105,31 +105,32 @@ async fn hot_and_cooled(
         .ingest_fact_atomic(permit, &draft(), None)
         .await?
         .memory_id;
-    let cooled = pg
+    let forgotten = pg
         .ingest_fact_atomic(permit, &draft(), None)
         .await?
         .memory_id;
     add_origins(pg, hot.into_inner(), 1).await?;
-    add_origins(pg, cooled.into_inner(), 2).await?;
-    pg.cool_legacy_for_tests(cooled.into_inner()).await?;
-    let cooled_rows: i64 =
-        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
-            .bind(cooled.into_inner())
-            .fetch_one(pg.pool_for_tests())
-            .await?;
-    assert_eq!(cooled_rows, 1, "the second memory is cooled");
-    Ok((hot.into_inner(), cooled.into_inner()))
+    add_origins(pg, forgotten.into_inner(), 2).await?;
+    MemoryAuthoringPort::forget_memory(pg, permit, forgotten).await?;
+    let forgotten_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1 AND forgotten_at IS NOT NULL",
+    )
+    .bind(forgotten.into_inner())
+    .fetch_one(pg.pool_for_tests())
+    .await?;
+    assert_eq!(forgotten_rows, 1, "the second memory is forgotten");
+    Ok((hot.into_inner(), forgotten.into_inner()))
 }
 
-/// The leak (red first): a hard erase of a COOLED admission runs under the
-/// owner scope, where the hot-only policy hides the cooled memory's origins
+/// The leak (red first): a hard erase of a FORGOTTEN admission runs under the
+/// owner scope, where the live-only policy hides the forgotten memory's origins
 /// from its delete, so they outlive the memory they described.
 #[tokio::test]
-async fn erasing_a_cooled_admission_deletes_its_external_origins() -> TestResult {
+async fn erasing_a_forgotten_admission_deletes_its_external_origins() -> TestResult {
     let (pg, _db) = fresh_pg("proxima_ext_origin_erase_one").await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-    let (hot, cooled) = hot_and_cooled(&pg, &permit).await?;
+    let (hot, forgotten) = hot_and_forgotten(&pg, &permit).await?;
 
     let mut tx = begin_owner_transaction(
         &pg.clone_pool_for_backend(),
@@ -139,13 +140,13 @@ async fn erasing_a_cooled_admission_deletes_its_external_origins() -> TestResult
     let context = proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(surfaces())
         .expect("no host lifecycle tables");
     let (erased, _plan) =
-        erase_memory_series(&mut tx, &core_pg_sidecars(), &context, &owner, &[cooled]).await?;
+        erase_memory_series(&mut tx, &core_pg_sidecars(), &context, &owner, &[forgotten]).await?;
     tx.commit().await?;
     assert_eq!(erased, 1);
     assert_eq!(
-        origins_on(&pg, &[cooled]).await?,
+        origins_on(&pg, &[forgotten]).await?,
         0,
-        "the erased cooled admission's origins survived"
+        "the erased forgotten admission's origins survived"
     );
     assert_eq!(
         origins_on(&pg, &[hot]).await?,
@@ -155,17 +156,17 @@ async fn erasing_a_cooled_admission_deletes_its_external_origins() -> TestResult
     Ok(())
 }
 
-/// Owner erase must leave no origin of a cooled memory behind, and the
+/// Owner erase must leave no origin of a forgotten memory behind, and the
 /// receipt must say how many it destroyed. (Owner erase already reached
 /// them before #478; this is a guard, plus the new receipt counter.)
 #[tokio::test]
-async fn owner_erase_deletes_a_cooled_memorys_external_origins() -> TestResult {
+async fn owner_erase_deletes_a_forgotten_memorys_external_origins() -> TestResult {
     let (pg, _db) = fresh_pg("proxima_ext_origin_erase").await;
     let user = UserId::new(Uuid::now_v7());
     let owner = OwnerId::from(user);
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-    let (hot, cooled) = hot_and_cooled(&pg, &permit).await?;
-    assert_eq!(origins_on(&pg, &[hot, cooled]).await?, 3);
+    let (hot, forgotten) = hot_and_forgotten(&pg, &permit).await?;
+    assert_eq!(origins_on(&pg, &[hot, forgotten]).await?, 3);
 
     let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
         user_id: user,
@@ -176,9 +177,9 @@ async fn owner_erase_deletes_a_cooled_memorys_external_origins() -> TestResult {
         panic!("expected a completed erase, got {outcome:?}");
     };
     assert_eq!(
-        origins_on(&pg, &[cooled]).await?,
+        origins_on(&pg, &[forgotten]).await?,
         0,
-        "the cooled memory's origins outlived the owner erase"
+        "the forgotten memory's origins outlived the owner erase"
     );
     assert_eq!(origins_on(&pg, &[hot]).await?, 0, "hot origins are erased");
     assert_eq!(
@@ -189,14 +190,14 @@ async fn owner_erase_deletes_a_cooled_memorys_external_origins() -> TestResult {
     Ok(())
 }
 
-/// The export carries the table, with the hot and the cooled memory's rows.
+/// The export carries the table, with the hot and the forgotten memory's rows.
 #[tokio::test]
-async fn export_carries_hot_and_cooled_external_origins() -> TestResult {
+async fn export_carries_hot_and_forgotten_external_origins() -> TestResult {
     let (pg, _db) = fresh_pg("proxima_ext_origin_export").await;
     let user = UserId::new(Uuid::now_v7());
     let owner = OwnerId::from(user);
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-    let (hot, cooled) = hot_and_cooled(&pg, &permit).await?;
+    let (hot, forgotten) = hot_and_forgotten(&pg, &permit).await?;
     // Another owner's origins never appear.
     let stranger = OwnerId::from(UserId::new(Uuid::now_v7()));
     let stranger_permit = OwnerWritePermit::new_for_tests(stranger, AccessKind::Fact);
@@ -219,9 +220,13 @@ async fn export_carries_hot_and_cooled_external_origins() -> TestResult {
         .map(|row| row["t"].as_str().unwrap_or_default().to_owned())
         .collect();
     ts.sort();
-    let mut expected = vec![hot.to_string(), cooled.to_string(), cooled.to_string()];
+    let mut expected = vec![
+        hot.to_string(),
+        forgotten.to_string(),
+        forgotten.to_string(),
+    ];
     expected.sort();
-    assert_eq!(ts, expected, "hot and cooled origins, nobody else's");
+    assert_eq!(ts, expected, "hot and forgotten origins, nobody else's");
     assert_eq!(bundle.count(TABLE), 3);
     // #480: every exported row says which kind of edge it is.
     assert!(
@@ -231,19 +236,20 @@ async fn export_carries_hot_and_cooled_external_origins() -> TestResult {
     Ok(())
 }
 
-/// Forget keeps the origins (they outlive the cool); the owner still reads
-/// them.
+/// Forget keeps the origins (they outlive the forget); the owner's ordinary
+/// reads hide them with their memory (#488 D1), and restore brings them back
+/// (`forget_and_restore_keep_external_origins`).
 #[tokio::test]
 async fn forget_keeps_external_origins() -> TestResult {
     let (pg, _db) = fresh_pg("proxima_ext_origin_forget").await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-    let (_hot, cooled) = hot_and_cooled(&pg, &permit).await?;
-    assert_eq!(origins_on(&pg, &[cooled]).await?, 2, "forget keeps them");
+    let (_hot, forgotten) = hot_and_forgotten(&pg, &permit).await?;
+    assert_eq!(origins_on(&pg, &[forgotten]).await?, 2, "forget keeps them");
     assert_eq!(
-        origins_visible_to(&pg, owner, cooled).await?,
-        2,
-        "the owner reads a cooled memory's origins"
+        origins_visible_to(&pg, owner, forgotten).await?,
+        0,
+        "the owner's ordinary reads hide a forgotten memory's origins"
     );
     Ok(())
 }

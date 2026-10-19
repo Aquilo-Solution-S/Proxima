@@ -76,6 +76,13 @@
 //! that field's spelling; their row counts, owner scope, and ID aliasing stay
 //! pinned to the same corpus. No other snapshot content was regenerated.
 //!
+//! Issue #488 makes forget keep the memory row instead of writing a cooled
+//! stub, and erase and export stop reading `cooled`. The corpus's two cooled
+//! admissions (`k4`, `k5`) are now forgotten through the real verb. Checked,
+//! not assumed: with every token replaced by one placeholder, the only diff
+//! is each cooled line becoming a `memory` line with `forgotten_at` set, and
+//! the section counts moving with them. Nothing else moved.
+//!
 //! ## What this does NOT cover
 //!
 //! Read the claim narrowly. This is an EQUIVALENCE gate over a corpus, and a
@@ -118,6 +125,7 @@ use proxima_core::publication::{
     PublicationDraft, PublicationExtensions, PublicationLimits, PublicationPlan, PublicationSource,
 };
 use proxima_core::storage_ports::FactIngestPort;
+use proxima_core::storage_ports::MemoryAuthoringPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
 use proxima_core::{
@@ -422,8 +430,6 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .ingest_fact_atomic(&permit, &draft(Some(("src-b", "k5")), None, None), None)
         .await?;
 
-    let t4 = fourth.memory_id.into_inner();
-    let t5 = fifth.memory_id.into_inner();
     let t1 = first.memory_id.into_inner();
     let t2 = second.memory_id.into_inner();
     let t3 = third.memory_id.into_inner();
@@ -509,26 +515,11 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .execute(pool)
         .await?;
 
-    // Two cooled admissions — one per source — so both erase scopes carry the
-    // locator manifest into the bundle and the cold-purge debt into the queue.
-    // Cooling is what `forget` does: the cooled stub replaces the hot row.
-    for (t, at) in [(t4, "2026-02-02 00:00:00Z"), (t5, "2026-02-03 00:00:00Z")] {
-        sqlx::query(
-            "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key, source_id, ingest_key,
-                 origins, refs, goal_refs, cooled_at, \"by\", via)
-             SELECT m.t, m.handle, m.owner_id, m.kind, 'cold/' || m.t::text, m.source_id,
-                    m.ingest_key, m.origins, m.refs, m.goal_refs, $2::timestamptz, m.\"by\", m.via
-               FROM proxima_core.memory m WHERE m.t = $1",
-        )
-        .bind(t)
-        .bind(at)
-        .execute(pool)
-        .await?;
-        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
-            .bind(t)
-            .execute(pool)
-            .await?;
+    // Two forgotten admissions — one per source — so both erase scopes
+    // carry a forgotten row into the bundle and erase it with the rest.
+    // Before #488 these were cooled stubs; forget now keeps the row.
+    for t in [fourth.memory_id, fifth.memory_id] {
+        pg.forget_memory(&permit, t).await?;
     }
 
     // Embedding infrastructure.
@@ -922,23 +913,6 @@ async fn export_dump(pg: &PgStorage, user: UserId) -> Result<String, Box<dyn std
                     && let Some(object) = row.as_object_mut()
                 {
                     object.remove(*column);
-                }
-            }
-            if names_relation(&table, "cooled")
-                && let Some(object) = row.as_object_mut()
-            {
-                object.insert("goal_refs".to_owned(), Value::Null);
-                // #478 took the cold locator out of the bundle; the baseline
-                // exported it. Restore it from the row the bundle came from,
-                // so the comparison stays about rows, not the allowlist.
-                if let Some(t) = object.get("t").and_then(Value::as_str) {
-                    let object_key: String = sqlx::query_scalar(
-                        "SELECT object_key FROM proxima_core.cooled WHERE t = $1::uuid",
-                    )
-                    .bind(t)
-                    .fetch_one(pg.pool_for_tests())
-                    .await?;
-                    object.insert("object_key".to_owned(), Value::String(object_key));
                 }
             }
             out.push_str(&canonical(&row));

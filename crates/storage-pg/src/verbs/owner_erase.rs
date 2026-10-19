@@ -514,10 +514,8 @@ async fn delete_owned_surfaces(
                 format!(
                     "DELETE FROM {tbl} a
                       WHERE a.{owner} = $1
-                        AND (EXISTS (SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
-                                      WHERE m.t = a.{key} AND m.source_id = $2)
-                          OR EXISTS (SELECT 1 FROM proxima_core.cooled c
-                                      WHERE c.t = a.{key} AND c.source_id = $2))",
+                        AND EXISTS (SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+                                     WHERE m.t = a.{key} AND m.source_id = $2)",
                     tbl = ident.as_str(),
                     owner = owner_column.as_str(),
                     key = key.as_str(),
@@ -614,7 +612,6 @@ async fn erase_selected(
 
     let content_ids = selected_content_ids(tx, owner, scope).await?;
     let memories = delete_selected_memories(tx, owner, scope).await?;
-    let (cooled, cold_purge) = delete_selected_cooled(tx, owner, scope).await?;
     super::content::gc_unreferenced_content_batch(tx, &content_ids).await?;
     // The three deletes above and the Goal delete below repeat the
     // owner/source predicate as a backstop. Under the scope fence that
@@ -622,8 +619,8 @@ async fn erase_selected(
     // means the backstop fired and rows were left behind. Say so instead of
     // reporting a smaller erase as a complete one — this receipt is what a
     // compliance answer is built from.
-    assert_selection_fully_deleted(tx, Selection::Memories, memories + cooled).await?;
-    record_count(tx, "memories", memories.saturating_add(cooled)).await?;
+    assert_selection_fully_deleted(tx, Selection::Memories, memories).await?;
+    record_count(tx, "memories", memories).await?;
     let goals = delete_selected_goals(tx, owner).await?;
     assert_selection_fully_deleted(tx, Selection::Goals, goals).await?;
     record_count(tx, "goals", goals).await?;
@@ -631,8 +628,7 @@ async fn erase_selected(
     record_count(tx, "blob_uploads", blobs.uploads).await?;
     record_count(tx, "blobs", blobs.blobs).await?;
     sync_selected_heads(tx, owner.into_inner()).await?;
-    let mut entries = cold_purge.entries().to_vec();
-    entries.extend_from_slice(blobs.cold_purge.entries());
+    let mut entries = blobs.cold_purge.entries().to_vec();
     entries.sort_unstable_by(|a, b| a.object_key.cmp(&b.object_key));
     entries.dedup_by(|a, b| a.object_key == b.object_key);
     Ok(ColdPurgePlan::from_entries(entries))
@@ -1056,7 +1052,7 @@ async fn revoke_original_publications(
 
 /// Acquire the complete series-handle footprint from the immutable selection
 /// snapshot.  The selected `handle` column is part of the snapshot precisely
-/// so this step does not consult a mutable hot/cooled row after the scope
+/// so this step does not consult a mutable memory row after the scope
 /// fence has been acquired.
 async fn lock_selected_memory_handles(tx: &mut Tx<'_>) -> Result<(), StorageError> {
     let handles: Vec<uuid::Uuid> =
@@ -1153,10 +1149,6 @@ async fn create_selected_sets(
                 "INSERT INTO selected_memories(memory_id, handle, kind)
                  SELECT t, handle, kind::text
                    FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
-                  WHERE owner_id = $1
-                 UNION ALL
-                 SELECT t, handle, kind::text
-                   FROM proxima_core.cooled
                   WHERE owner_id = $1",
             )
             .bind(owner_id)
@@ -1170,12 +1162,7 @@ async fn create_selected_sets(
                  SELECT m.t, m.handle, m.kind::text
                    FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                   WHERE m.owner_id = $1
-                    AND m.source_id = $2
-                 UNION ALL
-                 SELECT c.t, c.handle, c.kind::text
-                   FROM proxima_core.cooled c
-                  WHERE c.owner_id = $1
-                    AND c.source_id = $2",
+                    AND m.source_id = $2",
             )
             .bind(owner_id)
             .bind(source_id.as_str())
@@ -1203,17 +1190,10 @@ async fn create_selected_sets(
         SelectionScope::Source(_) => {
             sqlx::query(
                 "INSERT INTO selected_blobs(blob_id)
-                 SELECT blob_id FROM (
-                     SELECT m.blob_id
-                       FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
-                       JOIN selected_memories sm ON sm.memory_id = m.t
-                      WHERE m.blob_id IS NOT NULL
-                     UNION
-                     SELECT c.blob_id
-                       FROM proxima_core.cooled c
-                       JOIN selected_memories sm ON sm.memory_id = c.t
-                      WHERE c.blob_id IS NOT NULL
-                 ) selected",
+                 SELECT DISTINCT m.blob_id
+                   FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+                   JOIN selected_memories sm ON sm.memory_id = m.t
+                  WHERE m.blob_id IS NOT NULL",
             )
             .execute(&mut **tx)
             .await
@@ -1304,17 +1284,13 @@ async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<()
     .await
     .map_err(map_err)?;
     // A series' publication position goes once nothing of the series is
-    // left: no hot row and no cooled stub. Forget never deletes it; this is
-    // its only delete.
+    // left. Forget never deletes it; this is its only delete.
     sqlx::query(
         "DELETE FROM proxima_core.publication_counter c
           WHERE c.owner_id = $1
             AND c.handle IN (SELECT handle FROM selected_memory_handles)
             AND NOT EXISTS (
                 SELECT 1 FROM proxima_core.memory m WHERE m.handle = c.handle /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
-            )
-            AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.cooled k WHERE k.handle = c.handle
             )",
     )
     .bind(owner_id)
@@ -1478,8 +1454,8 @@ impl Selection {
 
 /// Every row the selection sealed must have been deleted.
 ///
-/// `deleted` is summed across the hot and cooled legs for Memory, because the
-/// selection holds both and each leg deletes its own table.
+/// For Memory, `deleted` is the memory delete's count: forgotten rows are
+/// rows like any other (#488).
 async fn assert_selection_fully_deleted(
     tx: &mut Tx<'_>,
     selection: Selection,
@@ -1539,74 +1515,18 @@ async fn delete_selected_goals(tx: &mut Tx<'_>, owner: OwnerId) -> Result<u64, S
     Ok(result.rows_affected())
 }
 
-/// Delete cooled stubs for selected admissions and mark their cold objects
-/// pending destruction. The objects themselves are destroyed after this
-/// transaction commits (see [`super::forget::purge_cold_objects_after_commit`]):
-/// deleting them here would destroy the payload of an admission that a
-/// rollback puts back.
-async fn delete_selected_cooled(
-    tx: &mut Tx<'_>,
-    owner: OwnerId,
-    scope: SelectionScope<'_>,
-) -> Result<(u64, ColdPurgePlan), StorageError> {
-    let owner_id = owner.into_inner();
-    // No backend recorded: a cold Memory object is written by the deployment's
-    // one wired `ColdObjectStore`, so there is no second store it could be in
-    // (see `proxima_core::UNRECORDED_BACKEND`). `cooled` carries no bucket
-    // column for the same reason.
-    let keys: Vec<String> = sqlx::query_scalar(
-        "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
-         SELECT c.object_key, c.owner_id
-           FROM proxima_core.cooled c
-           JOIN selected_memories sm ON sm.memory_id = c.t
-          WHERE c.owner_id = $1
-            AND ($2::text IS NULL OR c.source_id = $2)
-         ON CONFLICT (object_key) DO UPDATE SET enqueued_at = now()
-         RETURNING object_key",
-    )
-    .bind(owner_id)
-    .bind(scope.source_bind())
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(map_err)?;
-    let deleted = sqlx::query(
-        "DELETE FROM proxima_core.cooled c
-          WHERE c.owner_id = $1
-            AND ($2::text IS NULL OR c.source_id = $2)
-            AND EXISTS (
-                SELECT 1 FROM selected_memories sm WHERE sm.memory_id = c.t
-            )",
-    )
-    .bind(owner_id)
-    .bind(scope.source_bind())
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?
-    .rows_affected();
-    Ok((deleted, ColdPurgePlan::from_keys(keys)))
-}
-
 async fn selected_content_ids(
     tx: &mut Tx<'_>,
     owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<Vec<uuid::Uuid>, StorageError> {
     sqlx::query_scalar(
-        "SELECT DISTINCT content_id FROM (
-             SELECT m.content_id
-               FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
-               JOIN selected_memories sm ON sm.memory_id = m.t
-              WHERE m.owner_id = $1
-                AND ($2::text IS NULL OR m.source_id = $2)
-                AND m.content_id IS NOT NULL
-             UNION
-             SELECT c.content_id
-               FROM proxima_core.cooled c
-               JOIN selected_memories sm ON sm.memory_id = c.t
-              WHERE c.owner_id = $1
-                AND ($2::text IS NULL OR c.source_id = $2)
-                AND c.content_id IS NOT NULL
-         ) x",
+        "SELECT DISTINCT m.content_id
+           FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+           JOIN selected_memories sm ON sm.memory_id = m.t
+          WHERE m.owner_id = $1
+            AND ($2::text IS NULL OR m.source_id = $2)
+            AND m.content_id IS NOT NULL",
     )
     .bind(owner.into_inner())
     .bind(scope.source_bind())
@@ -1685,9 +1605,9 @@ struct BlobEraseCounts {
 /// already gone, so a surviving
 /// reference means the erase is wrong and the `NO ACTION` FK aborts it rather
 /// than letting the row survive quietly. Source-scope candidates are captured
-/// from the selected hot and cooled admissions before either table is deleted.
-/// After those deletions, candidates still referenced by a surviving hot or
-/// cooled admission are removed from the set.
+/// from the selected admissions before they are deleted. After those
+/// deletions, candidates still referenced by a surviving admission are
+/// removed from the set.
 ///
 /// `blob_uploads` rows with a NULL `blob_id` are pending or aborted uploads
 /// attributable to the owner and to no source, so source-scope erase leaves
@@ -1711,11 +1631,7 @@ async fn delete_blobs(
               WHERE EXISTS (
                     SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                      WHERE m.blob_id = sb.blob_id
-              )
-                 OR EXISTS (
-                    SELECT 1 FROM proxima_core.cooled c
-                     WHERE c.blob_id = sb.blob_id
-                 )",
+              )",
         )
         .execute(&mut **tx)
         .await
@@ -1891,12 +1807,8 @@ mod tests {
     }
 
     #[test]
-    fn owner_erase_names_cooled() {
+    fn owner_erase_gcs_content() {
         let src = include_str!("owner_erase.rs");
-        assert!(
-            src.contains("proxima_core.cooled"),
-            "owner erase must select and delete cooled"
-        );
         assert!(
             src.contains("gc_unreferenced_content"),
             "owner erase must GC Content"

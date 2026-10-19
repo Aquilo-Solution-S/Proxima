@@ -90,9 +90,8 @@ async fn reference_pairs(
 struct Version {
     handle: Uuid,
     owner_id: Uuid,
-    /// The series' schema: `memory.schema_id` for a hot version, the
-    /// content's for a cooled one. `None` when a cooled version names no
-    /// content, which no schema check can pass.
+    /// The series' schema, `memory.schema_id`. A forgotten version keeps
+    /// its row, so every version has one; `None` passes no schema check.
     schema_id: Option<String>,
 }
 
@@ -100,15 +99,9 @@ struct Version {
 const VERSIONS_OF_SQL: &str = "\
 WITH handles AS (
     SELECT handle FROM proxima_core.memory WHERE t = ANY($1::uuid[])
-    UNION
-    SELECT handle FROM proxima_core.cooled WHERE t = ANY($1::uuid[])
 )
 SELECT m.t, m.handle, m.owner_id, m.schema_id
-  FROM proxima_core.memory m JOIN handles h ON h.handle = m.handle
-UNION ALL
-SELECT c.t, c.handle, c.owner_id, k.schema_id
-  FROM proxima_core.cooled c JOIN handles h ON h.handle = c.handle
-  LEFT JOIN proxima_core.content k ON k.content_id = c.content_id";
+  FROM proxima_core.memory m JOIN handles h ON h.handle = m.handle";
 
 /// The footprint: a closed set of whole series.
 #[derive(Debug, Default)]
@@ -303,7 +296,7 @@ fn over_cap(footprint: &Footprint, request: &SeriesEraseRequest<'_>) -> Option<V
 }
 
 /// `newest`: the newest version's `t` of every series of schema `$2` with a
-/// version under owner `$1`, hot or cooled, over EVERY version of the
+/// version under owner `$1`, live or forgotten, over EVERY version of the
 /// series. The one reading of "newest version" both age selections share.
 macro_rules! newest_versions_cte {
     () => {
@@ -311,14 +304,8 @@ macro_rules! newest_versions_cte {
 WITH own AS (
     SELECT handle FROM proxima_core.memory
      WHERE owner_id = $1 AND schema_id = $2
-    UNION
-    SELECT c.handle FROM proxima_core.cooled c
-      JOIN proxima_core.content k ON k.content_id = c.content_id
-     WHERE c.owner_id = $1 AND k.schema_id = $2
 ), versions AS (
     SELECT m.handle, m.t FROM proxima_core.memory m JOIN own USING (handle)
-    UNION ALL
-    SELECT c.handle, c.t FROM proxima_core.cooled c JOIN own USING (handle)
 ), newest AS (
     SELECT DISTINCT ON (handle) t FROM versions ORDER BY handle, t DESC
 )
@@ -363,8 +350,6 @@ async fn footprint_grew(
     let handles: Vec<Uuid> = footprint.handles().into_iter().collect();
     let now: Vec<Uuid> = sqlx::query_scalar(
         "SELECT t FROM proxima_core.memory WHERE handle = ANY($1::uuid[])
-         UNION
-         SELECT t FROM proxima_core.cooled WHERE handle = ANY($1::uuid[])
          ORDER BY 1",
     )
     .bind(&handles)

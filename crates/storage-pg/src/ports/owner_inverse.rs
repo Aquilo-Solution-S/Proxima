@@ -122,9 +122,6 @@ impl OwnerInversePort for PgStorage {
             auth,
             tables,
             lifecycle,
-            &verbs::owner_export::ExportObjectSources {
-                cold: self.cold.as_ref(),
-            },
         )
         .await
     }

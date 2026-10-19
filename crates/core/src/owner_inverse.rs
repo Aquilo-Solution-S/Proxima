@@ -555,12 +555,6 @@ pub struct OwnerExportBundle {
     /// `origins` and `refs` arrays. Not a surface — there is no edge table —
     /// so it stays its own field.
     pub edges: Vec<serde_json::Value>,
-    /// Forgotten memories whose cold object could not be decoded into the
-    /// bundle, as `{"t": .., "reason": ..}` in `t` order. The cooled row is
-    /// still in `tables`; this names what is missing beside it and why
-    /// (`missing`, `invalid`, `unsupported_format(v)`, `unsupported_sidecar`,
-    /// `pre_witness`, `purge_pending`). Counted under `cold_unavailable`.
-    pub cold_unavailable: Vec<serde_json::Value>,
 }
 
 impl OwnerExportBundle {

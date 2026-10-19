@@ -6,16 +6,12 @@ use std::collections::BTreeSet;
 use proxima_core::flavor::{EraseLeg, ForgetLeg, KeyShape};
 use proxima_core::owner_inverse::OwnerSurfaces;
 use proxima_core::{ColdObjectStore, OwnerId, StorageError};
-use sqlx::{PgConnection, PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::sidecars::PgSidecarRegistryFrozen;
-
-/// The only accepted cold-object format. A record in another version is
-/// refused with that version.
-pub const COLD_FORMAT_VERSION: u8 = 10;
 
 // The persisted key derivation lives in core, the lowest crate shared by
 // storage-pg and blob-s3; re-exported here so the storage path names it.
@@ -64,26 +60,6 @@ impl ColdObjectStore for MemoryColdStore {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-pub(crate) struct HotRow {
-    pub(crate) handle: Uuid,
-    pub(crate) t: Uuid,
-    pub(crate) kind: String,
-    pub(crate) owner_id: Uuid,
-    pub(crate) by: Uuid,
-    pub(crate) via: Option<Uuid>,
-    pub(crate) schema_id: String,
-    pub(crate) source_id: Option<String>,
-    pub(crate) ingest_key: Option<String>,
-    pub(crate) blob_id: Option<Uuid>,
-    pub(crate) origins: Vec<Uuid>,
-    pub(crate) refs: Vec<Uuid>,
-    pub(crate) goal_refs: Vec<Uuid>,
-    pub(crate) sidecar_tables: Vec<String>,
-    pub(crate) content_id: Option<Uuid>,
-    pub(crate) occurred_at: Option<time::OffsetDateTime>,
-}
-
 /// The rows a lifecycle call may reach: one owner's, of every stored Memory
 /// kind up to the permit's write limit. Forget and hydration run in platform
 /// scope, so this is where the rule narrows their rows.
@@ -114,221 +90,6 @@ pub(crate) fn kinds_within(limit: proxima_core::AccessKind) -> Vec<&'static str>
     .filter(|(kind, _)| kind.rank() <= limit.rank())
     .map(|(_, name)| name)
     .collect()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-pub(crate) struct CooledRow {
-    pub(crate) t: Uuid,
-    pub(crate) handle: Uuid,
-    pub(crate) owner_id: Uuid,
-    pub(crate) by: Uuid,
-    pub(crate) via: Option<Uuid>,
-    pub(crate) kind: String,
-    pub(crate) object_key: String,
-    pub(crate) blob_id: Option<Uuid>,
-    pub(crate) content_id: Option<Uuid>,
-    pub(crate) source_id: Option<String>,
-    pub(crate) ingest_key: Option<String>,
-    pub(crate) origins: Option<Vec<Uuid>>,
-    pub(crate) refs: Option<Vec<Uuid>>,
-    pub(crate) goal_refs: Option<Vec<Uuid>>,
-    pub(crate) cold_digest: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ColdRecord {
-    pub(crate) row: HotRow,
-    pub(crate) schema_id: String,
-    pub(crate) sidecar_dumps: Vec<(String, String)>,
-    /// Contract-declared `ON DELETE CASCADE` detail rows. Each declaration is
-    /// present even when it has zero rows, so a cold record cannot add a
-    /// forged table or omit a surface during restore.
-    pub(crate) detail_dumps: Vec<(String, Vec<String>)>,
-    /// Embedding spaces that had vectors. Vectors stay out of the object;
-    /// hydrate enqueues embed jobs in these spaces.
-    pub(crate) embed_spaces: Vec<proxima_core::EmbeddingSpace>,
-    /// Exact persisted one-liner.
-    pub(crate) sketch: Option<String>,
-    /// Format version of the record.
-    pub(crate) format_version: u8,
-}
-
-pub(crate) fn cold_digest(bytes: &[u8]) -> Vec<u8> {
-    blake3::hash(bytes).as_bytes().to_vec()
-}
-
-/// The spaces a cold object's `t` had vectors in: one width per model.
-fn read_embed_spaces(
-    bytes: &[u8],
-    i: &mut usize,
-) -> Result<Vec<proxima_core::EmbeddingSpace>, StorageError> {
-    let models = read_str_list(bytes, i)?;
-    if usize::from(read_u16(bytes, i)?) != models.len() {
-        return Err(StorageError::Internal(
-            "cold object embedding widths do not match its models".into(),
-        ));
-    }
-    models
-        .into_iter()
-        .map(|model_id| {
-            let width = usize::from(read_u16(bytes, i)?);
-            let dim = proxima_core::EmbeddingDim::from_width(width).ok_or_else(|| {
-                StorageError::Internal(format!("cold object embedding width {width} has no lane"))
-            })?;
-            Ok(proxima_core::EmbeddingSpace::new(model_id, dim))
-        })
-        .collect()
-}
-
-fn decode_record(bytes: &[u8]) -> Result<ColdRecord, StorageError> {
-    let mut i = 0;
-    let version = read_u8(bytes, &mut i)?;
-    if version != COLD_FORMAT_VERSION {
-        return Err(StorageError::Internal(format!(
-            "unsupported cold format {version}; expected {COLD_FORMAT_VERSION}"
-        )));
-    }
-    let mut row = HotRow {
-        handle: read_uuid(bytes, &mut i)?,
-        t: read_uuid(bytes, &mut i)?,
-        kind: read_str(bytes, &mut i)?,
-        owner_id: read_uuid(bytes, &mut i)?,
-        by: read_uuid(bytes, &mut i)?,
-        via: read_opt_uuid(bytes, &mut i)?,
-        schema_id: String::new(),
-        source_id: read_opt_str(bytes, &mut i)?,
-        ingest_key: read_opt_str(bytes, &mut i)?,
-        blob_id: read_opt_uuid(bytes, &mut i)?,
-        origins: read_uuid_list(bytes, &mut i)?,
-        refs: read_uuid_list(bytes, &mut i)?,
-        goal_refs: read_uuid_list(bytes, &mut i)?,
-        sidecar_tables: Vec::new(),
-        content_id: None,
-        occurred_at: None,
-    };
-    row.occurred_at = read_opt_time(bytes, &mut i)?;
-    let schema_id = read_str(bytes, &mut i)?;
-    row.sidecar_tables = read_str_list(bytes, &mut i)?;
-    let n = usize::from(read_u16(bytes, &mut i)?);
-    let mut sidecar_dumps = Vec::with_capacity(n);
-    for _ in 0..n {
-        sidecar_dumps.push((read_str(bytes, &mut i)?, read_str(bytes, &mut i)?));
-    }
-    let embed_spaces = read_embed_spaces(bytes, &mut i)?;
-    let sketch = read_opt_str(bytes, &mut i)?;
-    let n = usize::from(read_u16(bytes, &mut i)?);
-    let mut detail_dumps = Vec::with_capacity(n);
-    for _ in 0..n {
-        let table = read_str(bytes, &mut i)?;
-        let rows = usize::from(read_u16(bytes, &mut i)?);
-        let mut values = Vec::with_capacity(rows);
-        for _ in 0..rows {
-            values.push(read_str(bytes, &mut i)?);
-        }
-        detail_dumps.push((table, values));
-    }
-    if i != bytes.len() {
-        return Err(StorageError::Internal(
-            "cold object has trailing bytes".into(),
-        ));
-    }
-    Ok(ColdRecord {
-        row,
-        schema_id,
-        sidecar_dumps,
-        detail_dumps,
-        embed_spaces,
-        sketch,
-        format_version: version,
-    })
-}
-
-fn read_str_list(bytes: &[u8], i: &mut usize) -> Result<Vec<String>, StorageError> {
-    let n = usize::from(read_u16(bytes, i)?);
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        out.push(read_str(bytes, i)?);
-    }
-    Ok(out)
-}
-
-fn read_u8(bytes: &[u8], i: &mut usize) -> Result<u8, StorageError> {
-    let b = *bytes
-        .get(*i)
-        .ok_or_else(|| StorageError::Internal("cold eof".into()))?;
-    *i += 1;
-    Ok(b)
-}
-
-fn read_u16(bytes: &[u8], i: &mut usize) -> Result<u16, StorageError> {
-    let hi = read_u8(bytes, i)?;
-    let lo = read_u8(bytes, i)?;
-    Ok(u16::from_be_bytes([hi, lo]))
-}
-
-fn read_uuid(bytes: &[u8], i: &mut usize) -> Result<Uuid, StorageError> {
-    let end = i.saturating_add(16);
-    let slice = bytes
-        .get(*i..end)
-        .ok_or_else(|| StorageError::Internal("cold eof uuid".into()))?;
-    *i = end;
-    Uuid::from_slice(slice).map_err(|err| StorageError::Internal(err.to_string()))
-}
-
-fn read_bytes(bytes: &[u8], i: &mut usize) -> Result<Vec<u8>, StorageError> {
-    let len = usize::from(read_u16(bytes, i)?);
-    let end = i.saturating_add(len);
-    let slice = bytes
-        .get(*i..end)
-        .ok_or_else(|| StorageError::Internal("cold eof bytes".into()))?;
-    *i = end;
-    Ok(slice.to_vec())
-}
-
-fn read_str(bytes: &[u8], i: &mut usize) -> Result<String, StorageError> {
-    String::from_utf8(read_bytes(bytes, i)?).map_err(|err| StorageError::Internal(err.to_string()))
-}
-
-fn read_opt_str(bytes: &[u8], i: &mut usize) -> Result<Option<String>, StorageError> {
-    match read_u8(bytes, i)? {
-        0 => Ok(None),
-        _ => Ok(Some(read_str(bytes, i)?)),
-    }
-}
-
-fn read_opt_time(
-    bytes: &[u8],
-    i: &mut usize,
-) -> Result<Option<time::OffsetDateTime>, StorageError> {
-    if read_u8(bytes, i)? == 0 {
-        return Ok(None);
-    }
-    let end = i.saturating_add(8);
-    let slice: [u8; 8] = bytes
-        .get(*i..end)
-        .and_then(|slice| slice.try_into().ok())
-        .ok_or_else(|| StorageError::Internal("cold eof time".into()))?;
-    *i = end;
-    let micros = i64::from_be_bytes(slice);
-    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(micros) * 1_000)
-        .map(Some)
-        .map_err(|err| StorageError::Internal(format!("cold time: {err}")))
-}
-
-fn read_opt_uuid(bytes: &[u8], i: &mut usize) -> Result<Option<Uuid>, StorageError> {
-    match read_u8(bytes, i)? {
-        0 => Ok(None),
-        _ => Ok(Some(read_uuid(bytes, i)?)),
-    }
-}
-
-fn read_uuid_list(bytes: &[u8], i: &mut usize) -> Result<Vec<Uuid>, StorageError> {
-    let n = usize::from(read_u16(bytes, i)?);
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        out.push(read_uuid(bytes, i)?);
-    }
-    Ok(out)
 }
 
 /// Owner-pinned sidecars do not take part in forget/hydrate at all.
@@ -374,20 +135,6 @@ pub struct ColdPurgeEntry {
 }
 
 impl ColdPurgePlan {
-    /// Debts with no recorded backend — cold Memory objects, whose store is
-    /// the deployment's one wired `ColdObjectStore`.
-    pub(crate) fn from_keys(object_keys: Vec<String>) -> Self {
-        Self::from_entries(
-            object_keys
-                .into_iter()
-                .map(|object_key| ColdPurgeEntry {
-                    object_key,
-                    backend: proxima_core::UNRECORDED_BACKEND.to_owned(),
-                })
-                .collect(),
-        )
-    }
-
     pub(crate) fn from_entries(entries: Vec<ColdPurgeEntry>) -> Self {
         Self { entries }
     }
@@ -648,11 +395,6 @@ async fn lock_forget_footprint_tx(
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
-        UNION
-        SELECT handle FROM proxima_core.cooled
-          WHERE kind <> 'fact'
-            AND t <> $1
-            AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
           ORDER BY handle",
     )
     .bind(source_t)
@@ -666,11 +408,6 @@ async fn lock_forget_footprint_tx(
 
     let grounded: Vec<(Uuid, Uuid)> = sqlx::query_as(
         "SELECT t, handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
-          WHERE kind <> 'fact'
-            AND t <> $1
-            AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
-        UNION
-        SELECT t, handle FROM proxima_core.cooled
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
@@ -700,11 +437,6 @@ async fn lock_forget_footprint_tx(
 
     let after: Vec<(Uuid, Uuid)> = sqlx::query_as(
         "SELECT t, handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
-          WHERE kind <> 'fact'
-            AND t <> $1
-            AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
-        UNION
-        SELECT t, handle FROM proxima_core.cooled
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
@@ -1010,12 +742,8 @@ async fn probe_memory_handle_for_owner(
     owner_id: Uuid,
 ) -> Result<Option<Uuid>, StorageError> {
     sqlx::query_scalar(
-        "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (hydrate, removed in S4) */
-          WHERE t = $1 AND owner_id = $2
-         UNION ALL
-         SELECT handle FROM proxima_core.cooled
-          WHERE t = $1 AND owner_id = $2
-         LIMIT 1",
+        "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+          WHERE t = $1 AND owner_id = $2",
     )
     .bind(t)
     .bind(owner_id)
@@ -1199,130 +927,33 @@ async fn restore_marked(
     lifecycle.leave(tx.as_mut()).await
 }
 
-/// Why a cold record cannot be restored.
-///
-/// Every variant is produced at a named site and names one export
-/// `cold_unavailable` reason. Nothing here is recovered from an error
-/// message: a classifier that reads prose is one reword away from silently
-/// reclassifying, and it cannot tell a bad object from a lifecycle conflict
-/// that happens to share a `StorageError` variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ColdRejection {
-    /// The locator names an object the store does not have.
-    MissingObject,
-    /// The record predates the database integrity witness, or declares a
-    /// format or detail set this binary cannot restore. Not evidence of
-    /// corrupt bytes.
-    UnsupportedObject,
-    /// A witnessed object declares this unsupported format version.
-    UnsupportedFormat(u8),
-    /// The bytes are present and witnessed but cannot be admitted: a digest
-    /// or identity mismatch, an undecodable record, or a payload PostgreSQL
-    /// refuses.
-    InvalidObject,
-}
-
-/// Fetch, verify and decode one cooled row's cold object: THE definition of
-/// a valid cold object, as the owner export reads it (#478).
-///
-/// The outer `Err` is a store or transport fault (anything but `NotFound`);
-/// the inner `Err` is a permanent verdict about this object.
-pub(crate) async fn read_verified_cold_record(
-    cold: &dyn ColdObjectStore,
-    cooled: &CooledRow,
-) -> Result<Result<ColdRecord, ColdRejection>, StorageError> {
-    // A pre-witness locator has neither a digest nor the split pin arrays,
-    // and its object predates the stamped cold format. Nothing can prove the
-    // bytes belong to this admission, so it fails closed rather than being
-    // admitted on the object's own say-so.
-    let (Some(origins), Some(refs), Some(goal_refs), Some(expected_digest)) = (
-        cooled.origins.as_ref(),
-        cooled.refs.as_ref(),
-        cooled.goal_refs.as_ref(),
-        cooled.cold_digest.as_ref(),
-    ) else {
-        return Ok(Err(ColdRejection::UnsupportedObject));
-    };
-    let bytes = match cold.get(&cooled.object_key).await {
-        Ok(bytes) => bytes,
-        Err(StorageError::NotFound) => return Ok(Err(ColdRejection::MissingObject)),
-        Err(error) => return Err(error),
-    };
-    if expected_digest.len() != 32 || cold_digest(&bytes) != *expected_digest {
-        return Ok(Err(ColdRejection::InvalidObject));
-    }
-    // Format is untrusted object metadata; keep its version in the refusal
-    // before the current-format decoder interprets any field.
-    let Some(&format_version) = bytes.first() else {
-        return Ok(Err(ColdRejection::InvalidObject));
-    };
-    if format_version != COLD_FORMAT_VERSION {
-        return Ok(Err(ColdRejection::UnsupportedFormat(format_version)));
-    }
-    let Ok(rec) = decode_record(&bytes) else {
-        return Ok(Err(ColdRejection::InvalidObject));
-    };
-    if rec.row.t != cooled.t
-        || rec.row.handle != cooled.handle
-        || rec.row.kind != cooled.kind
-        || rec.row.by != cooled.by
-        || rec.row.via != cooled.via
-        || rec.row.source_id != cooled.source_id
-        || rec.row.ingest_key != cooled.ingest_key
-        || rec.row.origins != *origins
-        || rec.row.refs != *refs
-        || rec.row.goal_refs != *goal_refs
-    {
-        return Ok(Err(ColdRejection::InvalidObject));
-    }
-    Ok(Ok(rec))
-}
-
-/// Every cooled row of one owner, with its locator, in `t` order. Export
-/// reads them in its snapshot; the locators never enter the bundle.
-pub(crate) async fn owner_cooled_rows(
-    conn: &mut PgConnection,
-    owner_id: Uuid,
-) -> Result<Vec<CooledRow>, StorageError> {
-    sqlx::query_as(
-        "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
-                source_id, ingest_key, origins, refs, goal_refs, cold_digest, \"by\", via
-           FROM proxima_core.cooled
-          WHERE owner_id = $1
-          ORDER BY t",
-    )
-    .bind(owner_id)
-    .fetch_all(conn)
-    .await
-    .map_err(map_err)
-}
-
-/// One cooled row by `t`, whoever owns it: export's revalidation re-read.
-pub(crate) async fn cooled_row(
-    conn: &mut PgConnection,
-    t: Uuid,
-) -> Result<Option<CooledRow>, StorageError> {
-    sqlx::query_as(
-        "SELECT t, handle, owner_id, kind::text, object_key, blob_id, content_id,
-                source_id, ingest_key, origins, refs, goal_refs, cold_digest, \"by\", via
-           FROM proxima_core.cooled
-          WHERE t = $1",
-    )
-    .bind(t)
-    .fetch_optional(conn)
-    .await
-    .map_err(map_err)
-}
-
 /// Hard-delete one admission of an abandoned owner.
 ///
-/// Returns the cold objects the erase still owes the object store: the caller
-/// commits this transaction and then calls
-/// [`purge_cold_objects_after_commit`]. The cold delete cannot run here —
-/// a rollback after it would restore the `cooled` locator over destroyed
-/// bytes.
-#[allow(clippy::too_many_lines)] // the ordered hard-delete transaction keeps atomic DML sequencing visible
+/// Returns an empty purge plan: a memory owes the object store nothing since
+/// #488. The return type stays because [`erase_memory_series`] merges the
+/// blob objects it owes into the same plan.
+///
+/// Runs in the lifecycle scope, so an owner-scope caller erases a forgotten
+/// admission too, and leaves it before returning.
+///
+/// # Errors
+///
+/// Returns storage errors from the delete statements.
 pub async fn erase_memory(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    context: &crate::PgHostStateEraseContext,
+    owner: &OwnerId,
+    t: Uuid,
+) -> Result<ColdPurgePlan, StorageError> {
+    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+    let plan = erase_memory_in_lifecycle(tx, sidecars, context, owner, t).await?;
+    lifecycle.leave(tx.as_mut()).await?;
+    Ok(plan)
+}
+
+#[allow(clippy::too_many_lines)] // the ordered hard-delete transaction keeps atomic DML sequencing visible
+async fn erase_memory_in_lifecycle(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     context: &crate::PgHostStateEraseContext,
@@ -1347,10 +978,7 @@ pub async fn erase_memory(
         ));
     }
     let content_id = sqlx::query_scalar::<_, Option<Uuid>>(
-        "SELECT content_id FROM proxima_core.memory WHERE t = $1 AND owner_id = $2 /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
-         UNION ALL
-         SELECT content_id FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
-         LIMIT 1",
+        "SELECT content_id FROM proxima_core.memory WHERE t = $1 AND owner_id = $2", /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
     )
     .bind(t)
     .bind(owner.into_inner())
@@ -1361,8 +989,6 @@ pub async fn erase_memory(
     let is_fact: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1 FROM proxima_core.memory WHERE t = $1 AND owner_id = $2 AND kind = 'fact' /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
-             UNION ALL
-             SELECT 1 FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2 AND kind = 'fact'
          )",
     )
     .bind(t)
@@ -1381,19 +1007,6 @@ pub async fn erase_memory(
         },
     )
     .await?;
-    let pending: Vec<String> = sqlx::query_scalar(
-        "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id)
-         SELECT c.object_key, c.owner_id
-           FROM proxima_core.cooled c
-          WHERE c.t = $1 AND c.owner_id = $2
-         ON CONFLICT (object_key) DO UPDATE SET enqueued_at = now()
-         RETURNING object_key",
-    )
-    .bind(t)
-    .bind(owner.into_inner())
-    .fetch_all(tx.as_mut())
-    .await
-    .map_err(map_err)?;
     let stamped: Vec<String> = sqlx::query_scalar(
         "SELECT unnest(sidecar_tables) FROM proxima_core.memory WHERE t = $1 AND owner_id = $2", /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
     )
@@ -1402,16 +1015,10 @@ pub async fn erase_memory(
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
-    // Before the memory and cooled rows: a kept surface with no owner column
-    // (memory_external_origin) finds its owner through its memory, hot OR
-    // cooled, so its delete must run while that parent is still there.
+    // Before the memory row: a kept surface with no owner column
+    // (memory_external_origin) finds its owner through its memory, so its
+    // delete must run while that parent is still there.
     delete_memory_dependents(tx, sidecars, surfaces, &stamped, t).await?;
-    sqlx::query("DELETE FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2")
-        .bind(t)
-        .bind(owner.into_inner())
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2") /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
         .bind(t)
         .bind(owner.into_inner())
@@ -1456,7 +1063,9 @@ pub async fn erase_memory(
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-    Ok(ColdPurgePlan::from_keys(pending))
+    // A memory owes the object store nothing since #488 (forget keeps the
+    // row); the plan type stays for the blob purges a series erase returns.
+    Ok(ColdPurgePlan::default())
 }
 
 /// Hard-delete every version of every series the given admissions belong to.
@@ -1503,13 +1112,18 @@ pub async fn erase_memory_series(
         return Ok((0, ColdPurgePlan::default()));
     }
     context.lock_before_physical_erase(tx).await?;
+    // The lifecycle scope: an owner-scope caller must reach forgotten
+    // versions too, or they would outlive the series erase.
+    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
     let owner_id = owner.into_inner();
     // Capture handles and membership in one statement before waiting. The
     // membership is the generation witness: handles are reusable after a
     // complete erase, so a non-empty post-lock series disjoint from this
     // snapshot is a replacement, not a late version of the requested series.
     let before = snapshot_series_for_erase_tx(tx, owner_id, ts).await?;
-    erase_memory_series_after_snapshot(tx, sidecars, context, owner, before).await
+    let erased = erase_memory_series_after_snapshot(tx, sidecars, context, owner, before).await?;
+    lifecycle.leave(tx.as_mut()).await?;
+    Ok(erased)
 }
 
 async fn erase_memory_series_after_snapshot(
@@ -1542,7 +1156,7 @@ async fn erase_memory_series_after_snapshot(
     let mut entries = Vec::new();
     let mut erased = 0_u64;
     for t in versions {
-        let plan = erase_memory(tx, sidecars, context, owner, t).await?;
+        let plan = erase_memory_in_lifecycle(tx, sidecars, context, owner, t).await?;
         entries.extend_from_slice(plan.entries());
         erased += 1;
     }
@@ -1651,17 +1265,10 @@ const SNAPSHOT_SERIES_FOR_ERASE_SQL: &str = "\
 WITH handles AS (
     SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
      WHERE t = ANY($1::uuid[]) AND owner_id = $2
-    UNION
-    SELECT handle FROM proxima_core.cooled
-     WHERE t = ANY($1::uuid[]) AND owner_id = $2
 ), versions AS (
     SELECT m.handle, m.t FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
       JOIN handles h ON h.handle = m.handle
      WHERE m.owner_id = $2
-    UNION
-    SELECT c.handle, c.t FROM proxima_core.cooled c
-      JOIN handles h ON h.handle = c.handle
-     WHERE c.owner_id = $2
 )
 SELECT handle, t FROM versions ORDER BY handle, t";
 
@@ -1690,10 +1297,6 @@ const SNAPSHOT_SERIES_BY_HANDLES_SQL: &str = "\
 SELECT m.handle, m.t FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
   JOIN unnest($1::uuid[]) h(handle) ON h.handle = m.handle
  WHERE m.owner_id = $2
-UNION
-SELECT c.handle, c.t FROM proxima_core.cooled c
-  JOIN unnest($1::uuid[]) h(handle) ON h.handle = c.handle
- WHERE c.owner_id = $2
  ORDER BY handle, t";
 
 /// Which of `ts` are NOT admissions of `owner`.
@@ -1735,10 +1338,6 @@ SELECT c.t
  WHERE NOT EXISTS (
            SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
             WHERE m.t = c.t AND m.owner_id = $2
-       )
-   AND NOT EXISTS (
-           SELECT 1 FROM proxima_core.cooled k
-            WHERE k.t = c.t AND k.owner_id = $2
        )";
 
 /// Take a row lock on admissions a scope erase is about to delete.
@@ -1799,9 +1398,6 @@ pub async fn lock_admissions_for_erase(
     let handles: Vec<Uuid> = sqlx::query_scalar(
         "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
           WHERE t = ANY($1::uuid[]) AND owner_id = $2
-        UNION
-        SELECT handle FROM proxima_core.cooled
-          WHERE t = ANY($1::uuid[]) AND owner_id = $2
           ORDER BY handle",
     )
     .bind(ts)
@@ -1813,9 +1409,6 @@ pub async fn lock_admissions_for_erase(
 
     let present: Vec<Uuid> = sqlx::query_scalar(
         "SELECT t FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
-          WHERE t = ANY($1::uuid[]) AND owner_id = $2
-        UNION
-        SELECT t FROM proxima_core.cooled
           WHERE t = ANY($1::uuid[]) AND owner_id = $2
           ORDER BY t",
     )
@@ -1899,9 +1492,6 @@ const CITED_BLOBS_LOCKED_SQL: &str = "\
 WITH cited AS (
     SELECT m.blob_id FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
      WHERE m.t = ANY($1::uuid[]) AND m.owner_id = $2 AND m.blob_id IS NOT NULL
-    UNION
-    SELECT c.blob_id FROM proxima_core.cooled c
-     WHERE c.t = ANY($1::uuid[]) AND c.owner_id = $2 AND c.blob_id IS NOT NULL
 )
 SELECT b.blob_id FROM proxima_core.blob b
  WHERE b.blob_id IN (SELECT blob_id FROM cited)
@@ -1978,9 +1568,6 @@ WITH orphans AS MATERIALIZED (
        AND b.owner_id = $2
        AND NOT EXISTS (
                SELECT 1 FROM proxima_core.memory m WHERE m.blob_id = b.blob_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still cites its content) */
-           )
-       AND NOT EXISTS (
-               SELECT 1 FROM proxima_core.cooled c WHERE c.blob_id = b.blob_id
            )
 ),
 enqueued AS (
