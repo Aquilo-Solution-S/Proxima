@@ -35,6 +35,9 @@ pub struct GoalWriteCommand {
     pub mint_write_act: bool,
     /// Attach an already-minted write-act when `mint_write_act` is false.
     pub write_act_t: Option<Uuid>,
+    /// Series handle of the goal this one was decomposed under (#514). Set
+    /// on a decompose child and copied forward by every later version.
+    pub parent_handle: Option<Uuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +87,11 @@ pub(crate) struct PreparedGoalWrite {
 }
 
 impl PreparedGoalWrite {
+    /// The goal series this write appends to.
+    pub(crate) const fn handle(&self) -> Uuid {
+        self.handle
+    }
+
     /// Every Fact identity this write reserved: the write-act, the close
     /// Fact and the goal-change Fact.
     fn lifecycle_identities(&self) -> impl Iterator<Item = ReservedFactIdentity> {
@@ -705,8 +713,8 @@ async fn insert_goal_revision(
     sqlx::query(
         "INSERT INTO proxima_core.goal
             (handle, t, owner_id, title, text, state, request_id, close_fact_t,
-            assignment_t, dependency_t, evidence_t, write_act_t, \"by\", via)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+            assignment_t, dependency_t, evidence_t, write_act_t, \"by\", via, parent_handle)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(prepared.handle)
     .bind(prepared.t)
@@ -722,6 +730,7 @@ async fn insert_goal_revision(
     .bind(prepared.command.write_act_t)
     .bind(prepared.writer.by)
     .bind(prepared.writer.via)
+    .bind(prepared.command.parent_handle)
     .execute(tx.as_mut())
     .await
     .map_err(map_err)?;

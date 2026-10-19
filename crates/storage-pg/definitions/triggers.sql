@@ -59,6 +59,7 @@ CREATE OR REPLACE TRIGGER erased_pin_target_insert_guard BEFORE INSERT ON proxim
 CREATE OR REPLACE TRIGGER goal_append_only BEFORE UPDATE ON proxima_core.goal FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
 CREATE OR REPLACE TRIGGER goal_erased_pin_target BEFORE DELETE ON proxima_core.goal FOR EACH ROW EXECUTE FUNCTION proxima_core.goal_erase_witness();
 CREATE OR REPLACE TRIGGER goal_no_later_after_terminal BEFORE INSERT ON proxima_core.goal FOR EACH ROW EXECUTE FUNCTION proxima_core.goal_no_later_after_terminal();
+CREATE OR REPLACE TRIGGER goal_parent_fixed BEFORE INSERT ON proxima_core.goal FOR EACH ROW EXECUTE FUNCTION proxima_core.goal_parent_fixed();
 CREATE OR REPLACE TRIGGER goal_pin_target_checks BEFORE INSERT ON proxima_core.goal FOR EACH ROW EXECUTE FUNCTION proxima_core.goal_pin_target_checks();
 
 

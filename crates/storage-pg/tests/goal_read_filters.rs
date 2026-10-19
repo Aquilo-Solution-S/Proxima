@@ -102,6 +102,7 @@ async fn goal(
             evidence_t: Vec::new(),
             mint_write_act: false,
             write_act_t: None,
+            parent_handle: None,
         },
         1,
     )

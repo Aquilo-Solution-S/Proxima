@@ -139,6 +139,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
                 evidence_t: vec![sum.memory_id.into_inner()],
                 mint_write_act: true,
                 write_act_t: None,
+                parent_handle: None,
             },
             1,
         )

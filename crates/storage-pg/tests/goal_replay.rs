@@ -287,6 +287,21 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
             .transition_goal_atomic(&step(one, GoalTransitionKind::Abandon, "feed-abandon"), &permit)
             .await?
             .goal_id;
+        // #514: a parent is Achieved only after its open children close.
+        let two_achieved = pg
+            .achieve_goal_atomic(
+                &AchieveGoalAtomicRequest {
+                    owner,
+                    prior_goal_id: two,
+                    authorship: GoalAuthorship::User,
+                    request_id: IdempotencyKey::new("feed-achieve-two")?,
+                    context: stamped(),
+                    evidence: vec![GoalEvidenceRef::new(evidence)],
+                },
+                &permit,
+            )
+            .await?
+            .goal_id;
         let achieve = AchieveGoalAtomicRequest {
             owner,
             prior_goal_id: modified,
@@ -306,6 +321,7 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
             (one, "decompose_child", "Active", 1, None, Some(modified), None),
             (two, "decompose_child", "Active", 1, None, Some(modified), None),
             (abandoned, "abandon", "Abandoned", 2, Some(one), None, None),
+            (two_achieved, "achieve", "Achieved", 2, Some(two), None, None),
             (achieved, "achieve", "Achieved", 5, Some(modified), None, None),
         ];
         for (goal, kind, state, revision, prior, parent, pending) in expected {
@@ -336,7 +352,7 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
             .fetch_one(pg.pool_for_tests())
             .await
         };
-        assert_eq!(counts().await?, (8, 8), "one Fact and one record per write");
+        assert_eq!(counts().await?, (9, 9), "one Fact and one record per write");
 
         // Every record's position is its goal series and the change's
         // revision, so a consumer orders one goal's changes without reading
@@ -348,7 +364,7 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
         )
         .fetch_all(pg.pool_for_tests())
         .await?;
-        assert_eq!(positions.len(), 8);
+        assert_eq!(positions.len(), 9);
         for (series, revision, envelope) in positions {
             let envelope: serde_json::Value = serde_json::from_slice(&envelope)?;
             assert_eq!(envelope["subject"], series.to_string());
@@ -357,7 +373,7 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
 
         let replay = pg.transition_goal_atomic(&pause, &permit).await?;
         assert!(replay.idempotent_replay);
-        assert_eq!(counts().await?, (8, 8), "a replay writes neither");
+        assert_eq!(counts().await?, (9, 9), "a replay writes neither");
 
         // A listenable schema needs the stamp the engine builds: refused.
         let unstamped = CreateGoalAtomicRequest {

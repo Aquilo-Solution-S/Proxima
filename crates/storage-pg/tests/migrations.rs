@@ -357,6 +357,10 @@ async fn migrations_apply_to_fresh_db() {
             !column_exists(&pg, "group_memberships", "created_at").await,
             "group_memberships has no created_at; list_group_members must not ORDER BY it"
         );
+        assert!(
+            column_exists(&pg, "goal", "parent_handle").await,
+            "a decompose child names its parent series (#514)"
+        );
 
         for index in [
             "memory_owner_handle_t_idx",
@@ -378,6 +382,7 @@ async fn migrations_apply_to_fresh_db() {
             "embeddings_hnsw_d3072",
             "embeddings_owner_model_idx",
             "goal_owner_state_t_idx",
+            "goal_parent_handle_idx",
             "sketch_owner_t_idx",
             // ONE composite GIN for the whole flavor, not one per sidecar.
             "core_projection_owner_tsv_gin",

@@ -230,10 +230,15 @@ impl Engine {
 
     /// Mark a Goal head Achieved with evidence.
     ///
+    /// A goal with decompose children is Achieved only when no child's
+    /// current head is Active or Paused and at least one is Achieved (#514).
+    ///
     /// # Errors
     ///
     /// Returns `Forbidden` when `authz` cannot access the request Owner or
-    /// lacks Goal write; `InvalidArgument`
+    /// lacks Goal write; `InvalidArgument` (field `goal`) when a child is
+    /// still open (`goal has open children: <handle>, ...`, naming each open
+    /// child's current head) or every child is Abandoned; `InvalidArgument`
     /// or `NotFound` for rejected references; or `Internal` for storage
     /// failures.
     pub async fn mark_goal_achieved(
@@ -709,6 +714,27 @@ mod tests {
 
     fn engine() -> Engine {
         Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+    }
+
+    /// #514 F10: the goal-tree refusals reach the protocol as
+    /// `InvalidArgument` on `goal` with stable message prefixes.
+    #[test]
+    fn goal_tree_refusals_map_to_invalid_argument() {
+        let a = GoalId::new(uuid::Uuid::from_u128(0x0001));
+        let b = GoalId::new(uuid::Uuid::from_u128(0x0002));
+        let err = map_goal_storage_error(StorageError::GoalChildrenOpen { open: vec![a, b] });
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert_eq!(
+            err.message,
+            "invalid argument goal: goal has open children: \
+             00000000-0000-0000-0000-000000000001, 00000000-0000-0000-0000-000000000002"
+        );
+        let err = map_goal_storage_error(StorageError::GoalChildrenAllAbandoned);
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert_eq!(
+            err.message,
+            "invalid argument goal: goal children are all abandoned; achieve at least one child first"
+        );
     }
 
     #[test]

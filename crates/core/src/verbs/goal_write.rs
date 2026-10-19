@@ -61,6 +61,10 @@ impl GoalState {
 
     /// Whether `self` may enter `Achieved` through the dedicated achieve verb.
     ///
+    /// This is the goal's own state only. Storage also requires its decompose
+    /// children to be closed with at least one Achieved (#514), checked after
+    /// the write's lifecycle lock.
+    ///
     /// See [`Self::may_transition_to`] for the authoritative plain-transition
     /// matrix and its engine/storage callers.
     #[must_use]

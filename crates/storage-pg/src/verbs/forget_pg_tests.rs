@@ -1027,6 +1027,7 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
                 evidence_t: vec![],
                 mint_write_act: false,
                 write_act_t: None,
+                parent_handle: None,
             },
             1,
         )

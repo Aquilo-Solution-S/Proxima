@@ -100,6 +100,7 @@ async fn seed(pg: &PgStorage, owner: OwnerId, extra_facts: u64) -> TestResult<Se
         evidence_t: Vec::new(),
         mint_write_act: false,
         write_act_t: None,
+        parent_handle: None,
     };
     let mut tx = pg.pool_for_tests().begin().await?;
     let first = write_goal(

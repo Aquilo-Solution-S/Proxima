@@ -389,6 +389,23 @@ BEGIN
 END;
 $function$;
 
+CREATE OR REPLACE FUNCTION proxima_core.goal_parent_fixed()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+    -- #514: a series keeps the parent it was decomposed under.
+    IF EXISTS (
+        SELECT 1 FROM proxima_core.goal g
+         WHERE g.handle = NEW.handle
+           AND g.parent_handle IS DISTINCT FROM NEW.parent_handle
+    ) THEN
+        RAISE EXCEPTION 'goal series parent is fixed' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$function$;
+
 -- FORGET-POLICY: includes-forgotten (pin integrity holds for forgotten targets) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxima_core.goal_pin_target_checks()
  RETURNS trigger

@@ -49,6 +49,9 @@ pub(in crate::engine) fn map_write_storage_error(
         StorageError::ConstraintViolation(message) | StorageError::Conflict(message) => {
             ProtocolError::invalid_argument(field, message)
         }
+        StorageError::GoalChildrenOpen { .. } | StorageError::GoalChildrenAllAbandoned => {
+            ProtocolError::invalid_argument(field, err.to_string())
+        }
         StorageError::MembershipIsolation => ProtocolError::invalid_argument(
             "transaction_isolation",
             "membership writes require READ COMMITTED isolation",

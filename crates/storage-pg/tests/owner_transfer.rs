@@ -2488,6 +2488,7 @@ async fn transfer_refuses_goal_entities() {
                 evidence_t: vec![],
                 mint_write_act: false,
                 write_act_t: None,
+                parent_handle: None,
             },
             1,
         )

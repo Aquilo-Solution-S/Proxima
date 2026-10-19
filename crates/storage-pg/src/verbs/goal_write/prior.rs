@@ -95,6 +95,10 @@ pub(super) fn validate_goal_transition(
     }
 }
 
+/// The parent's own state. The child rule (#514: no open child, at least one
+/// Achieved) is enforced after the lifecycle lock, through
+/// `PostLockGuard::ChildrenClosed` in `insert_or_replay_goal`, so it sees a
+/// child a racing decompose committed first.
 pub(super) fn validate_goal_achievement(prior: GoalState) -> Result<(), StorageError> {
     if prior.may_achieve() {
         Ok(())

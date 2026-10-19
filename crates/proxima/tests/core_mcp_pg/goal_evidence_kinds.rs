@@ -13,7 +13,7 @@ use super::{AgentMemoryApp, ResolvedAuthz, call_test_model_tool, space_authz};
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-struct Env {
+pub(super) struct Env {
     split_db: SplitRoleDb,
     built: BuiltProxima,
     tools: CoreMcpTools,
@@ -22,7 +22,7 @@ struct Env {
 }
 
 impl Env {
-    async fn new(prefix: &str) -> TestResult<Self> {
+    pub(super) async fn new(prefix: &str) -> TestResult<Self> {
         let split_db = clone_split_core_db(prefix).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let built = Proxima::<AgentMemoryApp>::app()
@@ -44,7 +44,7 @@ impl Env {
         })
     }
 
-    async fn call(
+    pub(super) async fn call(
         &self,
         tool: &str,
         args: serde_json::Value,
@@ -57,7 +57,7 @@ impl Env {
         Ok(made["handle"].as_str().ok_or("handle")?.to_owned())
     }
 
-    async fn remember(&self, title: &str) -> TestResult<String> {
+    pub(super) async fn remember(&self, title: &str) -> TestResult<String> {
         self.handle(
             "core_remember",
             serde_json::json!({"title": title, "body": title, "tags": []}),
@@ -65,7 +65,7 @@ impl Env {
         .await
     }
 
-    async fn derive(&self, title: &str, source: &str) -> TestResult<String> {
+    pub(super) async fn derive(&self, title: &str, source: &str) -> TestResult<String> {
         self.handle(
             "core_derive",
             serde_json::json!({
@@ -76,7 +76,7 @@ impl Env {
         .await
     }
 
-    async fn interpret(&self, claim: &str, subject: &str) -> TestResult<String> {
+    pub(super) async fn interpret(&self, claim: &str, subject: &str) -> TestResult<String> {
         self.handle(
             "core_interpret",
             serde_json::json!({"claim": claim, "confidence": 80, "subjects": [subject]}),
@@ -84,7 +84,7 @@ impl Env {
         .await
     }
 
-    async fn set_goal(
+    pub(super) async fn set_goal(
         &self,
         evidence: &[&str],
         target: &str,
@@ -118,7 +118,7 @@ impl Env {
         self.call("core_goal", args).await
     }
 
-    async fn decompose_goal(
+    pub(super) async fn decompose_goal(
         &self,
         parent: &str,
         children: &[&[&str]],
@@ -172,12 +172,12 @@ impl Env {
         Ok(rows)
     }
 
-    async fn shutdown(self) {
+    pub(super) async fn shutdown(self) {
         self.built.shutdown().await;
     }
 }
 
-fn handle_of(value: &serde_json::Value) -> TestResult<String> {
+pub(super) fn handle_of(value: &serde_json::Value) -> TestResult<String> {
     Ok(value["handle"].as_str().ok_or("handle")?.to_owned())
 }
 

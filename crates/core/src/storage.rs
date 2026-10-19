@@ -17,6 +17,7 @@ use crate::{
 use crate::{EntityKind, MemoryId, MemoryOperatorKind, OwnerId, SchemaId, SchemaVersion};
 
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum StorageError {
     #[error("storage backend unavailable: {0}")]
     Unavailable(String),
@@ -68,8 +69,25 @@ pub enum StorageError {
     /// message, so the engine maps it without parsing a string.
     #[error("publication refused: {0}")]
     PublicationRefused(#[from] crate::publication::PublicationError),
+    /// `mark_achieved` on a goal with decompose children that are still
+    /// Active or Paused (#514). `open` names each open child by its current
+    /// head (the handle a caller passes to transition or `mark_achieved`),
+    /// in child creation order.
+    #[error("goal has open children: {}", join_goal_ids(open))]
+    GoalChildrenOpen { open: Vec<crate::GoalId> },
+    /// `mark_achieved` on a goal whose decompose children are all Abandoned
+    /// (#514): split it again, or abandon it.
+    #[error("goal children are all abandoned; achieve at least one child first")]
+    GoalChildrenAllAbandoned,
     #[error("internal storage error: {0}")]
     Internal(String),
+}
+
+fn join_goal_ids(ids: &[crate::GoalId]) -> String {
+    ids.iter()
+        .map(|id| id.into_inner().hyphenated().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

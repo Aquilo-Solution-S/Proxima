@@ -2,8 +2,8 @@ use super::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, DraftFromPayload, GoalAuthorship, GoalChange,
     GoalId, GoalState, GoalWriteOutcome, LifecycleWrite, ModifyGoalAtomicRequest, OwnerWritePermit,
-    PgPool, PgSidecarRegistryFrozen, PreparedGoalInsert, RowColumns, StorageError, SystemOrigin,
-    TransitionGoalAtomicRequest, achieve_replay_declaration, child_draft,
+    PgPool, PgSidecarRegistryFrozen, PostLockGuard, PreparedGoalInsert, RowColumns, StorageError,
+    SystemOrigin, TransitionGoalAtomicRequest, achieve_replay_declaration, child_draft,
     create_replay_declaration, decompose_replay_declarations, draft_from_payload,
     draft_from_stored, insert_or_replay_goal, internal, lifecycle_outcome,
     load_goal_evidence_exact, load_prior_goal, lock_prepared_goal_writes, map_err,
@@ -132,6 +132,7 @@ pub(crate) async fn create_goal_in_tx(
             text: Some(&req.draft.text),
             write_act_t: req.write_act_t.map(proxima_core::MemoryId::into_inner),
         },
+        PostLockGuard::None,
     )
     .await?;
     if inserted.idempotent_replay {
@@ -217,6 +218,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
             text: prior.text.as_deref(),
             write_act_t: None,
         },
+        PostLockGuard::None,
     )
     .await?;
     if inserted.idempotent_replay {
@@ -302,6 +304,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
             text: prior.text.as_deref(),
             write_act_t: None,
         },
+        PostLockGuard::ChildrenClosed,
     )
     .await?;
     if inserted.idempotent_replay {
@@ -401,6 +404,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
             text: Some(&draft.text),
             write_act_t: None,
         },
+        PostLockGuard::None,
     )
     .await?;
     if inserted.idempotent_replay {
@@ -676,6 +680,7 @@ mod lifecycle_lock_tests {
             evidence_t: vec![],
             mint_write_act: true,
             write_act_t: None,
+            parent_handle: None,
         };
 
         // Both preparations observe the same predecessor before either
@@ -765,6 +770,7 @@ mod lifecycle_lock_tests {
                 evidence_t: vec![evidence_t],
                 mint_write_act: false,
                 write_act_t: None,
+                parent_handle: None,
             };
             let prepared_first = prepare_goal_write(
                 &mut tx,
@@ -871,6 +877,7 @@ mod lifecycle_lock_tests {
                     evidence_t: vec![],
                     mint_write_act: false,
                     write_act_t: None,
+                    parent_handle: None,
                 },
                 1,
             )
@@ -938,6 +945,7 @@ mod lifecycle_lock_tests {
                     evidence_t: vec![target.memory_id.into_inner()],
                     mint_write_act: true,
                     write_act_t: None,
+                    parent_handle: None,
                 },
                 None,
                 1,

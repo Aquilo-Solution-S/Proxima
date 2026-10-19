@@ -79,6 +79,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 evidence_t: vec![],
                 mint_write_act: true,
                 write_act_t: None,
+                parent_handle: None,
             },
             1,
         )
@@ -130,6 +131,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 evidence_t: vec![],
                 mint_write_act: true,
                 write_act_t: None,
+                parent_handle: None,
             },
             1,
         )
@@ -158,6 +160,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 evidence_t: vec![],
                 mint_write_act: false,
                 write_act_t: None,
+                parent_handle: None,
             },
             1,
         )
@@ -204,6 +207,7 @@ async fn goal_write_replay_terminal_and_write_act() {
                 evidence_t: vec![],
                 mint_write_act: false,
                 write_act_t: None,
+                parent_handle: None,
             },
             1,
         )
@@ -267,6 +271,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
                 evidence_t: vec![evidence.memory_id.into_inner()],
                 mint_write_act: false,
                 write_act_t: None,
+                parent_handle: None,
             },
             1,
         )

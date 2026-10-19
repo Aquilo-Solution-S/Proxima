@@ -490,6 +490,7 @@ fn goal_draft(request_id: &str) -> GoalWriteCommand {
         evidence_t: vec![],
         mint_write_act: true,
         write_act_t: None,
+        parent_handle: None,
     }
 }
 
@@ -1514,6 +1515,7 @@ async fn erase_group_owner_completes_when_abandoned() {
                 evidence_t: vec![],
                 mint_write_act: false,
                 write_act_t: None,
+                parent_handle: None,
             },
             1,
         )

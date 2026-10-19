@@ -22,6 +22,16 @@ pub(super) struct PreparedGoalInsert<'a> {
     pub(super) change_fact: Option<GoalChangeFact<'a>>,
 }
 
+/// A check that must see the database as it is once the write holds its
+/// lifecycle locks, and before anything is persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PostLockGuard {
+    None,
+    /// Achieve (#514): the series' decompose children are closed.
+    ChildrenClosed,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn insert_or_replay_goal(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -30,6 +40,7 @@ pub(super) async fn insert_or_replay_goal(
     change: GoalChange,
     context: GoalAtomicContext<'_>,
     columns: RowColumns<'_>,
+    guard: PostLockGuard,
 ) -> Result<InsertedGoal, StorageError> {
     let mut retried_collision = false;
     loop {
@@ -46,6 +57,15 @@ pub(super) async fn insert_or_replay_goal(
             .await?;
             if let GoalWritePreparation::New(prepared_write) = &prepared.preparation {
                 lock_prepared_goal_write(&mut attempt, prepared_write).await?;
+                // A replay preparation skips this: a replayed achieve replays.
+                if guard == PostLockGuard::ChildrenClosed {
+                    super::ensure_goal_children_closed(
+                        &mut attempt,
+                        &draft.owner(),
+                        prepared_write.handle(),
+                    )
+                    .await?;
+                }
             }
             persist_prepared_goal_insert(&mut attempt, sidecars, &prepared).await
         }
@@ -84,6 +104,41 @@ async fn lock_goal_request(
     .await
     .map_err(crate::error::map_err)?;
     Ok(())
+}
+
+/// The tree edge (#514): a successor copies its series' parent forward,
+/// and a decompose child names its parent's series handle. This is the
+/// one place that sets it.
+async fn resolve_series_edge(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &proxima_core::OwnerId,
+    expected_prior: Option<GoalId>,
+    change: GoalChange,
+) -> Result<(Option<uuid::Uuid>, Option<uuid::Uuid>), StorageError> {
+    if let Some(prior) = expected_prior {
+        let row: Option<(uuid::Uuid, Option<uuid::Uuid>)> = sqlx::query_as(
+            "SELECT handle, parent_handle FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
+        )
+        .bind(prior.into_inner())
+        .bind(owner.into_inner())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(crate::error::map_err)?;
+        let (handle, parent_handle) = row.ok_or(StorageError::NotFound)?;
+        Ok((Some(handle), parent_handle))
+    } else if let GoalChange::DecomposeChild { parent } = change {
+        let parent_handle: Option<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT handle FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
+        )
+        .bind(parent.into_inner())
+        .bind(owner.into_inner())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(crate::error::map_err)?;
+        Ok((None, Some(parent_handle.ok_or(StorageError::NotFound)?)))
+    } else {
+        Ok((None, None))
+    }
 }
 
 pub(super) async fn prepare_goal_insert<'a>(
@@ -128,19 +183,7 @@ pub(super) async fn prepare_goal_insert<'a>(
     crate::access::owner_columns::ensure_owner_row(tx.as_mut(), &owner).await?;
     validate_goal_schema(context, draft)?;
 
-    let handle = if let Some(prior) = expected_prior {
-        let handle: Option<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT handle FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
-        )
-        .bind(prior.into_inner())
-        .bind(owner.into_inner())
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(crate::error::map_err)?;
-        Some(handle.ok_or(StorageError::NotFound)?)
-    } else {
-        None
-    };
+    let (handle, parent_handle) = resolve_series_edge(tx, &owner, expected_prior, change).await?;
 
     let command = GoalWriteCommand {
         handle,
@@ -165,6 +208,7 @@ pub(super) async fn prepare_goal_insert<'a>(
             .collect(),
         mint_write_act: false,
         write_act_t: columns.write_act_t,
+        parent_handle,
     };
     let preparation = prepare_goal_write(
         tx,

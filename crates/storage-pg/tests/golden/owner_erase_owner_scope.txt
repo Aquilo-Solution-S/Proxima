@@ -8,8 +8,8 @@
 ## export proxima_core.delegated_authority_grants (1)
 {"action_name":null,"auth_epoch":1,"by":"<id009>","expires_at":"<ts010>","issued_at":"<ts011>","owner_id":"<id012>","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id012>","tool_name":"core_remember","via":null,"write_ceiling":"fact"}
 ## export proxima_core.goal (2)
-{"assignment_t":null,"by":"<id009>","close_fact_t":null,"dependency_t":[],"evidence_t":[],"handle":"<id013>","owner_id":"<id012>","request_id":"req-1","state":"Active","t":"<id013>","title":"a goal","via":null,"write_act_t":null}
-{"assignment_t":null,"by":"<id009>","close_fact_t":null,"dependency_t":[],"evidence_t":[],"handle":"<id014>","owner_id":"<id012>","request_id":"req-2","state":"Active","t":"<id014>","title":"a goal","via":null,"write_act_t":null}
+{"assignment_t":null,"by":"<id009>","close_fact_t":null,"dependency_t":[],"evidence_t":[],"handle":"<id013>","owner_id":"<id012>","parent_handle":null,"request_id":"req-1","state":"Active","t":"<id013>","title":"a goal","via":null,"write_act_t":null}
+{"assignment_t":null,"by":"<id009>","close_fact_t":null,"dependency_t":[],"evidence_t":[],"handle":"<id014>","owner_id":"<id012>","parent_handle":null,"request_id":"req-2","state":"Active","t":"<id014>","title":"a goal","via":null,"write_act_t":null}
 ## export proxima_core.ingest_keys (5)
 {"ingest_key":"k1","owner_id":"<id012>","source_id":"src-a","t":"<id002>"}
 {"ingest_key":"k2","owner_id":"<id012>","source_id":"src-a","t":"<id004>"}
@@ -64,7 +64,7 @@
 {"flavor_id":"core","table_name":"proxima_core.write_act_v1"}
 {"flavor_id":"core","table_name":"proxima_core.goal_change_v1"}
 ## proxima_core.goal (1)
-{"assignment_t":null,"by":"<id009>","close_fact_t":null,"dependency_t":[],"evidence_t":[],"handle":"<id043>","owner_id":"<id039>","request_id":"req-n","state":"Active","t":"<id043>","title":"a goal","via":null,"write_act_t":null}
+{"assignment_t":null,"by":"<id009>","close_fact_t":null,"dependency_t":[],"evidence_t":[],"handle":"<id043>","owner_id":"<id039>","parent_handle":null,"request_id":"req-n","state":"Active","t":"<id043>","title":"a goal","via":null,"write_act_t":null}
 ## proxima_core.goal_change_v1 (0)
 ## proxima_core.goal_head (1)
 {"handle":"<id043>","owner_id":"<id039>","schema_id":"core/task-goal-v1","t":"<id043>"}

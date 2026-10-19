@@ -258,7 +258,10 @@ const fn protocol_status(code: ErrorCode) -> (StatusCode, &'static str, &'static
 
 const fn storage_status(err: &StorageError) -> (StatusCode, &'static str, &'static str) {
     match err {
-        StorageError::ConstraintViolation(_) | StorageError::MembershipIsolation => {
+        StorageError::ConstraintViolation(_)
+        | StorageError::MembershipIsolation
+        | StorageError::GoalChildrenOpen { .. }
+        | StorageError::GoalChildrenAllAbandoned => {
             (StatusCode::BAD_REQUEST, "invalid-input", "Invalid input")
         }
         StorageError::MembershipForbidden(_) => (
@@ -306,11 +309,11 @@ const fn storage_status(err: &StorageError) -> (StatusCode, &'static str, &'stat
                 "Internal error",
             ),
         },
-        StorageError::Retryable(_)
-        | StorageError::Unavailable(_)
-        | StorageError::Internal(_)
-        | StorageError::MemoryIdCollision
-        | StorageError::SchemaResetRequired { .. } => (
+        // Retryable, Unavailable, Internal, MemoryIdCollision and
+        // SchemaResetRequired are server faults. `StorageError` is
+        // `#[non_exhaustive]`, so a variant this release does not know is one
+        // too until it is mapped.
+        _ => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "Internal error",

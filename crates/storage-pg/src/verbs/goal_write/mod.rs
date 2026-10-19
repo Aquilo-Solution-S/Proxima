@@ -18,6 +18,7 @@ use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
 use crate::error::{internal, map_err};
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
+mod children;
 mod commands;
 mod edges;
 mod evidence;
@@ -27,12 +28,14 @@ mod prior;
 mod replay;
 mod types;
 
+use children::ensure_goal_children_closed;
 use edges::assert_goal_topology_references;
 use evidence::{
     load_goal_evidence_exact, require_operator_evidence_nonempty, validate_evidence_in_owner,
 };
 use insert::{
-    PreparedGoalInsert, insert_or_replay_goal, persist_prepared_goal_insert, prepare_goal_insert,
+    PostLockGuard, PreparedGoalInsert, insert_or_replay_goal, persist_prepared_goal_insert,
+    prepare_goal_insert,
 };
 use lifecycle::{LifecycleWrite, lifecycle_outcome};
 use prior::{
