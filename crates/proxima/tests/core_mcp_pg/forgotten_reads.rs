@@ -542,3 +542,117 @@ async fn a_new_write_cannot_cite_a_forgotten_memory() {
     .await;
     result.expect("cite forgotten");
 }
+
+/// "A replay answers, it does not revive." Replaying the write that made a
+/// derived memory, after that memory was forgotten, answers with its handle
+/// and `forgotten: true` and writes nothing: no new version, no search hit.
+/// The same holds for an interpretation and for an episode's derive.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one fixture, three replaying writes
+async fn replaying_a_derived_write_after_forget_answers_forgotten_and_does_not_revive() {
+    let split_db = clone_split_core_db("proxima_derive_replay_forgotten")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(split_db.runtime_url().to_owned())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let memory_rows = || async {
+            let admin = sqlx::PgPool::connect(&db_url(split_db.name())).await?;
+            // Every episode call records its own write-act Fact; count the
+            // memories a replay could revive.
+            let rows: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM proxima_core.memory WHERE schema_id <> 'core/write-act-v1'",
+            )
+                .fetch_one(&admin)
+                .await?;
+            admin.close().await;
+            Ok::<i64, Box<dyn std::error::Error>>(rows)
+        };
+        let source = call(
+            "core_remember",
+            serde_json::json!({"title": "replay source", "body": "replay source", "tags": []}),
+        )
+        .await?["handle"]
+            .as_str()
+            .ok_or("handle")?
+            .to_owned();
+        let derive_args = serde_json::json!({
+            "kind": "Abstraction", "title": "replayneedle derived", "body": "replayneedle derived",
+            "tags": [], "source_handles": [source.clone()], "model_id": "test-model",
+        });
+        let interpret_args = serde_json::json!({
+            "claim": "replayneedle stance", "confidence": 70,
+            "subjects": [source.clone()], "model_id": "test-model",
+        });
+        let episode_args = serde_json::json!({
+            "remember": [{"title": "episode fact", "body": "episode fact", "idempotency_key": "ep-fact"}],
+            "derive": {"title": "replayneedle episode", "body": "replayneedle episode",
+                "source_handles": ["remember:0"], "model_id": "test-model",
+                "idempotency_key": "ep-derive"},
+        });
+        let derived = call("core_derive", derive_args.clone()).await?;
+        let stance = call("core_interpret", interpret_args.clone()).await?;
+        let episode = call("core_episode_commit", episode_args.clone()).await?;
+        let derived = derived["handle"].as_str().ok_or("handle")?.to_owned();
+        let stance = stance["handle"].as_str().ok_or("handle")?.to_owned();
+        let episode_derived = episode["derived"].as_str().ok_or("derived")?.to_owned();
+        // Control: a replay of a live write answers without `forgotten`.
+        let replay = call("core_derive", derive_args.clone()).await?;
+        assert_eq!(replay["handle"], derived.as_str(), "{replay}");
+        assert_eq!(replay["idempotent_replay"], true, "{replay}");
+        assert!(replay.get("forgotten").is_none(), "{replay}");
+
+        for handle in [&derived, &stance, &episode_derived] {
+            call("core_forget", serde_json::json!({"memory": handle})).await?;
+        }
+        let rows = memory_rows().await?;
+
+        let replay = call("core_derive", derive_args).await?;
+        assert_eq!(replay["handle"], derived.as_str(), "derive: {replay}");
+        assert_eq!(replay["idempotent_replay"], true, "derive: {replay}");
+        assert_eq!(replay["forgotten"], true, "derive: {replay}");
+        let replay = call("core_interpret", interpret_args).await?;
+        assert_eq!(replay["handle"], stance.as_str(), "interpret: {replay}");
+        assert_eq!(replay["idempotent_replay"], true, "interpret: {replay}");
+        assert_eq!(replay["forgotten"], true, "interpret: {replay}");
+        let replay = call("core_episode_commit", episode_args).await?;
+        assert_eq!(replay["derived"], episode_derived.as_str(), "episode: {replay}");
+
+        assert_eq!(memory_rows().await?, rows, "a replay wrote a memory row");
+        let found = call(
+            "core_search_memories",
+            serde_json::json!({"query": "replayneedle", "mode": "lexical"}),
+        )
+        .await?;
+        assert!(
+            found["memories"].as_array().is_none_or(Vec::is_empty),
+            "{found}"
+        );
+        for handle in [&derived, &stance, &episode_derived] {
+            let read = read_test_model_resource(
+                &tools,
+                authz.clone(),
+                owner,
+                &format!("proxima://memory/{handle}"),
+            )
+            .await;
+            assert!(read.is_err(), "{handle} stays forgotten: {read:?}");
+        }
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("derived replay after forget");
+}

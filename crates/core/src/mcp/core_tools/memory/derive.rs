@@ -154,6 +154,10 @@ impl DerivedKind {
 pub struct DeriveOutput {
     pub handle: String,
     pub idempotent_replay: bool,
+    /// Present (true) only on a replay of a memory that has been forgotten:
+    /// the write was not repeated and the memory stays forgotten.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub forgotten: bool,
     /// Number of index rows this write asserted. An edge has no handle
     /// to return: the row is `(source, target, kind)` and re-running the
     /// same derivation re-asserts the same rows.
@@ -282,6 +286,7 @@ impl McpTool for DeriveTool {
             Ok(DeriveOutput {
                 handle: outcome.memory_id.into_inner().to_string(),
                 idempotent_replay: outcome.idempotent_replay,
+                forgotten: outcome.forgotten,
                 edge_count: outcome.edge_count,
                 embedding_deferred: outcome.embedding_deferred,
             })

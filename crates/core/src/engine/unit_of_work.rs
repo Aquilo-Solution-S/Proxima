@@ -991,6 +991,7 @@ impl<'a> UnitOfWork<'a> {
         Ok(DerivedMemoryOutcome {
             memory_id: outcome.memory_id,
             idempotent_replay: outcome.idempotent_replay,
+            forgotten: outcome.forgotten,
             edge_count: outcome.edge_count,
             embedding_deferred: outcome.embedding_deferred,
         })

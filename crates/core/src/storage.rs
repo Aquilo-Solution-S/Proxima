@@ -393,6 +393,10 @@ pub struct AuthorDerivedRequest<'a> {
 pub struct AuthorDerivedOutcome {
     pub memory_id: MemoryId,
     pub idempotent_replay: bool,
+    /// The replay matched a memory that has been forgotten: the write was
+    /// not repeated and the memory stays forgotten. Always false for a new
+    /// admission.
+    pub forgotten: bool,
     /// Pins this write declared (`origins` + `refs`). A count, not a
     /// list: pins live in the row's own columns, so replaying the write
     /// re-asserts the same values and there is no pin id to hand back.

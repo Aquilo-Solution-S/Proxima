@@ -71,6 +71,9 @@ impl<'a> DerivedDraft<'a> {
 pub(crate) struct DerivedOutcome {
     pub memory_id: MemoryId,
     pub idempotent_replay: bool,
+    /// The replay matched a forgotten memory: nothing was written and it
+    /// stays forgotten.
+    pub forgotten: bool,
 }
 
 /// Content resolution is shared with the Fact routes and lives with the
@@ -209,10 +212,17 @@ async fn admit_derived(
     let outcome = DerivedOutcome {
         memory_id: ingested.memory_id,
         idempotent_replay: ingested.idempotent_replay,
+        forgotten: false,
     };
     Ok(outcome)
 }
 
+/// A replay of the write that made the series head answers with that head,
+/// also when it is forgotten: the probe runs in the lifecycle scope, so a
+/// forgotten head's pins are compared like a live one's, and a match
+/// answers `forgotten` without writing (#488 "a replay answers, it does not
+/// revive"). Without the scope the forgotten row's pins read as empty, the
+/// comparison failed, and the write appended a new live version.
 async fn try_derived_replay(
     tx: &mut Transaction<'_, Postgres>,
     handle: uuid::Uuid,
@@ -220,9 +230,24 @@ async fn try_derived_replay(
     kind: &str,
     input: DerivedAdmissionInput<'_>,
 ) -> Result<Option<DerivedOutcome>, StorageError> {
-    if draft.supersedes.is_none() {
+    if draft.supersedes.is_some() {
+        return Ok(None);
+    }
+    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+    let result = derived_replay_in_lifecycle(tx, handle, draft, kind, input).await;
+    lifecycle.finish(tx.as_mut(), result).await
+}
+
+async fn derived_replay_in_lifecycle(
+    tx: &mut Transaction<'_, Postgres>,
+    handle: uuid::Uuid,
+    draft: &DerivedDraft<'_>,
+    kind: &str,
+    input: DerivedAdmissionInput<'_>,
+) -> Result<Option<DerivedOutcome>, StorageError> {
+    {
         let existing = load_derived_replay_head(tx, handle, draft, kind).await?;
-        if let Some(t) = existing {
+        if let Some((t, forgotten)) = existing {
             let stored_origins = load_pin_ids(tx, t, PinColumn::Origins).await?;
             let incoming_origins = pin_memory_ids(input.origins);
             if stored_origins == incoming_origins {
@@ -238,6 +263,7 @@ async fn try_derived_replay(
                 return Ok(Some(DerivedOutcome {
                     memory_id: MemoryId::new(t),
                     idempotent_replay: true,
+                    forgotten,
                 }));
             }
         }
@@ -250,11 +276,13 @@ async fn load_derived_replay_head(
     handle: uuid::Uuid,
     draft: &DerivedDraft<'_>,
     kind: &str,
-) -> Result<Option<uuid::Uuid>, StorageError> {
-    sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory_head
-          WHERE handle = $1 AND owner_id = $2
-            AND kind = $3::proxima_core.memory_kind AND schema_id = $4",
+) -> Result<Option<(uuid::Uuid, bool)>, StorageError> {
+    sqlx::query_as(
+        "SELECT h.t, m.forgotten_at IS NOT NULL
+           FROM proxima_core.memory_head h
+           JOIN proxima_core.memory m /* FORGET-POLICY: includes-forgotten (a replay answers for a forgotten head) */ ON m.t = h.t
+          WHERE h.handle = $1 AND h.owner_id = $2
+            AND h.kind = $3::proxima_core.memory_kind AND h.schema_id = $4",
     )
     .bind(handle)
     .bind(draft.owner.into_inner())
@@ -387,9 +415,15 @@ pub(crate) async fn assert_derived_index_rows(
     let _ = draft;
     if outcome.idempotent_replay {
         let t = outcome.memory_id.into_inner();
-        let stored_origins = load_pin_ids(tx, t, PinColumn::Origins).await?;
-        let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
-        let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
+        // A forgotten memory's row is hidden from owner reads; its pins are
+        // re-read in the lifecycle scope, as the replay probe read them.
+        let (stored_origins, stored_refs, stored_goal_refs) = if outcome.forgotten {
+            let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+            let stored = load_stored_pins(tx, t).await;
+            lifecycle.finish(tx.as_mut(), stored).await?
+        } else {
+            load_stored_pins(tx, t).await?
+        };
         let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(references);
         if stored_origins != pin_memory_ids(origins)
             || stored_refs != refs
@@ -401,6 +435,19 @@ pub(crate) async fn assert_derived_index_rows(
         }
     }
     Ok(origins.len().saturating_add(references.len()))
+}
+
+type StoredPins = (Vec<uuid::Uuid>, Vec<uuid::Uuid>, Vec<uuid::Uuid>);
+
+async fn load_stored_pins(
+    tx: &mut Transaction<'_, Postgres>,
+    t: uuid::Uuid,
+) -> Result<StoredPins, StorageError> {
+    Ok((
+        load_pin_ids(tx, t, PinColumn::Origins).await?,
+        load_pin_ids(tx, t, PinColumn::Refs).await?,
+        load_pin_ids(tx, t, PinColumn::GoalRefs).await?,
+    ))
 }
 
 /// Record the other-store edges of a fresh derived row (`origin` for its
@@ -429,15 +476,25 @@ pub(crate) async fn record_external_edges(
         )
         .collect();
     if outcome.idempotent_replay {
-        let stored: BTreeSet<(uuid::Uuid, String)> = sqlx::query_as(
+        // A forgotten memory's edges are hidden from owner reads; the replay
+        // compares them in the lifecycle scope, as it compared the pins.
+        let lifecycle = if outcome.forgotten {
+            Some(crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?)
+        } else {
+            None
+        };
+        let stored: Result<Vec<(uuid::Uuid, String)>, StorageError> = sqlx::query_as(
             "SELECT memory, edge_kind FROM proxima_core.memory_external_origin WHERE t = $1",
         )
         .bind(t)
         .fetch_all(&mut **tx)
         .await
-        .map_err(map_err)?
-        .into_iter()
-        .collect();
+        .map_err(map_err);
+        let stored = match lifecycle {
+            Some(lifecycle) => lifecycle.finish(tx.as_mut(), stored).await?,
+            None => stored?,
+        };
+        let stored: BTreeSet<(uuid::Uuid, String)> = stored.into_iter().collect();
         if stored != declared {
             return Err(StorageError::Conflict(
                 "derived replay changed declared external edges".into(),

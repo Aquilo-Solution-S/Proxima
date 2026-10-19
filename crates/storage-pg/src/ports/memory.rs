@@ -114,6 +114,7 @@ impl MemoryAuthoringPort for PgStorage {
             Ok(AuthorDerivedOutcome {
                 memory_id: outcome.memory_id,
                 idempotent_replay: outcome.idempotent_replay,
+                forgotten: outcome.forgotten,
                 edge_count,
                 // A replay wrote nothing, so it deferred nothing: the row it
                 // found already carries whatever vector (or job) the write

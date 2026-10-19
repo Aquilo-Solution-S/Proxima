@@ -128,6 +128,7 @@ impl From<AuthorDerivedOutcome> for DerivedMemoryOutcome {
         Self {
             memory_id: outcome.memory_id,
             idempotent_replay: outcome.idempotent_replay,
+            forgotten: outcome.forgotten,
             edge_count: outcome.edge_count,
             embedding_deferred: outcome.embedding_deferred,
         }
@@ -247,6 +248,9 @@ pub struct DerivedMemoryOutcome {
     /// Persisted version t. Use this ID for reads, origins, and references.
     pub memory_id: MemoryId,
     pub idempotent_replay: bool,
+    /// The replay matched a forgotten memory: nothing was written and it
+    /// stays forgotten.
+    pub forgotten: bool,
     /// Pins declared by this write (`origins` + `refs`). A count, not a
     /// list of handles: a pin has no id to hand back, and re-running the
     /// write re-asserts the same column values.
@@ -1335,6 +1339,7 @@ mod tests {
             Ok(AuthorDerivedOutcome {
                 memory_id: req.memory_id,
                 idempotent_replay: false,
+                forgotten: false,
                 edge_count: req.origins.len() + req.references.len(),
                 embedding_deferred: false,
             })

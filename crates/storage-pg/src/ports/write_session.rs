@@ -372,6 +372,7 @@ impl WriteSession for PgWriteSession {
         Ok(AuthorDerivedOutcome {
             memory_id: outcome.memory_id,
             idempotent_replay: outcome.idempotent_replay,
+            forgotten: outcome.forgotten,
             edge_count,
             embedding_deferred: !req.queued_spaces.is_empty() && !outcome.idempotent_replay,
         })
