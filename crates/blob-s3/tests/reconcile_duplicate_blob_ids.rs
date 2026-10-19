@@ -228,7 +228,17 @@ async fn observe_reports(
         // Physical absence is intentional in this phase; retain the distinct
         // control object to prove scanning continues after the shared group.
         delete_keys(&store, &shared_keys).await?;
-        if store.cold_store().get(&canonical(control.0)).await? != CONTROL_BODY {
+        let control_body = client
+            .get_object()
+            .bucket(&config.bucket)
+            .key(canonical(control.0))
+            .send()
+            .await?
+            .body
+            .collect()
+            .await?
+            .into_bytes();
+        if control_body.as_ref() != CONTROL_BODY {
             return Err("later distinct control object was not retained".into());
         }
         let missing_owner = store.reconcile_owner(&authz, owner).await?;

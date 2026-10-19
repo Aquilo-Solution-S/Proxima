@@ -69,7 +69,7 @@ async fn fresh_pg() -> (String, PgStorage) {
     let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await
         .expect("connect")
-        .with_cold(Arc::new(MemoryColdStore::default()));
+        .with_cold(Arc::new(MemoryColdStore));
     (db_name, pg)
 }
 

@@ -3,8 +3,7 @@
 //!
 //! The database is a clone of one [`HostTemplate`] holding core and the
 //! example flavor's lane. The Engine is composed by hand rather than booted,
-//! so a suite can register schemas of its own next to the flavor's and see
-//! the cold objects a forget writes ([`MemoryColdStore`]). `pool` is the
+//! so a suite can register schemas of its own next to the flavor's. `pool` is the
 //! admin connection: it reads every row the census needs and registers
 //! notebooks past owner RLS.
 
@@ -14,7 +13,6 @@ use proxima::flavor::{FlavorBundle, PgSidecarRegistry, register_core_pg_sidecars
 use proxima::testkit::{HostTemplate, SplitRoleDb, TemplateFamily};
 use proxima_core::{Engine, FlavorRegistry, OwnerId};
 use proxima_example::ExampleFlavor;
-use proxima_storage_pg::verbs::forget::MemoryColdStore;
 use proxima_storage_pg::{PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
 use uuid::Uuid;
 
@@ -46,7 +44,6 @@ pub async fn migrated_db(prefix: &str) -> SplitRoleDb {
 pub struct ExampleEngine {
     pub pool: sqlx::PgPool,
     pub engine: Engine,
-    pub cold: Arc<MemoryColdStore>,
     /// Dropped last: after a passing test the clone goes, after a panic it
     /// stays for inspection.
     pub db: SplitRoleDb,
@@ -71,16 +68,11 @@ impl ExampleEngine {
         .initialize_store_number(0)
         .await
         .expect("store number");
-        let (engine, cold) = compose(db.runtime_url(), db.platform_url(), extra).await;
+        let engine = compose(db.runtime_url(), db.platform_url(), extra).await;
         let pool = sqlx::PgPool::connect(&db.admin_url())
             .await
             .expect("admin connection");
-        Self {
-            pool,
-            engine,
-            cold,
-            db,
-        }
+        Self { pool, engine, db }
     }
 
     /// Register a notebook for `owner`, as every notebook-scoped note needs.
@@ -112,7 +104,7 @@ pub async fn compose(
     runtime_url: &str,
     platform_url: &str,
     extra: impl FnOnce(&mut FlavorRegistry),
-) -> (Engine, Arc<MemoryColdStore>) {
+) -> Engine {
     let mut registry = FlavorRegistry::new();
     ExampleFlavor::register(&mut registry).expect("the example flavor registers");
     extra(&mut registry);
@@ -129,15 +121,12 @@ pub async fn compose(
     let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_example"])
         .await
         .expect("platform validation");
-    let cold = Arc::new(MemoryColdStore::default());
     let pg = PgStorage::connect(runtime_url, platform_scope, 0)
         .await
         .expect("runtime connection")
         .with_sidecars(sidecars)
-        .with_flavors(&registry)
-        .with_cold(cold.clone());
-    let engine = Engine::new(registry).with_storage_ports(Arc::new(pg).storage_ports());
-    (engine, cold)
+        .with_flavors(&registry);
+    Engine::new(registry).with_storage_ports(Arc::new(pg).storage_ports())
 }
 
 /// A clock barrier: returns the first instant in a later millisecond than

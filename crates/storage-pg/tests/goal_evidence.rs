@@ -55,7 +55,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect_for_tests(url.clone())
             .await?
-            .with_cold(Arc::new(MemoryColdStore::default()));
+            .with_cold(Arc::new(MemoryColdStore));
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let owner_scope = owner_scope_for_tests(&[owner]);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);

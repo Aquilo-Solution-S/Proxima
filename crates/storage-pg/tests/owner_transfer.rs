@@ -260,11 +260,28 @@ async fn fresh_pg() -> (String, PgStorage) {
 /// because a discharged debt deletes its own row.
 #[derive(Debug, Default)]
 struct CountingColdStore {
-    inner: MemoryColdStore,
+    objects: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
     deletes: std::sync::Mutex<Vec<String>>,
 }
 
 impl CountingColdStore {
+    /// Seed bytes as the upload would have left them in the bucket.
+    fn put(&self, key: &str, bytes: &[u8]) {
+        self.objects
+            .lock()
+            .expect("objects")
+            .insert(key.to_owned(), bytes.to_vec());
+    }
+
+    fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.objects
+            .lock()
+            .expect("objects")
+            .get(key)
+            .cloned()
+            .ok_or(StorageError::NotFound)
+    }
+
     fn deletes_of(&self, key: &str) -> usize {
         self.deletes
             .lock()
@@ -281,20 +298,13 @@ impl ColdObjectStore for CountingColdStore {
         "bucket"
     }
 
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        self.inner.put(key, bytes).await
-    }
-
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        self.inner.get(key).await
-    }
-
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
         self.deletes
             .lock()
             .expect("delete log")
             .push(key.to_owned());
-        self.inner.delete(key).await
+        self.objects.lock().expect("objects").remove(key);
+        Ok(())
     }
 }
 
@@ -316,7 +326,7 @@ async fn fresh_pg_with_cold() -> (String, PgStorage, Arc<MemoryColdStore>) {
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
-    let cold = Arc::new(MemoryColdStore::default());
+    let cold = Arc::new(MemoryColdStore);
     let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await
         .expect("connect")
@@ -3865,7 +3875,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
 
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[15_u8; 32]).await?;
         let object_key = format!("objects/{upload_id}");
-        cold.put(&object_key, b"the shared bytes").await?;
+        cold.put(&object_key, b"the shared bytes");
 
         let mine = cite(&pg, &permit, "purge-mine", blob_id).await?;
         let _also_mine = cite(&pg, &permit, "purge-also-mine", blob_id).await?;
@@ -3899,7 +3909,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
             "the destination's erase completes: {erased:?}"
         );
         assert_eq!(
-            cold.get(&object_key).await?,
+            cold.get(&object_key)?,
             b"the shared bytes".to_vec(),
             "an object another owner still names survives that owner's erase"
         );
@@ -3926,7 +3936,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
         );
         assert!(
             matches!(
-                cold.get(&object_key).await,
+                cold.get(&object_key),
                 Err(proxima_core::StorageError::NotFound)
             ),
             "with no row left naming it, the object is finally destroyed"
@@ -3965,7 +3975,7 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
 
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[17_u8; 32]).await?;
         let object_key = format!("objects/{upload_id}");
-        cold.put(&object_key, b"the contested bytes").await?;
+        cold.put(&object_key, b"the contested bytes");
 
         let mine = cite(&pg, &permit, "race-mine", blob_id).await?;
         let _also_mine = cite(&pg, &permit, "race-also-mine", blob_id).await?;
@@ -4058,7 +4068,7 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
         );
         assert!(
             matches!(
-                cold.get(&object_key).await,
+                cold.get(&object_key),
                 Err(proxima_core::StorageError::NotFound)
             ),
             "the object is destroyed, not orphaned"
@@ -4102,7 +4112,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
 
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &[23_u8; 32]).await?;
         let object_key = format!("objects/{upload_id}");
-        cold.put(&object_key, b"bytes two owners read").await?;
+        cold.put(&object_key, b"bytes two owners read");
 
         let dropped = cite_from(&pg, &permit, "src-drop", "scope-drop", blob_id).await?;
         let handed_over = cite_from(&pg, &permit, "src-keep", "scope-keep", blob_id).await?;
@@ -4154,7 +4164,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
         .await?;
         assert_eq!(source_rows, 0, "the erased scope's own upload row goes");
         assert_eq!(
-            cold.get(&object_key).await?,
+            cold.get(&object_key)?,
             b"bytes two owners read".to_vec(),
             "the object the destination mounted survives the source's scope erase"
         );
@@ -4173,7 +4183,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
         );
         assert!(
             matches!(
-                cold.get(&object_key).await,
+                cold.get(&object_key),
                 Err(proxima_core::StorageError::NotFound)
             ),
             "with the last row naming it gone, the object is destroyed"

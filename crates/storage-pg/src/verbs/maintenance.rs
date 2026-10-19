@@ -54,7 +54,7 @@ pub(crate) async fn retry_cold_object_purges(
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT object_key, backend
            FROM proxima_core.cold_purge_pending
-          WHERE backend IN ('', $2)
+          WHERE backend = $2
           ORDER BY enqueued_at, object_key
           LIMIT $1",
     )
@@ -106,23 +106,16 @@ pub(crate) async fn retry_cold_object_purges(
 /// to destroy survive with no record that they do. Skipping the rows silently
 /// leaves a queue that never empties and never says why. The operator is the
 /// only party that can fix the wiring, so the operator is told.
-///
-/// A row with no recorded backend is not foreign: see
-/// [`proxima_core::UNRECORDED_BACKEND`].
 async fn refuse_foreign_backends(
     pool: &PgPool,
     platform: &PgPlatformScope,
     store_backend: &str,
 ) -> Result<(), StorageError> {
-    if store_backend == proxima_core::UNRECORDED_BACKEND {
-        // A store that declares no identity cannot be the wrong one.
-        return Ok(());
-    }
     let mut tx = begin_platform(pool, platform).await?;
     let foreign: Vec<(String, i64)> = sqlx::query_as(
         "SELECT backend, count(*)::bigint
            FROM proxima_core.cold_purge_pending
-          WHERE backend NOT IN ('', $1)
+          WHERE backend <> $1
           GROUP BY backend
           ORDER BY backend
           LIMIT 4",

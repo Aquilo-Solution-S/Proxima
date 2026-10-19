@@ -1,6 +1,5 @@
 //! S3 adapter for cold Memory objects.
 
-use aws_sdk_s3::primitives::ByteStream;
 use proxima_core::{ColdObjectStore, StorageError};
 
 use super::CitedBlobStore;
@@ -26,53 +25,6 @@ impl ColdObjectStore for S3ColdStore {
     /// what the durable purge queue matches a debt against.
     fn backend(&self) -> &str {
         self.store.bucket()
-    }
-
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        let client = self
-            .store
-            .client()
-            .await
-            .map_err(|err| StorageError::Unavailable(err.to_string()))?;
-        client
-            .put_object()
-            .bucket(self.store.bucket())
-            .key(key)
-            .body(ByteStream::from(bytes.to_vec()))
-            .send()
-            .await
-            .map_err(|err| StorageError::Unavailable(format!("cold put {key}: {err}")))?;
-        Ok(())
-    }
-
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        let client = self
-            .store
-            .client()
-            .await
-            .map_err(|err| StorageError::Unavailable(err.to_string()))?;
-        let object = client
-            .get_object()
-            .bucket(self.store.bucket())
-            .key(key)
-            .send()
-            .await
-            .map_err(|err| {
-                if err
-                    .as_service_error()
-                    .is_some_and(aws_sdk_s3::operation::get_object::GetObjectError::is_no_such_key)
-                {
-                    StorageError::NotFound
-                } else {
-                    StorageError::Unavailable(format!("cold get {key}: {err}"))
-                }
-            })?;
-        object
-            .body
-            .collect()
-            .await
-            .map(|data| data.into_bytes().to_vec())
-            .map_err(|err| StorageError::Unavailable(format!("cold read {key}: {err}")))
     }
 
     async fn delete(&self, key: &str) -> Result<(), StorageError> {

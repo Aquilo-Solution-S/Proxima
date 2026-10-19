@@ -32,14 +32,6 @@ impl ColdObjectStore for PauseAfterDelete {
         self.inner.backend()
     }
 
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        self.inner.put(key, bytes).await
-    }
-
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        self.inner.get(key).await
-    }
-
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
         self.inner.delete(key).await?;
         self.deleted.notify_one();

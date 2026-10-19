@@ -149,14 +149,6 @@ impl ColdObjectStore for CorpusColdStore {
         "bucket"
     }
 
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        self.0.put(key, bytes).await
-    }
-
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        self.0.get(key).await
-    }
-
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
         self.0.delete(key).await
     }

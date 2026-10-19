@@ -58,7 +58,7 @@ pub use authz::*;
 pub use canonical_json::canonical_json_bytes;
 pub use capability::*;
 pub use citations::*;
-pub use cold::{ColdObjectStore, UNRECORDED_BACKEND, cold_backend_matches, cold_object_key};
+pub use cold::{ColdObjectStore, cold_backend_matches};
 pub use cursor::*;
 pub use edge::*;
 pub use engine::*;

@@ -12,8 +12,8 @@ use proxima::{
 };
 use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
-    AuthPath, CitedObjectPayload, ColdObjectStore, FlavorRegistry, FlavorRegistryFrozen, GroupId,
-    MemoryId, OwnerId, Relation, Replay, Role, ToolEffect, UserId, provider_safe_tool_name,
+    AuthPath, CitedObjectPayload, FlavorRegistry, FlavorRegistryFrozen, GroupId, MemoryId, OwnerId,
+    Relation, Replay, Role, ToolEffect, UserId, provider_safe_tool_name,
 };
 use proxima_pg_testkit::{db_url, split_role_urls};
 use proxima_storage_pg::PgStorage;
@@ -2869,18 +2869,6 @@ async fn core_forget_marks_a_remembered_fact() {
                 .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(cooled, None, "there is no cooled table to write a stub to");
-
-        let cold = built
-            .host()
-            .blobs()
-            .as_ref()
-            .expect("configured S3 fixture")
-            .cold_store();
-        let cold_key = proxima_core::cold_object_key(t);
-        assert!(
-            cold.get(&cold_key).await.is_err(),
-            "forget writes no cold object"
-        );
 
         built.shutdown().await;
         Ok(())

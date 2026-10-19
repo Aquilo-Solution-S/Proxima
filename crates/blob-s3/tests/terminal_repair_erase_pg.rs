@@ -29,14 +29,6 @@ struct DeferPurge(Arc<dyn ColdObjectStore>);
 
 #[async_trait::async_trait]
 impl ColdObjectStore for DeferPurge {
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        self.0.put(key, bytes).await
-    }
-
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        self.0.get(key).await
-    }
-
     async fn delete(&self, _key: &str) -> Result<(), StorageError> {
         Err(StorageError::Unavailable(
             "test defers post-commit deletion".into(),

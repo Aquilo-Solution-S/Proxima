@@ -1416,7 +1416,7 @@ async fn receipt_replay_requires_identical_authorized_refs() {
 #[tokio::test]
 async fn forgotten_replay_requires_known_identical_refs() {
     let (db_name, pg, registry) = bootstrap().await;
-    let cold = std::sync::Arc::new(MemoryColdStore::default());
+    let cold = std::sync::Arc::new(MemoryColdStore);
     let pg = pg.with_cold(cold);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner();

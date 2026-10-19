@@ -342,12 +342,8 @@ async fn internal_operations(
         .expect("internal verified read");
     assert_eq!(verified.bytes.as_slice(), body);
     let cold = store.cold_store();
-    let key = format!("cold/public-endpoint-test/{}", Uuid::now_v7());
-    cold.put(&key, body).await.expect("internal cold PUT");
-    assert_eq!(
-        cold.get(&key).await.expect("internal cold GET").as_slice(),
-        body
-    );
+    // The purge store only deletes (#488); an absent key is already purged.
+    let key = format!("objects/public-endpoint-test/{}", Uuid::now_v7());
     cold.delete(&key).await.expect("internal cold DELETE");
     let reconciled = store
         .reconcile_owner(ctx, owner)

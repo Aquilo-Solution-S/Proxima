@@ -1058,7 +1058,7 @@ impl PgStorage {
             non_embeddable_schemas: Vec::new(),
             tuning,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
-            cold: Arc::new(verbs::forget::MemoryColdStore::default()),
+            cold: Arc::new(verbs::forget::MemoryColdStore),
             host_state: None,
         })
     }

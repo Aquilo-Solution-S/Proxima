@@ -15,47 +15,21 @@ use crate::sidecars::PgSidecarRegistryFrozen;
 
 // The persisted key derivation lives in core, the lowest crate shared by
 // storage-pg and blob-s3; re-exported here so the storage path names it.
-pub use proxima_core::cold_object_key;
-
-#[derive(Default)]
-pub struct MemoryColdStore {
-    inner: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
-}
-
-impl std::fmt::Debug for MemoryColdStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MemoryColdStore").finish_non_exhaustive()
-    }
-}
+/// The in-process purge stub dev and test hosts wire when no object store
+/// is configured. It names its own backend, so it drains only debts it was
+/// handed and never an S3 bucket's.
+#[derive(Debug, Default)]
+pub struct MemoryColdStore;
 
 #[async_trait::async_trait]
 impl ColdObjectStore for MemoryColdStore {
     fn backend(&self) -> &'static str {
         // This cannot be an S3 bucket name. A host that boots without its
-        // S3 configuration must not acknowledge that bucket's durable debts
-        // by deleting from an unrelated, empty in-process map.
+        // S3 configuration must not acknowledge that bucket's durable debts.
         "memory://"
     }
 
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        self.inner
-            .lock()
-            .expect("cold store")
-            .insert(key.to_owned(), bytes.to_vec());
-        Ok(())
-    }
-
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        self.inner
-            .lock()
-            .expect("cold store")
-            .get(key)
-            .cloned()
-            .ok_or(StorageError::NotFound)
-    }
-
-    async fn delete(&self, key: &str) -> Result<(), StorageError> {
-        self.inner.lock().expect("cold store").remove(key);
+    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
         Ok(())
     }
 }
@@ -126,8 +100,7 @@ pub struct ColdPurgePlan {
 /// One debt: the key, and the object store that holds those bytes.
 ///
 /// The backend travels with the key because the queue outlives the process
-/// that wrote it. See [`proxima_core::UNRECORDED_BACKEND`] for what an empty
-/// backend means and why cold Memory objects have one.
+/// that wrote it, and a redeployment may wire another bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColdPurgeEntry {
     pub object_key: String,

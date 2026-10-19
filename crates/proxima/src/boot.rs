@@ -372,38 +372,10 @@ async fn compose_pg_sidecars<A: FlavorBundle>(
     Ok(pg_sidecars)
 }
 
-/// Missing durable storage must not fall back to the low-level in-memory
-/// test store: a successful forget would lose its payload on restart, and
-/// a successful delete would acknowledge bytes the host cannot reach.
-struct UnconfiguredColdStore;
-
-impl UnconfiguredColdStore {
-    fn unavailable() -> StorageError {
-        StorageError::Unavailable("durable cold object storage is not configured".into())
-    }
-}
-
-#[async_trait::async_trait]
-impl ColdObjectStore for UnconfiguredColdStore {
-    fn backend(&self) -> &'static str {
-        "unconfigured://"
-    }
-
-    async fn put(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
-        Err(Self::unavailable())
-    }
-
-    async fn get(&self, _key: &str) -> Result<Vec<u8>, StorageError> {
-        Err(Self::unavailable())
-    }
-
-    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
-        Err(Self::unavailable())
-    }
-}
-
-/// Wire durable cold storage, or an unavailable adapter for database-only
-/// hosts. Cited uploads and cold storage must name the same backend.
+/// Wire the purge store over S3 when it is configured. A database-only host
+/// keeps the in-process stub, whose own backend name never matches a
+/// bucket's debts: forget and restore need no object store (#488). Cited
+/// uploads and the purge store must name the same backend.
 fn compose_blob_stores(
     pg: PgStorage,
     s3: Option<proxima_blob_s3::S3RuntimeConfig>,
@@ -429,7 +401,7 @@ fn wire_cold_store(
     configured_bucket: Option<&str>,
 ) -> Result<PgStorage, ProximaError> {
     let Some(store) = blobs else {
-        return Ok(pg.with_cold(Arc::new(UnconfiguredColdStore)));
+        return Ok(pg);
     };
     let cold = store.cold_store();
     // Assert the composition the purge queue's `backend` column

@@ -248,10 +248,7 @@ async fn observe_failed_upload_finish(
             },
         )
         .await?;
-    store
-        .cold_store()
-        .put(&format!("pending/{}", prepared.upload_id), BODY)
-        .await?;
+    s3_put(&config, &format!("pending/{}", prepared.upload_id), BODY).await?;
     let calls = Arc::new(AtomicUsize::new(0));
     let service = CitedBlobService::new(Arc::new(FaultAfterCorpusCommit {
         inner: store.clone(),
@@ -317,7 +314,7 @@ async fn upload_completion_commits_upload_row_with_corpus() -> TestResult<()> {
         eprintln!("skipped: PROXIMA_S3_* unset");
         return Ok(());
     }
-    let observed = failed_upload_finish_fixture(false).await?;
+    let observed = Box::pin(failed_upload_finish_fixture(false)).await?;
     eprintln!("post-commit failure observation: {observed:?}");
     assert_eq!(
         observed.finish_calls, 1,
@@ -339,7 +336,7 @@ async fn expired_completed_upload_replays_same_fact_and_object() -> TestResult<(
         eprintln!("skipped: PROXIMA_S3_* unset");
         return Ok(());
     }
-    let observed = failed_upload_finish_fixture(true).await?;
+    let observed = Box::pin(failed_upload_finish_fixture(true)).await?;
     eprintln!("restart after expired upload observation: {observed:?}");
     assert_eq!(observed.finish_calls, 1, "failure injected before restart");
     let replay = observed.replay.ok_or("replay observation")??;
@@ -423,10 +420,7 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
         .await?;
     // The same public S3 adapter writes the transfer bytes. Completion still
     // runs through the facade's composed engine and authentic admission path.
-    store
-        .cold_store()
-        .put(&format!("pending/{}", prepared.upload_id), BODY)
-        .await?;
+    s3_put(&config, &format!("pending/{}", prepared.upload_id), BODY).await?;
     let service = CitedBlobService::new(Arc::new(store.clone()));
     let completed = initial
         .host()
@@ -448,7 +442,7 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
         )
     );
     assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (1, 1));
-    assert_eq!(store.cold_store().get(&canonical).await?, BODY);
+    assert_eq!(s3_get(&config, &canonical).await?, BODY);
     assert_eq!(object_versions(&config, &canonical).await?, 1);
     drop(service);
     stop(initial).await;
@@ -511,7 +505,7 @@ async fn recover_and_cleanup(
     let cold = cleanup.host().blobs().expect("cleanup store").cold_store();
     if versions_after_erase > 0 {
         assert_eq!(
-            cold.get(canonical).await?,
+            s3_get(config, canonical).await?,
             expected_bytes,
             "retained versions contain the original bytes"
         );
@@ -633,6 +627,32 @@ async fn corpus_counts(pool: &sqlx::PgPool) -> TestResult<(i64, i64)> {
 
 async fn admin_pool(database: &str) -> TestResult<sqlx::PgPool> {
     Ok(sqlx::PgPool::connect(&db_url(database)).await?)
+}
+
+/// Write bytes straight to the bucket, as the holder's presigned PUT would.
+/// The purge store only deletes (#488), so fixtures use the S3 client.
+async fn s3_put(config: &S3RuntimeConfig, key: &str, bytes: &[u8]) -> TestResult<()> {
+    config
+        .client()
+        .put_object()
+        .bucket(&config.bucket)
+        .key(key)
+        .body(bytes.to_vec().into())
+        .send()
+        .await?;
+    Ok(())
+}
+
+/// Read bytes straight from the bucket.
+async fn s3_get(config: &S3RuntimeConfig, key: &str) -> TestResult<Vec<u8>> {
+    let object = config
+        .client()
+        .get_object()
+        .bucket(&config.bucket)
+        .key(key)
+        .send()
+        .await?;
+    Ok(object.body.collect().await?.into_bytes().to_vec())
 }
 
 /// Observe all versions and delete markers of this exact key using the same

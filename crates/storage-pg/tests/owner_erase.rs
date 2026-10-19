@@ -46,22 +46,12 @@ const CITED_TABLE: &str = "proxima_core.test_cited_object_v1";
 const SPAN_TABLE: &str = "proxima_core.test_cited_span_v1";
 
 #[derive(Default)]
-struct RefusingDeleteCold {
-    inner: MemoryColdStore,
-}
+struct RefusingDeleteCold;
 
 #[async_trait::async_trait]
 impl ColdObjectStore for RefusingDeleteCold {
     fn backend(&self) -> &'static str {
         "bucket"
-    }
-
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        self.inner.put(key, bytes).await
-    }
-
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        self.inner.get(key).await
     }
 
     async fn delete(&self, _key: &str) -> Result<(), StorageError> {
@@ -73,16 +63,34 @@ impl ColdObjectStore for RefusingDeleteCold {
 /// durable purge queue matches a debt against.
 #[derive(Debug)]
 struct BucketNamedCold {
-    inner: MemoryColdStore,
+    objects: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
     bucket: String,
 }
 
 impl BucketNamedCold {
     fn new(bucket: &str) -> Self {
         Self {
-            inner: MemoryColdStore::default(),
+            objects: std::sync::Mutex::default(),
             bucket: bucket.to_owned(),
         }
+    }
+
+    /// Seed bytes as an upload would have left them in the bucket. The purge
+    /// store itself only deletes (#488).
+    fn put(&self, key: &str, bytes: &[u8]) {
+        self.objects
+            .lock()
+            .expect("objects")
+            .insert(key.to_owned(), bytes.to_vec());
+    }
+
+    fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.objects
+            .lock()
+            .expect("objects")
+            .get(key)
+            .cloned()
+            .ok_or(StorageError::NotFound)
     }
 }
 
@@ -92,16 +100,9 @@ impl ColdObjectStore for BucketNamedCold {
         &self.bucket
     }
 
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        self.inner.put(key, bytes).await
-    }
-
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        self.inner.get(key).await
-    }
-
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
-        self.inner.delete(key).await
+        self.objects.lock().expect("objects").remove(key);
+        Ok(())
     }
 }
 
@@ -923,7 +924,7 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
             .await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
         let (_blob, key) = completed_blob_upload(pool, owner, 21).await?;
-        cold.put(&key, b"owned object").await?;
+        cold.put(&key, b"owned object");
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
@@ -943,7 +944,7 @@ async fn erase_personal_owner_purges_cold_objects_after_commit() {
             "got {outcome:?}"
         );
         assert!(
-            matches!(cold.get(&key).await, Err(StorageError::NotFound)),
+            matches!(cold.get(&key), Err(StorageError::NotFound)),
             "the committed erase destroys the owned object"
         );
         assert_eq!(
@@ -966,7 +967,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let cold = Arc::new(RefusingDeleteCold::default());
+        let cold = Arc::new(RefusingDeleteCold);
         let pg = PgStorage::connect_for_tests(url.clone())
             .await?
             .with_cold(cold.clone());
@@ -975,8 +976,7 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         let owner = OwnerId::from(user);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
-        let (_blob, key) = completed_blob_upload(pool, owner, 22).await?;
-        cold.put(&key, b"owned object").await?;
+        let (_blob, _key) = completed_blob_upload(pool, owner, 22).await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: user,
@@ -1086,7 +1086,7 @@ async fn an_injected_deadlock_inside_owner_erase_is_retried() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect_for_tests(url.clone())
             .await?
-            .with_cold(Arc::new(MemoryColdStore::default()));
+            .with_cold(Arc::new(MemoryColdStore));
         let pool = pg.pool_for_tests();
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
@@ -1180,7 +1180,7 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
         // Mint the owner row the queue's FK needs.
         pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
 
-        cold.put("cold/mine", b"wired bytes").await?;
+        cold.put("cold/mine", b"wired bytes");
         sqlx::query(
             "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
              VALUES ('cold/mine', $1, 'wired-bucket'),
@@ -1216,7 +1216,7 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
             "a refused drain destroys nothing and clears nothing"
         );
         assert_eq!(
-            cold.get("cold/mine").await?,
+            cold.get("cold/mine")?,
             b"wired bytes".to_vec(),
             "including the debt it could have discharged"
         );
@@ -1237,7 +1237,7 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
         );
         assert_eq!(pending_debts(pool).await?, 0);
         assert!(
-            matches!(cold.get("cold/mine").await, Err(StorageError::NotFound)),
+            matches!(cold.get("cold/mine"), Err(StorageError::NotFound)),
             "the matching debt is discharged against the wired store"
         );
         Ok(())
@@ -1279,9 +1279,9 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
             .ingest_fact_atomic(&permit, &shared_survivor, None)
             .await?;
         MemoryAuthoringPort::forget_memory(&pg, &permit, shared_survivor.memory_id).await?;
-        cold.put("objects/8", b"shared cited object").await?;
-        cold.put("objects/9", b"target cited object").await?;
-        cold.put(&unrelated_key, b"unrelated object").await?;
+        cold.put("objects/8", b"shared cited object");
+        cold.put("objects/9", b"target cited object");
+        cold.put(&unrelated_key, b"unrelated object");
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
                  (owner_id, bucket, object_key, filename, mime, expected_byte_len, expires_at)
@@ -1333,15 +1333,15 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
             "an unrelated unreferenced completed blob is not source-owned"
         );
         assert!(
-            matches!(cold.get("objects/9").await, Err(StorageError::NotFound)),
+            matches!(cold.get("objects/9"), Err(StorageError::NotFound)),
             "the selected upload's exact object key must be purged"
         );
         assert!(
-            cold.get("objects/8").await.is_ok(),
+            cold.get("objects/8").is_ok(),
             "the shared blob's object must survive"
         );
         assert!(
-            cold.get(&unrelated_key).await.is_ok(),
+            cold.get(&unrelated_key).is_ok(),
             "the unrelated upload's object must survive"
         );
         let pending_uploads: i64 = sqlx::query_scalar(

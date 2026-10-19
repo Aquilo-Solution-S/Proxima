@@ -949,7 +949,7 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
                 None,
             )
             .await?;
-        let cold = MemoryColdStore::default();
+        let cold = MemoryColdStore;
 
         for (t, expected_kind) in [
             (perspective.memory_id.into_inner(), "perspective"),
@@ -1941,16 +1941,12 @@ struct FailDeleteCold;
 
 #[async_trait::async_trait]
 impl ColdObjectStore for FailDeleteCold {
-    async fn put(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get(&self, _key: &str) -> Result<Vec<u8>, StorageError> {
-        Err(StorageError::NotFound)
-    }
-
     async fn delete(&self, _key: &str) -> Result<(), StorageError> {
         Err(StorageError::Internal("cold delete refused".into()))
+    }
+
+    fn backend(&self) -> &'static str {
+        "bucket"
     }
 }
 
@@ -2092,7 +2088,27 @@ async fn stale_source_erase_does_not_lock_transferred_series() {
 #[derive(Default)]
 struct PurgeRecordingCold {
     inner: MemoryColdStore,
+    objects: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
     deletes: std::sync::Mutex<Vec<String>>,
+}
+
+impl PurgeRecordingCold {
+    /// Seed bytes as an upload would have left them in the store.
+    fn put(&self, key: &str, bytes: &[u8]) {
+        self.objects
+            .lock()
+            .expect("objects")
+            .insert(key.to_owned(), bytes.to_vec());
+    }
+
+    fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.objects
+            .lock()
+            .expect("objects")
+            .get(key)
+            .cloned()
+            .ok_or(StorageError::NotFound)
+    }
 }
 
 #[async_trait::async_trait]
@@ -2101,19 +2117,12 @@ impl ColdObjectStore for PurgeRecordingCold {
         self.inner.backend()
     }
 
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        self.inner.put(key, bytes).await
-    }
-
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
-        self.inner.get(key).await
-    }
-
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
         self.deletes
             .lock()
             .expect("cold delete calls")
             .push(key.to_owned());
+        self.objects.lock().expect("objects").remove(key);
         self.inner.delete(key).await
     }
 }
@@ -2138,7 +2147,7 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
         let bytes = b"bytes require a current matching purge obligation";
         let mut entries = Vec::new();
         for key in [retired_key, reassigned_key, current_key] {
-            cold.put(key, bytes).await?;
+            cold.put(key, bytes);
             let (object_key, backend): (String, String) = sqlx::query_as(
                 "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
                  VALUES ($1, NULL, $2)
@@ -2193,12 +2202,9 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
             vec![current_key.to_owned()],
             "only the unchanged durable debt may reach the provider"
         );
-        assert_eq!(cold.get(retired_key).await?, bytes);
-        assert_eq!(cold.get(reassigned_key).await?, bytes);
-        assert!(matches!(
-            cold.get(current_key).await,
-            Err(StorageError::NotFound)
-        ));
+        assert_eq!(cold.get(retired_key)?, bytes);
+        assert_eq!(cold.get(reassigned_key)?, bytes);
+        assert!(matches!(cold.get(current_key), Err(StorageError::NotFound)));
         let remaining: Vec<(String, String)> = sqlx::query_as(
             "SELECT object_key, backend FROM proxima_core.cold_purge_pending ORDER BY object_key",
         )
@@ -2546,7 +2552,7 @@ async fn forget_overlapping_drain_leaves_no_orphan_head() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect_for_tests(url.clone())
             .await?
-            .with_cold(Arc::new(MemoryColdStore::default()));
+            .with_cold(Arc::new(MemoryColdStore));
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests().clone();

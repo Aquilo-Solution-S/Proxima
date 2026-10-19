@@ -28,9 +28,9 @@ use proxima_core::storage_ports::{
 };
 use proxima_core::test_fixtures::{ConstantEmbedding, TestEmbeddingRouter};
 use proxima_core::{
-    AccessCeiling, AccessKind, AgentNoteV1, AuthPath, ColdObjectStore, EdgeTargetProjection,
-    EntityKind, EntityRef, FlavorRegistry, GroupId, MemoryId, OwnerId, OwnerRoles, Role,
-    StorageError, UploadedBlobPayload, UserId,
+    AccessCeiling, AccessKind, AgentNoteV1, AuthPath, EdgeTargetProjection, EntityKind, EntityRef,
+    FlavorRegistry, GroupId, MemoryId, OwnerId, OwnerRoles, Role, StorageError,
+    UploadedBlobPayload, UserId,
 };
 use proxima_pg_testkit::{db_url, split_role_urls};
 use serde_json::{Value, json};
@@ -730,9 +730,18 @@ async fn assert_s3_writes(
                 },
             )
             .await?;
-        store
-            .cold_store()
-            .put(&format!("pending/{}", prepared.upload_id), body.as_bytes())
+        // The holder's presigned PUT; the purge store only deletes (#488).
+        let config = S3RuntimeConfig {
+            force_path_style: true,
+            ..S3RuntimeConfig::from_env()?
+        };
+        config
+            .client()
+            .put_object()
+            .bucket(&config.bucket)
+            .key(format!("pending/{}", prepared.upload_id))
+            .body(body.as_bytes().to_vec().into())
+            .send()
             .await?;
         let service = CitedBlobService::new(Arc::new(store.clone()));
         built

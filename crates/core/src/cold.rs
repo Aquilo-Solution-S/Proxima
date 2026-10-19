@@ -1,44 +1,14 @@
-//! Cold object store and persisted object-key derivation for forget/hydrate.
-
-use uuid::Uuid;
+//! The object store a purge deletes from.
+//!
+//! Forget keeps the Memory row (#488), so nothing is written to or read from
+//! an object store on forget or restore. What is left is the durable purge
+//! queue's other end: deleting an object a hard erase let go of.
 
 use crate::StorageError;
 
-/// Deterministic key for a persisted cold Memory record.
-///
-/// The key is exactly `cold/{t}`, and `t` is the Memory version id — unique
-/// across the deployment, minted by the server, and immutable for the life
-/// of the row. Stable across retries and hydrate → forget cycles, so
-/// competing writers address one logical object rather than creating
-/// attempt-specific objects.
-///
-/// **No owner component, and only one scheme.** An owner transfer moves
-/// `cooled.owner_id` and nothing else: the key a transferred series was
-/// written under stays correct, so the transfer performs no object-store
-/// work at all. There is no second, owner-scoped derivation to fall back
-/// to — keys written by an earlier scheme are not readable and are not
-/// meant to be.
-#[must_use]
-pub fn cold_object_key(t: Uuid) -> String {
-    format!("cold/{t}")
-}
-
-/// A `cold_purge_pending` row that records no backend belongs to whatever
-/// `ColdObjectStore` the deployment wired.
-///
-/// Two kinds of row mean it. A cold Memory object has exactly one store by
-/// construction — core wires a single `ColdObjectStore` — so there is no
-/// second backend it could have been written to. And a row enqueued before
-/// the `backend` column existed predates the question entirely. Cited upload
-/// objects DO record theirs, because `blob_uploads.bucket` is row data that a
-/// redeployment against a different bucket can change underneath the queue.
-pub const UNRECORDED_BACKEND: &str = "";
-
-/// One object per Memory `t` under `cold/<t>`.
+/// Deletes objects the durable purge queue names.
 #[async_trait::async_trait]
 pub trait ColdObjectStore: Send + Sync {
-    async fn put(&self, key: &str, bytes: &[u8]) -> Result<(), StorageError>;
-    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError>;
     async fn delete(&self, key: &str) -> Result<(), StorageError>;
 
     /// This store's backend identity — the S3 bucket for the S3 adapter.
@@ -47,49 +17,44 @@ pub trait ColdObjectStore: Send + Sync {
     /// against, and the drain refuses a row whose backend is not this one:
     /// matching store to queue by boot convention alone means a deployment
     /// that changed buckets deletes against the wrong store, or silently
-    /// stops reclaiming. Returning [`UNRECORDED_BACKEND`] declares no
-    /// identity and therefore adopts every row. This legacy wildcard is
-    /// appropriate only for an adapter that can actually delete objects
-    /// from every backend it adopts. The built-in in-memory dev/test store
-    /// names its own backend so it cannot acknowledge an external store's
-    /// debts when a host boots without that store's configuration.
-    fn backend(&self) -> &str {
-        UNRECORDED_BACKEND
-    }
+    /// stops reclaiming. Every store names its backend; there is no
+    /// wildcard. The built-in in-memory dev/test store names its own, so it
+    /// cannot acknowledge an external store's debts when a host boots
+    /// without that store's configuration.
+    fn backend(&self) -> &str;
 }
 
 /// Whether the store wired now may drain a queue row enqueued against
 /// `row_backend`.
-///
-/// Not equality: an unrecorded backend on either side is a declared absence
-/// of identity, not a different identity (see [`UNRECORDED_BACKEND`]).
 #[must_use]
 pub fn cold_backend_matches(store_backend: &str, row_backend: &str) -> bool {
-    row_backend == UNRECORDED_BACKEND
-        || store_backend == UNRECORDED_BACKEND
-        || row_backend == store_backend
+    row_backend == store_backend
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{OwnerId, UserId};
 
-    /// The cold key carries the Memory version id and nothing else. A
-    /// transfer rewrites `cooled.owner_id`; if the key mentioned the owner
-    /// the object would have to move with it, which is exactly the S3 work
-    /// this scheme exists to avoid.
+    /// F17.1 (#488): a store that only purges is a whole store. Before S17
+    /// this did not compile: the trait also demanded `put` and `get`.
+    struct PurgeOnly;
+
+    #[async_trait::async_trait]
+    impl ColdObjectStore for PurgeOnly {
+        async fn delete(&self, _key: &str) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        fn backend(&self) -> &'static str {
+            "purge-only"
+        }
+    }
+
     #[test]
-    fn cold_key_is_owner_free_and_golden() {
-        let t = Uuid::parse_str("00000000-0000-0000-0000-000000000003").expect("uuid literal");
-        let owner = OwnerId::from(UserId::new(
-            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid literal"),
-        ));
-
-        assert_eq!(
-            cold_object_key(t),
-            "cold/00000000-0000-0000-0000-000000000003"
-        );
-        assert!(!cold_object_key(t).contains(&owner.into_inner().to_string()));
+    fn a_purge_only_store_matches_only_its_own_backend() {
+        let store = PurgeOnly;
+        assert!(cold_backend_matches(store.backend(), "purge-only"));
+        assert!(!cold_backend_matches(store.backend(), ""));
+        assert!(!cold_backend_matches("", "purge-only"));
     }
 }

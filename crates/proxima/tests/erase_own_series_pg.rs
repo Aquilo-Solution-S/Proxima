@@ -2,7 +2,7 @@
 //! example flavor's note series (see `docs/data-and-erasure.md`).
 //!
 //! Every Fact here is admitted and forgotten through the Engine, so the rows
-//! the erase must reach — sidecar, head, cooled locator, cold object — are
+//! the erase must reach — memory row, sidecar, head — are
 //! the ones production writes, not a fixture's idea of them.
 #![allow(clippy::too_many_lines)]
 
@@ -15,8 +15,8 @@ use proxima::flavor::{
     SeriesEraseRefusalKind, SeriesSelection, SidecarAtom,
 };
 use proxima_core::{
-    AgentNoteV1, AuthPath, AuthzContext, ColdObjectStore, Engine, ErrorCode, FactPayload,
-    FactWrite, GroupId, MemoryId, OwnerId, Role, SchemaId, SeriesHandle, UserId,
+    AgentNoteV1, AuthPath, AuthzContext, Engine, ErrorCode, FactPayload, FactWrite, GroupId,
+    MemoryId, OwnerId, Role, SchemaId, SeriesHandle, UserId,
 };
 use proxima_example::{FLAVOR_ID, NoteV1};
 use uuid::Uuid;
@@ -142,9 +142,9 @@ async fn run(test: impl AsyncFnOnce(&Harness) -> Result<(), Box<dyn std::error::
     harness.pool.close().await;
 }
 
-/// One id selects its whole series, hot and cooled, and every surface of
-/// every version goes: sidecar, receipt, head, cooled locator and — after
-/// commit — the cold object. The erase witness records each `t`. A series
+/// One id selects its whole series, live and forgotten, and every surface of
+/// every version goes: sidecar, receipt and head. The erase witness records
+/// each `t`. A series
 /// the selection did not name is untouched.
 #[tokio::test]
 async fn one_id_erases_its_whole_series_and_everything_hanging_off_it() {
@@ -163,11 +163,6 @@ async fn one_id_erases_its_whole_series_and_everything_hanging_off_it() {
         .await;
         let other = ingest(&h.engine, &authz, owner, &note(notebook_id, "b1"), None).await;
         h.engine.forget_memory(&authz, owner, v1).await?;
-        let cold_key = proxima_core::cold_object_key(v1.into_inner());
-        assert!(
-            h.cold.get(&cold_key).await.is_err(),
-            "forget marks the row and writes no cold object"
-        );
         assert_eq!(footprint(&h.pool, &[v1, v2]).await, [2, 1, 2, 2, 0]);
 
         let receipt = erase(
@@ -203,17 +198,11 @@ async fn one_id_erases_its_whole_series_and_everything_hanging_off_it() {
                 .fetch_one(&h.pool)
                 .await?;
         assert_eq!(head, 0, "the series head goes with its last version");
-        let pending: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.cold_purge_pending WHERE object_key = $1",
-        )
-        .bind(&cold_key)
-        .fetch_one(&h.pool)
-        .await?;
-        assert_eq!(pending, 0, "the committed erase settled its cold debt");
-        assert!(
-            h.cold.get(&cold_key).await.is_err(),
-            "the cold object is destroyed after commit"
-        );
+        let pending: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_core.cold_purge_pending")
+                .fetch_one(&h.pool)
+                .await?;
+        assert_eq!(pending, 0, "a note series leaves no object debt");
         assert_eq!(footprint(&h.pool, &[other]).await, [1, 0, 1, 1, 0]);
 
         let again = erase(
@@ -265,13 +254,6 @@ async fn a_dry_run_reports_what_the_erase_then_does_and_changes_nothing() {
             footprint(&h.pool, &[v1, v2]).await,
             before,
             "a dry run changes nothing"
-        );
-        assert!(
-            h.cold
-                .get(&proxima_core::cold_object_key(v1.into_inner()))
-                .await
-                .is_err(),
-            "forget wrote no cold object for the dry run to keep"
         );
 
         let wet = erase(

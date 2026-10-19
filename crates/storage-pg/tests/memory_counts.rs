@@ -178,7 +178,7 @@ async fn fixture() -> TestResult<(String, PgStorage)> {
     }
     let pg = PgStorage::connect_for_tests(db_url(&db_name))
         .await?
-        .with_cold(Arc::new(MemoryColdStore::default()));
+        .with_cold(Arc::new(MemoryColdStore));
     Ok((db_name, pg))
 }
 

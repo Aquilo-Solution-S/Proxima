@@ -42,7 +42,6 @@ pub use dto::{
     CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs,
     CitedBlobUploadPrepareTs, PresignedHeaderTs,
 };
-pub use keys::cold_object_key;
 
 use crate::config::{
     DEFAULT_MAX_BLOB_BYTES, S3RuntimeConfig, validate_endpoint_url, validate_presign_ttl,

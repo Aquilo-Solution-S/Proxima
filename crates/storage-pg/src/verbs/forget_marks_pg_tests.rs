@@ -22,19 +22,13 @@ struct CountingCold {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for CountingCold {
-    async fn put(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        Err(StorageError::Internal("forget called put".into()))
-    }
-
-    async fn get(&self, _key: &str) -> Result<Vec<u8>, StorageError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        Err(StorageError::Internal("forget called get".into()))
-    }
-
     async fn delete(&self, _key: &str) -> Result<(), StorageError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Err(StorageError::Internal("forget called delete".into()))
+    }
+
+    fn backend(&self) -> &'static str {
+        "bucket"
     }
 }
 

@@ -27,8 +27,8 @@ use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, Stati
 use proxima_core::ToolScope;
 use proxima_core::storage_ports::{MembershipWritePermit, OwnerMembershipAdminPort};
 use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, ColdObjectStore, Engine, FlavorRegistry, GroupId,
-    OwnerAccessPort, OwnerId, Relation, Role, UserId,
+    AccessKind, AuthPath, AuthzContext, Engine, FlavorRegistry, GroupId, OwnerAccessPort, OwnerId,
+    Relation, Role, UserId,
 };
 use proxima_mcp::ProximaMcpApp;
 use serde_json::json;
@@ -423,16 +423,7 @@ async fn oidc_e2e_discovery_public_and_core_tools_behind_bearer()
     );
     let forgotten_output: serde_json::Value = serde_json::from_str(&mcp_text(&forgotten))?;
     assert_eq!(forgotten_output["ok"], json!(true));
-    let memory_t = handle.parse::<Uuid>()?;
-    let cold = running
-        .host()
-        .blobs()
-        .as_ref()
-        .expect("configured S3 fixture")
-        .cold_store();
-    let cold_key = proxima_core::cold_object_key(memory_t);
-    assert!(!cold.get(&cold_key).await?.is_empty());
-    cold.delete(&cold_key).await?;
+    // Forget keeps the row in place (#488); nothing is written to the bucket.
 
     running.shutdown().await;
     if let Some(name) = created_db {

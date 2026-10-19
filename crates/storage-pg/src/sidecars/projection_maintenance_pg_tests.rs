@@ -955,19 +955,13 @@ struct RefusingCold {
 
 #[async_trait::async_trait]
 impl proxima_core::ColdObjectStore for RefusingCold {
-    async fn put(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(StorageError::Internal("restore must not put".into()))
-    }
-
-    async fn get(&self, _key: &str) -> Result<Vec<u8>, StorageError> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(StorageError::Internal("restore must not get".into()))
-    }
-
     async fn delete(&self, _key: &str) -> Result<(), StorageError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Err(StorageError::Internal("restore must not delete".into()))
+    }
+
+    fn backend(&self) -> &'static str {
+        "bucket"
     }
 }
 

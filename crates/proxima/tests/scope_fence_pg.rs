@@ -128,7 +128,7 @@ impl Fixture {
         .initialize_store_number(0)
         .await
         .expect("store number");
-        let (engine, _cold) = compose(db.runtime_url(), db.platform_url(), |_| {}).await;
+        let engine = compose(db.runtime_url(), db.platform_url(), |_| {}).await;
         let admin = sqlx::PgPool::connect(&db.admin_url())
             .await
             .expect("admin connection");
@@ -231,7 +231,7 @@ impl Fixture {
         let runtime = self.db.runtime_url().to_owned();
         let platform = self.db.platform_url().to_owned();
         tokio::spawn(async move {
-            let (engine, _cold) = compose(&runtime, &platform, |_| {}).await;
+            let engine = compose(&runtime, &platform, |_| {}).await;
             remember_note(&engine, &authz(owner), owner, &note(notebook_id, key))
                 .await
                 .map_err(|err| err.to_string())
@@ -248,7 +248,7 @@ impl Fixture {
         let runtime = self.db.runtime_url().to_owned();
         let platform = self.db.platform_url().to_owned();
         tokio::spawn(async move {
-            let (engine, _cold) = compose(&runtime, &platform, |_| {}).await;
+            let engine = compose(&runtime, &platform, |_| {}).await;
             let pool = sqlx::PgPool::connect(&runtime)
                 .await
                 .map_err(|err| err.to_string())?;
@@ -540,7 +540,7 @@ async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refuse
     let runtime = fx.db.runtime_url().to_owned();
     let platform = fx.db.platform_url().to_owned();
     let late = tokio::spawn(async move {
-        let (engine, _cold) = compose(&runtime, &platform, |_| {}).await;
+        let engine = compose(&runtime, &platform, |_| {}).await;
         host_write_digest(
             &engine,
             &authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer)),

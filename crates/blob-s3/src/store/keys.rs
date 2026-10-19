@@ -67,10 +67,6 @@ pub(super) fn locator_was_minted_here(
     object_key == canonical_object_key(minting_upload_id(upload_id, mounted_from_upload_id))
 }
 
-/// Forget/hydrate/erase: one object per Memory `t`; the derivation is owned by
-/// `proxima_core` so storage-pg and blob-s3 cannot drift apart.
-pub use proxima_core::cold_object_key;
-
 #[cfg(test)]
 mod tests {
     use proxima_core::{OwnerId, UserId};
@@ -84,12 +80,10 @@ mod tests {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let owner_key_id = owner.into_inner().to_string();
         let upload_id = Uuid::now_v7();
-        let t = Uuid::now_v7();
 
         for key in [
             pending_object_key(upload_id),
             canonical_object_key(upload_id),
-            cold_object_key(t),
         ] {
             assert!(!key.contains(&owner_key_id), "{key} leaks the owner id");
             for kind in ["personal", "group"] {
@@ -259,7 +253,7 @@ mod tests {
             ),
             // Real keys of other shapes that name the same id.
             pending_object_key(upload_id),
-            cold_object_key(upload_id),
+            format!("cold/{upload_id}"),
             upload_id.to_string(),
             String::new(),
         ] {

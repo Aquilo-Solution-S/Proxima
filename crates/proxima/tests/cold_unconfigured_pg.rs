@@ -23,6 +23,9 @@ struct ForgetObservation {
     lifecycle_before_forget: LifecycleState,
     lifecycle_after_forget: LifecycleState,
     lifecycle_after_restart: LifecycleState,
+    restore: Result<(), ProtocolError>,
+    readable_after_restore: Option<AgentNoteV1>,
+    expected: AgentNoteV1,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -39,10 +42,11 @@ struct HeadState {
     t: Uuid,
 }
 
-/// #488: forget needs no object store. Without S3 it succeeds, keeps the row
-/// and its typed payload in Postgres marked forgotten, and by-id reads return
-/// nothing, before and after a restart. The head row stays on the forgotten
-/// version because it is the series' only one.
+/// #488: forget and restore need no object store. Without S3 forget
+/// succeeds, keeps the row and its typed payload in Postgres marked
+/// forgotten, and by-id reads return nothing, before and after a restart.
+/// The head row stays on the forgotten version because it is the series'
+/// only one. Restore on the restarted runtime brings the exact payload back.
 #[tokio::test]
 async fn forget_without_s3_marks_the_row_and_hides_it_across_restart() -> TestResult<()> {
     let database = unique_db_name("proxima_no_s3_cold");
@@ -75,6 +79,15 @@ async fn forget_without_s3_marks_the_row_and_hides_it_across_restart() -> TestRe
     assert_eq!(
         observed.lifecycle_after_restart, observed.lifecycle_before_forget,
         "the head survives restart"
+    );
+    assert!(
+        observed.restore.is_ok(),
+        "restore needs no S3: {observed:?}"
+    );
+    assert_eq!(
+        observed.readable_after_restore.as_ref(),
+        Some(&observed.expected),
+        "restore brings the exact typed payload back"
     );
     Ok(())
 }
@@ -125,6 +138,12 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
     let rows_after_restart = rows(&admin_pool, written.memory_id).await?;
     let lifecycle_after_restart = lifecycle(&admin_pool, written.handle).await?;
     let readable_after_restart = read_note(&restarted, &authz, written.memory_id).await?;
+    let restore = restarted
+        .host()
+        .engine()
+        .restore_memory(&authz, owner, written.memory_id)
+        .await;
+    let readable_after_restore = read_note(&restarted, &authz, written.memory_id).await?;
     stop(restarted).await;
     Ok(ForgetObservation {
         forget,
@@ -136,6 +155,9 @@ async fn observe_forget(database: &str) -> TestResult<ForgetObservation> {
         lifecycle_before_forget,
         lifecycle_after_forget,
         lifecycle_after_restart,
+        restore,
+        readable_after_restore,
+        expected,
     })
 }
 
