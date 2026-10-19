@@ -2231,7 +2231,8 @@ async fn transfer_cited_blobs(
     let blob_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
         "SELECT DISTINCT blob_id
            FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
-          WHERE handle = $1 AND owner_id = $2 AND blob_id IS NOT NULL",
+          WHERE handle = $1 AND owner_id = $2 AND blob_id IS NOT NULL
+          ORDER BY blob_id",
     )
     .bind(handle)
     .bind(from_id)
@@ -2721,7 +2722,8 @@ async fn transfer_content_for_handle(
                  SELECT DISTINCT content_id
                    FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
                   WHERE handle = $1 AND owner_id = $2 AND content_id IS NOT NULL
-                ) series_content ON series_content.content_id = c.content_id",
+                ) series_content ON series_content.content_id = c.content_id
+          ORDER BY c.content_id",
     )
     .bind(handle)
     .bind(from_id)

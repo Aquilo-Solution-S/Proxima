@@ -103,9 +103,45 @@ pub async fn apply_historical_schema(
             .execute(transaction.as_mut())
             .await?;
     }
+    if !versions.contains(&DROP_COOLED_MIGRATION) {
+        // SQL-POLICY: fixed-fragment — the cooled policies as definitions carried them before 0040.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(PRE_DROP_COOLED_POLICIES))
+            .execute(transaction.as_mut())
+            .await?;
+    }
     transaction.commit().await?;
     Ok(())
 }
+
+/// Migration 0040 drops `proxima_core.cooled` (#488), and the definitions
+/// lost its policies with it. A historical schema still has the table, and
+/// its migrations read it as the platform role, so it gets them back.
+const DROP_COOLED_MIGRATION: i64 = 40;
+const PRE_DROP_COOLED_POLICIES: &str = r#"-- cooled
+SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxima_core', 'cooled', 'owner_id', 'owner_id');
+
+ALTER POLICY proxima_owner_read ON proxima_core.cooled USING (((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])) AND (owner_id = ANY (
+CASE (kind)::text
+    WHEN 'fact'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+    WHEN 'abstraction'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.read_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+    WHEN 'perspective'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.read_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+    ELSE ( SELECT COALESCE((NULLIF(current_setting('app.read_goal'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+END))));
+
+ALTER POLICY proxima_owner_write ON proxima_core.cooled USING (((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])) AND (owner_id = ANY (
+CASE (kind)::text
+    WHEN 'fact'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+    WHEN 'abstraction'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.write_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+    WHEN 'perspective'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.write_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+    ELSE ( SELECT COALESCE((NULLIF(current_setting('app.write_goal'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+END)))) WITH CHECK (((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])) AND (owner_id = ANY (
+CASE (kind)::text
+    WHEN 'fact'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+    WHEN 'abstraction'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.write_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+    WHEN 'perspective'::text THEN ( SELECT COALESCE((NULLIF(current_setting('app.write_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+    ELSE ( SELECT COALESCE((NULLIF(current_setting('app.write_goal'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
+END))));
+"#;
 
 /// Migration 0039 adds `memory.forgotten_at`, which the memory owner policies
 /// read (#488).

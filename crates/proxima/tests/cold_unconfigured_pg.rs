@@ -55,15 +55,15 @@ async fn forget_without_s3_marks_the_row_and_hides_it_across_restart() -> TestRe
     assert!(observed.forget.is_ok(), "forget needs no S3: {observed:?}");
     assert_eq!(
         observed.rows_after_forget,
-        (1, 0, 1),
-        "the admission and its typed payload stay, with no cooled stub: {observed:?}"
+        (1, 1, 1),
+        "the admission stays, marked forgotten, with its typed payload: {observed:?}"
     );
     assert_eq!(observed.forgotten_after_forget, 1, "the row is marked");
     assert_eq!(
         observed.readable_after_forget, None,
         "a by-id read returns nothing once forgotten"
     );
-    assert_eq!(observed.rows_after_restart, (1, 0, 1));
+    assert_eq!(observed.rows_after_restart, (1, 1, 1));
     assert_eq!(
         observed.readable_after_restart, None,
         "a new runtime does not read the forgotten memory either"
@@ -285,7 +285,7 @@ async fn read_note(
 async fn rows(pool: &sqlx::PgPool, memory_id: MemoryId) -> TestResult<(i64, i64, i64)> {
     Ok(sqlx::query_as(
         "SELECT (SELECT count(*) FROM proxima_core.memory WHERE t = $1),
-                (SELECT count(*) FROM proxima_core.cooled WHERE t = $1),
+                (SELECT count(*) FROM proxima_core.memory WHERE t = $1 AND forgotten_at IS NOT NULL),
                 (SELECT count(*) FROM proxima_core.agent_note_v1 WHERE t = $1)",
     )
     .bind(memory_id.into_inner())

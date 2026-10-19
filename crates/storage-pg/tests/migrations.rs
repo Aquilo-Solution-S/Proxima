@@ -280,8 +280,8 @@ async fn migrations_apply_to_fresh_db() {
             "embeddings carry entity_id only"
         );
         assert!(
-            column_exists(&pg, "cooled", "source_id").await,
-            "cooled carries source_id so source-scope erase can select"
+            !table_exists(&pg, "cooled").await,
+            "0040 drops the cooled table: forget keeps the memory row (#488)"
         );
         assert!(
             !column_exists(&pg, "cold_purge_pending", "compliance_operation_id").await,
@@ -332,45 +332,6 @@ async fn migrations_apply_to_fresh_db() {
         assert_eq!(
             statute_comments, 0,
             "no shipped catalog comment may name a statute; found {statute_comments}"
-        );
-        assert!(
-            column_exists(&pg, "cooled", "ingest_key").await,
-            "cooled carries ingest_key next to source_id"
-        );
-        assert!(
-            column_exists(&pg, "cooled", "blob_id").await,
-            "cooled carries blob_id so citation-bearing replays keep their object"
-        );
-        assert!(
-            column_exists(&pg, "cooled", "origins").await,
-            "cooled carries nullable origins for exact replay"
-        );
-        assert!(
-            column_exists(&pg, "cooled", "refs").await,
-            "cooled carries nullable refs for exact replay"
-        );
-        assert!(
-            column_exists(&pg, "cooled", "cold_digest").await,
-            "cooled carries the nullable cold-object integrity witness"
-        );
-        let digest_constraint: bool = sqlx::query_scalar(
-            "SELECT EXISTS (
-                 SELECT 1
-                   FROM pg_constraint c
-                   JOIN pg_class r ON r.oid = c.conrelid
-                   JOIN pg_namespace n ON n.oid = r.relnamespace
-                  WHERE n.nspname = 'proxima_core'
-                    AND r.relname = 'cooled'
-                    AND c.conname = 'cooled_cold_digest_len_chk'
-                    AND c.contype = 'c'
-                    AND c.convalidated
-             )",
-        )
-        .fetch_one(pg.pool_for_tests())
-        .await?;
-        assert!(
-            digest_constraint,
-            "cooled digest witness length is constrained"
         );
         assert!(
             column_exists(&pg, "memory", "schema_id").await,
@@ -657,7 +618,7 @@ async fn blob_upload_content_hash_rejects_noncanonical_length() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
+async fn reference_integrity_migration_enforces_goal_refs() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -786,38 +747,6 @@ async fn reference_integrity_migration_enforces_goal_refs_and_cooled_arrays() {
             "Goal origin rejection must come from the origin-only checks: {err}"
         );
 
-        let cooled_t = Uuid::now_v7();
-        let err = sqlx::query(
-            "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key, origins, \"by\", via)
-             VALUES ($1, $2, $3, 'fact', 'cold/null-origin', ARRAY[NULL]::uuid[], '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
-        )
-        .bind(cooled_t)
-        .bind(Uuid::now_v7())
-        .bind(owner)
-        .execute(pool)
-        .await
-        .expect_err("cooled origins must reject NULL elements");
-        assert!(
-            err.to_string().contains("cooled_origins_no_null_chk"),
-            "cooled origins constraint must name the malformed array: {err}"
-        );
-
-        let err = sqlx::query(
-            "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key, refs, \"by\", via)
-             VALUES ($1, $2, $3, 'fact', 'cold/null-ref', ARRAY[NULL]::uuid[], '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
-        )
-        .bind(Uuid::now_v7())
-        .bind(Uuid::now_v7())
-        .bind(owner)
-        .execute(pool)
-        .await
-        .expect_err("cooled refs must reject NULL elements");
-        assert!(
-            err.to_string().contains("cooled_refs_no_null_chk"),
-            "cooled refs constraint must name the malformed array: {err}"
-        );
         Ok(())
     }
     .await;
@@ -845,22 +774,6 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
             .bind(owner)
             .execute(pool)
             .await?;
-        let null_cooled_t = Uuid::now_v7();
-        let err = sqlx::query(
-            "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key, \"by\", via)
-             VALUES ($1, $2, $3, 'fact', 'cold/unsealed-null', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
-        )
-        .bind(null_cooled_t)
-        .bind(Uuid::now_v7())
-        .bind(owner)
-        .execute(pool)
-        .await
-        .expect_err("new cooled rows require a hot identity seal even with NULL pins");
-        assert!(
-            err.to_string().contains("does not seal its hot Memory"),
-            "unsealed NULL-array cooled insert must be rejected: {err}"
-        );
         sqlx::query(
             "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
@@ -880,21 +793,6 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
         .bind(owner)
         .execute(pool)
         .await?;
-
-        let err = sqlx::query(
-            "INSERT INTO proxima_core.cooled
-                 (t, handle, owner_id, kind, object_key, origins, refs, \"by\", via)
-             SELECT t, handle, owner_id, kind, 'cold/partial-goal-refs', origins, refs, \"by\", via
-               FROM proxima_core.memory WHERE t = $1",
-        )
-        .bind(t)
-        .execute(pool)
-        .await
-        .expect_err("a partial cooled declaration cannot pass the exact pin seal");
-        assert!(
-            err.to_string().contains("does not seal its hot Memory"),
-            "partial cooled goal_refs must be rejected by the identity seal: {err}"
-        );
 
         let err = sqlx::query(
             "INSERT INTO proxima_core.erased_pin_target (t, kind)
@@ -1123,301 +1021,6 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("conflicting witness rollback test failed");
-}
-
-async fn assert_cooled_writer_seal(pool: &sqlx::PgPool, t: Uuid) -> Result<(), sqlx::Error> {
-    for (by, via) in [
-        (Uuid::now_v7(), None),
-        (Uuid::from_u128(0x509), Some(Uuid::now_v7())),
-    ] {
-        let error = sqlx::query(
-            "INSERT INTO proxima_core.cooled
-                (t, handle, owner_id, kind, object_key, origins, refs, goal_refs, \"by\", via)
-             SELECT t, handle, owner_id, kind, 'cold/forged-writer', origins, refs, goal_refs, $2, $3
-               FROM proxima_core.memory WHERE t = $1",
-        ).bind(t).bind(by).bind(via).execute(pool).await
-            .expect_err("cooled writer must seal the hot writer");
-        assert!(
-            error.to_string().contains("does not seal its hot Memory"),
-            "{error}"
-        );
-    }
-    sqlx::query(
-        "INSERT INTO proxima_core.cooled
-             (t, handle, owner_id, kind, object_key, origins, refs, goal_refs, \"by\", via)
-         SELECT t, handle, owner_id, kind, 'cold/sealed', origins, refs, goal_refs, \"by\", via
-           FROM proxima_core.memory WHERE t = $1",
-    )
-    .bind(t)
-    .execute(pool)
-    .await?;
-
-    for query in [
-        sqlx::query("UPDATE proxima_core.cooled SET \"by\" = $2 WHERE t = $1"),
-        sqlx::query("UPDATE proxima_core.cooled SET via = $2 WHERE t = $1"),
-    ] {
-        let error = query
-            .bind(t)
-            .bind(Uuid::now_v7())
-            .execute(pool)
-            .await
-            .expect_err("cooled writer is sealed");
-        assert!(error.to_string().contains("frozen"), "{error}");
-    }
-    Ok(())
-}
-
-async fn cool_restoration_fixture(
-    pool: &sqlx::PgPool,
-    via: Option<Uuid>,
-) -> Result<Uuid, sqlx::Error> {
-    let owner = Uuid::now_v7();
-    let handle = Uuid::now_v7();
-    let t = Uuid::now_v7();
-    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
-        .bind(owner)
-        .execute(pool)
-        .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
-    )
-    .bind(handle)
-    .bind(owner)
-    .bind(t)
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, occurred_at, \"by\", via)
-         VALUES ($1, $2, 'fact', $3, 'core/test-v1', 'restoration-source', $2::text,
-                 uuid_extract_timestamp($2), $4, $5)",
-    )
-    .bind(handle)
-    .bind(t)
-    .bind(owner)
-    .bind(Uuid::now_v7())
-    .bind(via)
-    .execute(pool)
-    .await?;
-
-    let mut tx = pool.begin().await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.cooled
-             (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id,
-              ingest_key, origins, refs, goal_refs, \"by\", via)
-         SELECT t, handle, owner_id, kind, 'cold/restoration', blob_id, content_id,
-                source_id, ingest_key, origins, refs, goal_refs, \"by\", via
-           FROM proxima_core.memory WHERE t = $1",
-    )
-    .bind(t)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
-        .bind(t)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    let reversible: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM proxima_core.cooled WHERE t = $1)
-            AND NOT EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = $1)
-            AND NOT EXISTS (SELECT 1 FROM proxima_core.erased_pin_target WHERE t = $1)",
-    )
-    .bind(t)
-    .fetch_one(pool)
-    .await?;
-    assert!(reversible, "cooling retains only the restorable sealed row");
-    Ok(t)
-}
-
-async fn restore_cooled_with_writer(
-    pool: &sqlx::PgPool,
-    t: Uuid,
-    writer: (Uuid, Option<Uuid>),
-) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO proxima_core.memory
-             (handle, t, kind, owner_id, schema_id, blob_id, content_id, source_id,
-              ingest_key, origins, refs, goal_refs, occurred_at, \"by\", via)
-         SELECT handle, t, kind, owner_id, 'core/test-v1', blob_id, content_id,
-                source_id, ingest_key, origins, refs, goal_refs, uuid_extract_timestamp(t), $2, $3
-           FROM proxima_core.cooled WHERE t = $1",
-    )
-    .bind(t)
-    .bind(writer.0)
-    .bind(writer.1)
-    .execute(pool)
-    .await
-}
-
-async fn assert_cooled_restoration_writer(pool: &sqlx::PgPool, t: Uuid) -> Result<(), sqlx::Error> {
-    let (by, via, cooled): (Uuid, Option<Uuid>, serde_json::Value) =
-        sqlx::query_as("SELECT \"by\", via, to_jsonb(c) FROM proxima_core.cooled c WHERE t = $1")
-            .bind(t)
-            .fetch_one(pool)
-            .await?;
-    let mut changed = vec![(Uuid::now_v7(), via), (by, Some(Uuid::now_v7()))];
-    if via.is_some() {
-        changed.push((by, None));
-    }
-    for writer in changed {
-        let error = restore_cooled_with_writer(pool, t, writer)
-            .await
-            .expect_err("restoration must retain the original writer pair");
-        assert_eq!(
-            error
-                .as_database_error()
-                .and_then(sqlx::error::DatabaseError::code),
-            Some("23514".into()),
-            "writer {writer:?}: {error}"
-        );
-        let (hot_rows, after): (i64, serde_json::Value) = sqlx::query_as(
-            "SELECT (SELECT count(*) FROM proxima_core.memory WHERE t = $1), to_jsonb(c)
-               FROM proxima_core.cooled c WHERE t = $1",
-        )
-        .bind(t)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(hot_rows, 0, "a refused restoration leaves no hot row");
-        assert_eq!(
-            after, cooled,
-            "a refused restoration preserves the cooled row"
-        );
-    }
-
-    let restored = restore_cooled_with_writer(pool, t, (by, via)).await?;
-    assert_eq!(restored.rows_affected(), 1);
-    let writer: (Uuid, Option<Uuid>) =
-        sqlx::query_as("SELECT \"by\", via FROM proxima_core.memory WHERE t = $1")
-            .bind(t)
-            .fetch_one(pool)
-            .await?;
-    assert_eq!(
-        writer,
-        (by, via),
-        "matching attribution restores the hot row"
-    );
-    let after: serde_json::Value =
-        sqlx::query_scalar("SELECT to_jsonb(c) FROM proxima_core.cooled c WHERE t = $1")
-            .bind(t)
-            .fetch_one(pool)
-            .await?;
-    assert_eq!(
-        after, cooled,
-        "restoration preserves the original cooled seal"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn cooled_restoration_preserves_writer_attribution() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect_for_tests(url.clone()).await?;
-        apply_current_migrations(&pg).await?;
-        for via in [None, Some(Uuid::now_v7())] {
-            let t = cool_restoration_fixture(pg.pool_for_tests(), via).await?;
-            assert_cooled_restoration_writer(pg.pool_for_tests(), t).await?;
-        }
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("cooled restoration writer attribution test failed");
-}
-
-#[tokio::test]
-async fn cooled_identity_seal_freezes_all_but_transfer_remaps() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if let Err(e) = create_db(&db_name).await {
-        panic!("PG required for tests but admin connect failed: {e}");
-    }
-    let url = db_url(&db_name);
-    let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect_for_tests(url.clone()).await?;
-        apply_current_migrations(&pg).await?;
-        let pool = pg.pool_for_tests();
-        let owner = Uuid::now_v7();
-        let destination = Uuid::now_v7();
-        let handle = Uuid::now_v7();
-        let t = Uuid::now_v7();
-        sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, 'personal'), ($2, 'group')",
-        )
-        .bind(owner)
-        .bind(destination)
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-             VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
-        )
-        .bind(handle)
-        .bind(owner)
-        .bind(t)
-        .execute(pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO proxima_core.memory
-                 (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
-             VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
-        )
-        .bind(handle)
-        .bind(t)
-        .bind(owner)
-        .execute(pool)
-        .await?;
-        assert_cooled_writer_seal(pool, t).await?;
-        sqlx::query("UPDATE proxima_core.cooled SET owner_id = $2 WHERE t = $1")
-            .bind(t)
-            .bind(destination)
-            .execute(pool)
-            .await?;
-        let writer: (Uuid, Option<Uuid>) = sqlx::query_as(
-            "SELECT \"by\", via FROM proxima_core.cooled WHERE t = $1",
-        ).bind(t).fetch_one(pool).await?;
-        assert_eq!(writer, (Uuid::from_u128(0x509), None));
-        let err = sqlx::query("UPDATE proxima_core.cooled SET handle = $2 WHERE t = $1")
-            .bind(t)
-            .bind(Uuid::now_v7())
-            .execute(pool)
-            .await
-            .expect_err("cooled handle is sealed");
-        assert!(err.to_string().contains("frozen"), "got: {err}");
-        let err =
-            sqlx::query("UPDATE proxima_core.cooled SET origins = ARRAY[$2]::uuid[] WHERE t = $1")
-                .bind(t)
-                .bind(Uuid::now_v7())
-                .execute(pool)
-                .await
-                .expect_err("cooled pins are sealed");
-        assert!(err.to_string().contains("frozen"), "got: {err}");
-        let err = sqlx::query(
-            "UPDATE proxima_core.cooled SET goal_refs = ARRAY[$2]::uuid[] WHERE t = $1",
-        )
-        .bind(t)
-        .bind(Uuid::now_v7())
-        .execute(pool)
-        .await
-        .expect_err("cooled Goal pins are sealed");
-        assert!(err.to_string().contains("frozen"), "got: {err}");
-        let err = sqlx::query("UPDATE proxima_core.cooled SET cold_digest = $2 WHERE t = $1")
-            .bind(t)
-            .bind(vec![7_u8; 32])
-            .execute(pool)
-            .await
-            .expect_err("cooled cold digest is sealed");
-        assert!(err.to_string().contains("frozen"), "got: {err}");
-        Ok(())
-    }
-    .await;
-    let _ = drop_db(&db_name).await;
-    result.expect("cooled identity seal test failed");
 }
 
 #[tokio::test]

@@ -2864,12 +2864,11 @@ async fn core_forget_marks_a_remembered_fact() {
         .fetch_one(&admin_pool)
         .await?;
         assert_eq!((rows, forgotten), (1, 1), "forget keeps the row, marked");
-        let cooled: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cooled WHERE t = $1")
-                .bind(t)
+        let cooled: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('proxima_core.cooled')::text")
                 .fetch_one(&admin_pool)
                 .await?;
-        assert_eq!(cooled, 0, "forget writes no cooled stub");
+        assert_eq!(cooled, None, "there is no cooled table to write a stub to");
 
         let cold = built
             .host()

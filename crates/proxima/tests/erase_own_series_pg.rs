@@ -85,13 +85,13 @@ async fn handle_of(pool: &sqlx::PgPool, t: MemoryId) -> SeriesHandle {
 }
 
 /// Every row the erase must reach for these admissions, as one number per
-/// surface, so "nothing changed" and "everything went" are both one
-/// comparison.
+/// surface (the second is how many of the memory rows are forgotten), so
+/// "nothing changed" and "everything went" are both one comparison.
 async fn footprint(pool: &sqlx::PgPool, ts: &[MemoryId]) -> [i64; 5] {
     let ts: Vec<Uuid> = ts.iter().map(|t| t.into_inner()).collect();
-    let (memory, cooled, note, ingest_keys, witnesses): (i64, i64, i64, i64, i64) = sqlx::query_as(
+    let (memory, forgotten, note, ingest_keys, witnesses): (i64, i64, i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM proxima_core.memory WHERE t = ANY($1)),
-                    (SELECT count(*) FROM proxima_core.cooled WHERE t = ANY($1)),
+                    (SELECT count(*) FROM proxima_core.memory WHERE t = ANY($1) AND forgotten_at IS NOT NULL),
                     (SELECT count(*) FROM proxima_example.note_v1 WHERE t = ANY($1)),
                     (SELECT count(*) FROM proxima_core.ingest_keys WHERE t = ANY($1)),
                     (SELECT count(*) FROM proxima_core.erased_pin_target WHERE t = ANY($1))",
@@ -100,7 +100,7 @@ async fn footprint(pool: &sqlx::PgPool, ts: &[MemoryId]) -> [i64; 5] {
     .fetch_one(pool)
     .await
     .expect("footprint census");
-    [memory, cooled, note, ingest_keys, witnesses]
+    [memory, forgotten, note, ingest_keys, witnesses]
 }
 
 async fn erase(
@@ -168,7 +168,7 @@ async fn one_id_erases_its_whole_series_and_everything_hanging_off_it() {
             h.cold.get(&cold_key).await.is_err(),
             "forget marks the row and writes no cold object"
         );
-        assert_eq!(footprint(&h.pool, &[v1, v2]).await, [2, 0, 2, 2, 0]);
+        assert_eq!(footprint(&h.pool, &[v1, v2]).await, [2, 1, 2, 2, 0]);
 
         let receipt = erase(
             &h.engine,

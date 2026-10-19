@@ -44,13 +44,6 @@ CREATE OR REPLACE TRIGGER agent_note_v1_declared_by_memory_on_update
 CREATE OR REPLACE TRIGGER agent_note_v1_append_only BEFORE UPDATE ON proxima_core.agent_note_v1 FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
 
 
--- cooled
-CREATE OR REPLACE TRIGGER cooled_append_only BEFORE UPDATE ON proxima_core.cooled FOR EACH ROW EXECUTE FUNCTION proxima_core.cooled_append_only();
-CREATE OR REPLACE TRIGGER cooled_erased_pin_target BEFORE DELETE ON proxima_core.cooled FOR EACH ROW EXECUTE FUNCTION proxima_core.cooled_erase_witness();
-CREATE OR REPLACE TRIGGER cooled_forget_grounding BEFORE INSERT ON proxima_core.cooled FOR EACH ROW EXECUTE FUNCTION proxima_core.cooled_forget_grounding();
-CREATE OR REPLACE TRIGGER cooled_identity_seal BEFORE INSERT ON proxima_core.cooled FOR EACH ROW EXECUTE FUNCTION proxima_core.cooled_identity_seal();
-
-
 -- delegated_authority_grants
 CREATE OR REPLACE TRIGGER delegated_authority_writer_immutable
     BEFORE UPDATE OF "by", via ON proxima_core.delegated_authority_grants

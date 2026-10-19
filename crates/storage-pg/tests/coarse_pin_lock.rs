@@ -1,5 +1,5 @@
 //! Coarse pin-lock mode: a transaction holding SHARE ROW EXCLUSIVE or
-//! stronger on `memory`, `cooled` and `goal` stops taking one advisory lock
+//! stronger on `memory` and `goal` stops taking one advisory lock
 //! per pin target once it has taken 256. Requires local PG.
 #![allow(clippy::too_many_lines)]
 
@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-const COARSE: &str = "LOCK TABLE proxima_core.cooled, proxima_core.memory, proxima_core.goal \
+const COARSE: &str = "LOCK TABLE proxima_core.memory, proxima_core.goal \
                       IN SHARE ROW EXCLUSIVE MODE";
 
 /// Target locks a transaction takes before it reads `pg_locks`.
@@ -206,7 +206,7 @@ async fn seed_owner(pg: &PgStorage) -> Result<(OwnerId, OwnerWritePermit, Memory
 }
 
 #[tokio::test]
-async fn coarse_mode_needs_all_three_tables_in_share_row_exclusive() {
+async fn coarse_mode_needs_both_tables_in_share_row_exclusive() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     let result: TestResult = async {
         let pg = engine_db(&db_name).await?;
@@ -222,34 +222,24 @@ async fn coarse_mode_needs_all_three_tables_in_share_row_exclusive() {
                 false,
             ),
             (
-                "memory, cooled",
+                "goal",
                 Some(sqlx::query(
-                    "LOCK TABLE proxima_core.memory, proxima_core.cooled \
-                     IN SHARE ROW EXCLUSIVE MODE",
+                    "LOCK TABLE proxima_core.goal IN ACCESS EXCLUSIVE MODE",
                 )),
                 false,
             ),
             (
-                "cooled, goal",
+                "both in SHARE",
                 Some(sqlx::query(
-                    "LOCK TABLE proxima_core.cooled, proxima_core.goal IN ACCESS EXCLUSIVE MODE",
+                    "LOCK TABLE proxima_core.memory, proxima_core.goal IN SHARE MODE",
                 )),
                 false,
             ),
+            ("both", Some(sqlx::query(COARSE)), true),
             (
-                "all three in SHARE",
+                "both in ACCESS EXCLUSIVE",
                 Some(sqlx::query(
-                    "LOCK TABLE proxima_core.memory, proxima_core.cooled, proxima_core.goal \
-                     IN SHARE MODE",
-                )),
-                false,
-            ),
-            ("all three", Some(sqlx::query(COARSE)), true),
-            (
-                "all three in ACCESS EXCLUSIVE",
-                Some(sqlx::query(
-                    "LOCK TABLE proxima_core.memory, proxima_core.cooled, proxima_core.goal \
-                     IN ACCESS EXCLUSIVE MODE",
+                    "LOCK TABLE proxima_core.memory, proxima_core.goal IN ACCESS EXCLUSIVE MODE",
                 )),
                 true,
             ),
@@ -297,12 +287,11 @@ async fn coarse_mode_needs_all_three_tables_in_share_row_exclusive() {
               WHERE pid = pg_backend_pid() AND granted
                 AND mode = 'ShareRowExclusiveLock'
                 AND relation IN ('proxima_core.memory'::regclass,
-                                 'proxima_core.cooled'::regclass,
                                  'proxima_core.goal'::regclass)",
         )
         .fetch_one(&mut *tx)
         .await?;
-        assert_eq!(held, 3, "a bound setting acquires the coarse locks");
+        assert_eq!(held, 2, "a bound setting acquires the coarse locks");
         tx.rollback().await?;
         Ok(())
     }
@@ -560,9 +549,9 @@ fn deadlocked(error: &sqlx::Error) -> bool {
 }
 
 /// `LOCK` takes its tables one at a time. In the documented order a writer
-/// that takes `cooled` then `memory` (forget, erase) finds its second table
-/// free and finishes first; one that takes `memory` then `cooled`
-/// (hydration, owner erase) deadlocks with it, and Postgres aborts one side.
+/// that takes `memory` then `goal` finds its second table free and finishes
+/// first; one that takes `goal` then `memory` deadlocks with it, and
+/// Postgres aborts one side.
 #[tokio::test]
 async fn documented_lock_order_meets_lifecycle_writers() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -571,7 +560,7 @@ async fn documented_lock_order_meets_lifecycle_writers() {
         let pool = pg.pool_for_tests();
 
         let mut writer = pool.begin().await?;
-        sqlx::query("DELETE FROM proxima_core.cooled WHERE false")
+        sqlx::query("DELETE FROM proxima_core.memory WHERE false")
             .execute(&mut *writer)
             .await?;
         let locked = AtomicBool::new(false);
@@ -584,7 +573,7 @@ async fn documented_lock_order_meets_lifecycle_writers() {
         };
         let driver = async {
             wait_for_lock_waiter(pool).await?;
-            sqlx::query("DELETE FROM proxima_core.memory WHERE false")
+            sqlx::query("DELETE FROM proxima_core.goal WHERE false")
                 .execute(&mut *writer)
                 .await?;
             assert!(
@@ -599,7 +588,7 @@ async fn documented_lock_order_meets_lifecycle_writers() {
         bulk_result?;
 
         let mut writer = pool.begin().await?;
-        sqlx::query("DELETE FROM proxima_core.memory WHERE false")
+        sqlx::query("DELETE FROM proxima_core.goal WHERE false")
             .execute(&mut *writer)
             .await?;
         let bulk = async {
@@ -610,7 +599,7 @@ async fn documented_lock_order_meets_lifecycle_writers() {
         };
         let driver = async {
             wait_for_lock_waiter(pool).await?;
-            let wrote = sqlx::query("DELETE FROM proxima_core.cooled WHERE false")
+            let wrote = sqlx::query("DELETE FROM proxima_core.memory WHERE false")
                 .execute(&mut *writer)
                 .await;
             writer.rollback().await?;

@@ -135,10 +135,8 @@ struct Seeded {
     fact: Value,
     abstraction: Value,
     perspective: Value,
-    /// An Abstraction nothing pins, which the SQL check cools and closes.
+    /// An Abstraction nothing pins, which the SQL check forgets and closes.
     unpinned: Value,
-    /// A hot Abstraction nothing pins, which the SQL check tries to cool.
-    spare: Value,
 }
 
 impl Seeded {
@@ -244,20 +242,11 @@ async fn seed(tools: &CoreMcpTools, group: OwnerId) -> TestResult<Seeded> {
         &fact,
     )
     .await?;
-    let spare = derive(
-        tools,
-        &admin,
-        group,
-        (EntityKind::Abstraction, "spare"),
-        &fact,
-    )
-    .await?;
     let seeded = Seeded {
         fact,
         abstraction,
         perspective,
         unpinned,
-        spare,
     };
     set_goal(tools, &admin, group, &seeded).await?;
     call(
@@ -998,7 +987,7 @@ enum Rows {
     Memory(&'static str),
     /// A Fact schema's sidecar: the memory at `t`, only ever a Fact.
     FactSidecar,
-    /// The hot or cooled admission naming it.
+    /// The admission naming it, live or forgotten.
     Content,
     /// Its `memory_head`.
     ClosedHandle,
@@ -1014,7 +1003,6 @@ const TABLES: &[(&str, Rows)] = &[
     ("closed_handle", Rows::ClosedHandle),
     ("cold_purge_pending", Rows::NoKind),
     ("content", Rows::Content),
-    ("cooled", Rows::Kind),
     ("delegated_authority_grants", Rows::NoKind),
     ("embedding_heads", Rows::Memory("entity_id")),
     ("embedding_jobs", Rows::Memory("entity_id")),
@@ -1056,10 +1044,7 @@ const TABLES: &[(&str, Rows)] = &[
 /// Rows of an Abstraction, Perspective or Goal, as the superuser sees them.
 fn above_fact(table: &str, rows: Rows) -> Option<String> {
     let memory_kind = |join: &str| {
-        format!(
-            "EXISTS (SELECT 1 FROM proxima_core.memory AS m WHERE {join} AND m.kind <> 'fact')
-             OR EXISTS (SELECT 1 FROM proxima_core.cooled AS m WHERE {join} AND m.kind <> 'fact')"
-        )
+        format!("EXISTS (SELECT 1 FROM proxima_core.memory AS m WHERE {join} AND m.kind <> 'fact')")
     };
     let predicate = match rows {
         Rows::Kind => "x.kind::text <> 'fact'".to_owned(),
@@ -1129,29 +1114,12 @@ async fn assert_fact_scope_sql(
     .bind(handle_id(&seeded.unpinned)?)
     .execute(admin)
     .await?;
-    // Cool the unpinned Abstraction the way forget does: the cooled row seals
-    // the hot row's identity, which then goes.
-    let mut cool = admin.begin().await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.cooled
-             (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id,
-              ingest_key, origins, refs, goal_refs, \"by\", via)
-         SELECT t, handle, owner_id, kind, 'kindrule/cooled', blob_id, content_id, source_id,
-                ingest_key, origins, refs, goal_refs, \"by\", via
-           FROM proxima_core.memory WHERE t = $1",
-    )
-    .bind(handle_id(&seeded.unpinned)?)
-    .execute(&mut *cool)
-    .await?;
-    sqlx::query("DELETE FROM proxima_core.agent_derivation_v1 WHERE t = $1")
+    // Forget the unpinned Abstraction the way forget does: the row stays,
+    // marked, with its sidecar.
+    sqlx::query("UPDATE proxima_core.memory SET forgotten_at = now() WHERE t = $1")
         .bind(handle_id(&seeded.unpinned)?)
-        .execute(&mut *cool)
+        .execute(admin)
         .await?;
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
-        .bind(handle_id(&seeded.unpinned)?)
-        .execute(&mut *cool)
-        .await?;
-    cool.commit().await?;
     // An other-store origin of the Abstraction: the row reads and
     // writes at its memory's kind.
     sqlx::query(
@@ -1304,26 +1272,11 @@ async fn assert_fact_scope_sql(
         }
         // Content is written before the admission that names it; its kind is
         // the admission's, which the memory policy refuses.
-        let mut inserts = if matches!(rows, Rows::Content) {
+        let inserts = if matches!(rows, Rows::Content) {
             Vec::new()
         } else {
             above.clone()
         };
-        if *table == "cooled" {
-            // A cooled row seals a hot one, so no copy of a cooled row is
-            // insertable; the probe cools the hot spare instead.
-            inserts.push(
-                sqlx::query_scalar(
-                    "SELECT to_jsonb(jsonb_populate_record(NULL::proxima_core.cooled,
-                            to_jsonb(m) || jsonb_build_object('object_key', 'kindrule/probe',
-                                                              'cooled_at', now())))::text
-                       FROM proxima_core.memory AS m WHERE m.t = $1",
-                )
-                .bind(handle_id(&seeded.spare)?)
-                .fetch_one(admin)
-                .await?,
-            );
-        }
         let mut probed = 0;
         for row in &inserts {
             // A scope that writes every kind is stopped at most by the

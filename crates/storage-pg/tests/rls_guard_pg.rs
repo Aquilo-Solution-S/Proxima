@@ -908,9 +908,7 @@ async fn full_policy_isolation_uses_authenticated_scope_and_platform_role() {
     let expected_trigger_functions = [
         "assert_erased_pin_target_insert",
         "memory_erase_witness",
-        "cooled_erase_witness",
         "goal_erase_witness",
-        "cooled_identity_seal",
         "goal_pin_target_checks",
         "memory_pin_checks",
         "cooled_forget_grounding",

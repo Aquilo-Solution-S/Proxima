@@ -4,16 +4,14 @@
 
 use proxima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
 use proxima_storage_pg::begin_owner_transaction;
-use sqlx::PgConnection;
 use sqlx::postgres::PgQueryResult;
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-const BRIDGED_ROUTINES: [&str; 9] = [
+const BRIDGED_ROUTINES: [&str; 7] = [
     "assert_erased_pin_target_insert",
     "memory_erase_witness",
-    "cooled_erase_witness",
     "goal_erase_witness",
-    "cooled_identity_seal",
     "goal_pin_target_checks",
     "memory_pin_checks",
     "cooled_forget_grounding",
@@ -111,18 +109,26 @@ async fn insert_memory(
     Ok(t)
 }
 
-async fn cool(connection: &mut PgConnection, t: Uuid) -> Result<PgQueryResult, sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO proxima_core.cooled
-             (t, handle, owner_id, kind, object_key, source_id, ingest_key, blob_id,
-              content_id, origins, refs, goal_refs, cooled_at, \"by\", via)
-         SELECT m.t, m.handle, m.owner_id, m.kind, 'cold/' || m.t::text, m.source_id,
-                m.ingest_key, m.blob_id, m.content_id, m.origins, m.refs, m.goal_refs, now(), m.\"by\", m.via
-           FROM proxima_core.memory m WHERE m.t = $1",
+/// Forget `t` as a superuser in a transaction that carries an owner scope,
+/// so the forget trigger runs and must hand that scope back. The verb's own
+/// lifecycle scope is crate-private; RLS is not what this file tests.
+async fn forget(admin: &PgPool, t: Uuid, path: &str) {
+    let mut tx = admin.begin().await.unwrap();
+    sqlx::query("SELECT set_config('app.proxima_scope', 'owner', true)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let forgotten = sqlx::query(
+        "UPDATE proxima_core.memory SET forgotten_at = now()
+          WHERE t = $1 AND forgotten_at IS NULL",
     )
     .bind(t)
-    .execute(connection)
+    .execute(&mut *tx)
     .await
+    .unwrap();
+    assert_eq!(forgotten.rows_affected(), 1, "{path}");
+    assert_owner_scope(&mut tx, path).await;
+    tx.commit().await.unwrap();
 }
 
 async fn insert_goal(
@@ -225,15 +231,12 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
     insert_memory(&mut seed, owner, "perspective", &[grounding])
         .await
         .unwrap();
-    // Erase targets the runtime transaction has never locked: its own
-    // lifecycle locks are transaction-scoped and would block the contender.
-    let erase_cooled = insert_memory(&mut seed, owner, "fact", &[]).await.unwrap();
-    cool(&mut seed, erase_cooled).await.unwrap();
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
-        .bind(erase_cooled)
-        .execute(&mut *seed)
+    let forget_fact = insert_memory(&mut seed, owner, "fact", &[]).await.unwrap();
+    let forget_abstraction = insert_memory(&mut seed, owner, "abstraction", &[fact])
         .await
         .unwrap();
+    // Erase targets the runtime transaction has never locked: its own
+    // lifecycle locks are transaction-scoped and would block the contender.
     let erase_goal = Uuid::now_v7();
     insert_goal(&mut seed, owner, erase_goal).await.unwrap();
     drop(seed);
@@ -255,9 +258,9 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
 
     // memory_pin_checks: Fact early return, full pin path (nesting
     // pins_have_grounding_support), and an ungrounded refusal.
-    let cooled_fact = insert_memory(&mut tx, owner, "fact", &[]).await.unwrap();
+    insert_memory(&mut tx, owner, "fact", &[]).await.unwrap();
     assert_owner_scope(&mut tx, "memory_pin_checks fact return").await;
-    let abstraction = insert_memory(&mut tx, owner, "abstraction", &[fact])
+    insert_memory(&mut tx, owner, "abstraction", &[fact])
         .await
         .unwrap();
     assert_owner_scope(&mut tx, "memory_pin_checks pinned return").await;
@@ -289,43 +292,19 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
     )
     .await;
 
-    // cooled_forget_grounding (Fact early return) + cooled_identity_seal, then
-    // the forget's Memory delete (memory_erase_witness, no witness written).
-    cool(&mut tx, cooled_fact).await.unwrap();
-    assert_owner_scope(&mut tx, "cooled_identity_seal return").await;
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
-        .bind(cooled_fact)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    assert_owner_scope(&mut tx, "memory_erase_witness forget return").await;
-    savepoint(&mut tx).await;
-    let outcome = sqlx::query(
-        "INSERT INTO proxima_core.cooled
-             (t, handle, owner_id, kind, object_key, origins, refs, goal_refs, cooled_at, \"by\", via)
-         VALUES ($1, $1, $2, 'fact', 'cold/unsealed', '{}', '{}', '{}', now(), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
-    )
-    .bind(Uuid::now_v7())
-    .bind(owner)
-    .execute(&mut *tx)
-    .await;
-    assert_refusal_restores_scope(
-        &mut tx,
-        "cooled_identity_seal",
-        "23514",
-        "does not seal its hot Memory",
-        outcome,
+    // cooled_forget_grounding, fired by memory_forget_grounding: the Fact
+    // early return, the non-Fact path, and since #488 S13 the last source of
+    // a remaining depender (no grounding refusal).
+    forget(&admin, forget_fact, "cooled_forget_grounding fact return").await;
+    forget(&admin, forget_abstraction, "cooled_forget_grounding return").await;
+    forget(
+        &admin,
+        grounding,
+        "cooled_forget_grounding last-source return",
     )
     .await;
 
-    // cooled_forget_grounding: the non-Fact path, and since #488 S13 the
-    // last source of a remaining depender cools too (no grounding refusal).
-    cool(&mut tx, abstraction).await.unwrap();
-    assert_owner_scope(&mut tx, "cooled_forget_grounding return").await;
-    cool(&mut tx, grounding).await.unwrap();
-    assert_owner_scope(&mut tx, "cooled_forget_grounding last-source return").await;
-
-    // The three erase witnesses, each refused inside its body by a held
+    // The two erase witnesses, each refused inside its body by a held
     // lifecycle lock, then run to completion. Completion nests
     // record_erased_pin_target and assert_erased_pin_target_insert.
     let mut holder = admin.acquire().await.unwrap();
@@ -336,22 +315,17 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
             hard_erase,
         ),
         (
-            "cooled_erase_witness",
-            "DELETE FROM proxima_core.cooled WHERE t = $1",
-            erase_cooled,
-        ),
-        (
             "goal_erase_witness",
             "DELETE FROM proxima_core.goal WHERE t = $1",
             erase_goal,
         ),
     ] {
         contend(&mut tx, &mut holder, target).await;
-        // SQL-POLICY: fixed-fragment — one of the three literal DELETEs above.
+        // SQL-POLICY: fixed-fragment — one of the two literal DELETEs above.
         let outcome = sqlx::query(statement).bind(target).execute(&mut *tx).await;
         release(&mut holder).await;
         assert_refusal_restores_scope(&mut tx, routine, "55P03", "lock timeout", outcome).await;
-        // SQL-POLICY: fixed-fragment — one of the three literal DELETEs above.
+        // SQL-POLICY: fixed-fragment — one of the two literal DELETEs above.
         let deleted = sqlx::query(statement)
             .bind(target)
             .execute(&mut *tx)

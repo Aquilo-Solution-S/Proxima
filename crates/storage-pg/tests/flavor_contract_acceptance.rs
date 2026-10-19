@@ -863,9 +863,9 @@ async fn the_connect_default_resolves_surfaces_through_the_registry() {
              surface list"
         );
         assert_eq!(
-            surfaces.erase_leg("proxima_core.cooled"),
+            surfaces.erase_leg("proxima_core.content"),
             EraseLeg::Bespoke,
-            "same list, second entry"
+            "same list, another entry"
         );
 
         // The class, not just the two examples: `Unreachable` is documented

@@ -788,7 +788,7 @@ async fn a_changed_definitions_record_is_planned_and_reapplied() {
 async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
     let db = Db::core_current().await;
     let original_function: String = sqlx::query_scalar(
-        "SELECT pg_get_functiondef('proxima_core.cooled_append_only()'::regprocedure)",
+        "SELECT pg_get_functiondef('proxima_core.memory_head_t_only()'::regprocedure)",
     )
     .fetch_one(&db.admin)
     .await
@@ -803,7 +803,7 @@ async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
     .await
     .expect("amend definitions record");
     sqlx::raw_sql(
-        "CREATE OR REPLACE FUNCTION proxima_core.cooled_append_only()
+        "CREATE OR REPLACE FUNCTION proxima_core.memory_head_t_only()
          RETURNS trigger LANGUAGE plpgsql
          AS $$ BEGIN RETURN NULL; END $$",
     )
@@ -811,7 +811,7 @@ async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
     .await
     .expect("amend a definitions function");
     let modified_function: String = sqlx::query_scalar(
-        "SELECT pg_get_functiondef('proxima_core.cooled_append_only()'::regprocedure)",
+        "SELECT pg_get_functiondef('proxima_core.memory_head_t_only()'::regprocedure)",
     )
     .fetch_one(&db.admin)
     .await
@@ -855,7 +855,7 @@ async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
         .expect("allow policy leaves newer definitions in place");
     assert_eq!(db.definitions_catalog().await, Some(before));
     let after_function: String = sqlx::query_scalar(
-        "SELECT pg_get_functiondef('proxima_core.cooled_append_only()'::regprocedure)",
+        "SELECT pg_get_functiondef('proxima_core.memory_head_t_only()'::regprocedure)",
     )
     .fetch_one(&db.admin)
     .await

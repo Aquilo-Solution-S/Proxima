@@ -35,7 +35,6 @@
 {"content_hash":"\\x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","content_id":"<id038>","owner_id":"<id024>","schema_id":"core/agent-note-v1"}
 {"content_hash":"\\x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","content_id":"<id039>","owner_id":"<id027>","schema_id":"core/agent-note-v1"}
 {"content_hash":"\\x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c","content_id":"<id040>","owner_id":"<id027>","schema_id":"core/agent-note-v1"}
-## proxima_core.cooled (0)
 ## proxima_core.delegated_authority_grants (1)
 {"action_name":null,"auth_epoch":1,"by":"<id041>","delegation_id":"<id042>","expires_at":"<ts031>","issued_at":"<ts030>","owner_id":"<id024>","read_ceiling":"fact","revoked_at":null,"revoked_by_user_id":null,"subject_user_id":"<id024>","tool_name":"core_remember","via":null,"write_ceiling":"fact"}
 ## proxima_core.embedding_heads (9)

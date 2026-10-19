@@ -589,11 +589,7 @@ async fn run_forget_legs(
 /// The surfaces [`erase_memory`] deletes with a hand-written statement of
 /// its own, because each needs an owner predicate or an ordering the
 /// generated `DELETE ... WHERE <key> = $1` does not carry.
-const ERASE_MEMORY_EXPLICIT: &[&str] = &[
-    "proxima_core.memory",
-    "proxima_core.cooled",
-    "proxima_core.ingest_keys",
-];
+const ERASE_MEMORY_EXPLICIT: &[&str] = &["proxima_core.memory", "proxima_core.ingest_keys"];
 
 /// Every memory-keyed surface a forget KEEPS (its rows outlive a cool) and
 /// owner erase deletes by key, minus the ones [`erase_memory`] deletes
@@ -1022,9 +1018,7 @@ async fn erase_memory_in_lifecycle(
 /// SET: erasing one version of a series says nothing about whether the
 /// blob is still cited, and asking per-version would answer "still cited"
 /// for every version but the last. `proxima_core.blob` is referenced by
-/// `memory.blob_id`, `cooled.blob_id` (empty since 0038) and
-/// `blob_uploads.blob_id` and by
-/// nothing else, so once the admissions are gone the reference question is
+/// `memory.blob_id` and `blob_uploads.blob_id` and by nothing else, so once the admissions are gone the reference question is
 /// answerable in one statement, which is what `gc_unreferenced_blobs`
 /// below is.
 ///
@@ -1442,8 +1436,8 @@ SELECT b.blob_id FROM proxima_core.blob b
 /// `gc_unreferenced_content`'s idiom, at the blob level, plus the refcount
 /// a shared object needs when several upload rows name it.
 /// `proxima_core.blob` is
-/// referenced by exactly three columns — `memory.blob_id`,
-/// `cooled.blob_id` (empty since 0038), `blob_uploads.blob_id`, all `NO ACTION` — so "no
+/// referenced by exactly two columns, `memory.blob_id` and
+/// `blob_uploads.blob_id`, both `NO ACTION` — so "no
 /// admission cites it" is the whole reference question. Citation schemas
 /// are opaque and have no sidecar table, which is why
 /// `OwnerSurfaces::for_registry` finds no cited-object family for

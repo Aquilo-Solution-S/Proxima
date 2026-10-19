@@ -942,14 +942,11 @@ async fn host_fact_count(pool: &PgPool, owner: OwnerId) -> i64 {
 }
 
 async fn core_fact_count(pool: &PgPool, fact_id: MemoryId) -> i64 {
-    sqlx::query_scalar(
-        "SELECT (SELECT count(*) FROM proxima_core.memory WHERE t = $1 AND kind = 'fact')
-             + (SELECT count(*) FROM proxima_core.cooled WHERE t = $1 AND kind = 'fact')",
-    )
-    .bind(fact_id.into_inner())
-    .fetch_one(pool)
-    .await
-    .expect("core Fact count")
+    sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE t = $1 AND kind = 'fact'")
+        .bind(fact_id.into_inner())
+        .fetch_one(pool)
+        .await
+        .expect("core Fact count")
 }
 
 async fn publication_origin_count(pool: &PgPool, fact_id: MemoryId) -> i64 {

@@ -1366,7 +1366,7 @@ async fn forget_pinless_abstraction_is_refused() {
         .await
         .expect_err("pinless A");
         assert!(
-            err.to_string().contains("cooled fact") || err.to_string().contains("23514"),
+            err.to_string().contains("non-fact must pin a memory") || err.to_string().contains("23514"),
             "got: {err}"
         );
         Ok(())

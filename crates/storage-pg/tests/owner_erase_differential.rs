@@ -12,12 +12,10 @@
 //! statement that this implementation and the baseline disagree about what an
 //! owner erase leaves behind, or about what an owner's bundle contains.
 //!
-//! Two deliberate exclusions, held out of BOTH sides: three relations the
-//! baseline has and this schema does not (`compliance_audit_log`,
+//! Two deliberate exclusions, held out of BOTH sides: four relations the
+//! baseline has and this schema does not (`compliance_audit_log`, `cooled`,
 //! `owner_fact_retention`, `owner_legal_holds`) and one column
-//! (`cold_purge_pending.compliance_operation_id`). The current schema also has
-//! two nullable declaration witnesses the baseline predates
-//! (`cooled.origins`, `cooled.refs`). A surface that does not exist on both
+//! (`cold_purge_pending.compliance_operation_id`). A surface that does not exist on both
 //! sides cannot be compared. Everything else is compared, including every row
 //! of the neighbour owner that both erases must leave untouched.
 //!
@@ -645,6 +643,9 @@ fn embed_vector() -> pgvector::Vector {
 /// difference is a failure.
 pub const DROPPED_TABLES: &[&str] = &[
     "compliance_audit_log",
+    // Dropped by 0040 (#488): forget keeps the memory row, so the corpus's
+    // forgotten admissions are in the `memory` section.
+    "cooled",
     "owner_fact_retention",
     "owner_legal_holds",
     // Added after the pinned fd362509 baseline. Its capture/revoke/backfill
@@ -660,7 +661,7 @@ pub const DROPPED_TABLES: &[&str] = &[
     // Added after the baseline by 0029: other-store origins of a derived
     // memory, keyed on its `t`. Skipped here only because the pinned
     // baseline lacks it; it is a flavor #0 surface (#478), so its erase leg
-    // is generated, hot and cooled, and `external_origin_reach` pins it.
+    // is generated, live and forgotten, and `external_origin_reach` pins it.
     "memory_external_origin",
     // Added after the baseline by 0034: a series' publication position,
     // deleted by owner erase once nothing of its series is left.
@@ -672,9 +673,6 @@ pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // migration and transfer differentials assert the live value directly.
     ("blob_uploads", "content_hash"),
     ("cold_purge_pending", "compliance_operation_id"),
-    ("cooled", "origins"),
-    ("cooled", "refs"),
-    ("cooled", "cold_digest"),
     // 0025 added the Goal prompt text after this frozen baseline; the
     // export and erase of it are asserted directly in `goal_text.rs`.
     ("goal", "text"),
@@ -737,14 +735,6 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
                 {
                     object.remove(*column);
                 }
-            }
-            if table == "cooled"
-                && let Some(object) = row.as_object_mut()
-            {
-                // The pinned corpus predates the 0004 split. Keep the
-                // column in the normalized shape expected by its golden,
-                // while the migration suite checks its real value.
-                object.insert("goal_refs".to_owned(), Value::Null);
             }
             if table == "publication_outbox"
                 && let Some(object) = row.as_object_mut()

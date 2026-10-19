@@ -448,7 +448,8 @@ async fn attribution_migration_installs_the_restoration_seal_before_definitions(
             (36, true),
             (37, true),
             (38, true),
-            (39, true)
+            (39, true),
+            (40, true)
         ]
     );
     assert!(!definitions::current_matches(transaction.as_mut()).await?);
@@ -802,5 +803,45 @@ async fn forget_state_migration_refuses_a_used_store_without_changes() -> TestRe
             "cooled={cooled}"
         );
     }
+    Ok(())
+}
+
+/// #488 migration 0040 drops the cooled table. The purge debts that were
+/// its objects (`cold/<t>` keys, and rows from before a backend was named)
+/// go with it; an upload's purge debt on a named backend stays.
+#[tokio::test]
+async fn drop_cooled_migration_keeps_only_upload_purge_rows() -> TestResult {
+    let (_guard, platform, admin) = empty_store().await?;
+    apply_historical_schema(
+        &platform,
+        &[33, 34, 35, 36, 37, 38, 39],
+        definitions::POLICIES,
+    )
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+         VALUES ('cold/0190a8f0-0000-7000-8000-000000000001', NULL, 'bucket'),
+                ('objects/before-backends', NULL, ''),
+                ('objects/upload-debt', NULL, 'bucket')",
+    )
+    .execute(&admin)
+    .await?;
+
+    let mut connection = platform.acquire().await?;
+    let mut transaction = begin_migration_transaction(&mut connection).await?;
+    core_migrator().run(transaction.as_mut()).await?;
+    transaction.commit().await?;
+    drop(connection);
+
+    let left: Vec<String> = sqlx::query_scalar(
+        "SELECT object_key FROM proxima_core.cold_purge_pending ORDER BY object_key",
+    )
+    .fetch_all(&admin)
+    .await?;
+    assert_eq!(left, vec!["objects/upload-debt".to_owned()]);
+    let cooled: bool = sqlx::query_scalar("SELECT to_regclass('proxima_core.cooled') IS NOT NULL")
+        .fetch_one(&admin)
+        .await?;
+    assert!(!cooled, "0040 drops proxima_core.cooled");
     Ok(())
 }
