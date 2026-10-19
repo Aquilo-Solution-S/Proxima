@@ -12,6 +12,12 @@ use crate::{
     PendingWork, PromptVersion, SchemaId, SchemaVersion, SidecarPayload, ToolId,
 };
 
+/// The in-transaction refusal of goal evidence whose memory row the owner
+/// transaction cannot see: absent, forgotten (owner reads hide it), or gone
+/// since the entry gate. The engine answers it as `entry not found`, the
+/// answer an unknown id gets at the gate.
+pub const EVIDENCE_DOES_NOT_EXIST: &str = "evidence does not exist";
+
 #[derive(
     Debug,
     Clone,

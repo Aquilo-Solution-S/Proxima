@@ -50,7 +50,7 @@ pub(super) async fn validate_evidence_in_owner(
                 .map_err(map_err)?;
         let Some(kind_text) = kind_text else {
             return Err(StorageError::ConstraintViolation(
-                "evidence does not exist".into(),
+                proxima_core::verbs::goal_write::EVIDENCE_DOES_NOT_EXIST.into(),
             ));
         };
         let kind = match kind_text.as_str() {
@@ -59,7 +59,7 @@ pub(super) async fn validate_evidence_in_owner(
             "perspective" => EntityKind::Perspective,
             _ => {
                 return Err(StorageError::ConstraintViolation(
-                    "evidence does not exist".into(),
+                    proxima_core::verbs::goal_write::EVIDENCE_DOES_NOT_EXIST.into(),
                 ));
             }
         };

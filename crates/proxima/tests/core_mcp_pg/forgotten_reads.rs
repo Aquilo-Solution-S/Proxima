@@ -656,3 +656,110 @@ async fn replaying_a_derived_write_after_forget_answers_forgotten_and_does_not_r
     .await;
     result.expect("derived replay after forget");
 }
+
+/// Goal evidence and a goal's target Perspective that name a forgotten
+/// memory are refused exactly as an unknown id is: `entry not found`.
+#[tokio::test]
+async fn goal_evidence_naming_a_forgotten_memory_is_refused_as_absent() {
+    let split_db = clone_split_core_db("proxima_goal_forgotten_evidence")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(split_db.runtime_url().to_owned())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let handle = |made: serde_json::Value| -> Result<String, &'static str> {
+            Ok(made["handle"].as_str().ok_or("handle")?.to_owned())
+        };
+        let fact = handle(
+            call(
+                "core_remember",
+                serde_json::json!({"title": "goal fact", "body": "goal fact", "tags": []}),
+            )
+            .await?,
+        )?;
+        let derive = |title: &'static str| {
+            call(
+                "core_derive",
+                serde_json::json!({
+                    "kind": "Abstraction", "title": title, "body": title, "tags": [],
+                    "source_handles": [fact.clone()], "model_id": "test-model",
+                }),
+            )
+        };
+        let evidence = handle(derive("goal evidence").await?)?;
+        let gone = handle(derive("forgotten evidence").await?)?;
+        let perspective = |claim: &'static str| {
+            call(
+                "core_interpret",
+                serde_json::json!({"claim": claim, "confidence": 80, "subjects": [fact.clone()]}),
+            )
+        };
+        let target = handle(perspective("goal target").await?)?;
+        let gone_target = handle(perspective("forgotten target").await?)?;
+        let set_goal = |evidence: String, target: String, key: String| {
+            call(
+                "core_goal",
+                serde_json::json!({
+                    "action": "set", "schema_id": "core/simple-text-v1",
+                    "title": "goal", "text": "goal", "body": {},
+                    "evidence": [evidence], "target_perspective": target,
+                    "idempotency_key": key,
+                }),
+            )
+        };
+        // Control: both are accepted while live.
+        set_goal(gone.clone(), gone_target.clone(), "goal-control".into()).await?;
+        call("core_forget", serde_json::json!({"memory": gone})).await?;
+        call("core_forget", serde_json::json!({"memory": gone_target})).await?;
+
+        let absent = absent_local_id(&gone)?;
+        let cited = set_goal(gone.clone(), target.clone(), "goal-gone-evidence".into())
+            .await
+            .expect_err("forgotten evidence is refused");
+        let missing = set_goal(
+            absent.clone(),
+            target.clone(),
+            "goal-absent-evidence".into(),
+        )
+        .await
+        .expect_err("absent evidence is refused");
+        assert_eq!(observed(&cited, &gone), observed(&missing, &absent));
+        assert!(
+            format!("{cited:?}").contains("entry not found"),
+            "{cited:?}"
+        );
+
+        let absent = absent_local_id(&gone_target)?;
+        let cited = set_goal(
+            evidence.clone(),
+            gone_target.clone(),
+            "goal-gone-target".into(),
+        )
+        .await
+        .expect_err("a forgotten target is refused");
+        let missing = set_goal(
+            evidence.clone(),
+            absent.clone(),
+            "goal-absent-target".into(),
+        )
+        .await
+        .expect_err("an absent target is refused");
+        assert_eq!(observed(&cited, &gone_target), observed(&missing, &absent));
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("goal evidence forgotten");
+}

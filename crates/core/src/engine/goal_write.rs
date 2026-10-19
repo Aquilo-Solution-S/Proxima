@@ -667,6 +667,14 @@ pub(in crate::engine) async fn transition_goal_authorized(
 }
 
 fn map_goal_storage_error(err: StorageError) -> ProtocolError {
+    // Evidence passed the entry gate, which resolves a home in either state;
+    // a row the owner transaction cannot see is forgotten (or went away), and
+    // the caller gets the gate's answer for an unknown id.
+    if let StorageError::ConstraintViolation(message) = &err
+        && message == crate::verbs::goal_write::EVIDENCE_DOES_NOT_EXIST
+    {
+        return ProtocolError::forbidden(super::pipeline::ENTRY_NOT_FOUND_MESSAGE);
+    }
     super::errors::map_write_storage_error(err, "goal", "goal write referenced row not found")
 }
 
