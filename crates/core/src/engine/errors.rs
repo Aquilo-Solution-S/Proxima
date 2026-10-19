@@ -43,9 +43,10 @@ pub(in crate::engine) fn map_write_storage_error(
     match err {
         StorageError::NotFound => ProtocolError::not_found(not_found_message),
         StorageError::ScopeMissing { kind, id } => ProtocolError::scope_not_registered(&kind, id),
-        StorageError::IdempotencyConflict { request_id } => {
-            ProtocolError::idempotency_conflict(request_id)
-        }
+        StorageError::IdempotencyConflict {
+            request_id,
+            existing,
+        } => ProtocolError::idempotency_conflict(request_id, existing),
         StorageError::ConstraintViolation(message) | StorageError::Conflict(message) => {
             ProtocolError::invalid_argument(field, message)
         }

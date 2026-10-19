@@ -184,6 +184,11 @@ pub struct FactWriteCommand {
     /// `fact` | `abstraction` | `perspective`. Default fact.
     #[serde(default)]
     pub kind: String,
+    /// Tool `idempotency_key` ledger entry. When set, storage judges this
+    /// request before receipt replay and claims the ledger rows on admit.
+    /// Not receipt material and never serialized.
+    #[serde(skip)]
+    pub request: Option<crate::verbs::idempotency::RequestKey>,
 }
 
 /// The values every authorized Fact witness carries: the mint gate, the
@@ -789,6 +794,7 @@ impl FactWriteCommand {
             refs: Vec::new(),
             blob_id: None,
             kind: "fact".into(),
+            request: None,
         }
     }
 
@@ -825,6 +831,14 @@ impl FactWriteCommand {
     #[must_use]
     pub fn with_lexical_language(mut self, lexical_language: Option<String>) -> Self {
         self.lexical_language = lexical_language;
+        self
+    }
+
+    /// Attach a tool `idempotency_key` request so storage judges and claims
+    /// the shared request ledger.
+    #[must_use]
+    pub fn request_key(mut self, request: crate::verbs::idempotency::RequestKey) -> Self {
+        self.request = Some(request);
         self
     }
 

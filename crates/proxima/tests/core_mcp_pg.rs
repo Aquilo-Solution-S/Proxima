@@ -48,6 +48,9 @@ mod memory_reads_alike;
 #[path = "core_mcp_pg/read_veto.rs"]
 mod read_veto;
 
+#[path = "core_mcp_pg/idempotency_rule.rs"]
+mod idempotency_rule;
+
 mod embedding_failure_regressions {
     use super::*;
     use proxima::host::{EmbedCaps, OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
@@ -2343,7 +2346,10 @@ async fn facade_core_episode_commit_bound_replay_fails() {
         .expect_err("bound derive replay must fail");
         assert!(
             derive_err.to_string().contains("replayed")
-                || derive_err.to_string().contains("changed declared refs"),
+                || derive_err.to_string().contains("changed declared refs")
+                || derive_err
+                    .to_string()
+                    .contains("changed declared index rows"),
             "derive H9: {derive_err}"
         );
 

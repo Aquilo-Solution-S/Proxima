@@ -51,6 +51,7 @@ fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: &str) -> FactWr
         refs,
         blob_id: None,
         kind: kind.into(),
+        request: None,
     }
 }
 

@@ -39,6 +39,7 @@ pub struct FactWrite<'a, P: FactPayload> {
     lexical_language: Option<String>,
     refs: Vec<MemoryId>,
     reobserve_displaced: bool,
+    request: Option<crate::verbs::idempotency::RequestKey>,
 }
 
 impl<P: FactPayload> std::fmt::Debug for FactWrite<'_, P> {
@@ -78,6 +79,7 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
             ),
             refs: Vec::new(),
             reobserve_displaced: false,
+            request: None,
         }
     }
 
@@ -101,6 +103,13 @@ impl<'a, P: FactPayload> FactWrite<'a, P> {
     #[must_use]
     pub const fn handle(mut self, handle: crate::SeriesHandle) -> Self {
         self.handle = Some(handle);
+        self
+    }
+
+    /// Attach a tool `idempotency_key` request for the shared ledger.
+    #[must_use]
+    pub fn request_key(mut self, request: crate::verbs::idempotency::RequestKey) -> Self {
+        self.request = Some(request);
         self
     }
 
@@ -146,6 +155,7 @@ struct OwnedFactWrite<P: FactPayload> {
     lexical_language: Option<String>,
     refs: Vec<MemoryId>,
     reobserve_displaced: bool,
+    request: Option<crate::verbs::idempotency::RequestKey>,
 }
 
 impl<P: FactPayload + Clone> FactWrite<'_, P> {
@@ -160,6 +170,7 @@ impl<P: FactPayload + Clone> FactWrite<'_, P> {
             lexical_language: self.lexical_language.clone(),
             refs: self.refs.clone(),
             reobserve_displaced: self.reobserve_displaced,
+            request: self.request.clone(),
         }
     }
 }
@@ -176,6 +187,7 @@ impl<P: FactPayload> OwnedFactWrite<P> {
             lexical_language: self.lexical_language.clone(),
             refs: self.refs.clone(),
             reobserve_displaced: self.reobserve_displaced,
+            request: self.request.clone(),
         }
     }
 }
@@ -955,6 +967,9 @@ impl<'a> UnitOfWork<'a> {
         }
         .with_additional_references(references)
         .with_handle(spec.handle.map(crate::SeriesHandle::into_inner));
+        if let Some(request) = spec.request {
+            draft = draft.request_key(request);
+        }
         if let Some(citation) = spec.citation {
             draft = draft.with_citation(citation);
         }

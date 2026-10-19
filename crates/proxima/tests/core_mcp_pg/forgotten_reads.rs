@@ -948,27 +948,50 @@ async fn replaying_a_forgotten_older_version_answers_forgotten_and_does_not_revi
                 .to_owned();
             sources.push(handle);
         }
-        let derive = |source: &str| {
-            serde_json::json!({
+        let derive = |source: &str, key: &str, supersedes: Option<&str>| {
+            let mut args = serde_json::json!({
                 "kind": "Abstraction", "title": "probevtwo secret", "body": "probevtwo secret",
                 "tags": [], "source_handles": [source], "model_id": "test-model",
-                "idempotency_key": "probe-version-key",
-            })
+                "idempotency_key": key,
+            });
+            if let Some(prior) = supersedes {
+                args["supersedes"] = serde_json::json!(prior);
+            }
+            args
         };
-        let episode = |body: &str, key: &str| {
+        // Episode derive has no supersedes (follow-up); use distinct keys so
+        // each episode's derive is its own request (#477).
+        let episode = |body: &str, remember_key: &str, derive_key: &str| {
             serde_json::json!({
-                "remember": [{"title": body, "body": body, "idempotency_key": key}],
+                "remember": [{"title": body, "body": body, "idempotency_key": remember_key}],
                 "derive": {"title": "probevepisode secret", "body": "probevepisode secret",
                     "source_handles": ["remember:0"], "model_id": "test-model",
-                    "idempotency_key": "probe-episode-key"},
+                    "idempotency_key": derive_key},
             })
         };
-        let v1 = call("core_derive", derive(&sources[0])).await?;
-        let v2 = call("core_derive", derive(&sources[1])).await?;
+        let v1 = call(
+            "core_derive",
+            derive(&sources[0], "probe-version-key", None),
+        )
+        .await?;
+        let v1_handle = v1["handle"].as_str().ok_or("handle")?.to_owned();
+        let v2 = call(
+            "core_derive",
+            derive(&sources[1], "probe-version-key-2", Some(&v1_handle)),
+        )
+        .await?;
         let v2_handle = v2["handle"].as_str().ok_or("handle")?.to_owned();
         assert_ne!(v1["handle"], v2["handle"], "v2 is a new version: {v1} {v2}");
-        let e1 = call("core_episode_commit", episode("epver one", "epver-1")).await?;
-        let e2 = call("core_episode_commit", episode("epver two", "epver-2")).await?;
+        let e1 = call(
+            "core_episode_commit",
+            episode("epver one", "epver-1", "probe-episode-key"),
+        )
+        .await?;
+        let e2 = call(
+            "core_episode_commit",
+            episode("epver two", "epver-2", "probe-episode-key-2"),
+        )
+        .await?;
         let e2_derived = e2["derived"].as_str().ok_or("derived")?.to_owned();
         assert_ne!(
             e1["derived"], e2["derived"],
@@ -980,11 +1003,19 @@ async fn replaying_a_forgotten_older_version_answers_forgotten_and_does_not_revi
         }
         let rows = memory_rows().await?;
 
-        let replay = call("core_derive", derive(&sources[1])).await?;
+        let replay = call(
+            "core_derive",
+            derive(&sources[1], "probe-version-key-2", Some(&v1_handle)),
+        )
+        .await?;
         assert_eq!(replay["handle"], v2_handle.as_str(), "derive: {replay}");
         assert_eq!(replay["idempotent_replay"], true, "derive: {replay}");
         assert_eq!(replay["forgotten"], true, "derive: {replay}");
-        let replay = call("core_episode_commit", episode("epver two", "epver-2")).await?;
+        let replay = call(
+            "core_episode_commit",
+            episode("epver two", "epver-2", "probe-episode-key-2"),
+        )
+        .await?;
         assert_eq!(replay["derived"], e2_derived.as_str(), "episode: {replay}");
 
         assert_eq!(memory_rows().await?, rows, "a replay wrote a memory row");
@@ -1018,12 +1049,14 @@ async fn replaying_a_forgotten_older_version_answers_forgotten_and_does_not_revi
     result.expect("replay of a forgotten older version");
 }
 
-/// #488 review r3: a same-key remember with a changed body after forget
-/// continues the forgotten note's series, as a changed derive does. The
-/// forgotten version stays history, and restoring it never leaves two live
-/// series for one note key: one handle, one live head, one search hit.
+/// #477 / #488: a same-key remember with a changed body after forget is an
+/// idempotency conflict (the key still names the forgotten write). Restore
+/// the head, then a new key with `supersedes` continues the one series.
+/// Also: after v2 supersedes v1, forget v2, write v3 superseding v1, restore
+/// v2 — v3 stays the only live head.
 #[tokio::test]
-async fn a_changed_remember_after_forget_continues_the_series_and_restore_keeps_one_head() {
+#[allow(clippy::too_many_lines)]
+async fn a_changed_remember_after_forget_conflicts_and_new_key_supersedes() {
     let split_db = clone_split_core_db("proxima_remember_forgotten_series")
         .await
         .expect("PG required for tests");
@@ -1041,10 +1074,6 @@ async fn a_changed_remember_after_forget_continues_the_series_and_restore_keeps_
         let authz = space_authz(owner, vec![owner], Role::admin());
         let call = |tool: &'static str, args: serde_json::Value| {
             call_test_model_tool(&tools, authz.clone(), owner, tool, args)
-        };
-        let note = |body: &str| {
-            serde_json::json!({"title": "notex", "body": body, "tags": [],
-                "idempotency_key": "notex-key"})
         };
         let series = || async {
             let admin = sqlx::PgPool::connect(&db_url(split_db.name())).await?;
@@ -1065,51 +1094,80 @@ async fn a_changed_remember_after_forget_continues_the_series_and_restore_keeps_
             admin.close().await;
             Ok::<(i64, Vec<Uuid>), Box<dyn std::error::Error>>((handles, live_heads))
         };
-        let first = call("core_remember", note("notex notefirst")).await?;
-        let first = first["handle"].as_str().ok_or("handle")?.to_owned();
-        call("core_forget", serde_json::json!({"memory": first})).await?;
-        let second = call("core_remember", note("notex notesecond")).await?;
-        assert_eq!(second["idempotent_replay"], false, "{second}");
-        let second = second["handle"].as_str().ok_or("handle")?.to_owned();
-        assert_eq!(
-            series().await?.0,
-            1,
-            "a changed remember after forget minted a new series"
+        let first = call(
+            "core_remember",
+            serde_json::json!({"title": "notex", "body": "notex notefirst", "tags": [],
+                "idempotency_key": "notex-key"}),
+        )
+        .await?;
+        let first_h = first["handle"].as_str().ok_or("handle")?.to_owned();
+        call("core_forget", serde_json::json!({"memory": first_h})).await?;
+        let err = call(
+            "core_remember",
+            serde_json::json!({"title": "notex", "body": "notex notesecond", "tags": [],
+                "idempotency_key": "notex-key"}),
+        )
+        .await
+        .expect_err("changed body after forget must conflict");
+        assert!(
+            err.to_string().contains("already names")
+                || err
+                    .to_string()
+                    .to_ascii_lowercase()
+                    .contains("idempotency_conflict"),
+            "{err}"
         );
-
         call(
             "core_forget",
-            serde_json::json!({"memory": first, "action": "restore"}),
+            serde_json::json!({"memory": first_h, "action": "restore"}),
         )
         .await?;
+        let second = call(
+            "core_remember",
+            serde_json::json!({"title": "notex", "body": "notex notesecond", "tags": [],
+                "idempotency_key": "notex-key-2", "supersedes": first_h}),
+        )
+        .await?;
+        assert_eq!(second["idempotent_replay"], false, "{second}");
+        let second_h = second["handle"].as_str().ok_or("handle")?.to_owned();
+        assert_ne!(second_h, first_h);
         let (handles, live_heads) = series().await?;
-        assert_eq!(handles, 1, "one note key, one series");
+        assert_eq!(handles, 1, "one note key, one series after supersede");
         assert_eq!(
             live_heads,
-            vec![Uuid::parse_str(&second)?],
-            "restore must not move the head back or add a second live head"
+            vec![Uuid::parse_str(&second_h)?],
+            "exactly one live head after supersede"
         );
 
-        let third = call("core_remember", note("notex notethird")).await?;
-        let third = third["handle"].as_str().ok_or("handle")?.to_owned();
-        let (handles, live_heads) = series().await?;
-        assert_eq!(handles, 1, "the next write appends to the one series");
-        assert_eq!(live_heads, vec![Uuid::parse_str(&third)?]);
-        let found = call(
-            "core_search_memories",
-            serde_json::json!({"query": "notex", "mode": "lexical"}),
+        // Restore case: forget v2, write v3 superseding v1, restore v2 → v3 remains head.
+        call("core_forget", serde_json::json!({"memory": second_h})).await?;
+        let third = call(
+            "core_remember",
+            serde_json::json!({"title": "notex", "body": "notex notethird", "tags": [],
+                "idempotency_key": "notex-key-3", "supersedes": first_h}),
         )
         .await?;
-        assert_eq!(handles_of(&found), vec![third.clone()], "{found}");
+        let third_h = third["handle"].as_str().ok_or("handle")?.to_owned();
+        call(
+            "core_forget",
+            serde_json::json!({"memory": second_h, "action": "restore"}),
+        )
+        .await?;
+        let (handles, live_heads) = series().await?;
+        assert_eq!(
+            handles, 1,
+            "still one series after restore of older version"
+        );
+        assert_eq!(
+            live_heads,
+            vec![Uuid::parse_str(&third_h)?],
+            "restore of v2 must not displace v3 as the live head"
+        );
         built.shutdown().await;
         Ok(())
     }
     .await;
-    result.expect("changed remember after forget, then restore");
-}
-
-fn handles_of(found: &serde_json::Value) -> Vec<String> {
-    handles(found, "memories", "memory")
+    result.expect("changed remember after forget conflicts; restore then supersede");
 }
 
 /// #488 review r3: every replay surface says when the memory it answers is

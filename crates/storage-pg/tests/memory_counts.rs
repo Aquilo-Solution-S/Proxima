@@ -40,6 +40,7 @@ fn memory(kind: &str, handle: Option<Uuid>) -> FactWriteCommand {
         refs: Vec::new(),
         blob_id: None,
         kind: kind.into(),
+        request: None,
     }
 }
 

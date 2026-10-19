@@ -5,6 +5,7 @@ use super::{
     ModifyGoalAtomicRequest, OwnerId, PgConnection, StorageError, SystemOrigin,
     TransitionGoalAtomicRequest, internal, map_err,
 };
+use proxima_core::verbs::idempotency::{IdempotencyKey, KeyVerdict, judge};
 
 fn authorship_declaration(authorship: &GoalAuthorship) -> &'static str {
     // Replay identity records only the logical author category. The operator
@@ -220,11 +221,17 @@ pub(super) async fn resolve_decompose_replay_set(
             replayed.push(None);
             continue;
         };
-        if matches != Some(true) {
-            return Err(idempotency_conflict(child.request_id.as_str()));
+        let key = &child.request_id;
+        match judge(Some((goal_t, matches == Some(true))), key) {
+            Ok(KeyVerdict::Replay(t)) => {
+                reused.get_or_insert(child.request_id.as_str());
+                replayed.push(Some(replay_outcome(t, edge_count)?));
+            }
+            Ok(KeyVerdict::Fresh) => replayed.push(None),
+            Err(conflict) => {
+                return Err(idempotency_conflict(&conflict.key, Some(conflict.existing)));
+            }
         }
-        reused.get_or_insert(child.request_id.as_str());
-        replayed.push(Some(replay_outcome(goal_t, edge_count)?));
     }
     // Nothing was reused, so the whole set is fresh.
     let Some(reused) = reused else {
@@ -235,7 +242,7 @@ pub(super) async fn resolve_decompose_replay_set(
     let mut children = Vec::with_capacity(replayed.len());
     for outcome in replayed {
         let Some(outcome) = outcome else {
-            return Err(idempotency_conflict(reused));
+            return Err(idempotency_conflict(reused, None));
         };
         children.push(DecomposedGoalOutcome { outcome });
     }
@@ -312,10 +319,13 @@ pub(super) async fn resolve_goal_replay(
     let Some((goal_t, edge_count, matches)) = row else {
         return Ok(None);
     };
-    if matches != Some(true) {
-        return Err(idempotency_conflict(request_id));
+    let key =
+        IdempotencyKey::new(request_id.to_string()).map_err(StorageError::ConstraintViolation)?;
+    match judge(Some((goal_t, matches == Some(true))), &key) {
+        Ok(KeyVerdict::Replay(t)) => replay_outcome(t, edge_count).map(Some),
+        Ok(KeyVerdict::Fresh) => Ok(None),
+        Err(conflict) => Err(idempotency_conflict(&conflict.key, Some(conflict.existing))),
     }
-    replay_outcome(goal_t, edge_count).map(Some)
 }
 
 fn replay_outcome(
@@ -364,10 +374,11 @@ pub(super) async fn record_goal_replay_declaration(
     Ok(())
 }
 
-pub(super) fn idempotency_conflict(request_id: &str) -> StorageError {
+pub(super) fn idempotency_conflict(request_id: &str, existing: Option<uuid::Uuid>) -> StorageError {
     // The `Display` form is load-bearing: storage-level callers match on the
     // message `idempotency_conflict:{request_id}`. The engine matches the variant.
     StorageError::IdempotencyConflict {
         request_id: request_id.to_string(),
+        existing,
     }
 }

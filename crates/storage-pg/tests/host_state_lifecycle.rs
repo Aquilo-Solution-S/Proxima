@@ -832,6 +832,7 @@ fn draft(source_id: &str, ingest_key: &str) -> FactWriteCommand {
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".to_owned(),
+        request: None,
     }
 }
 

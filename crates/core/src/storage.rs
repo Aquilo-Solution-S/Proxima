@@ -43,12 +43,16 @@ pub enum StorageError {
     MembershipForbidden(String),
     /// A same `(owner, request_id)` idempotency key already exists with a
     /// different body. Carries the offending request id so the engine can
-    /// surface a typed `IdempotencyConflict` without message parsing.
+    /// surface a typed `IdempotencyConflict` without message parsing, and
+    /// the existing handle when known so a client can `supersedes` it.
     ///
     /// NOTE: the `Display` form is deliberately `idempotency_conflict:{id}`
     /// so storage-level callers that match on the message keep working.
     #[error("idempotency_conflict:{request_id}")]
-    IdempotencyConflict { request_id: String },
+    IdempotencyConflict {
+        request_id: String,
+        existing: Option<uuid::Uuid>,
+    },
     #[error(
         "database schema does not match this release lane; export/reset is required: {details}"
     )]
@@ -405,6 +409,8 @@ pub struct AuthorDerivedRequest<'a> {
     /// remote subjects), recorded like `external_origins` but as
     /// `reference` rows (#480). A memory id is never in both lists.
     pub external_references: &'a [uuid::Uuid],
+    /// Tool `idempotency_key` ledger entry when the caller supplied one.
+    pub request: Option<crate::verbs::idempotency::RequestKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

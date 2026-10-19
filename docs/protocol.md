@@ -95,8 +95,10 @@ asked.
 Typed payload registration fixes each schema's kind, references, validation,
 sidecars, and listen declaration. A Fact receipt proves admission, not external
 truth. Source ingestion deduplicates using its owner, source, and ingestion
-key; keyless admissions mint a new version. Idempotent command retries must
-reuse both key and body; a changed body conflicts.
+key; keyless admissions mint a new version. An `idempotency_key` names one
+request: the same key with the same content replays and returns the same
+handle; with changed content it fails with `idempotency_conflict` naming
+that handle; write a new version with a new key and `supersedes`.
 
 An episode or explicit `UnitOfWork` commits its declared operations atomically.
 Authoring derived content carries declared-input provenance. An interpretation

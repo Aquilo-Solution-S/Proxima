@@ -110,7 +110,10 @@ pub use verbs::fact_ingest::{
     FactIngestOutcome, FactReceiptDraft, FactWriteCommand, OCCURRED_AT_FUTURE_BOUND,
 };
 pub use verbs::goal_write::{
-    GoalAssignmentTarget, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite,
+    GoalAssignmentTarget, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite, IdempotencyKey,
+};
+pub use verbs::idempotency::{
+    ContentFingerprint, KeyConflict, KeyScope, KeyVerdict, RequestKey, judge,
 };
 pub use verbs::own_erase::{
     EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,

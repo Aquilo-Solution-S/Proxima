@@ -573,6 +573,12 @@ fn components() -> Value {
                     "detail": { "type": "string" },
                     "instance": { "type": "string" },
                     "request_id": { "type": "string" },
+                    "existing": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description":
+                            "Handle the idempotency_key already names, when type is idempotency-conflict.",
+                    },
                 },
                 "required": ["type", "title", "status"],
             },

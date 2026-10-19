@@ -41,6 +41,8 @@ pub struct Problem {
     /// `Allow` for a `405`. Emitted by hand because the generated routes use
     /// `any()`, which calls `skip_allow_header()` and suppresses axum's own.
     allow: Option<&'static str>,
+    /// RFC 9457 extension: existing handle for an idempotency conflict.
+    existing: Option<uuid::Uuid>,
 }
 
 impl Problem {
@@ -59,12 +61,19 @@ impl Problem {
             detail: detail.into(),
             instance: instance.to_string(),
             allow: None,
+            existing: None,
         }
     }
 
     #[must_use]
     pub fn with_allow(mut self, allow: &'static str) -> Self {
         self.allow = Some(allow);
+        self
+    }
+
+    #[must_use]
+    pub fn with_existing(mut self, existing: uuid::Uuid) -> Self {
+        self.existing = Some(existing);
         self
     }
 
@@ -106,13 +115,17 @@ impl Problem {
     }
 
     pub(crate) fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut value = serde_json::json!({
             "type": format!("{TYPE_BASE}{}", self.slug),
             "title": self.title,
             "status": self.status.as_u16(),
             "detail": self.detail,
             "instance": self.instance,
-        })
+        });
+        if let Some(existing) = self.existing {
+            value["existing"] = serde_json::json!(existing.to_string());
+        }
+        value
     }
 }
 
@@ -200,7 +213,19 @@ fn tool_problem(err: &McpToolError, instance: &str) -> Problem {
     // The redaction seam. `Other` and the internal storage variants collapse
     // to a generic string here; nothing else in this module may reach for
     // `Display`.
-    Problem::new(status, slug, title, err.client_message(), instance)
+    let mut problem = Problem::new(status, slug, title, err.client_message(), instance);
+    if let Some(existing) = idempotency_existing(err) {
+        problem = problem.with_existing(existing);
+    }
+    problem
+}
+
+fn idempotency_existing(err: &McpToolError) -> Option<uuid::Uuid> {
+    match err {
+        McpToolError::Protocol(inner) => inner.existing,
+        McpToolError::Storage(StorageError::IdempotencyConflict { existing, .. }) => *existing,
+        _ => None,
+    }
 }
 
 const fn protocol_status(code: ErrorCode) -> (StatusCode, &'static str, &'static str) {
@@ -335,6 +360,7 @@ mod tests {
             code,
             message: "boom".into(),
             request_id: None,
+            existing: None,
         }))
     }
 
@@ -420,6 +446,7 @@ mod tests {
             (
                 StorageError::IdempotencyConflict {
                     request_id: "r".into(),
+                    existing: None,
                 },
                 StatusCode::CONFLICT,
             ),

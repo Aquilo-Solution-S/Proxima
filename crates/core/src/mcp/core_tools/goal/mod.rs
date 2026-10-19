@@ -123,7 +123,7 @@ pub struct GoalSetArgs {
     )]
     pub target_perspective: Option<String>,
     #[schemars(
-        description = "Stable key, 1 to 180 chars, that makes a replay of this call a no-op."
+        description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
     )]
     pub idempotency_key: Option<String>,
 }
@@ -320,7 +320,7 @@ pub struct GoalTransitionArgs {
     )]
     pub pending: Option<PendingWork>,
     #[schemars(
-        description = "Stable key, 1 to 180 chars, that makes a replay of this call a no-op."
+        description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
     )]
     pub idempotency_key: Option<String>,
 }
@@ -384,7 +384,7 @@ pub struct GoalMarkAchievedArgs {
     )]
     pub evidence: Vec<String>,
     #[schemars(
-        description = "Stable key, 1 to 180 chars, that makes a replay of this call a no-op."
+        description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
     )]
     pub idempotency_key: Option<String>,
 }
@@ -437,7 +437,7 @@ pub struct GoalModifyArgs {
     )]
     pub evidence: Option<Vec<String>>,
     #[schemars(
-        description = "Stable key, 1 to 180 chars, that makes a replay of this call a no-op."
+        description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
     )]
     pub idempotency_key: Option<String>,
 }
@@ -492,7 +492,7 @@ pub struct GoalDecomposeArgs {
     )]
     pub target_perspective: Option<String>,
     #[schemars(
-        description = "Stable key, at most 162 chars, that makes a replay of this call a no-op; each child's key derives from it."
+        description = "Key, at most 162 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`; each child's key derives from it."
     )]
     pub idempotency_key: String,
 }

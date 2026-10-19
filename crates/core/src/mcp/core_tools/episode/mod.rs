@@ -16,11 +16,11 @@ use super::memory::interpret::{
     self, MAX_CLAIM_CHARS, MAX_SUBJECTS, default_confidence, interpretation_memory_id,
     reject_self_subject,
 };
-use super::memory::util::{dedup_resolved, normalize_idempotency_key, normalize_tags};
+use super::memory::remember::{self, NoteWriteInput};
+use super::memory::util::dedup_resolved;
 use crate::engine::GoalCreatePayloadWriteRequest;
 use crate::error::ErrorCode;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
-use crate::memory::payloads::AgentNoteV1;
 use crate::memory::payloads::write_act::WriteActV1;
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
@@ -38,9 +38,6 @@ const MAX_REMEMBER: usize = 16;
 const MAX_STANCE: usize = 16;
 const MAX_GOAL: usize = 16;
 const MAX_BIND: usize = 32;
-const NOTE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
-    0x3d, 0x9a, 0x4e, 0x11, 0x8c, 0x20, 0x4f, 0x6a, 0x9b, 0x77, 0x12, 0x44, 0x88, 0x01, 0xcc, 0x55,
-]);
 
 #[derive(Debug, Default)]
 pub struct EpisodeCommitTool;
@@ -56,9 +53,14 @@ pub struct EpisodeRememberItem {
     pub tags: Vec<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional stable note key, 1 to 180 chars, unique within this call. Same key and content returns the existing Fact."
+        description = "Optional key, 1 to 180 chars, unique within this call, naming this one request: same key and content replays; changed content is `idempotency_conflict`. Use `supersedes` for a new version."
     )]
     pub idempotency_key: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional memory handle of a live agent-note Fact to revise. Requires a new `idempotency_key`."
+    )]
+    pub supersedes: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -82,7 +84,7 @@ pub struct EpisodeDeriveItem {
     pub model_id: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional key, 1 to 180 chars. Omit to key on model_id, title, body and tags."
+        description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
     )]
     pub idempotency_key: Option<String>,
     #[serde(default)]
@@ -201,6 +203,8 @@ struct EpisodeWrite<'a> {
     uow: UnitOfWork<'a>,
     bind: &'a BindSet,
     owner: crate::OwnerId,
+    /// Caller-supplied space key (same as `EpisodeCommitArgs.space`).
+    space: Option<&'a str>,
     act_id: MemoryId,
     slots: EpisodeSlots,
     bound: Vec<String>,
@@ -252,6 +256,7 @@ async fn episode_commit(
         uow,
         bind: &bind,
         owner: space.owner,
+        space: args.space.as_deref(),
         act_id,
         slots: EpisodeSlots::default(),
         bound: Vec::new(),
@@ -325,29 +330,35 @@ impl EpisodeWrite<'_> {
     ) -> Result<(), McpToolError> {
         let bind = self.bind;
         let act_id = self.act_id;
+        let ctx = self.ctx;
         for (idx, item) in items.iter().enumerate() {
-            let title = validate_trimmed_len("title", &item.title, 240)?;
-            let body = validate_trimmed_len("body", &item.body, 20_000)?;
-            let idempotency_key = normalize_idempotency_key(item.idempotency_key.clone())?;
-            let tags = normalize_tags(item.tags.clone())?;
-            let note_id = idempotency_key
-                .as_deref()
-                .map_or_else(uuid::Uuid::now_v7, |key| {
-                    uuid::Uuid::new_v5(&NOTE_NAMESPACE, key.as_bytes())
-                });
-            let payload = AgentNoteV1 {
-                note_id,
-                title: title.to_string(),
-                body: body.to_string(),
-                tags,
-                idempotency_key,
-            };
+            let prepared = remember::prepare_note_write(
+                ctx,
+                NoteWriteInput {
+                    title: &item.title,
+                    body: &item.body,
+                    tags: item.tags.clone(),
+                    idempotency_key: item.idempotency_key.clone(),
+                    supersedes: item.supersedes.as_deref(),
+                    citation: None,
+                    space: self.space,
+                    observed_at: None,
+                    language: None,
+                },
+            )
+            .await?;
+            // Episode notes share core/agent and NOTE_NAMESPACE with core_remember.
+            // prepare_note_write already stamps SOURCE_ID = core/agent.
             let pin = bind.remember.contains(&idx);
-            // A remember item takes no `language`, so this write keeps the
-            // builder's default: an explicit request for the deployment
-            // configuration, which is what an omitted `language` resolves to
-            // on the standalone `core_remember` too.
-            let mut spec = FactWrite::new(self.owner, "core/episode-remember", &payload);
+            let draft = &prepared.draft;
+            let payload = prepared.payload.clone();
+            let mut spec = crate::FactWrite::new(self.owner, remember::SOURCE_ID, &payload);
+            if let Some(handle) = draft.handle {
+                spec = spec.handle(crate::SeriesHandle::new(handle));
+            }
+            if let Some(request) = draft.request.clone() {
+                spec = spec.request_key(request);
+            }
             if pin {
                 spec = spec.refs([act_id]);
             }
@@ -424,6 +435,7 @@ impl EpisodeWrite<'_> {
             core_derive_operator_id(kind),
             core_derive_input_contract_id(kind),
         );
+        let request = derive::derive_request_key(kind, &authored, &origins, &[], None)?;
         let outcome = self
             .uow
             .derive_memory(
@@ -436,7 +448,8 @@ impl EpisodeWrite<'_> {
                     identity,
                 )?
                 .refs(extra_refs)
-                .lexical_language(lexical_language),
+                .lexical_language(lexical_language)
+                .request_key(request),
             )
             .await
             .map_err(|err| map_bound_derived_error(err, "derive", pin))?;
@@ -615,7 +628,10 @@ fn reject_bound_replay(pin: bool, replay: bool, kind: &str) -> Result<(), McpToo
 fn map_bound_fact_error(err: crate::error::ProtocolError, kind: &str, pin: bool) -> McpToolError {
     if pin
         && matches!(err.code, ErrorCode::InvalidArgument | ErrorCode::Internal)
-        && err.message.contains("fact replay changed declared refs")
+        && (err.message.contains("fact replay changed declared refs")
+            || err
+                .message
+                .contains("fact replay changed declared index rows"))
     {
         return McpToolError::InvalidInput(format!(
             "bound {kind} replayed an existing row; bind requires a new admission that pins this write-act"
@@ -631,7 +647,10 @@ fn map_bound_derived_error(
 ) -> McpToolError {
     if pin
         && matches!(err.code, ErrorCode::InvalidArgument | ErrorCode::Internal)
-        && err.message.contains("derived replay changed declared refs")
+        && (err.message.contains("derived replay changed declared refs")
+            || err
+                .message
+                .contains("derived replay changed declared index rows"))
     {
         return McpToolError::InvalidInput(format!(
             "bound {kind} replayed an existing memory; bind requires a new admission that pins this write-act"

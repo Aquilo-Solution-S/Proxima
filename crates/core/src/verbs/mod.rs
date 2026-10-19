@@ -2,6 +2,7 @@
 //! docs/protocol.md.
 pub mod fact_ingest;
 pub mod goal_write;
+pub mod idempotency;
 pub mod own_erase;
 pub mod query;
 pub mod schema;

@@ -194,8 +194,11 @@ pub fn build_instructions(
             );
         }
         out.push_str(
-            "Pass `idempotency_key` on any write you might replay (imports, re-runs) so replays \
-             are no-ops, not duplicates, and tag consistently (domain + kind). `model_id` is an \
+            "Pass `idempotency_key` on any write you might replay (imports, re-runs): an \
+             `idempotency_key` names one request — the same key with the same content \
+             replays and returns the same handle; with changed content it fails with \
+             `idempotency_conflict` naming that handle; write a new version with a new \
+             key and `supersedes`. Tag consistently (domain + kind). `model_id` is an \
              optional operator label; when your token already binds a model identity that \
              identity is recorded, so omit `model_id` or send exactly the bound value — a \
              different one is refused. ",
@@ -319,6 +322,7 @@ pub fn how_to_markdown(
     }
     push_capture_table(&mut out, s);
     push_edges(&mut out, s);
+    push_idempotency(&mut out, s);
     push_worked_example(&mut out, s);
     push_reading(&mut out, s);
 
@@ -456,6 +460,35 @@ fn push_edges(out: &mut String, s: Surface) {
         );
     }
     out.push('\n');
+}
+
+fn push_idempotency(out: &mut String, s: Surface) {
+    // Any keyed write advertises the rule; name only tools this surface has.
+    if !(s.remember || s.record_utterance || s.derive || s.goals) {
+        return;
+    }
+    out.push_str(
+        "## Idempotency\n\nAn `idempotency_key` names one request: the same key with the same content replays and returns the same handle; with changed content it fails with `idempotency_conflict` naming that handle; write a new version with a new key and `supersedes`",
+    );
+    let mut named = Vec::new();
+    if s.remember {
+        named.push("`core_remember`");
+    }
+    if s.derive {
+        named.push("`core_derive`");
+    }
+    // Episode remember shares core_remember's key space; name it only when
+    // remember is advertised (episode_commit is not a NAMEABLE_TOOLS entry).
+    if s.remember {
+        named.push("episode remember");
+    }
+    if named.is_empty() {
+        out.push_str(".\n\n");
+    } else {
+        out.push_str(" (");
+        out.push_str(&named.join(", "));
+        out.push_str(").\n\n");
+    }
 }
 
 fn push_worked_example(out: &mut String, s: Surface) {
@@ -712,12 +745,33 @@ mod tests {
             .filter(|name| name.starts_with("core_"))
             .collect();
         let resources = full_resource_set();
+        let instructions = build_instructions(&tools, &resources);
+        let how_to = how_to_markdown(&tools, &resources);
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/golden/selfdoc_core_instructions.txt"
+                ),
+                &instructions,
+            )
+            .unwrap();
+            std::fs::write(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/golden/selfdoc_core_how_to.txt"
+                ),
+                &how_to,
+            )
+            .unwrap();
+            return;
+        }
         assert_eq!(
-            build_instructions(&tools, &resources),
+            instructions,
             include_str!("../tests/golden/selfdoc_core_instructions.txt")
         );
         assert_eq!(
-            how_to_markdown(&tools, &resources),
+            how_to,
             include_str!("../tests/golden/selfdoc_core_how_to.txt")
         );
     }

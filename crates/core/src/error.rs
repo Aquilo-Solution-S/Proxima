@@ -6,6 +6,10 @@ pub struct ProtocolError {
     pub code: ErrorCode,
     pub message: String,
     pub request_id: Option<String>,
+    /// When `code` is [`ErrorCode::IdempotencyConflict`], the handle the
+    /// key already names. Skipped when absent so older clients keep working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing: Option<uuid::Uuid>,
 }
 
 /// Subset of docs/protocol.md's `ErrorCode` exercised so far. Additional
@@ -63,6 +67,7 @@ impl ProtocolError {
             code: ErrorCode::Forbidden,
             message: message.into(),
             request_id: None,
+            existing: None,
         }
     }
 
@@ -71,17 +76,29 @@ impl ProtocolError {
             code: ErrorCode::UnknownSchema,
             message: format!("schema not registered: {} v{}", schema_id.as_ref(), version),
             request_id: None,
+            existing: None,
         }
     }
 
-    pub fn idempotency_conflict(request_id: impl AsRef<str>) -> Self {
+    pub fn idempotency_conflict(
+        key: impl AsRef<str>,
+        existing: impl Into<Option<uuid::Uuid>>,
+    ) -> Self {
+        let key = key.as_ref();
+        let existing = existing.into();
+        let message = match existing {
+            Some(handle) => format!(
+                "idempotency_key {key} already names {handle} with other content; resend it unchanged to replay, or write a new version with a new key and supersedes: {handle}"
+            ),
+            None => format!(
+                "idempotency_key {key} already names a write with other content; resend it unchanged to replay, or write a new version with a new key and supersedes"
+            ),
+        };
         Self {
             code: ErrorCode::IdempotencyConflict,
-            message: format!(
-                "request_id already used with different body: {}",
-                request_id.as_ref(),
-            ),
+            message,
             request_id: None,
+            existing,
         }
     }
 
@@ -96,6 +113,7 @@ impl ProtocolError {
             code: ErrorCode::NotFound,
             message: format!("scope not registered: {}:{id}", kind.as_ref()),
             request_id: None,
+            existing: None,
         }
     }
 
@@ -104,6 +122,7 @@ impl ProtocolError {
             code: ErrorCode::NotFound,
             message: message.into(),
             request_id: None,
+            existing: None,
         }
     }
 
@@ -114,6 +133,7 @@ impl ProtocolError {
             code: ErrorCode::CapacityExhausted,
             message: message.into(),
             request_id: None,
+            existing: None,
         }
     }
 
@@ -122,6 +142,7 @@ impl ProtocolError {
             code: ErrorCode::Internal,
             message: message.into(),
             request_id: None,
+            existing: None,
         }
     }
 
@@ -130,6 +151,7 @@ impl ProtocolError {
             code: ErrorCode::InvalidArgument,
             message: format!("invalid argument {}: {}", field.as_ref(), reason.as_ref()),
             request_id: None,
+            existing: None,
         }
     }
 
@@ -138,6 +160,7 @@ impl ProtocolError {
             code: ErrorCode::ToolNotRegistered,
             message: format!("tool not registered: {}", tool_id.as_ref()),
             request_id: None,
+            existing: None,
         }
     }
 
@@ -146,6 +169,7 @@ impl ProtocolError {
             code: ErrorCode::Suppressed,
             message: message.into(),
             request_id: None,
+            existing: None,
         }
     }
 
@@ -158,6 +182,7 @@ impl ProtocolError {
                 trigger_id.as_ref()
             ),
             request_id: None,
+            existing: None,
         }
     }
 
@@ -173,6 +198,7 @@ impl ProtocolError {
                 trigger_id.as_ref()
             ),
             request_id: None,
+            existing: None,
         }
     }
 }

@@ -27,7 +27,7 @@ pub struct RecordUtteranceArgs {
     )]
     pub text: String,
     #[schemars(
-        description = "Optional key, 1 to 180 chars. Resending the same key with the same speaker, conversation_id and text returns the existing Fact; changed content under the same key writes a new Fact."
+        description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
     )]
     pub idempotency_key: Option<String>,
     #[serde(default)]
@@ -98,11 +98,23 @@ impl McpTool for RecordUtteranceTool {
             let lexical_language =
                 crate::lexical_language::resolve_lexical_language(args.language.as_deref(), text)
                     .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-            let draft = FactWriteCommand {
+            let mut draft = FactWriteCommand {
                 occurred_at,
                 ..FactWriteCommand::from_payload(source_id, &payload)
             }
             .with_lexical_language(Some(lexical_language));
+            if let Some(key_str) = &idempotency_key {
+                let key = crate::IdempotencyKey::new(key_str.clone())
+                    .map_err(McpToolError::InvalidInput)?;
+                let fp = crate::ContentFingerprint::builder(crate::KeyScope::Utterance)
+                    .text("body", text)
+                    .bytes("speaker", payload.speaker.as_str().as_bytes())
+                    .text("conversation_id", conversation_id)
+                    .tags(std::iter::empty::<&str>())
+                    .build();
+                draft =
+                    draft.request_key(crate::RequestKey::new(crate::KeyScope::Utterance, key, fp));
+            }
 
             let engine = ctx.require_engine()?;
             let sidecars = [SidecarPayload::fact(payload.clone())];

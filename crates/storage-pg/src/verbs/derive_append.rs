@@ -44,6 +44,8 @@ pub(crate) struct DerivedDraft<'a> {
     /// Spaces selected by the schema and write route. Jobs are queued in
     /// this memory transaction; an empty slice requests no work.
     pub queued_spaces: &'a [proxima_core::EmbeddingSpace],
+    /// Tool `idempotency_key` ledger entry, when the caller supplied one.
+    pub request: Option<proxima_core::verbs::idempotency::RequestKey>,
 }
 
 impl<'a> DerivedDraft<'a> {
@@ -63,6 +65,7 @@ impl<'a> DerivedDraft<'a> {
             supersedes: req.supersedes,
             lexical_language: req.lexical_language,
             queued_spaces: req.queued_spaces,
+            request: req.request.clone(),
         }
     }
 }
@@ -165,12 +168,26 @@ async fn admit_derived(
     } else {
         draft.memory_id
     };
-    if let Some(replay) =
+    if let Some(request) = draft.request.as_ref() {
+        match super::request_keys::judge_request(tx, &draft.owner, request).await? {
+            proxima_core::verbs::idempotency::KeyVerdict::Replay(replay) => {
+                return Ok(DerivedOutcome {
+                    memory_id: proxima_core::MemoryId::new(replay.memory_id),
+                    idempotent_replay: true,
+                    forgotten: replay.forgotten,
+                });
+            }
+            proxima_core::verbs::idempotency::KeyVerdict::Fresh => {}
+        }
+    } else if let Some(replay) =
         try_derived_replay(tx, handle, draft, kind, input.origins, input.references).await?
     {
         return Ok(replay);
     }
-    let cmd = derived_memory_command(draft, handle, kind);
+    let mut cmd = derived_memory_command(draft, handle, kind);
+    if let Some(request) = draft.request.as_ref() {
+        cmd = cmd.request_key(request.clone());
+    }
     let supersedes_targets = draft
         .supersedes
         .map(MemoryId::into_inner)
@@ -197,8 +214,10 @@ async fn admit_derived(
     // preparation. Preparation then observes its head and legitimately
     // passes the locked head comparison. Recheck under the existing fences
     // and handle/lifecycle locks before materializing another version.
-    if let Some(replay) =
-        try_derived_replay(tx, handle, draft, kind, input.origins, input.references).await?
+    // When a request key is present the ledger (via claim) is the authority.
+    if draft.request.is_none()
+        && let Some(replay) =
+            try_derived_replay(tx, handle, draft, kind, input.origins, input.references).await?
     {
         return Ok(replay);
     }
@@ -363,6 +382,7 @@ fn derived_memory_command(
         refs: Vec::new(),
         blob_id: None,
         kind: kind.into(),
+        request: None,
     }
 }
 

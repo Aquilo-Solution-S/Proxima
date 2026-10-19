@@ -87,6 +87,7 @@ fn draft(_owner: &OwnerId) -> FactWriteCommand {
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
+        request: None,
     }
 }
 

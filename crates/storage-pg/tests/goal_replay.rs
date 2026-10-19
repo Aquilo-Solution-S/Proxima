@@ -48,6 +48,7 @@ fn memory_draft(kind: &str) -> FactWriteCommand {
         refs: Vec::new(),
         blob_id: None,
         kind: kind.into(),
+        request: None,
     }
 }
 

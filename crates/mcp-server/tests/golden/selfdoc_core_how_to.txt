@@ -61,6 +61,10 @@ Two kinds, and the vocabulary is closed. The kind follows the write that produce
 
 `core_interpret` writes no edge of its own: its `subjects` are payload fields of the interpretation Perspective, so they arrive as `reference` entries.
 
+## Idempotency
+
+An `idempotency_key` names one request: the same key with the same content replays and returns the same handle; with changed content it fails with `idempotency_conflict` naming that handle; write a new version with a new key and `supersedes` (`core_remember`, `core_derive`, episode remember).
+
 ## Worked example: turning the wheel
 
 1. **Observe.** `core_remember(title=..., body=...)` for each distinct thing that happened → Facts `fact-a`, `fact-b`, `fact-c`.

@@ -39,6 +39,7 @@ fn draft(kind: &str) -> FactWriteCommand {
         refs: Vec::new(),
         blob_id: None,
         kind: kind.into(),
+        request: None,
     }
 }
 
@@ -60,6 +61,7 @@ fn derived_draft(
         supersedes: None,
         lexical_language: None,
         queued_spaces: &[],
+        request: None,
     }
 }
 

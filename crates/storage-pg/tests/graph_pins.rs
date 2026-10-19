@@ -62,6 +62,7 @@ fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
         refs,
         blob_id: None,
         kind: kind.into(),
+        request: None,
     }
 }
 

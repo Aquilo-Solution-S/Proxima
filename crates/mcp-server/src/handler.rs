@@ -650,6 +650,7 @@ const CAPACITY_EXHAUSTED_CODE: &str = "capacity_exhausted";
 /// `error.data.code` for another store that did not answer: retryable, and
 /// never -32602 (a client would read that as "no such memory").
 const STORE_UNAVAILABLE_CODE: &str = "store_unavailable";
+const IDEMPOTENCY_CONFLICT_CODE: &str = "idempotency_conflict";
 
 /// Classify an [`McpToolError`] by JSON-RPC code: caller-input faults —
 /// including references to missing entities — → `invalid_params` (-32602);
@@ -666,7 +667,13 @@ pub fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
         McpToolErrorKind::InvalidInput | McpToolErrorKind::NotFound => {
             ErrorData::invalid_params(err.client_message(), None)
         }
-        McpToolErrorKind::InvalidRequest => ErrorData::invalid_request(err.client_message(), None),
+        McpToolErrorKind::InvalidRequest => {
+            if let Some(data) = idempotency_conflict_data(err) {
+                ErrorData::invalid_request(err.client_message(), Some(data))
+            } else {
+                ErrorData::invalid_request(err.client_message(), None)
+            }
+        }
         McpToolErrorKind::CapacityExhausted => ErrorData::new(
             SERVER_ERROR,
             err.client_message(),
@@ -685,6 +692,32 @@ pub fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
         }
         McpToolErrorKind::Internal => generic_internal_error(err),
     }
+}
+
+fn idempotency_conflict_data(err: &McpToolError) -> Option<serde_json::Value> {
+    let existing = match err {
+        McpToolError::Protocol(inner)
+            if inner.code == proxima_core::error::ErrorCode::IdempotencyConflict =>
+        {
+            inner.existing
+        }
+        McpToolError::Storage(proxima_core::StorageError::IdempotencyConflict {
+            existing, ..
+        }) => *existing,
+        _ => return None,
+    };
+    let mut data = serde_json::Map::new();
+    data.insert(
+        "code".into(),
+        serde_json::Value::String(IDEMPOTENCY_CONFLICT_CODE.to_string()),
+    );
+    if let Some(existing) = existing {
+        data.insert(
+            "existing".into(),
+            serde_json::Value::String(existing.to_string()),
+        );
+    }
+    Some(serde_json::Value::Object(data))
 }
 
 fn generic_internal_error(err: impl std::fmt::Display) -> ErrorData {

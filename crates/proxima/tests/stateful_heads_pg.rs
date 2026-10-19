@@ -100,6 +100,7 @@ fn fresh_draft(schema: &str, payload: &[u8]) -> FactWriteCommand {
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
+        request: None,
     }
 }
 

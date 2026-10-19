@@ -181,6 +181,7 @@ fn draft(
         refs: Vec::new(),
         blob_id,
         kind: "fact".into(),
+        request: None,
     }
 }
 

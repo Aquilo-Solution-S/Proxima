@@ -274,6 +274,47 @@ struct PreparationOptions<'a> {
     extra_targets: &'a [Uuid],
 }
 
+enum AdmissionReplay {
+    Replay(FactIngestOutcome),
+    Admit,
+    Reobserve { next_key: String },
+}
+
+async fn decide_admission_replay(
+    tx: &mut Transaction<'_, Postgres>,
+    admission: MemoryAdmissionDraft<'_>,
+    owner: &OwnerId,
+    owner_id: Uuid,
+    draft: &FactWriteCommand,
+    refs: &[Uuid],
+    goal_refs: &[Uuid],
+) -> Result<AdmissionReplay, StorageError> {
+    if let Some(request) = draft.request.as_ref() {
+        return Ok(
+            match super::request_keys::judge_request(tx, owner, request).await? {
+                proxima_core::verbs::idempotency::KeyVerdict::Replay(replay) => {
+                    AdmissionReplay::Replay(FactIngestOutcome {
+                        receipt_id: None,
+                        memory_id: MemoryId::new(replay.memory_id),
+                        handle: replay.handle,
+                        idempotent_replay: true,
+                        cited_object_id: None,
+                        forgotten: replay.forgotten,
+                    })
+                }
+                proxima_core::verbs::idempotency::KeyVerdict::Fresh => AdmissionReplay::Admit,
+            },
+        );
+    }
+    Ok(
+        match replay_decision(tx, admission, owner_id, refs, goal_refs).await? {
+            ReplayDecision::Replay(replay) => AdmissionReplay::Replay(replay),
+            ReplayDecision::Admit => AdmissionReplay::Admit,
+            ReplayDecision::Reobserve { next_key } => AdmissionReplay::Reobserve { next_key },
+        },
+    )
+}
+
 async fn prepare_memory_admission_at(
     tx: &mut Transaction<'_, Postgres>,
     admission: MemoryAdmissionDraft<'_>,
@@ -296,10 +337,12 @@ async fn prepare_memory_admission_at(
     }
 
     let reobservation_key =
-        match replay_decision(tx, admission, owner_id, &refs, &goal_refs).await? {
-            ReplayDecision::Replay(replay) => return Ok(PreparedMemoryAdmission::Replay(replay)),
-            ReplayDecision::Admit => None,
-            ReplayDecision::Reobserve { next_key } => Some(next_key),
+        match decide_admission_replay(tx, admission, owner, owner_id, draft, &refs, &goal_refs)
+            .await?
+        {
+            AdmissionReplay::Replay(replay) => return Ok(PreparedMemoryAdmission::Replay(replay)),
+            AdmissionReplay::Admit => None,
+            AdmissionReplay::Reobserve { next_key } => Some(next_key),
         };
 
     // A new admission takes the owner fence BEFORE arbitrating the owner row.
@@ -723,8 +766,13 @@ fn reobservation_key(key: &str, n: u64) -> String {
     hash.finalize().to_hex().to_string()
 }
 
-/// Claim the sourced replay key after the lifecycle set is held. A concurrent
-/// loser discovers the replay here, still before citation/content persistence.
+/// Claim the request ledger (when present) and the sourced replay key after
+/// the lifecycle set is held. A concurrent loser discovers the replay here,
+/// still before citation/content persistence.
+///
+/// When a tool `idempotency_key` request is present it alone decides: the
+/// receipt-key short-circuit is skipped so a revision's natural note key
+/// cannot answer as a replay of an older version under a different request.
 pub(crate) async fn claim_prepared_memory_admission(
     tx: &mut Transaction<'_, Postgres>,
     prepared: PreparedMemoryAdmission,
@@ -732,6 +780,25 @@ pub(crate) async fn claim_prepared_memory_admission(
     let PreparedMemoryAdmission::New(prepared) = prepared else {
         return Ok(prepared);
     };
+    if let Some(request) = prepared.draft.request.as_ref() {
+        match super::request_keys::claim_request(tx, &prepared.owner, request, prepared.t).await? {
+            proxima_core::verbs::idempotency::KeyVerdict::Fresh => {}
+            proxima_core::verbs::idempotency::KeyVerdict::Replay(replay) => {
+                return Ok(PreparedMemoryAdmission::Replay(FactIngestOutcome {
+                    receipt_id: None,
+                    memory_id: MemoryId::new(replay.memory_id),
+                    handle: replay.handle,
+                    idempotent_replay: true,
+                    cited_object_id: None,
+                    forgotten: replay.forgotten,
+                }));
+            }
+        }
+        // Request key claimed: do not also short-circuit on the natural
+        // receipt key (note_id+title+body+tags). That key is still inserted
+        // below only when no request is present.
+        return Ok(PreparedMemoryAdmission::New(prepared));
+    }
     if let (Some(source_id), Some(key)) = (
         prepared.draft.source_id.as_deref(),
         prepared.draft.ingest_key.as_deref(),

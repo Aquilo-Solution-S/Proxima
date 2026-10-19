@@ -32,6 +32,7 @@ fn fact_draft() -> FactWriteCommand {
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
+        request: None,
     }
 }
 
@@ -48,6 +49,7 @@ fn derived_draft(owner: OwnerId, handle: Uuid) -> DerivedDraft<'static> {
         supersedes: None,
         lexical_language: None,
         queued_spaces: &[],
+        request: None,
     }
 }
 

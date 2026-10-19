@@ -176,6 +176,7 @@ pub async fn ingest_write_act(
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
+        request: None,
     };
     let writer = crate::owner_scope::require_owner_scope(permit.owner_scope())?.writer();
     ingest_fact_timeseries(
@@ -226,6 +227,7 @@ pub(crate) async fn ingest_write_act_at(
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
+        request: None,
     };
     ingest_unpinned_fact_at(
         tx,
@@ -520,6 +522,7 @@ pub(crate) async fn persist_goal_change_fact(
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
+        request: None,
     };
     let tables = sidecars.tables_for_payloads(std::slice::from_ref(&payload))?;
     let (outcome, occurred_at) = ingest_unpinned_fact_at(

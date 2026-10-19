@@ -762,7 +762,7 @@ MEMORY_CENSUS_PLATFORM_CALLEES = (
 LIVE_ONLY_FILTER = re.compile(r"\bforgotten_at IS NULL\b")
 LIVE_ONLY_WINDOW = 8
 LIVE_ONLY_RLS_REASON = "under owner RLS"
-EXPECTED_MEMORY_READS = {"live-only": 25, "includes-forgotten": 75}
+EXPECTED_MEMORY_READS = {"live-only": 25, "includes-forgotten": 76}
 
 
 def in_memory_census(text: str, suffix: str, rel: str = "") -> bool:
@@ -909,6 +909,7 @@ EXPECTED_LIFECYCLE_ENTER_SITES = {
     ("crates/storage-pg/src/verbs/memory_timeseries.rs", "load_ingest_replay"): 1,
     ("crates/storage-pg/src/verbs/memory_timeseries.rs", "resolve_natural_series_handle"): 1,
     ("crates/storage-pg/src/verbs/query/lineage.rs", "forgotten_nodes_on_connection"): 1,
+    ("crates/storage-pg/src/verbs/request_keys.rs", "judge_request"): 1,
 }
 LIFECYCLE_GUC_ROOTS = ("crates", "apps", "tools", "flavors")
 

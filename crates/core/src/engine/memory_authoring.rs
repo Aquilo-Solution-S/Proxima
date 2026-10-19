@@ -28,6 +28,7 @@ pub(super) struct PreparedDerived {
     pub(super) references: Vec<EdgeEndpoint>,
     pub(super) external_origins: Vec<uuid::Uuid>,
     pub(super) external_references: Vec<uuid::Uuid>,
+    pub(super) request: Option<crate::verbs::idempotency::RequestKey>,
 }
 
 #[cfg(test)]
@@ -97,6 +98,7 @@ impl RawDerivedTestRequest<'_> {
             lexical_language: self.lexical_language.map(str::to_owned),
             external_origins: Vec::new(),
             external_references: Vec::new(),
+            request: None,
         })
     }
 }
@@ -119,6 +121,7 @@ impl PreparedDerived {
             references: &self.references,
             external_origins: &self.external_origins,
             external_references: &self.external_references,
+            request: self.request.clone(),
         }
     }
 }
@@ -325,6 +328,7 @@ pub struct DerivedMemory {
     pub(crate) lexical_language: Option<String>,
     pub(crate) external_origins: Vec<crate::storage_ports::other_stores::ReadOrigin>,
     pub(crate) external_references: Vec<crate::storage_ports::other_stores::ReadOrigin>,
+    pub(crate) request: Option<crate::verbs::idempotency::RequestKey>,
 }
 
 impl DerivedMemory {
@@ -380,6 +384,7 @@ impl DerivedMemory {
             ),
             external_origins: Vec::new(),
             external_references: Vec::new(),
+            request: None,
         })
     }
     /// Create a Perspective derived from Abstractions.
@@ -407,6 +412,7 @@ impl DerivedMemory {
             ),
             external_origins: Vec::new(),
             external_references: Vec::new(),
+            request: None,
         })
     }
     /// Create an origin-free Perspective grounded through its payload references.
@@ -430,8 +436,16 @@ impl DerivedMemory {
             ),
             external_origins: Vec::new(),
             external_references: Vec::new(),
+            request: None,
         }
     }
+    /// Attach a tool `idempotency_key` request for the shared ledger.
+    #[must_use]
+    pub fn request_key(mut self, request: crate::verbs::idempotency::RequestKey) -> Self {
+        self.request = Some(request);
+        self
+    }
+
     /// Add memories of other stores, each read through the other-stores
     /// port as the caller ([`OtherStoresService::read_origin`]); duplicates
     /// are removed. Beside local origins they are origins on the same layer
@@ -748,6 +762,7 @@ impl Engine {
             references,
             external_origins,
             external_references,
+            request: memory.request,
         })
     }
 
@@ -891,6 +906,7 @@ impl Engine {
             references,
             external_origins: &[],
             external_references: &[],
+            request: None,
         };
         self.storage()
             .memory_authoring

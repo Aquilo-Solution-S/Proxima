@@ -118,9 +118,14 @@ pub struct DeriveArgs {
     )]
     pub model_id: Option<String>,
     #[schemars(
-        description = "Optional key, 1 to 180 chars. Omit to key on model_id, title, body and tags. Calls sharing a supplied key are one derivation: the first content written is kept."
+        description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`. Omit to key on title, body, tags and sources. Use `supersedes` for a new version."
     )]
     pub idempotency_key: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional memory handle of a live Abstraction or Perspective of the same kind to revise. Requires a new `idempotency_key`."
+    )]
+    pub supersedes: Option<String>,
     #[serde(default)]
     #[schemars(
         description = "Memory space key from core_memory_spaces. The new memory is authored in this space; source handles may be in other readable spaces."
@@ -189,109 +194,138 @@ impl McpTool for DeriveTool {
         ctx: McpToolCtx,
         args: DeriveArgs,
     ) -> futures::future::BoxFuture<'static, Result<DeriveOutput, McpToolError>> {
-        Box::pin(async move {
-            let authored = authored_derivation(
-                &ctx,
-                DerivationFields {
-                    title: &args.title,
-                    body: &args.body,
-                    tags: &args.tags,
-                    model_id: args.model_id.as_deref(),
-                    idempotency_key: args.idempotency_key.as_deref(),
-                },
-            )?;
-
-            if args.source_handles.len() > MAX_SOURCE_HANDLES {
-                return Err(McpToolError::InvalidInput(format!(
-                    "source_handles must contain at most {MAX_SOURCE_HANDLES} handles"
-                )));
-            }
-            let space = super::super::memory_spaces::resolve_space_owner(
-                &ctx,
-                args.space.as_deref(),
-                super::super::memory_spaces::SpaceDefault::Current,
-            )?;
-            let resolved = other_stores::resolve_references(&ctx, &args.source_handles).await?;
-            let sources = resolved
-                .iter()
-                .map(ResolvedMemory::classified)
-                .collect::<Result<Vec<_>, _>>()?;
-            if !resolved
-                .iter()
-                .any(|source| matches!(source, ResolvedMemory::Local(..)))
-                && !resolved.is_empty()
-            {
-                return Err(McpToolError::InvalidInput(
-                    "source_handles must include at least one memory of this store; memories of other stores only join local ones".into(),
-                ));
-            }
-            let lexical_language = crate::lexical_language::resolve_lexical_language(
-                args.language.as_deref(),
-                &format!("{}\n{}", authored.title, authored.body),
-            )
-            .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-            let DerivationPlan {
-                memory_id,
-                derived_from,
-                sidecar,
-                authored,
-                ..
-            } = plan_derivation(&ctx, &space.owner, args.kind, authored, &sources)?;
-            let engine = ctx.require_engine()?;
-            let origins = derived_from
-                .iter()
-                .filter_map(|endpoint| {
-                    endpoint.memory_id().filter(|id| {
-                        crate::memory_store_number(id.into_inner()) == engine.store_number()
-                    })
-                })
-                .collect::<Vec<_>>();
-            let external = resolved
-                .into_iter()
-                .filter_map(|source| match source {
-                    ResolvedMemory::Local(..) => None,
-                    ResolvedMemory::Remote(origin) => Some(origin),
-                })
-                .collect::<Vec<_>>();
-            let identity = DerivationIdentity::new(
-                core_derive_operator_id(args.kind),
-                core_derive_input_contract_id(args.kind),
-            );
-            let target = crate::MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner()));
-            let memory = match args.kind {
-                DerivedKind::Abstraction => DerivedMemory::abstraction(
-                    target,
-                    space.owner,
-                    authored.body.clone(),
-                    sidecar,
-                    origins,
-                    identity,
-                )?,
-                DerivedKind::Perspective => DerivedMemory::perspective(
-                    target,
-                    space.owner,
-                    authored.body.clone(),
-                    sidecar,
-                    origins,
-                    identity,
-                )?,
-            }
-            .lexical_language(lexical_language)
-            .external_origins(external);
-            let outcome = engine
-                .derive_memory(&ctx.authz, memory)
-                .await
-                .map_err(map_derive_authoring_error)?;
-
-            Ok(DeriveOutput {
-                handle: outcome.memory_id.into_inner().to_string(),
-                idempotent_replay: outcome.idempotent_replay,
-                forgotten: outcome.forgotten,
-                edge_count: outcome.edge_count,
-                embedding_deferred: outcome.embedding_deferred,
-            })
-        })
+        Box::pin(derive_call(ctx, args))
     }
+}
+
+async fn resolve_derive_sources(
+    ctx: &McpToolCtx,
+    source_handles: &[String],
+) -> Result<
+    (
+        Vec<(crate::MemoryId, MemoryHandleClass)>,
+        Vec<ResolvedMemory>,
+    ),
+    McpToolError,
+> {
+    if source_handles.len() > MAX_SOURCE_HANDLES {
+        return Err(McpToolError::InvalidInput(format!(
+            "source_handles must contain at most {MAX_SOURCE_HANDLES} handles"
+        )));
+    }
+    let resolved = other_stores::resolve_references(ctx, source_handles).await?;
+    let sources = resolved
+        .iter()
+        .map(ResolvedMemory::classified)
+        .collect::<Result<Vec<_>, _>>()?;
+    if !resolved
+        .iter()
+        .any(|source| matches!(source, ResolvedMemory::Local(..)))
+        && !resolved.is_empty()
+    {
+        return Err(McpToolError::InvalidInput(
+            "source_handles must include at least one memory of this store; memories of other stores only join local ones".into(),
+        ));
+    }
+    Ok((sources, resolved))
+}
+
+async fn derive_call(ctx: McpToolCtx, args: DeriveArgs) -> Result<DeriveOutput, McpToolError> {
+    let authored = authored_derivation(
+        &ctx,
+        DerivationFields {
+            title: &args.title,
+            body: &args.body,
+            tags: &args.tags,
+            model_id: args.model_id.as_deref(),
+            idempotency_key: args.idempotency_key.as_deref(),
+        },
+    )?;
+
+    let space = super::super::memory_spaces::resolve_space_owner(
+        &ctx,
+        args.space.as_deref(),
+        super::super::memory_spaces::SpaceDefault::Current,
+    )?;
+    let (sources, resolved) = resolve_derive_sources(&ctx, &args.source_handles).await?;
+    let lexical_language = crate::lexical_language::resolve_lexical_language(
+        args.language.as_deref(),
+        &format!("{}\n{}", authored.title, authored.body),
+    )
+    .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    let DerivationPlan {
+        memory_id,
+        derived_from,
+        sidecar,
+        authored,
+        ..
+    } = plan_derivation(&ctx, &space.owner, args.kind, authored, &sources)?;
+    let engine = ctx.require_engine()?;
+    let origins = derived_from
+        .iter()
+        .filter_map(|endpoint| {
+            endpoint
+                .memory_id()
+                .filter(|id| crate::memory_store_number(id.into_inner()) == engine.store_number())
+        })
+        .collect::<Vec<_>>();
+    let external = resolved
+        .into_iter()
+        .filter_map(|source| match source {
+            ResolvedMemory::Local(..) => None,
+            ResolvedMemory::Remote(origin) => Some(origin),
+        })
+        .collect::<Vec<_>>();
+    let external_ids: Vec<uuid::Uuid> = external
+        .iter()
+        .map(crate::storage_ports::other_stores::ReadOrigin::handle)
+        .collect();
+    let identity = DerivationIdentity::new(
+        core_derive_operator_id(args.kind),
+        core_derive_input_contract_id(args.kind),
+    );
+    let (target, supersedes_id) = resolve_derive_target(
+        &ctx,
+        args.kind,
+        memory_id,
+        args.idempotency_key.as_deref(),
+        args.supersedes.as_deref(),
+    )
+    .await?;
+    let request = derive_request_key(args.kind, &authored, &origins, &external_ids, supersedes_id)?;
+    let memory = match args.kind {
+        DerivedKind::Abstraction => DerivedMemory::abstraction(
+            target,
+            space.owner,
+            authored.body.clone(),
+            sidecar,
+            origins,
+            identity,
+        )?,
+        DerivedKind::Perspective => DerivedMemory::perspective(
+            target,
+            space.owner,
+            authored.body.clone(),
+            sidecar,
+            origins,
+            identity,
+        )?,
+    }
+    .lexical_language(lexical_language)
+    .external_origins(external)
+    .request_key(request);
+    let outcome = engine
+        .derive_memory(&ctx.authz, memory)
+        .await
+        .map_err(map_derive_authoring_error)?;
+
+    Ok(DeriveOutput {
+        handle: outcome.memory_id.into_inner().to_string(),
+        idempotent_replay: outcome.idempotent_replay,
+        forgotten: outcome.forgotten,
+        edge_count: outcome.edge_count,
+        embedding_deferred: outcome.embedding_deferred,
+    })
 }
 
 /// What a `core_derive` request carries once it is validated: the authored
@@ -372,10 +406,11 @@ pub(crate) fn plan_derivation(
     authored: AuthoredDerivation,
     sources: &[(MemoryId, MemoryHandleClass)],
 ) -> Result<DerivationPlan, McpToolError> {
-    let key = authored
-        .idempotency_key
-        .clone()
-        .unwrap_or_else(|| content_idempotency_key(&authored));
+    let key = authored.idempotency_key.clone().unwrap_or_else(|| {
+        // Keyless: key on title, body, tags and source memory ids so a
+        // re-derive over other sources is a new memory.
+        content_idempotency_key(&authored, sources)
+    });
     let memory_id = MemoryId::new(derived_memory_id(owner, kind.as_str(), &key));
     let sidecar = derivation_sidecar(ctx, &authored, sources);
     let (_operator_kind, target_kind) = operator_shape(kind, sources)?;
@@ -412,16 +447,20 @@ pub(crate) fn plan_derivation(
 /// is asserting "this is the same derivation" — that is what the
 /// parameter is for, and a re-generated body differing by a space
 /// must still replay.
-pub(crate) fn content_idempotency_key(authored: &AuthoredDerivation) -> String {
-    let mut content = blake3::Hasher::new();
-    content.update(authored.title.as_bytes());
-    content.update(b"\0");
-    content.update(authored.body.as_bytes());
-    for tag in &authored.tags {
-        content.update(b"\0");
-        content.update(tag.as_bytes());
-    }
-    format!("{}:{}", authored.model_id, content.finalize().to_hex())
+pub(crate) fn content_idempotency_key(
+    authored: &AuthoredDerivation,
+    sources: &[(MemoryId, MemoryHandleClass)],
+) -> String {
+    let origin_ids = sources.iter().map(|(id, _)| id.into_inner());
+    let fp = crate::ContentFingerprint::builder(crate::KeyScope::Abstraction)
+        .text("title", &authored.title)
+        .text("body", &authored.body)
+        .tags(authored.tags.iter().map(String::as_str))
+        .uuid_set("origins", origin_ids)
+        .absent_uuid_set("references")
+        .absent_uuid_set("supersedes")
+        .build();
+    fp.to_hex()
 }
 
 /// The typed sidecar this write stores beside the memory row.
@@ -443,6 +482,82 @@ pub(crate) fn derivation_sidecar(
         client_name: ctx.author.client_name.clone(),
         client_version: ctx.author.client_version.clone(),
     }
+}
+
+async fn resolve_derive_target(
+    ctx: &McpToolCtx,
+    kind: DerivedKind,
+    series_memory_id: MemoryId,
+    idempotency_key: Option<&str>,
+    supersedes: Option<&str>,
+) -> Result<(crate::MemoryTarget, Option<uuid::Uuid>), McpToolError> {
+    let Some(raw) = supersedes else {
+        return Ok((
+            crate::MemoryTarget::Series(SeriesHandle::new(series_memory_id.into_inner())),
+            None,
+        ));
+    };
+    if idempotency_key.is_none() {
+        return Err(McpToolError::InvalidInput(
+            "supersedes requires a new idempotency_key".into(),
+        ));
+    }
+    let (prior, class) = ctx.resolve_memory_with_kind(raw).await?;
+    let expected = match kind {
+        DerivedKind::Abstraction => MemoryHandleClass::Abstraction,
+        DerivedKind::Perspective => MemoryHandleClass::Perspective,
+    };
+    if class != expected {
+        return Err(McpToolError::InvalidInput(format!(
+            "supersedes must name a live {} memory",
+            kind.as_str()
+        )));
+    }
+    Ok((
+        crate::MemoryTarget::Revision(prior),
+        Some(prior.into_inner()),
+    ))
+}
+
+pub(crate) fn derive_request_key(
+    kind: DerivedKind,
+    authored: &AuthoredDerivation,
+    origins: &[MemoryId],
+    external_origins: &[uuid::Uuid],
+    supersedes_id: Option<uuid::Uuid>,
+) -> Result<crate::RequestKey, McpToolError> {
+    let scope = match kind {
+        DerivedKind::Abstraction => crate::KeyScope::Abstraction,
+        DerivedKind::Perspective => crate::KeyScope::Perspective,
+    };
+    let key_str = authored.idempotency_key.clone().unwrap_or_else(|| {
+        let fp = fingerprint_derivation(scope, authored, origins, external_origins, supersedes_id);
+        fp.to_hex()
+    });
+    let key = crate::IdempotencyKey::new(key_str).map_err(McpToolError::InvalidInput)?;
+    let fp = fingerprint_derivation(scope, authored, origins, external_origins, supersedes_id);
+    Ok(crate::RequestKey::new(scope, key, fp))
+}
+
+pub(crate) fn fingerprint_derivation(
+    scope: crate::KeyScope,
+    authored: &AuthoredDerivation,
+    origins: &[MemoryId],
+    external_origins: &[uuid::Uuid],
+    supersedes_id: Option<uuid::Uuid>,
+) -> crate::ContentFingerprint {
+    let mut fp = crate::ContentFingerprint::builder(scope)
+        .text("title", &authored.title)
+        .text("body", &authored.body)
+        .tags(authored.tags.iter().map(String::as_str))
+        .bytes("kind", scope.as_str().as_bytes())
+        .uuid_set("origins", origins.iter().map(|id| id.into_inner()))
+        .uuid_set("external_origins", external_origins.iter().copied());
+    fp = match supersedes_id {
+        Some(id) => fp.uuid_set("supersedes", [id]),
+        None => fp.absent_uuid_set("supersedes"),
+    };
+    fp.absent_uuid_set("references").build()
 }
 
 pub(crate) fn map_derive_authoring_error(err: crate::error::ProtocolError) -> McpToolError {

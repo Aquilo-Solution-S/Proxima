@@ -499,3 +499,144 @@ async fn sse_json(
     }
     Err(format!("missing JSON SSE data in {text:?}").into())
 }
+
+/// #477: a changed-content replay returns `idempotency_conflict` with
+/// `error.data.existing` on MCP and `existing` on the REST problem body.
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn idempotency_conflict_names_existing_on_mcp_and_rest()
+-> Result<(), Box<dyn std::error::Error>> {
+    if proxima_pg_testkit::admin_url_or_skip().is_none() {
+        return Ok(());
+    }
+    let fixture = proxima_pg_testkit::SplitRoleDb::create("mcp_idempotency_e2e", &[]).await?;
+    let runtime_url = fixture.runtime_url().to_owned();
+    let platform_url = fixture.platform_url().to_owned();
+    let subject = UserId::new(Uuid::now_v7());
+    let owner_key = OwnerId::from(subject).to_string();
+    let (signing, resolver) = keypair();
+    let mut subject_map = OidcSubjectMap::new();
+    subject_map.insert(ISSUER, "idem-operator-sub", subject)?;
+    let owner_access: Arc<dyn OwnerAccessPort> =
+        Arc::new(common::owner_access(&runtime_url, &platform_url).await?);
+    let authn = OidcAuthenticator::new(
+        OidcAuthConfig {
+            issuer: ISSUER.to_string(),
+            jwks_uri: None,
+            audience: AUDIENCE.to_string(),
+            allowed_subjects: None,
+            leeway_secs: 60,
+        },
+        Arc::new(resolver),
+        subject_map,
+        owner_access,
+    )?;
+
+    let app = Proxima::<ProximaMcpApp>::app()
+        .served_surface(proxima_core::ServedSurface::All)
+        .database_url(runtime_url.clone())
+        .store_number(0)
+        .platform_database_url(platform_url.clone())
+        .owner(OwnerId::from(subject))
+        .authenticator(Arc::new(authn))
+        .resource_metadata(ResourceServerMetadata {
+            public_url: "https://proxima.end-to-end.test".to_string(),
+            authorization_servers: vec![ISSUER.to_string()],
+        })
+        .mcp_bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0));
+    #[cfg(feature = "rest")]
+    let app = app.rest_enabled(true);
+    let running = app.run().await?;
+    let addr = running.mcp_addr().ok_or("missing MCP listener address")?;
+    let client = reqwest::Client::new();
+    let mcp_url = format!("http://{addr}/mcp");
+    let bearer = format!("Bearer {}", mint(&signing, "idem-operator-sub"));
+    let session_id = initialize(&client, &mcp_url, &bearer, &owner_key).await?;
+    initialized(&client, &mcp_url, &session_id, &bearer).await?;
+
+    let first = post_rpc(
+        &client,
+        &mcp_url,
+        Some(&session_id),
+        &bearer,
+        json!({
+            "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+            "params": {
+                "name": "core_remember",
+                "arguments": {
+                    "title": "idem e2e",
+                    "body": "first body",
+                    "tags": [],
+                    "idempotency_key": "e2e-idem-key",
+                },
+            },
+        }),
+    )
+    .await?;
+    assert!(first.get("error").is_none(), "{first}");
+    let handle = first["result"]["structuredContent"]["handle"]
+        .as_str()
+        .ok_or("handle")?
+        .to_owned();
+
+    let conflict = post_rpc(
+        &client,
+        &mcp_url,
+        Some(&session_id),
+        &bearer,
+        json!({
+            "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+            "params": {
+                "name": "core_remember",
+                "arguments": {
+                    "title": "idem e2e",
+                    "body": "changed body",
+                    "tags": [],
+                    "idempotency_key": "e2e-idem-key",
+                },
+            },
+        }),
+    )
+    .await?;
+    let err = conflict
+        .get("error")
+        .ok_or_else(|| format!("expected error: {conflict}"))?;
+    assert_eq!(err["code"], -32600, "{conflict}");
+    assert_eq!(err["data"]["code"], "idempotency_conflict", "{conflict}");
+    assert_eq!(err["data"]["existing"], handle, "{conflict}");
+
+    #[cfg(feature = "rest")]
+    {
+        let rest = client
+            .post(format!("http://{addr}/v1/tools/core_remember"))
+            .header("Origin", "http://localhost")
+            .header("Authorization", &bearer)
+            .header("X-Proxima-Owner", &owner_key)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/problem+json, application/json")
+            .json(&json!({
+                "title": "idem e2e",
+                "body": "changed again",
+                "tags": [],
+                "idempotency_key": "e2e-idem-key",
+            }))
+            .send()
+            .await?;
+        assert_eq!(
+            rest.status(),
+            reqwest::StatusCode::CONFLICT,
+            "{}",
+            rest.status()
+        );
+        let problem: serde_json::Value = rest.json().await?;
+        let ty = problem["type"].as_str().unwrap_or("");
+        assert!(
+            ty.contains("idempotency-conflict"),
+            "type={ty}, body={problem}"
+        );
+        assert_eq!(problem["existing"], handle, "{problem}");
+    }
+
+    running.shutdown().await;
+    Ok(())
+}

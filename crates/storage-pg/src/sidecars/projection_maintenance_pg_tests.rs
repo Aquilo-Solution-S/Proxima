@@ -66,6 +66,7 @@ fn draft(language: Option<&str>) -> FactWriteCommand {
         refs: Vec::new(),
         blob_id: None,
         kind: "fact".into(),
+        request: None,
     }
 }
 
