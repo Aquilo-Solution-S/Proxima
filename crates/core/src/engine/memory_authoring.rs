@@ -565,7 +565,8 @@ impl Engine {
             .collect()
     }
 
-    /// Cool one owned memory `t`. PUT cold first, then stub+delete hot.
+    /// Forget one owned memory `t`: mark its row, delete what search and
+    /// embedding derive from it, and move the series head off it.
     ///
     /// One-shot command-port: generic [`EngineAuthority`], including
     /// delegated workers. Multi-write forget lives on
@@ -591,6 +592,45 @@ impl Engine {
             .memory_authoring
             .memory_authoring
             .forget_memory(write_permit.owner_write_permit(), memory_id)
+            .await
+            .map_err(|err| {
+                super::errors::map_write_storage_error(err, "memory", "memory not found")
+            })
+    }
+
+    /// Restore one owned forgotten memory `t`: it is searchable, recallable
+    /// and the head of its series again (unless a newer live version is).
+    /// Restoring a live memory is a no-op success. No object store is
+    /// involved.
+    ///
+    /// The restored memory is queued for embedding in the spaces the
+    /// Owner's route names now; a route error refuses the restore like any
+    /// other write.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context may write nothing on the owner,
+    /// `NotFound` when `t` is absent or above the context's write limit, and
+    /// storage errors from the restore transaction.
+    pub async fn restore_memory<A>(
+        &self,
+        authority: &A,
+        owner: OwnerId,
+        memory_id: MemoryId,
+    ) -> Result<(), ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let write_permit = self.authorize_write_limit(authority, &owner).await?;
+        let embedding_spaces = self.write_route(&owner).await?.write_spaces();
+        self.storage()
+            .memory_authoring
+            .memory_authoring
+            .restore_memory(
+                write_permit.owner_write_permit(),
+                memory_id,
+                &embedding_spaces,
+            )
             .await
             .map_err(|err| {
                 super::errors::map_write_storage_error(err, "memory", "memory not found")
@@ -1310,6 +1350,15 @@ mod tests {
             &self,
             _permit: &OwnerWritePermit,
             _memory_id: MemoryId,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn restore_memory(
+            &self,
+            _permit: &OwnerWritePermit,
+            _memory_id: MemoryId,
+            _embedding_spaces: &[crate::EmbeddingSpace],
         ) -> Result<(), StorageError> {
             Ok(())
         }

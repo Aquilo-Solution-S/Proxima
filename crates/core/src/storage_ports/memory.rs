@@ -59,6 +59,28 @@ pub trait MemoryAuthoringPort: Send + Sync {
         permit: &OwnerWritePermit,
         memory_id: MemoryId,
     ) -> Result<(), StorageError>;
+
+    /// Bring one forgotten memory `t` back: clear its `forgotten_at`,
+    /// rebuild what forget deleted (search projection in the memory's own
+    /// lexical language, embedding jobs for `embedding_spaces`) and move the
+    /// series head back. Restoring a live memory is a no-op success; an
+    /// absent, foreign or unwritable-kind `t` is `NotFound`.
+    ///
+    /// `embedding_spaces` are the spaces the permit Owner's route names now,
+    /// not the ones the memory had vectors in before the forget.
+    ///
+    /// Defaults to refusing, so a backend written before restore keeps
+    /// compiling and says so instead of pretending.
+    async fn restore_memory(
+        &self,
+        _permit: &OwnerWritePermit,
+        _memory_id: MemoryId,
+        _embedding_spaces: &[crate::EmbeddingSpace],
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement memory restore".into(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]

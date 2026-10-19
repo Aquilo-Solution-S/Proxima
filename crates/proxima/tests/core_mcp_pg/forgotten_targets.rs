@@ -192,3 +192,78 @@ async fn forgetting_the_last_source_is_allowed_and_the_derived_memory_stays_read
     .await;
     result.expect("forget last source");
 }
+
+/// #488 S14: `core_forget` with `action: "restore"` brings a forgotten memory
+/// back. Restoring a live memory is a no-op success; the output keeps its
+/// shape.
+#[tokio::test]
+async fn the_owner_restores_a_forgotten_memory_through_core_forget() {
+    let split_db = clone_split_core_db("proxima_restore_forgotten")
+        .await
+        .expect("PG required for tests");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(runtime_url.clone())
+            .store_number(0)
+            .platform_database_url(platform_url.clone())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let read = |memory: String| {
+            let (tools, authz) = (&tools, authz.clone());
+            async move {
+                let uri = format!("proxima://memory/{memory}");
+                read_test_model_resource(tools, authz, owner, &uri).await
+            }
+        };
+        let memory = call(
+            "core_remember",
+            serde_json::json!({"title": "kept aside", "body": "kept aside", "tags": []}),
+        )
+        .await?["handle"]
+            .as_str()
+            .expect("handle")
+            .to_owned();
+
+        call("core_forget", serde_json::json!({"memory": memory})).await?;
+        assert!(
+            read(memory.clone()).await.is_err(),
+            "forgotten reads absent"
+        );
+
+        let restored = call(
+            "core_forget",
+            serde_json::json!({"memory": memory, "action": "restore"}),
+        )
+        .await?;
+        assert_eq!(
+            restored,
+            serde_json::json!({"ok": true, "memory": memory}),
+            "the output is unchanged"
+        );
+        let back = read(memory.clone()).await?;
+        assert_eq!(back["handle"], memory.as_str(), "{back}");
+
+        let again = call(
+            "core_forget",
+            serde_json::json!({"memory": memory, "action": "restore"}),
+        )
+        .await?;
+        assert_eq!(again["ok"], true, "restoring a live memory is a no-op");
+        assert!(read(memory.clone()).await.is_ok());
+        Ok(())
+    }
+    .await;
+    result.expect("restore through core_forget");
+}

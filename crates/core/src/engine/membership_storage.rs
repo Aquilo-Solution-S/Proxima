@@ -129,6 +129,17 @@ impl MemoryAuthoringPort for MembershipStorage {
             "MembershipStorage rejects writes".into(),
         ))
     }
+
+    async fn restore_memory(
+        &self,
+        _permit: &crate::storage_ports::OwnerWritePermit,
+        _memory_id: MemoryId,
+        _embedding_spaces: &[crate::EmbeddingSpace],
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "MembershipStorage rejects writes".into(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]

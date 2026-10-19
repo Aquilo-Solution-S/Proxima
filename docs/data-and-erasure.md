@@ -21,11 +21,17 @@ owner, never a global content hash.
 | Flavor-scoped erase | Destroy whole series of the flavor's own schemas in one owner |
 | Owner export | Return the declared exportable surfaces under host authority |
 
-Forget is not hard deletion. The memory row and its sidecar rows stay in
-Postgres marked `forgotten_at`; reads hide them, and their search projection and
-embeddings are deleted. A forgotten memory still grounds what was derived from
-it, so forgetting the last source of an Abstraction or Perspective is allowed and
-the derived memory stays readable.
+Forget is not hard deletion. The memory row, its sidecar rows and its sketch
+stay in Postgres marked `forgotten_at`; reads hide them, and their search
+projection and embeddings are deleted. A forgotten memory still grounds what was
+derived from it, so forgetting the last source of an Abstraction or Perspective is
+allowed and the derived memory stays readable.
+
+Restore (`core_forget` with `action: "restore"`) clears the mark: the search
+projection is rebuilt in the language the memory was written in, embedding jobs
+are queued for the spaces the owner's route names now, and the memory is the
+head of its series again unless a newer live version is. Restoring a live
+memory changes nothing. Neither forget nor restore touches an object store.
 
 The kernel states `wipeable` and owner-scope principles in
 [`Compliance.lean`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/docs/lean/Causa/Compliance.lean).

@@ -109,6 +109,17 @@ impl MemoryAuthoringPort for RejectingStorage {
             "RejectingStorage rejects writes".into(),
         ))
     }
+
+    async fn restore_memory(
+        &self,
+        _permit: &OwnerWritePermit,
+        _memory_id: crate::MemoryId,
+        _embedding_spaces: &[crate::EmbeddingSpace],
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]

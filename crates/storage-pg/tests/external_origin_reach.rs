@@ -14,7 +14,7 @@ use proxima_core::owner_inverse::{
     OwnerExportTarget, OwnerSurfaces,
 };
 use proxima_core::storage_ports::{
-    FactIngestPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
+    FactIngestPort, MemoryAuthoringPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
 };
 use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
@@ -245,6 +245,34 @@ async fn forget_keeps_external_origins() -> TestResult {
         2,
         "the owner reads a cooled memory's origins"
     );
+    Ok(())
+}
+
+/// #488 S14: forget keeps a memory's external origins and restore finds them
+/// again; the owner reads them once the memory is back.
+#[tokio::test]
+async fn forget_and_restore_keep_external_origins() -> TestResult {
+    let (pg, _db) = fresh_pg("proxima_ext_origin_restore").await;
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+    let t = pg
+        .ingest_fact_atomic(&permit, &draft(), None)
+        .await?
+        .memory_id;
+    add_origins(&pg, t.into_inner(), 2).await?;
+    pg.forget_memory(&permit, t).await?;
+    assert_eq!(
+        origins_on(&pg, &[t.into_inner()]).await?,
+        2,
+        "forget keeps them"
+    );
+    pg.restore_memory(&permit, t, &[]).await?;
+    assert_eq!(
+        origins_on(&pg, &[t.into_inner()]).await?,
+        2,
+        "restore finds them again"
+    );
+    assert_eq!(origins_visible_to(&pg, owner, t.into_inner()).await?, 2);
     Ok(())
 }
 

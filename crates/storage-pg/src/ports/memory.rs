@@ -205,6 +205,37 @@ impl MemoryAuthoringPort for PgStorage {
         })
         .await
     }
+    async fn restore_memory(
+        &self,
+        permit: &OwnerWritePermit,
+        memory_id: MemoryId,
+        embedding_spaces: &[proxima_core::EmbeddingSpace],
+    ) -> Result<(), StorageError> {
+        let t = memory_id.into_inner();
+        let storage = self.clone();
+        let sidecars = self.sidecars.clone();
+        let non_embeddable_schemas = self.non_embeddable_schemas.clone();
+        with_bounded_retry(move || {
+            let storage = storage.clone();
+            let sidecars = sidecars.clone();
+            let non_embeddable_schemas = non_embeddable_schemas.clone();
+            async move {
+                let tx = storage.owner_maintenance_transaction(permit).await?;
+                verbs::forget::restore_memory_oneshot_in_transaction(
+                    tx,
+                    &sidecars,
+                    t,
+                    &verbs::forget::Reach::of(permit),
+                    verbs::fact_embeddings::RouteSpaces {
+                        spaces: embedding_spaces,
+                        non_embeddable_schemas: &non_embeddable_schemas,
+                    },
+                )
+                .await
+            }
+        })
+        .await
+    }
 }
 
 #[async_trait::async_trait]

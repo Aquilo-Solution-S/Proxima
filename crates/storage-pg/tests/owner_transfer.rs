@@ -10,7 +10,7 @@ use proxima_core::owner_inverse::{
 };
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{
-    MemoryReadPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
+    MemoryAuthoringPort, MemoryReadPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
 };
 use proxima_core::test_fixtures::{authenticated_context, owner_scope_for_tests};
 use proxima_core::verbs::fact_ingest::{
@@ -817,6 +817,85 @@ async fn transfer_accepts_a_cooled_input_for_a_live_series() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("cooled input live-series transfer failed");
+}
+
+/// #488 S14: a forgotten memory transferred to another owner comes back under
+/// that owner. The restored row, its sketch and its re-embed job are the
+/// destination's, and the writer it was written by stays.
+#[tokio::test]
+async fn a_forgotten_memory_restores_under_the_owner_it_was_transferred_to() {
+    let (db_name, pg, _cold) = fresh_pg_with_cold().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let dest = destination();
+        let pool = pg.pool_for_tests();
+        let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
+        let t = first.memory_id.into_inner();
+        let writer = || {
+            sqlx::query_as::<_, (Uuid, Option<Uuid>)>(
+                "SELECT \"by\", via FROM proxima_core.memory WHERE t = $1",
+            )
+            .bind(t)
+            .fetch_one(pool)
+        };
+        let written_by = writer().await?;
+        pg.forget_memory(&permit, first.memory_id).await?;
+        assert!(
+            pg.transfer_to_owner(
+                &transfer_permit(&permit, dest),
+                EntityId::Memory(first.memory_id),
+                dest,
+                &contract_sidecar_tables(),
+                &[],
+            )
+            .await?
+        );
+
+        let dest_permit = OwnerWritePermit::new_for_tests(dest, AccessKind::Fact);
+        let dest_spaces = [proxima_core::EmbeddingSpace::new(
+            "transfer-restore-model",
+            proxima_core::EmbeddingDim::D1024,
+        )];
+        pg.restore_memory(&dest_permit, first.memory_id, &dest_spaces)
+            .await?;
+        let owners: (Uuid, Uuid, bool) = sqlx::query_as(
+            "SELECT m.owner_id, s.owner_id, m.forgotten_at IS NOT NULL
+               FROM proxima_core.memory m JOIN proxima_core.sketch s ON s.t = m.t
+              WHERE m.t = $1",
+        )
+        .bind(t)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            owners,
+            (dest.into_inner(), dest.into_inner(), false),
+            "the row and its sketch are the destination's; the sketch is read owner-scoped"
+        );
+        assert_eq!(writer().await?, written_by);
+        let embed_job_owners: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT owner_id FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+        )
+        .bind(t)
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            embed_job_owners,
+            vec![dest.into_inner()],
+            "the re-embed job is the destination's work"
+        );
+        assert!(
+            matches!(
+                pg.forget_memory(&permit, first.memory_id).await,
+                Err(StorageError::NotFound)
+            ),
+            "the giver no longer reaches it"
+        );
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("restore after transfer failed");
 }
 
 /// A series can be entirely cooled, leaving no `memory` or `memory_head` row.

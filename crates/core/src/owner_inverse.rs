@@ -388,7 +388,7 @@ impl OwnerSurfaces {
     ///
     /// The `Marked` surfaces are deliberately NOT here: they stay with the
     /// forgotten row. What is left is the derived rows nothing stamps — the
-    /// embedding triple and the sketch.
+    /// embedding triple (the sketch is kept: a restore needs its text).
     ///
     /// One exception to table order: `embedding_jobs` comes first, the same
     /// order owner erase deletes in. A drainer writes an embedding head only

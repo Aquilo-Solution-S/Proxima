@@ -2506,6 +2506,73 @@ async fn every_event_of_a_series_carries_the_next_position_in_it() {
     let _ = drop_db(&db).await;
 }
 
+/// Forgetting every row of a series deletes its head; restore recreates it.
+/// The next event must still take a position above every position the
+/// series already published, or a consumer that dedupes by position drops
+/// it. (#488 S14; the forget cancels the undelivered records, so the prior
+/// positions are read before it.)
+#[tokio::test]
+async fn forget_restore_write_publishes_above_prior_sequences() {
+    let (pg, db) = fresh_pg("pub_restore_counter").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+
+    let write_to = |series: Option<Uuid>, note: &'static str| {
+        let mut command = fact_command(ListenableProbeV1::SCHEMA_ID, None);
+        command.handle = series;
+        witness(&owner, command).with_publication_for_tests(plan_for(
+            owner,
+            &probe(note),
+            PublicationLimits::default(),
+        ))
+    };
+    let sequence = |envelope: serde_json::Value| -> u64 {
+        envelope["sequence"]
+            .as_str()
+            .expect("sequence is a string")
+            .parse()
+            .expect("sequence is numeric")
+    };
+    let first = pg
+        .ingest_fact_with_typed_sidecar(&write_to(None, "v1"), &[])
+        .await
+        .expect("first write");
+    let series = first.handle;
+    let second = pg
+        .ingest_fact_with_typed_sidecar(&write_to(Some(series), "v2"), &[])
+        .await
+        .expect("second write");
+    let prior = sequence(envelope_of(&pool, first.memory_id.into_inner()).await).max(sequence(
+        envelope_of(&pool, second.memory_id.into_inner()).await,
+    ));
+
+    for outcome in [&second, &first] {
+        MemoryAuthoringPort::forget_memory(&pg, &permit, outcome.memory_id)
+            .await
+            .expect("forget");
+    }
+    MemoryAuthoringPort::restore_memory(&pg, &permit, second.memory_id, &[])
+        .await
+        .expect("restore");
+    let third = pg
+        .ingest_fact_with_typed_sidecar(&write_to(Some(series), "v3"), &[])
+        .await
+        .expect("write after restore");
+    assert_eq!(third.handle, series);
+
+    let next = sequence(envelope_of(&pool, third.memory_id.into_inner()).await);
+    assert!(
+        next > prior,
+        "the write after forget and restore publishes above every earlier position \
+         ({next} <= {prior})"
+    );
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
 /// Two writes to one series overlap: A mints its `t`, then B runs to commit,
 /// then A finishes. Whatever order they serialize in, the series head must
 /// be the write that took the highest publication position, so a reader of

@@ -282,6 +282,83 @@ async fn forget_non_last_t_rewinds_memory_head() {
     result.expect("forget rewind failed");
 }
 
+/// #488 S14: forgetting the head moves the head to the previous version;
+/// restoring it moves the head back. Restoring a live memory is a no-op
+/// success, and an id the owner does not have is `NotFound`.
+#[tokio::test]
+async fn restore_moves_the_head_back_and_a_live_restore_changes_nothing() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let first = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let mut later = draft(None);
+        later.handle = Some(first.handle);
+        let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
+        let head = || async {
+            sqlx::query_scalar::<_, Uuid>(
+                "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
+            )
+            .bind(first.handle)
+            .fetch_one(pool)
+            .await
+        };
+        let state = |t: Uuid| async move {
+            sqlx::query_as::<_, (bool, i64)>(
+                "SELECT m.forgotten_at IS NOT NULL,
+                        (SELECT count(*) FROM proxima_core.sketch s WHERE s.t = m.t)
+                   FROM proxima_core.memory m WHERE m.t = $1",
+            )
+            .bind(t)
+            .fetch_one(pool)
+            .await
+        };
+
+        pg.forget_memory(&permit, second.memory_id).await?;
+        assert_eq!(head().await?, first.memory_id.into_inner());
+        assert_eq!(
+            state(second.memory_id.into_inner()).await?,
+            (true, 1),
+            "forget keeps the sketch: it is the memory's own text"
+        );
+
+        pg.restore_memory(&permit, second.memory_id, &[]).await?;
+        assert_eq!(head().await?, second.memory_id.into_inner(), "head again");
+        assert_eq!(state(second.memory_id.into_inner()).await?, (false, 1));
+
+        pg.restore_memory(&permit, second.memory_id, &[]).await?;
+        pg.restore_memory(&permit, first.memory_id, &[]).await?;
+        assert_eq!(head().await?, second.memory_id.into_inner(), "no-op");
+        assert_eq!(state(first.memory_id.into_inner()).await?, (false, 1));
+
+        let stranger = OwnerWritePermit::new_for_tests(
+            OwnerId::from(UserId::new(Uuid::now_v7())),
+            AccessKind::Fact,
+        );
+        pg.forget_memory(&permit, second.memory_id).await?;
+        assert!(matches!(
+            pg.restore_memory(&stranger, second.memory_id, &[]).await,
+            Err(StorageError::NotFound)
+        ));
+        assert!(matches!(
+            pg.restore_memory(&permit, proxima_core::MemoryId::new(Uuid::now_v7()), &[])
+                .await,
+            Err(StorageError::NotFound)
+        ));
+        assert_eq!(state(second.memory_id.into_inner()).await?, (true, 1));
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("restore head");
+}
+
 #[tokio::test]
 async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());

@@ -905,6 +905,8 @@ pub async fn cool_legacy_for_tests(
         ));
     }
     legs.extend(pg.surfaces.generated_forget_legs());
+    // A pre-#488 cool deleted the sketch too; forget keeps it since S14.
+    legs.push(("proxima_core.sketch", "t"));
     run_forget_legs(&mut tx, legs, t).await?;
     sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1") /* FORGET-POLICY: includes-forgotten (test fixture: legacy cool reads the row in either state) */
         .bind(t)
@@ -1100,6 +1102,100 @@ async fn forget_marked(
     delete_derived_dependents(tx, sidecars, surfaces, t).await?;
     crate::verbs::publication_outbox::cancel_undelivered_for_forget(tx, t).await?;
     sync_memory_head(tx, handle).await?;
+    lifecycle.leave(tx.as_mut()).await
+}
+
+/// The owner's row for `t`, locked, in either state.
+const LOCK_OWNED_FOR_RESTORE_SQL: &str = "SELECT handle, kind::text, schema_id, sidecar_tables,
+                lexical_language::text, forgotten_at IS NOT NULL
+           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+          WHERE t = $1 AND owner_id = $2
+          FOR UPDATE";
+
+/// Restore one forgotten memory: clear its `forgotten_at`, rebuild what
+/// [`forget_memory`] deleted, and move the series head back onto it unless a
+/// newer live version holds it.
+///
+/// Rebuilt: the search projection, in the language stamped on the memory
+/// row (the projection row that carried it is gone); embedding jobs for the
+/// spaces the Owner's route names now. The sidecar rows and the sketch never
+/// left. Cancelled publication records stay cancelled. No object store is
+/// involved.
+///
+/// A live `t` is a no-op success. Takes the same lock footprint as a
+/// forget, inside the lifecycle scope, and leaves the scope before
+/// returning. Commits `tx`.
+pub(crate) async fn restore_memory_oneshot_in_transaction(
+    mut tx: Transaction<'static, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    t: Uuid,
+    reach: &Reach,
+    embeddings: crate::verbs::fact_embeddings::RouteSpaces<'_>,
+) -> Result<(), StorageError> {
+    restore_marked(&mut tx, sidecars, t, reach, embeddings).await?;
+    tx.commit().await.map_err(map_err)
+}
+
+async fn restore_marked(
+    tx: &mut Transaction<'_, Postgres>,
+    sidecars: &PgSidecarRegistryFrozen,
+    t: Uuid,
+    reach: &Reach,
+    embeddings: crate::verbs::fact_embeddings::RouteSpaces<'_>,
+) -> Result<(), StorageError> {
+    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+    let handle = probe_memory_handle_for_owner(tx, t, reach.owner_id)
+        .await?
+        .ok_or(StorageError::NotFound)?;
+    lock_forget_footprint_tx(tx, t, handle).await?;
+    let row: Option<(Uuid, String, String, Vec<String>, String, bool)> =
+        sqlx::query_as(LOCK_OWNED_FOR_RESTORE_SQL)
+            .bind(t)
+            .bind(reach.owner_id)
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+    // A `t` the probe found only in `cooled` has no row to restore: the
+    // pre-#488 form is not restorable (S15/S16 retire it).
+    let (locked_handle, kind, schema_id, sidecar_tables, language, forgotten) =
+        row.ok_or(StorageError::NotFound)?;
+    if locked_handle != handle || !reach.kinds.contains(&kind.as_str()) {
+        return Err(StorageError::NotFound);
+    }
+    if forgotten {
+        sqlx::query(
+            "UPDATE proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+                SET forgotten_at = NULL
+              WHERE t = $1 AND owner_id = $2",
+        )
+        .bind(t)
+        .bind(reach.owner_id)
+        .execute(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+        for table in &sidecar_tables {
+            sidecars
+                .rebuild_projection_for_table(
+                    tx,
+                    proxima_core::MemoryId::new(t),
+                    table,
+                    &schema_id,
+                    Some(language.as_str()),
+                )
+                .await?;
+        }
+        if !embeddings.spaces.is_empty() && !embeddings.non_embeddable_schemas.contains(&schema_id)
+        {
+            crate::verbs::fact_embeddings::enqueue_embedding_jobs_in_tx(
+                tx,
+                reach.owner_id,
+                t,
+                embeddings.spaces,
+            )
+            .await?;
+        }
+        sync_memory_head(tx, handle).await?;
+    }
     lifecycle.leave(tx.as_mut()).await
 }
 
@@ -1944,13 +2040,14 @@ mod tests {
         )
     }
 
-    /// The declared walk reaches exactly the four derived-row tables and
+    /// The declared walk reaches exactly the three embedding tables and
     /// nothing else, with the embedding queue first (see
-    /// `generated_forget_legs`).
+    /// `generated_forget_legs`). The sketch is not one of them since #488
+    /// S14: it is the memory's own text, which a restore needs back.
     ///
-    /// The key column is pinned too: three of the four are keyed on
-    /// `entity_id`, not `t`. A walk that assumed `t` because the sidecar
-    /// half does would delete nothing from any of them, and both lanes share
+    /// The key column is pinned too: all three are keyed on `entity_id`,
+    /// not `t`. A walk that assumed `t` because the sidecar half does would
+    /// delete nothing from any of them, and both lanes share
     /// `forget_leg_sql` precisely so that assumption cannot be made in one
     /// place and not the other.
     #[test]
@@ -1961,7 +2058,6 @@ mod tests {
                 ("proxima_core.embedding_jobs", "entity_id"),
                 ("proxima_core.embedding_heads", "entity_id"),
                 ("proxima_core.embeddings", "entity_id"),
-                ("proxima_core.sketch", "t"),
             ]
         );
     }

@@ -945,3 +945,104 @@ async fn deleting_a_stamped_row_is_refused_unless_its_memory_goes_too() {
     })
     .await;
 }
+
+/// An object store that refuses everything and counts the calls: restore
+/// must not touch it.
+#[derive(Debug, Default)]
+struct RefusingCold {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl proxima_core::ColdObjectStore for RefusingCold {
+    async fn put(&self, _key: &str, _bytes: &[u8]) -> Result<(), StorageError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(StorageError::Internal("restore must not put".into()))
+    }
+
+    async fn get(&self, _key: &str) -> Result<Vec<u8>, StorageError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(StorageError::Internal("restore must not get".into()))
+    }
+
+    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(StorageError::Internal("restore must not delete".into()))
+    }
+}
+
+/// #488 S14. Forget, then the sidecar table grows a `NOT NULL DEFAULT`
+/// column (a later flavor migration), then restore: the memory is back,
+/// searchable in the language it was written in (German, not the
+/// deployment default), queued for embedding in the route's spaces, and
+/// no object store was asked for anything.
+#[tokio::test]
+async fn a_restore_rebuilds_the_projection_in_the_written_language_after_the_sidecar_grew() {
+    with_db("proxima_proj_restore", async |pg| {
+        let cold = std::sync::Arc::new(RefusingCold::default());
+        let pg = pg.clone().with_cold(cold.clone());
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let pool = pg.pool_for_tests();
+        let t = write_note(pool, owner, Some("german")).await?;
+        let (_, default) = memory_language_of(pool, t).await?;
+        assert_ne!(default, "german", "the probe needs a non-default language");
+
+        pg.forget_memory(&permit, t).await?;
+        assert_eq!(projection_of(pool, t).await?, None);
+        sqlx::query(
+            "ALTER TABLE proxima_core.agent_note_v1
+               ADD COLUMN restore_probe text NOT NULL DEFAULT 'added after the forget'",
+        )
+        .execute(pool)
+        .await?;
+
+        let spaces = [proxima_core::EmbeddingSpace::new(
+            "restore-model",
+            proxima_core::EmbeddingDim::D1024,
+        )];
+        pg.restore_memory(&permit, t, &spaces).await?;
+
+        let forgotten: bool = sqlx::query_scalar(
+            "SELECT forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(t.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert!(!forgotten, "the memory is live again");
+        let projection = projection_of(pool, t).await?.expect("projection rebuilt");
+        assert_eq!(projection.lexical_language, "german");
+        assert!(projection.has_vector);
+        // German stems "pilings" to "piling"; the deployment default does not,
+        // so this matches only a projection rebuilt in the written language.
+        let matches: bool = sqlx::query_scalar(
+            "SELECT search_tsv @@ plainto_tsquery('german', 'pilings')
+               FROM proxima_core.projection WHERE memory_id = $1",
+        )
+        .bind(t.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            matches,
+            "lexically searchable in the language it was written in"
+        );
+        let jobs: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT owner_id, model_id FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+        )
+        .bind(t.into_inner())
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            jobs,
+            vec![(owner.into_inner(), "restore-model".to_owned())],
+            "embedding pending for the route's space"
+        );
+        assert_eq!(
+            cold.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "restore makes no object-store call"
+        );
+        Ok(())
+    })
+    .await;
+}
