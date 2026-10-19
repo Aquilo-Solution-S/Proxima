@@ -81,7 +81,6 @@ pub enum KeyScope {
     Utterance,
     Abstraction,
     Perspective,
-    Goal,
 }
 
 impl KeyScope {
@@ -93,7 +92,6 @@ impl KeyScope {
             Self::Utterance => "utterance",
             Self::Abstraction => "abstraction",
             Self::Perspective => "perspective",
-            Self::Goal => "goal",
         }
     }
 
