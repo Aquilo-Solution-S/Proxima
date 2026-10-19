@@ -66,7 +66,7 @@ Two kinds, and the vocabulary is closed. The kind follows the write that produce
 1. **Observe.** `core_remember(title=..., body=...)` for each distinct thing that happened → Facts `fact-a`, `fact-b`, `fact-c`.
 2. **Abstract.** Once a pattern recurs across those Facts: `core_derive(kind="Abstraction", source_handles=["fact-a","fact-b","fact-c"], …)` → `abstraction-d`, with an `origin` entry to each Fact.
 3. **Take a stance.** When your view genuinely shifts: `core_derive(kind="Perspective", source_handles=["abstraction-d"], …)` → `perspective-e`.
-4. **Wire intent.** `core_goal` action=set to record what to pursue; action=decompose to break it down.
+4. **Wire intent.** `core_goal` action=set to record what to pursue; action=decompose to break it down; mark the parent achieved after its children.
 
 ## Reading: which surface first
 

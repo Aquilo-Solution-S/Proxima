@@ -148,7 +148,8 @@ pub enum CoreGoalArgs {
     Transition(GoalTransitionArgs),
     /// Replace an Active goal's title, text and payload; omitted evidence carries over.
     Modify(GoalModifyArgs),
-    /// Mark a goal Achieved, citing the memories that show it.
+    /// Mark a goal Achieved, citing the memories that show it; a goal with child goals needs every
+    /// child Achieved or Abandoned and at least one Achieved.
     MarkAchieved(GoalMarkAchievedArgs),
     /// Create Active child Goals under a parent goal.
     Decompose(GoalDecomposeArgs),
@@ -168,7 +169,8 @@ impl McpTool for CoreGoalTool {
          goal's new head `handle`; the next write on that goal names that handle. set and decompose \
          assign goals to a Perspective: pass target_perspective unless the host supplies a caller \
          Perspective. A pause names what happens to work already queued for the goal: pending is \
-         keep or discard.";
+         keep or discard. A parent is marked achieved only after its children: none Active or \
+         Paused, at least one Achieved.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = CORE_GOAL_PRODUCES_SCHEMA_IDS;
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
@@ -372,7 +374,7 @@ async fn goal_transition(
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GoalMarkAchievedArgs {
     #[schemars(
-        description = "Goal handle `<uuid>` from the latest write on this goal; an older handle is refused."
+        description = "Goal handle `<uuid>` from the latest write on this goal; an older handle is refused, and so is a goal while a child goal is still Active or Paused."
     )]
     pub goal: String,
     #[schemars(
@@ -481,7 +483,7 @@ pub struct GoalDecomposeArgs {
     pub parent_goal: String,
     #[schemars(
         length(min = 1, max = 50),
-        description = "Child goals to create, 1 to 50; each starts Active under the parent."
+        description = "Child goals to create, 1 to 50; each starts Active under the parent; the parent can be marked achieved once no child is open and one is achieved."
     )]
     pub children: Vec<ChildGoalInput>,
     #[schemars(

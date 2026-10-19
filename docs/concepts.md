@@ -72,6 +72,15 @@ what it depends on. Goal decomposition, evidence, and assignment are fields of
 the Goal version, so the Goal owns those references. A lifecycle transition is
 an appended `t`; there is no supersession pointer and no in-place mutation.
 
+Goals form a plain tree. `decompose` creates child Goals under a parent; each
+child records its parent's series once, at creation, and every later version
+of the child keeps it (a Goal is never its own parent, and the parent exists
+first, so there are no cycles). The parent still appears among the child's
+dependencies. A parent is marked achieved only when none of its children's
+current versions is Active or Paused and at least one is Achieved. Abandoning
+a parent neither cascades to its children nor is refused because of them, and
+plain dependencies between Goals do not make a tree.
+
 Scheduling and execution are host decisions. See
 [host integration](host-integration.md) for the boundary.
 

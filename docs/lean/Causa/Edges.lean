@@ -9,7 +9,8 @@ Memory row (UML §5). The two closed kinds remain:
 
 Rebuildability is identity: the pin set IS node content. Goal pins live on
 the Goal row (`assignment_t`, `dependency_t`, `evidence_t`, `close_fact_t`,
-`write_act_t`) and never appear in `memory.refs`.
+`write_act_t`) and never appear in `memory.refs`. `parent_handle` names the
+parent's series (the goal tree, #514); it is not a pin.
 
 E1–E7 rebase:
 E1 existence   — origin and refs t are a stored Memory.t, live or forgotten;

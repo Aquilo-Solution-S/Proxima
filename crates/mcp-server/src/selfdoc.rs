@@ -483,7 +483,7 @@ fn push_worked_example(out: &mut String, s: Surface) {
         let _ = writeln!(
             out,
             "4. **Wire intent.** `core_goal` action=set to record what to pursue; \
-             action=decompose to break it down."
+             action=decompose to break it down; mark the parent achieved after its children."
         );
     }
     out.push('\n');

@@ -103,8 +103,12 @@ Authoring derived content carries declared-input provenance. An interpretation
 Perspective declares references without claiming a derivation. No operation
 writes an independent edge.
 
-Goal transitions append a later version. Pause's `pending: keep|discard` is an
-instruction for the host's queue. The host decides how to execute that
+Goal transitions append a later version. `core_goal` `mark_achieved` on a goal
+with decompose children is refused as `InvalidArgument` on `goal` while a
+child is open, with the message prefix `goal has open children: ` followed by
+each open child's current handle, or when every child is Abandoned, with
+`goal children are all abandoned; achieve at least one child first`. Pause's
+`pending: keep|discard` is an instruction for the host's queue. The host decides how to execute that
 instruction; Proxima persists intent and state. Hard deletion uses the explicit
 host or flavor-scoped inverse paths in [data and erasure](data-and-erasure.md).
 

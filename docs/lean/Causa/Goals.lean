@@ -74,6 +74,8 @@ structure Goal where
   dependency_t  : List GoalId
   evidence_t    : List MemoryId
   write_act_t   : Option MemoryId
+  /-- The parent's series (#514), set at decompose and fixed for the series. -/
+  parent_handle : Option Handle
   tick          : Instant
   terminal_close_fact :
     state.terminal = true → close_fact_t.isSome = true
@@ -101,6 +103,7 @@ def goal_dependencies : Goal → List GoalId := Goal.dependency_t
 def goal_evidence : Goal → List MemoryId := Goal.evidence_t
 def goal_write_act_t : Goal → Option MemoryId := Goal.write_act_t
 def goal_tick : Goal → Instant := Goal.tick
+def goal_parent : Goal → Option Handle := Goal.parent_handle
 
 def ErasedTargetsDisjointGoals
     (targets : Set ErasedPinTarget) (goals : Set Goal) : Prop :=
@@ -272,6 +275,51 @@ theorem terminal_goal_close_fact_member :
 def goalIsHead (goals : Set Goal) (heads : Set GoalHead) (g : Goal) : Prop :=
   g ∈ goals ∧
   ∃ h : GoalHead, h ∈ heads ∧ h.handle = goal_handle g ∧ h.t = goal_t g
+
+-- ============================================================
+-- The goal tree (#514)
+-- ============================================================
+
+/-- `child` is the current head of a series decomposed under `parent`'s series. -/
+def goalChildOf (goals : Set Goal) (heads : Set GoalHead) (child parent : Goal) : Prop :=
+  goalIsHead goals heads child ∧ goal_parent child = some (goal_handle parent)
+
+/-- Every version of a series names the same parent (the `goal_parent_fixed`
+    trigger). -/
+def GoalParentFixed (goals : Set Goal) : Prop :=
+  ∀ g g' : Goal, g ∈ goals → g' ∈ goals →
+    goalSameSeries g g' → goal_parent g = goal_parent g'
+
+/-- An Achieved parent head has no open child head and, if it has children,
+    at least one Achieved child (the post-lock achieve check). -/
+def GoalTreeClosed (goals : Set Goal) (heads : Set GoalHead) : Prop :=
+  ∀ p : Goal, goalIsHead goals heads p → goal_state p = .Achieved →
+    (∀ c : Goal, goalChildOf goals heads c p →
+      goal_state c = .Achieved ∨ goal_state c = .Abandoned) ∧
+    ((∃ c : Goal, goalChildOf goals heads c p) →
+      ∃ c : Goal, goalChildOf goals heads c p ∧ goal_state c = .Achieved)
+
+theorem achieved_parent_child_closed :
+    ∀ (goals : Set Goal) (heads : Set GoalHead),
+      GoalTreeClosed goals heads →
+      ∀ p c : Goal,
+        goalIsHead goals heads p →
+        goal_state p = .Achieved →
+        goalChildOf goals heads c p →
+        goal_state c = .Achieved ∨ goal_state c = .Abandoned := by
+  intro goals heads hclosed p c hp hachieved hc
+  exact (hclosed p hp hachieved).1 c hc
+
+theorem achieved_parent_has_achieved_child :
+    ∀ (goals : Set Goal) (heads : Set GoalHead),
+      GoalTreeClosed goals heads →
+      ∀ p : Goal,
+        goalIsHead goals heads p →
+        goal_state p = .Achieved →
+        (∃ c : Goal, goalChildOf goals heads c p) →
+        ∃ c : Goal, goalChildOf goals heads c p ∧ goal_state c = .Achieved := by
+  intro goals heads hclosed p hp hachieved hsome
+  exact (hclosed p hp hachieved).2 hsome
 
 /-- Reachability along later ticks of the same handle. -/
 inductive GoalSeriesReachable (goals : Set Goal) : Goal → Goal → Prop where
