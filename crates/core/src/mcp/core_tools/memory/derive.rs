@@ -3,8 +3,7 @@ use crate::mcp::{Replay, ToolEffect};
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
 use crate::{
-    DerivationIdentity, DerivedMemory, EdgeEndpoint, InputContractId, MemoryId, OperatorId,
-    SeriesHandle,
+    DerivationIdentity, DerivedMemory, InputContractId, MemoryId, OperatorId, SeriesHandle,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -253,21 +252,11 @@ async fn derive_call(ctx: McpToolCtx, args: DeriveArgs) -> Result<DeriveOutput, 
         &format!("{}\n{}", authored.title, authored.body),
     )
     .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-    let DerivationPlan {
-        memory_id,
-        derived_from,
-        sidecar,
-        authored,
-        ..
-    } = plan_derivation(&ctx, &space.owner, args.kind, authored, &sources)?;
     let engine = ctx.require_engine()?;
-    let origins = derived_from
+    let origins = sources
         .iter()
-        .filter_map(|endpoint| {
-            endpoint
-                .memory_id()
-                .filter(|id| crate::memory_store_number(id.into_inner()) == engine.store_number())
-        })
+        .map(|(id, _class)| *id)
+        .filter(|id| crate::memory_store_number(id.into_inner()) == engine.store_number())
         .collect::<Vec<_>>();
     let external = resolved
         .into_iter()
@@ -284,15 +273,29 @@ async fn derive_call(ctx: McpToolCtx, args: DeriveArgs) -> Result<DeriveOutput, 
         core_derive_operator_id(args.kind),
         core_derive_input_contract_id(args.kind),
     );
-    let (target, supersedes_id) = resolve_derive_target(
+    let supersedes = resolve_supersedes(
         &ctx,
         args.kind,
-        memory_id,
         args.idempotency_key.as_deref(),
         args.supersedes.as_deref(),
     )
     .await?;
-    let request = derive_request_key(args.kind, &authored, &origins, &external_ids, supersedes_id)?;
+    let request = derive_request_key(
+        args.kind,
+        &authored,
+        &origins,
+        &external_ids,
+        supersedes.map(MemoryId::into_inner),
+    )?;
+    let DerivationPlan {
+        memory_id,
+        sidecar,
+        authored,
+    } = plan_derivation(&ctx, &space.owner, args.kind, authored, &sources, &request)?;
+    let target = supersedes.map_or(
+        crate::MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
+        crate::MemoryTarget::Revision,
+    );
     let memory = match args.kind {
         DerivedKind::Abstraction => DerivedMemory::abstraction(
             target,
@@ -387,13 +390,15 @@ pub(crate) fn authored_derivation(
 /// `core_episode_commit`.
 pub(crate) struct DerivationPlan {
     pub(crate) memory_id: MemoryId,
-    pub(crate) derived_from: Vec<EdgeEndpoint>,
     pub(crate) sidecar: AgentDerivationV1,
     pub(crate) authored: AuthoredDerivation,
 }
 
 /// Fold the authored content and the resolved sources into the identity,
-/// operator shape, sidecar and declared inputs of one derived write.
+/// operator shape and sidecar of one derived write. The series is named by
+/// the request key ([`derive_request_key`]): the caller's key, or for a
+/// keyless write the content fingerprint the ledger judges it by, so the
+/// series and the ledger cannot disagree about which write this is.
 ///
 /// # Errors
 ///
@@ -405,62 +410,20 @@ pub(crate) fn plan_derivation(
     kind: DerivedKind,
     authored: AuthoredDerivation,
     sources: &[(MemoryId, MemoryHandleClass)],
+    request: &crate::RequestKey,
 ) -> Result<DerivationPlan, McpToolError> {
-    let key = authored.idempotency_key.clone().unwrap_or_else(|| {
-        // Keyless: key on title, body, tags and source memory ids so a
-        // re-derive over other sources is a new memory.
-        content_idempotency_key(&authored, sources)
-    });
-    let memory_id = MemoryId::new(derived_memory_id(owner, kind.as_str(), &key));
+    operator_shape(kind, sources)?;
+    let memory_id = MemoryId::new(derived_memory_id(
+        owner,
+        kind.as_str(),
+        request.key().as_str(),
+    ));
     let sidecar = derivation_sidecar(ctx, &authored, sources);
-    let (_operator_kind, target_kind) = operator_shape(kind, sources)?;
-    // The declaration is a list of targets. Its kind — `origin` —
-    // follows from what this operation IS, so there is nothing
-    // here for the caller to pick.
-    let derived_from: Vec<EdgeEndpoint> = sources
-        .iter()
-        .map(|(source_id, _class)| EdgeEndpoint::memory(target_kind, *source_id))
-        .collect();
     Ok(DerivationPlan {
         memory_id,
-        derived_from,
         sidecar,
         authored,
     })
-}
-
-/// The auto-derived idempotency key, which must cover everything this write
-/// stores that the storage-side replay proof does not.
-///
-/// That proof (`validate_derived_replay_equivalent`) compares the
-/// `memories` row: text, kind, operator, model, owner. `text` is
-/// the body alone — the title and tags live in the
-/// `agent_derivation_v1` sidecar, which the proof never reads and
-/// which the replay path never even writes. Hashing the body alone
-/// would make two derivations with one body and different titles a
-/// single write: the second caller gets `idempotent_replay: true`
-/// and a handle to somebody else's Abstraction, with their own
-/// title silently discarded. A success flag over dropped content
-/// is the worst shape a write can fail in.
-///
-/// An *explicit* key is deliberately left alone. There the caller
-/// is asserting "this is the same derivation" — that is what the
-/// parameter is for, and a re-generated body differing by a space
-/// must still replay.
-pub(crate) fn content_idempotency_key(
-    authored: &AuthoredDerivation,
-    sources: &[(MemoryId, MemoryHandleClass)],
-) -> String {
-    let origin_ids = sources.iter().map(|(id, _)| id.into_inner());
-    let fp = crate::ContentFingerprint::builder(crate::KeyScope::Abstraction)
-        .text("title", &authored.title)
-        .text("body", &authored.body)
-        .tags(authored.tags.iter().map(String::as_str))
-        .uuid_set("origins", origin_ids)
-        .absent_uuid_set("references")
-        .absent_uuid_set("supersedes")
-        .build();
-    fp.to_hex()
 }
 
 /// The typed sidecar this write stores beside the memory row.
@@ -484,18 +447,14 @@ pub(crate) fn derivation_sidecar(
     }
 }
 
-async fn resolve_derive_target(
+async fn resolve_supersedes(
     ctx: &McpToolCtx,
     kind: DerivedKind,
-    series_memory_id: MemoryId,
     idempotency_key: Option<&str>,
     supersedes: Option<&str>,
-) -> Result<(crate::MemoryTarget, Option<uuid::Uuid>), McpToolError> {
+) -> Result<Option<MemoryId>, McpToolError> {
     let Some(raw) = supersedes else {
-        return Ok((
-            crate::MemoryTarget::Series(SeriesHandle::new(series_memory_id.into_inner())),
-            None,
-        ));
+        return Ok(None);
     };
     if idempotency_key.is_none() {
         return Err(McpToolError::InvalidInput(
@@ -513,10 +472,7 @@ async fn resolve_derive_target(
             kind.as_str()
         )));
     }
-    Ok((
-        crate::MemoryTarget::Revision(prior),
-        Some(prior.into_inner()),
-    ))
+    Ok(Some(prior))
 }
 
 pub(crate) fn derive_request_key(
@@ -530,16 +486,20 @@ pub(crate) fn derive_request_key(
         DerivedKind::Abstraction => crate::KeyScope::Abstraction,
         DerivedKind::Perspective => crate::KeyScope::Perspective,
     };
-    let key_str = authored.idempotency_key.clone().unwrap_or_else(|| {
-        let fp = fingerprint_derivation(scope, authored, origins, external_origins, supersedes_id);
-        fp.to_hex()
-    });
-    let key = crate::IdempotencyKey::new(key_str).map_err(McpToolError::InvalidInput)?;
     let fp = fingerprint_derivation(scope, authored, origins, external_origins, supersedes_id);
+    let key = authored
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(|| fp.to_hex());
+    let key = crate::IdempotencyKey::new(key).map_err(McpToolError::InvalidInput)?;
     Ok(crate::RequestKey::new(scope, key, fp))
 }
 
-pub(crate) fn fingerprint_derivation(
+/// Everything a derived write stores that a replay must match: title, body
+/// and tags (the sidecar, which the storage replay proof never reads), the
+/// kind, local and cross-store origins and `supersedes`. A keyless write is
+/// keyed on it, so one body under two titles stays two writes.
+fn fingerprint_derivation(
     scope: crate::KeyScope,
     authored: &AuthoredDerivation,
     origins: &[MemoryId],

@@ -28,8 +28,8 @@ use crate::verbs::goal_write::{
     GoalAssignmentTarget, GoalEvidenceRef, GoalTopologyWrite, IdempotencyKey,
 };
 use crate::{
-    DerivationIdentity, DerivedMemory, EdgeEndpoint, FactWrite, InterpretationSubjectKind,
-    InterpretationV1, MemoryId, SeriesHandle, UnitOfWork,
+    DerivationIdentity, DerivedMemory, FactWrite, InterpretationSubjectKind, InterpretationV1,
+    MemoryId, SeriesHandle, UnitOfWork,
 };
 
 use bind::{BindSet, parse_bind, reject_duplicate_keys};
@@ -418,24 +418,18 @@ impl EpisodeWrite<'_> {
         )
         .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
         let kind = DerivedKind::Abstraction;
+        let origins = sources.iter().map(|(id, _class)| *id).collect::<Vec<_>>();
+        let request = derive::derive_request_key(kind, &authored, &origins, &[], None)?;
         let derive::DerivationPlan {
             memory_id,
-            derived_from,
             sidecar,
             authored,
-            ..
-        } = derive::plan_derivation(ctx, &owner, kind, authored, &sources)?;
+        } = derive::plan_derivation(ctx, &owner, kind, authored, &sources, &request)?;
         let extra_refs = pin.then_some(act_id).into_iter().collect::<Vec<_>>();
-        let origins = derived_from
-            .iter()
-            .copied()
-            .filter_map(EdgeEndpoint::memory_id)
-            .collect::<Vec<_>>();
         let identity = DerivationIdentity::new(
             core_derive_operator_id(kind),
             core_derive_input_contract_id(kind),
         );
-        let request = derive::derive_request_key(kind, &authored, &origins, &[], None)?;
         let outcome = self
             .uow
             .derive_memory(
