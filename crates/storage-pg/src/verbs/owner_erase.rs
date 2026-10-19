@@ -1256,8 +1256,11 @@ async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<()
                 SELECT handle, t
                   FROM (
                     SELECT handle, t,
-                           row_number() OVER (PARTITION BY handle ORDER BY t DESC) AS n
-                      FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+                           row_number() OVER (
+                               PARTITION BY handle
+                               ORDER BY (forgotten_at IS NULL) DESC, t DESC
+                           ) AS n
+                      FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (the head is the newest live version, like sync_memory_head) */
                      WHERE owner_id = $1
                        AND handle IN (SELECT handle FROM selected_memory_handles)
                   ) ranked

@@ -1562,7 +1562,7 @@ async fn erase_group_owner_completes_when_abandoned() {
 }
 
 #[tokio::test]
-async fn erase_source_scope_rewinds_head_to_remaining_t() {
+async fn erase_source_scope_rewinds_head_to_newest_live_remaining_t() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -1577,10 +1577,17 @@ async fn erase_source_scope_rewinds_head_to_remaining_t() {
         let first = pg
             .ingest_fact_atomic(&permit, &draft(Some(("src-old", "k-old"))), None)
             .await?;
+        // A forgotten version between them must not become the head: owner
+        // reads skip it, so the series would read as absent although `first`
+        // is live (#488 "the head is the newest live version").
+        let mut middle = draft(Some(("src-old", "k-mid")));
+        middle.handle = Some(first.handle);
+        let middle = pg.ingest_fact_atomic(&permit, &middle, None).await?;
         let mut later = draft(Some(("src-new", "k-new")));
         later.handle = Some(first.handle);
         let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
         assert_eq!(second.handle, first.handle);
+        MemoryAuthoringPort::forget_memory(&pg, &permit, middle.memory_id).await?;
 
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
             user_id: user,
