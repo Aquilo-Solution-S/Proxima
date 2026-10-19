@@ -304,7 +304,10 @@ async fn fresh_split_role_boot_migrates_core_and_example_automatically() {
     .await
     .expect("fresh schema census");
     assert!(base_tables > 0);
-    assert_eq!(flavor_tables, 4, "notebooks, settings and the two sidecars");
+    assert_eq!(
+        flavor_tables, 5,
+        "notebooks, settings, stamp, and the two memory sidecars"
+    );
     exec(
         &admin,
         format!(

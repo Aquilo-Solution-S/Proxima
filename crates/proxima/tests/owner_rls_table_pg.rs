@@ -54,8 +54,8 @@ const FK_PARENT: &[&str] = &[
 const OWNERLESS: &[&str] = &["settings"];
 const MEMORY_OWNER: &[&str] = &["self_v1", "projection", "m_keyed", "m_only", "m_plain"];
 
-/// The example schema's owner classification, as its baseline states it.
-const EXAMPLE_OWNER_ID: &[&str] = &["notebooks"];
+/// The example schema's owner classification, as the example migrator states it (baseline plus `stamp_follows`).
+const EXAMPLE_OWNER_ID: &[&str] = &["notebooks", "stamp_v1"];
 const EXAMPLE_FK_PARENT: &[&str] = &["note_v1", "digest_v1"];
 const EXAMPLE_OWNERLESS: &[&str] = &["settings"];
 

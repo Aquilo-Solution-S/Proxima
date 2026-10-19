@@ -1,5 +1,5 @@
-//! The example flavor's two payloads: a stateful note Fact and a digest
-//! Abstraction, both scoped to a notebook. Test and tutorial fixtures.
+//! The example flavor's payloads: a stateful note Fact, a digest
+//! Abstraction, and a stamp Fact that follows its memory on transfer.
 
 use proxima_core::{AbstractionPayload, FactPayload, ScopeKind};
 use schemars::JsonSchema;
@@ -13,6 +13,8 @@ pub const NOTEBOOK_SCOPE: ScopeKind = ScopeKind::new("notebook");
 pub const NOTE_SCHEMA_ID: &str = "proxima-example/note-v1";
 /// Schema id of [`DigestV1`].
 pub const DIGEST_SCHEMA_ID: &str = "proxima-example/digest-v1";
+/// Schema id of [`StampV1`].
+pub const STAMP_SCHEMA_ID: &str = "proxima-example/stamp-v1";
 
 /// One note in a notebook. Stateful: a newer note with the same
 /// `(notebook_id, key)` supersedes the older one.
@@ -115,5 +117,50 @@ proxima::flavor::pg_sidecar! {
     fields: {
         notebook_id => notebook_id: (uuid),
         summary => summary: (text),
+    },
+}
+
+/// A stamp on a memory that carries its own `owner_id` and follows the
+/// memory on transfer (`owner: follows`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StampV1 {
+    /// Opaque mark text.
+    pub mark: String,
+}
+
+impl FactPayload for StampV1 {
+    const SCHEMA_ID: &'static str = STAMP_SCHEMA_ID;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        self.mark.as_bytes().to_vec()
+    }
+
+    fn render(&self) -> String {
+        self.mark.clone()
+    }
+
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_example.stamp_v1")
+    }
+
+    fn natural_key_columns() -> &'static [&'static str] {
+        &[]
+    }
+
+    fn json_schema() -> Option<serde_json::Value> {
+        Some(serde_json::to_value(schemars::schema_for!(Self)).expect("StampV1 schema serializes"))
+    }
+}
+
+proxima::flavor::pg_sidecar! {
+    payload: StampV1,
+    row: StampRow,
+    kinds: [Fact],
+    table: "proxima_example.stamp_v1",
+    key: t,
+    owner: follows,
+    fields: {
+        mark => mark: (text),
     },
 }

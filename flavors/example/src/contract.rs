@@ -80,6 +80,36 @@ const DIGEST_V1: SchemaContract = SchemaContract {
     natural_key_columns: &[],
 };
 
+const STAMP_V1: SchemaContract = SchemaContract {
+    id: SchemaRef::new(FLAVOR_ID, "stamp", 1),
+    kind: PayloadKind::Fact,
+    sidecar_table: Some("proxima_example.stamp_v1"),
+    search: SearchProjectionDecl::None {
+        why: "a test fixture for owner:follows transfer, not a search surface",
+    },
+    embedding: EmbeddingRecipe::Never {
+        why: "a test fixture for owner:follows transfer, not a memory to embed",
+    },
+    transfer: TransferRule::Follow,
+    provenance: Provenance::None,
+    surfaces: &[Surface {
+        table: "proxima_example.stamp_v1",
+        key: KeyShape::MemoryT { column: "t" },
+        owner_column: Some("owner_id"),
+        transfer: TransferRule::Follow,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Rows,
+        forget: ForgetRule::DumpThenDelete,
+        lexical_language_column: None,
+        counter: CounterRule::Counted("sidecar_rows"),
+        completeness: Some(DbConstraint {
+            relation: "proxima_example.stamp_v1",
+            name: "stamp_v1_t_fkey",
+        }),
+    }],
+    natural_key_columns: &[],
+};
+
 const STATE_SURFACES: &[Surface] = &[Surface {
     table: "proxima_example.notebooks",
     key: KeyShape::Custom(&["owner_id", "notebook_id"]),
@@ -105,12 +135,29 @@ const TOOLS: &[ToolContract] = &[ToolContract {
     actions: &[],
 }];
 
-/// The example flavor's contract: two typed sidecars, the notebook scope,
-/// one read-only tool.
-pub static EXAMPLE_CONTRACT: FlavorContract = FlavorContract {
+/// Baseline schemas only (note + digest). Tutorial kit flavors that splice
+/// [`crate::BASELINE_SQL`] use this so stamp triggers are not required.
+pub static EXAMPLE_BASELINE_CONTRACT: FlavorContract = FlavorContract {
     flavor_id: FLAVOR_ID,
     ordinal: EXAMPLE_ORDINAL,
     schemas: &[NOTE_V1, DIGEST_V1],
+    state_surfaces: STATE_SURFACES,
+    scopes: &[NOTEBOOK_SCOPE_DECL],
+    kernel_surfaces: &[],
+    tools: TOOLS,
+    resources: &[],
+    bespoke_erase_legs: &[],
+    bespoke_transfer_legs: &[],
+    projection: ProjectionDecl::None {
+        why: "a test fixture registers no search surface",
+    },
+};
+
+/// Full example contract: baseline schemas plus the stamp Fact (`owner: follows`).
+pub static EXAMPLE_CONTRACT: FlavorContract = FlavorContract {
+    flavor_id: FLAVOR_ID,
+    ordinal: EXAMPLE_ORDINAL,
+    schemas: &[NOTE_V1, DIGEST_V1, STAMP_V1],
     state_surfaces: STATE_SURFACES,
     scopes: &[NOTEBOOK_SCOPE_DECL],
     kernel_surfaces: &[],

@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 /// The example's baseline version (ordinal 11's lane).
 const EXAMPLE_MIGRATION_VERSION: i64 = 20_261_018_000_011;
+const STAMP_FOLLOWS_MIGRATION_VERSION: i64 = 20_261_019_100_000;
 
 /// The baseline with every table but `settings` classified.
 fn gap_sql() -> String {
@@ -111,7 +112,7 @@ mod kit_definer_view {
         fact_schemas = [proxima_example::NoteV1],
         abstraction_schemas = [proxima_example::DigestV1],
         mcp_tools = [proxima_example::ListNotebooksTool],
-        contract = &proxima_example::EXAMPLE_CONTRACT,
+        contract = &proxima_example::EXAMPLE_BASELINE_CONTRACT,
         migrations = super::view_migrator(false),
         app = { title = "Kit fixture with a definer view" },
     }
@@ -124,7 +125,7 @@ mod kit_invoker_view {
         fact_schemas = [proxima_example::NoteV1],
         abstraction_schemas = [proxima_example::DigestV1],
         mcp_tools = [proxima_example::ListNotebooksTool],
-        contract = &proxima_example::EXAMPLE_CONTRACT,
+        contract = &proxima_example::EXAMPLE_BASELINE_CONTRACT,
         migrations = super::view_migrator(true),
         app = { title = "Kit fixture with an invoker view" },
     }
@@ -137,7 +138,7 @@ mod kit_gap {
         fact_schemas = [proxima_example::NoteV1],
         abstraction_schemas = [proxima_example::DigestV1],
         mcp_tools = [proxima_example::ListNotebooksTool],
-        contract = &proxima_example::EXAMPLE_CONTRACT,
+        contract = &proxima_example::EXAMPLE_BASELINE_CONTRACT,
         migrations = super::gap_migrator(),
         app = { title = "Kit fixture, one table unclassified" },
     }
@@ -150,7 +151,7 @@ mod kit_per_table {
         fact_schemas = [proxima_example::NoteV1],
         abstraction_schemas = [proxima_example::DigestV1],
         mcp_tools = [proxima_example::ListNotebooksTool],
-        contract = &proxima_example::EXAMPLE_CONTRACT,
+        contract = &proxima_example::EXAMPLE_BASELINE_CONTRACT,
         migrations = super::per_table_migrator(super::PerTableHost::CallsEveryTable),
         app = { title = "Kit fixture, one owner-RLS call per table" },
     }
@@ -163,7 +164,7 @@ mod kit_forgotten_table {
         fact_schemas = [proxima_example::NoteV1],
         abstraction_schemas = [proxima_example::DigestV1],
         mcp_tools = [proxima_example::ListNotebooksTool],
-        contract = &proxima_example::EXAMPLE_CONTRACT,
+        contract = &proxima_example::EXAMPLE_BASELINE_CONTRACT,
         migrations = super::per_table_migrator(super::PerTableHost::ForgetsSettings),
         app = { title = "Kit fixture, one table without a call" },
     }
@@ -176,7 +177,7 @@ mod kit_forgotten_table_census {
         fact_schemas = [proxima_example::NoteV1],
         abstraction_schemas = [proxima_example::DigestV1],
         mcp_tools = [proxima_example::ListNotebooksTool],
-        contract = &proxima_example::EXAMPLE_CONTRACT,
+        contract = &proxima_example::EXAMPLE_BASELINE_CONTRACT,
         migrations = super::per_table_migrator(super::PerTableHost::ForgetsSettingsAssertsCensus),
         app = { title = "Kit fixture, one table without a call, census at the end" },
     }
@@ -205,7 +206,7 @@ mod kit_full {
         bundle = KitFullFlavor,
         name = "proxima-example",
         display_name = "Example",
-        fact_schemas = [proxima_example::NoteV1],
+        fact_schemas = [proxima_example::NoteV1, proxima_example::StampV1],
         abstraction_schemas = [proxima_example::DigestV1],
         mcp_tools = [proxima_example::ListNotebooksTool],
         contract = &proxima_example::EXAMPLE_CONTRACT,
@@ -318,19 +319,24 @@ fn the_bundle_is_the_hand_written_one() {
     <ExampleFlavor as FlavorBundle>::register_pg_sidecars(&mut registry);
     let mut hand_written = PgSidecarRegistry::new();
     hand_written.add_fact::<NoteV1>();
+    hand_written.add_fact::<proxima_example::StampV1>();
     hand_written.add_abstraction::<proxima_example::DigestV1>();
     assert_eq!(
         debug_entries(&format!("{registry:?}")),
         debug_entries(&format!("{hand_written:?}"))
     );
 
-    assert_trigger_migrations::<ExampleFlavor>("proxima-example", &[BASELINE_SQL]);
+    assert_trigger_migrations::<ExampleFlavor>(
+        "proxima-example",
+        &[BASELINE_SQL, proxima_example::STAMP_FOLLOWS_SQL],
+    );
 }
 
 #[test]
 #[should_panic(expected = "appear in no migration")]
 fn the_trigger_drift_assertion_names_a_missing_trigger() {
-    let without_presence = BASELINE_SQL
+    let without_presence = [BASELINE_SQL, proxima_example::STAMP_FOLLOWS_SQL]
+        .join(";\n")
         .split(";\n")
         .filter(|statement| !statement.contains("assert_declared_sidecar_present"))
         .collect::<Vec<_>>()
@@ -405,8 +411,11 @@ async fn an_installer_migration_boots_under_the_runtime_rls_guard() {
 
     assert_eq!(
         ledger_versions(&db, "public._sqlx_migrations_proxima_example").await,
-        Some(vec![EXAMPLE_MIGRATION_VERSION]),
-        "the flavor records on its own ledger"
+        Some(vec![
+            EXAMPLE_MIGRATION_VERSION,
+            STAMP_FOLLOWS_MIGRATION_VERSION
+        ]),
+        "the flavor records baseline and stamp_follows on its own ledger"
     );
     assert_eq!(
         ledger_versions(&db, "public._sqlx_migrations").await,

@@ -8,8 +8,8 @@ mod example_engine;
 
 use sqlx::{Connection, PgConnection};
 
-/// The example schema's classification, as its baseline states it.
-const OWNER_ID_TABLES: &[&str] = &["notebooks"];
+/// The example schema's classification, as the example migrator states it (baseline plus `stamp_follows`).
+const OWNER_ID_TABLES: &[&str] = &["notebooks", "stamp_v1"];
 const FK_PARENT_TABLES: &[&str] = &["note_v1", "digest_v1"];
 const OWNERLESS_TABLES: &[&str] = &["settings"];
 

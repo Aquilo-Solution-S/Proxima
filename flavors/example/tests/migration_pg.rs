@@ -1,11 +1,13 @@
-//! The example flavor's baseline: the generated trigger text it carries,
-//! its owner RLS on a split-role database, and its one tool's owner scope.
+//! The example flavor's migrations: generated trigger text, owner RLS on a
+//! split-role database, and its one tool's owner scope.
 
 use proxima::flavor::{FlavorBundle, FlavorRegistry, PgSidecarRegistry};
 use proxima::testkit::{SplitRoleDb, assert_trigger_migrations, scoped_authz};
 use proxima::{QueryRequest, company_owner};
 use proxima_example::testkit::{build_engine, register_notebook, remember_note};
-use proxima_example::{BASELINE_SQL, ExampleFlavor, ExampleStore, FLAVOR_ID, NoteV1};
+use proxima_example::{
+    BASELINE_SQL, ExampleFlavor, ExampleStore, FLAVOR_ID, NoteV1, STAMP_FOLLOWS_SQL,
+};
 use uuid::Uuid;
 
 fn frozen_sidecars() -> proxima::flavor::PgSidecarRegistryFrozen {
@@ -22,7 +24,7 @@ fn frozen_sidecars() -> proxima::flavor::PgSidecarRegistryFrozen {
 
 #[test]
 fn the_testkit_drift_assertion_holds_for_the_example_flavor() {
-    assert_trigger_migrations::<ExampleFlavor>(FLAVOR_ID, &[BASELINE_SQL]);
+    assert_trigger_migrations::<ExampleFlavor>(FLAVOR_ID, &[BASELINE_SQL, STAMP_FOLLOWS_SQL]);
 }
 
 #[test]
@@ -30,11 +32,12 @@ fn generated_declaration_triggers_are_the_example_migration_text() {
     let artifacts = frozen_sidecars()
         .declaration_trigger_artifacts(FLAVOR_ID)
         .expect("the example's declaration triggers");
-    assert_eq!(artifacts.len(), 2, "one per sidecar");
+    assert_eq!(artifacts.len(), 3, "one per sidecar");
     for artifact in &artifacts {
         assert!(
-            BASELINE_SQL.contains(&artifact.forward),
-            "the baseline does not carry the generator's output verbatim:\n{}",
+            BASELINE_SQL.contains(&artifact.forward)
+                || STAMP_FOLLOWS_SQL.contains(&artifact.forward),
+            "no example migration carries the generator's output verbatim:\n{}",
             artifact.forward
         );
     }
@@ -48,15 +51,16 @@ fn generated_presence_triggers_are_the_example_migration_text() {
     assert!(!artifacts.is_empty());
     for artifact in &artifacts {
         assert!(
-            BASELINE_SQL.contains(&artifact.forward),
-            "the baseline does not carry the generator's output verbatim:\n{}",
+            BASELINE_SQL.contains(&artifact.forward)
+                || STAMP_FOLLOWS_SQL.contains(&artifact.forward),
+            "no example migration carries the generator's output verbatim:\n{}",
             artifact.forward
         );
     }
 }
 
-/// The baseline applies on a split-role database, its census passes, and
-/// the Engine admits a scoped note into the typed sidecar.
+/// The example migrator applies on a split-role database, its census passes,
+/// and the Engine admits a scoped note into the typed sidecar.
 #[tokio::test]
 async fn the_baseline_applies_under_split_roles_and_the_census_passes() {
     let db = SplitRoleDb::create("proxima_example_baseline", &[])
@@ -108,7 +112,7 @@ async fn the_baseline_applies_under_split_roles_and_the_census_passes() {
     .fetch_all(&admin)
     .await
     .expect("the example's own ledger");
-    assert_eq!(versions, vec![20_261_018_000_011]);
+    assert_eq!(versions, vec![20_261_018_000_011, 20_261_019_100_000]);
     admin.close().await;
     runtime.close().await;
     built.shutdown().await;

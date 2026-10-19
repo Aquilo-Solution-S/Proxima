@@ -86,6 +86,10 @@ name = "forget_note_pg"
 required-features = ["testkit"]
 
 [[test]]
+name = "stamp_follows_pg"
+required-features = ["testkit"]
+
+[[test]]
 name = "scope_fence_pg"
 required-features = ["testkit"]
 
