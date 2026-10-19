@@ -93,6 +93,12 @@
 //! every token replaced by one placeholder, the only diff is the three stub
 //! lines becoming memory
 //! lines, three note lines staying, and the counts moving with them.
+//!
+//! #482 regenerated it for the store column: every upload row gains
+//! `object_store`, and the never-drained debt names that store where it
+//! used to carry an empty `backend`. Checked, not assumed: with every token
+//! replaced by one placeholder and those two fields removed, the file is
+//! line-identical to the previous golden.
 #![allow(
     clippy::doc_markdown,
     clippy::format_push_string,
@@ -263,9 +269,9 @@ async fn blob_row(
     let object_key = format!("objects/{upload_id}");
     sqlx::query(
         "INSERT INTO proxima_core.blob_uploads
-             (upload_id, owner_id, bucket, object_key, filename, mime, expected_byte_len,
+             (upload_id, owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len,
               status, blob_id, sha256, content_hash, etag, expires_at, completed_at)
-         VALUES ($1, $2, 'bucket', $3, 'f.pdf', 'application/pdf', 1,
+         VALUES ($1, $2, 'bucket', 's3:test/bucket', $3, 'f.pdf', 'application/pdf', 1,
                  'completed'::proxima_core.blob_upload_status, $4, $5, $6, 'etag-1',
                  TIMESTAMPTZ '2030-01-01 00:00:00Z', TIMESTAMPTZ '2026-01-01 00:00:00Z')",
     )
@@ -552,8 +558,9 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.cold_purge_pending (owner_id, object_key, enqueued_at)
-         VALUES ($1, 'cold/never-drained', TIMESTAMPTZ '2026-04-04 00:00:00Z')",
+        "INSERT INTO proxima_core.cold_purge_pending
+             (owner_id, object_key, object_store, enqueued_at)
+         VALUES ($1, 'cold/never-drained', 's3:test/bucket', TIMESTAMPTZ '2026-04-04 00:00:00Z')",
     )
     .bind(source.into_inner())
     .execute(pool)

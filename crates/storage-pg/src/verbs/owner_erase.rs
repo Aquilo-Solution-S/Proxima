@@ -1701,41 +1701,43 @@ async fn enqueue_blob_object_keys(
     owner_id: uuid::Uuid,
     scope: SelectionScope<'_>,
 ) -> Result<Vec<ColdPurgeEntry>, StorageError> {
-    // `u.bucket` travels with the key: the queue outlives the process that
-    // wrote it, and the object store a debt was incurred against is row data
-    // here, not deployment convention. `DISTINCT ON` rather than `DISTINCT`
-    // because two mounted rows over one key carry the same bucket but differ
-    // in `owner_id`, and the insert needs exactly one row per key.
+    // `u.object_store` travels with the key: the queue outlives the process
+    // that wrote it, and the object store a debt was incurred against is row
+    // data here, not deployment convention. `DISTINCT ON` rather than
+    // `DISTINCT` because two mounted rows over one key carry the same store
+    // but differ in `owner_id`, and the insert needs exactly one row per key.
     let rows: Vec<(String, String)> = match scope {
         SelectionScope::Owner => sqlx::query_as(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
-             SELECT DISTINCT ON (u.object_key) u.object_key, u.owner_id, u.bucket
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+             SELECT DISTINCT ON (u.object_store, u.object_key) u.object_key, u.owner_id, u.object_store
                FROM proxima_core.blob_uploads u
               WHERE u.owner_id = $1
                 AND NOT EXISTS (
                         SELECT 1
                           FROM proxima_core.blob_uploads other
                          WHERE other.object_key = u.object_key
+                           AND other.object_store = u.object_store
                            AND other.owner_id <> $1
                     )
-              ORDER BY u.object_key, u.upload_id
-             ON CONFLICT (object_key) DO UPDATE
-                SET enqueued_at = now(), backend = EXCLUDED.backend
-             RETURNING object_key, backend",
+              ORDER BY u.object_store, u.object_key, u.upload_id
+             ON CONFLICT (object_store, object_key) DO UPDATE
+                SET enqueued_at = now()
+             RETURNING object_key, object_store",
         )
         .bind(owner_id)
         .fetch_all(&mut **tx)
         .await
         .map_err(map_err)?,
         SelectionScope::Source(_) => sqlx::query_as(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
-             SELECT DISTINCT ON (u.object_key) u.object_key, u.owner_id, u.bucket
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+             SELECT DISTINCT ON (u.object_store, u.object_key) u.object_key, u.owner_id, u.object_store
                FROM proxima_core.blob_uploads u
                JOIN selected_blobs sb ON sb.blob_id = u.blob_id
               WHERE NOT EXISTS (
                         SELECT 1
                           FROM proxima_core.blob_uploads other
                          WHERE other.object_key = u.object_key
+                           AND other.object_store = u.object_store
                            AND other.upload_id <> u.upload_id
                            AND NOT EXISTS (
                                    SELECT 1
@@ -1743,10 +1745,10 @@ async fn enqueue_blob_object_keys(
                                     WHERE sb2.blob_id = other.blob_id
                                )
                     )
-              ORDER BY u.object_key, u.upload_id
-             ON CONFLICT (object_key) DO UPDATE
-                SET enqueued_at = now(), backend = EXCLUDED.backend
-             RETURNING object_key, backend",
+              ORDER BY u.object_store, u.object_key, u.upload_id
+             ON CONFLICT (object_store, object_key) DO UPDATE
+                SET enqueued_at = now()
+             RETURNING object_key, object_store",
         )
         .fetch_all(&mut **tx)
         .await
@@ -1754,9 +1756,9 @@ async fn enqueue_blob_object_keys(
     };
     Ok(rows
         .into_iter()
-        .map(|(object_key, backend)| ColdPurgeEntry {
+        .map(|(object_key, object_store)| ColdPurgeEntry {
             object_key,
-            backend,
+            object_store,
         })
         .collect())
 }

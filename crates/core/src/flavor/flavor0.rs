@@ -949,7 +949,9 @@ const KERNEL_SURFACES: &[Surface] = &[
     },
     Surface {
         table: "proxima_core.cold_purge_pending",
-        key: KeyShape::Custom(&["object_key"]),
+        // One debt per object in one store: the same key in two stores is
+        // two obligations.
+        key: KeyShape::Custom(&["object_store", "object_key"]),
         owner_column: Some("owner_id"),
         transfer: TransferRule::StaysOnKey,
         // The debt outlives the transaction that recorded it BY

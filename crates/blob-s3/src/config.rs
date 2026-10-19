@@ -92,6 +92,13 @@ pub struct S3RuntimeConfig {
     /// `byte_len`) and again while streaming the uploaded object at completion,
     /// so an under-declared object cannot bypass the cap.
     pub max_blob_bytes: Option<u64>,
+    /// Operator-chosen identity of this object store (`PROXIMA_S3_STORE_ID`,
+    /// 1 to 64 of `[A-Za-z0-9._-]`). `None` derives it from `endpoint_url`
+    /// and `bucket` ([`proxima_core::ObjectStoreId::derive_s3`]). Upload rows
+    /// and purge debt record it, and a store drains only its own debt, so
+    /// set it when processes sharing one store reach it through different
+    /// endpoint URLs, or when several stores share one endpoint and bucket.
+    pub store_id: Option<String>,
 }
 
 impl S3RuntimeConfig {
@@ -147,6 +154,11 @@ impl S3RuntimeConfig {
         if let Some(endpoint_url) = &endpoint_url {
             validate_endpoint_url("PROXIMA_S3_ENDPOINT_URL", endpoint_url, &plaintext_hosts)?;
         }
+        let store_id = env_value(lookup, "PROXIMA_S3_STORE_ID");
+        if let Some(store_id) = &store_id {
+            proxima_core::ObjectStoreId::operator(store_id)
+                .map_err(|error| BlobError::Config(format!("PROXIMA_S3_STORE_ID: {error}")))?;
+        }
         let public_endpoint_url = env_value(lookup, "PROXIMA_S3_PUBLIC_ENDPOINT_URL");
         if let Some(endpoint_url) = &public_endpoint_url {
             validate_endpoint_url(
@@ -179,6 +191,7 @@ impl S3RuntimeConfig {
             // constructors too. Defaulting in the parser as well was the
             // second of two application points for one value.
             max_blob_bytes: parse_optional_u64_env(lookup, "PROXIMA_S3_MAX_BLOB_BYTES")?,
+            store_id,
         }))
     }
 
@@ -189,6 +202,24 @@ impl S3RuntimeConfig {
     #[must_use]
     pub fn present_in_env() -> bool {
         env_value(&process_env, "PROXIMA_S3_BUCKET").is_some()
+    }
+
+    /// The identity upload rows and purge debt record for this store.
+    ///
+    /// # Errors
+    /// Returns `BlobError::Config` when `store_id` is not a valid operator
+    /// identity, or the endpoint URL or bucket cannot name a store.
+    pub fn object_store_id(&self) -> Result<proxima_core::ObjectStoreId, BlobError> {
+        match &self.store_id {
+            Some(id) => proxima_core::ObjectStoreId::operator(id)
+                .map_err(|error| BlobError::Config(format!("PROXIMA_S3_STORE_ID: {error}"))),
+            None => {
+                proxima_core::ObjectStoreId::derive_s3(self.endpoint_url.as_deref(), &self.bucket)
+                    .map_err(|error| {
+                        BlobError::Config(format!("S3 object store identity: {error}"))
+                    })
+            }
+        }
     }
 
     /// Build the internal object-I/O client solely from configured values.
@@ -339,6 +370,42 @@ mod tests {
             panic!("wrong variant");
         };
         assert!(msg.contains("PROXIMA_S3_REGION"), "{msg}");
+    }
+
+    /// The store id is derived from endpoint and bucket unless the operator
+    /// names it; a named id is validated where the config is read.
+    #[test]
+    fn from_lookup_derives_or_takes_the_store_id() {
+        let derived = S3RuntimeConfig::from_lookup(&env(&bucketed(&[(
+            "PROXIMA_S3_ENDPOINT_URL",
+            "HTTPS://Minio.Local:443/",
+        )])))
+        .expect("valid config")
+        .expect("configured");
+        assert_eq!(derived.store_id, None);
+        assert_eq!(
+            derived.object_store_id().expect("derived").as_str(),
+            "s3:https://minio.local/b"
+        );
+        let named = S3RuntimeConfig::from_lookup(&env(&bucketed(&[(
+            "PROXIMA_S3_STORE_ID",
+            "tenant-a.store_1",
+        )])))
+        .expect("valid config")
+        .expect("configured");
+        assert_eq!(
+            named.object_store_id().expect("named").as_str(),
+            "s3:id/tenant-a.store_1"
+        );
+        for bad in ["has space", "slash/inside"] {
+            let err =
+                S3RuntimeConfig::from_lookup(&env(&bucketed(&[("PROXIMA_S3_STORE_ID", bad)])))
+                    .expect_err("an invalid store id is refused");
+            let BlobError::Config(msg) = err else {
+                panic!("wrong variant");
+            };
+            assert!(msg.contains("PROXIMA_S3_STORE_ID"), "{msg}");
+        }
     }
 
     #[test]

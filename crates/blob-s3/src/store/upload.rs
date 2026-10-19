@@ -363,8 +363,9 @@ impl CitedBlobStore {
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads \
                 (owner_id, upload_id, \
-                 bucket, object_key, filename, mime, expected_byte_len, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                 bucket, object_key, filename, mime, expected_byte_len, expires_at, \
+                 object_store) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(owner_id)
         .bind(upload_id)
@@ -377,6 +378,7 @@ impl CitedBlobStore {
                 .map_err(|_| BlobError::State("byte_len exceeds Postgres bigint".into()))?,
         )
         .bind(expires_at)
+        .bind(self.store_id.as_str())
         .execute(&mut *tx)
         .await
         .map_err(BlobError::Db)?;
@@ -702,7 +704,7 @@ impl CitedBlobStore {
             {
                 stage_locator_decision(observed.status, observed.blob_id, rows_affected)?
             } else {
-                self.resolve_erased_owner_row(upload_id, canonical_key, &row.bucket)
+                self.resolve_erased_owner_row(upload_id, canonical_key)
                     .await?;
                 tx.commit().await.map_err(BlobError::Db)?;
                 self.purge_pending_upload_best_effort(&row.bucket, upload_id)
@@ -761,7 +763,6 @@ impl CitedBlobStore {
         &self,
         upload_id: Uuid,
         canonical_key: &str,
-        bucket: &str,
     ) -> Result<(), BlobError> {
         let mut platform_tx = self
             .platform_scope
@@ -772,13 +773,14 @@ impl CitedBlobStore {
             "SELECT EXISTS (
                  SELECT 1
                    FROM proxima_core.blob_uploads
-                  WHERE object_key = $1
+                  WHERE (object_key = $1 AND object_store = $3)
                      OR upload_id = $2
                      OR mounted_from_upload_id = $2
              )",
         )
         .bind(canonical_key)
         .bind(upload_id)
+        .bind(self.store_id.as_str())
         .fetch_one(&mut *platform_tx)
         .await
         .map_err(BlobError::Db)?;
@@ -789,16 +791,16 @@ impl CitedBlobStore {
         // what may have been erased, and `cold_purge_pending.owner_id` carries
         // a foreign key to `owners`. The debt is about an OBJECT; whose erase
         // incurred it is metadata, and unavailable metadata is not a reason to
-        // drop a debt on the floor. The backend is not: it is the bucket this
-        // stage published to, so the drain deletes against the right store.
+        // drop a debt on the floor. The store is not: it is the store this
+        // stage published to, so the drain deletes against the right one.
         sqlx::query(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
              VALUES ($1, NULL, $2)
-             ON CONFLICT (object_key) DO UPDATE
-                SET enqueued_at = now(), backend = EXCLUDED.backend",
+             ON CONFLICT (object_store, object_key) DO UPDATE
+                SET enqueued_at = now()",
         )
         .bind(canonical_key)
-        .bind(bucket)
+        .bind(self.store_id.as_str())
         .execute(&mut *platform_tx)
         .await
         .map_err(BlobError::Db)?;

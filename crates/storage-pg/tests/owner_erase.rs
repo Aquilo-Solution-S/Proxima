@@ -50,8 +50,12 @@ struct RefusingDeleteCold;
 
 #[async_trait::async_trait]
 impl ColdObjectStore for RefusingDeleteCold {
-    fn backend(&self) -> &'static str {
-        "bucket"
+    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+        static ID: std::sync::LazyLock<proxima_core::ObjectStoreId> =
+            std::sync::LazyLock::new(|| {
+                proxima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
+            });
+        &ID
     }
 
     async fn delete(&self, _key: &str) -> Result<(), StorageError> {
@@ -59,19 +63,21 @@ impl ColdObjectStore for RefusingDeleteCold {
     }
 }
 
-/// A cold store that names the bucket it writes to, which is what the
+/// A cold store that names the store it writes to, which is what the
 /// durable purge queue matches a debt against.
 #[derive(Debug)]
 struct BucketNamedCold {
     objects: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
-    bucket: String,
+    store: proxima_core::ObjectStoreId,
 }
 
 impl BucketNamedCold {
+    /// The store `s3:test/<bucket>`, the identity the fixtures below record.
     fn new(bucket: &str) -> Self {
         Self {
             objects: std::sync::Mutex::default(),
-            bucket: bucket.to_owned(),
+            store: proxima_core::ObjectStoreId::parse(&format!("s3:test/{bucket}"))
+                .expect("test store id"),
         }
     }
 
@@ -96,8 +102,8 @@ impl BucketNamedCold {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for BucketNamedCold {
-    fn backend(&self) -> &str {
-        &self.bucket
+    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+        &self.store
     }
 
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
@@ -189,9 +195,9 @@ async fn cite_blob(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.blob_uploads
-             (owner_id, bucket, object_key, filename, mime, expected_byte_len,
+             (owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len,
               status, blob_id, sha256, expires_at, completed_at)
-         VALUES ($1, 'bucket', $2, 'cited.pdf', 'application/pdf', 1,
+         VALUES ($1, 'bucket', 's3:test/bucket', $2, 'cited.pdf', 'application/pdf', 1,
                  'completed', $3, $4, now() + interval '1 hour', now())",
     )
     .bind(owner.into_inner())
@@ -240,9 +246,9 @@ async fn completed_blob_upload(
     let object_key = format!("objects/{seed}");
     sqlx::query(
         "INSERT INTO proxima_core.blob_uploads
-             (owner_id, bucket, object_key, filename, mime, expected_byte_len,
+             (owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len,
               status, blob_id, sha256, expires_at, completed_at)
-         VALUES ($1, 'bucket', $2, 'unreferenced.pdf', 'application/pdf', 1,
+         VALUES ($1, 'bucket', 's3:test/bucket', $2, 'unreferenced.pdf', 'application/pdf', 1,
                  'completed', $3, $4, now() + interval '1 hour', now())",
     )
     .bind(owner.into_inner())
@@ -773,8 +779,8 @@ async fn erase_personal_owner_destroys_blobs_uploads_and_citation_sidecars() {
         // A pending upload names no blob: owner data attributable to no source.
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
-                 (owner_id, bucket, object_key, filename, mime, expected_byte_len, expires_at)
-             VALUES ($1, 'bucket', 'pending/1', 'draft.pdf', 'application/pdf', 1,
+                 (owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len, expires_at)
+             VALUES ($1, 'bucket', 's3:test/bucket', 'pending/1', 'draft.pdf', 'application/pdf', 1,
                      now() + interval '1 hour')",
         )
         .bind(owner.into_inner())
@@ -999,8 +1005,8 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         // journal row can.
         assert_eq!(pending_debts(pool).await?, 1);
         sqlx::query(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
-             VALUES ('objects/test-second-debt', $1, 'bucket')",
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+             VALUES ('objects/test-second-debt', $1, 's3:test/bucket')",
         )
         .bind(owner.into_inner())
         .execute(pool)
@@ -1154,10 +1160,10 @@ async fn an_injected_deadlock_inside_owner_erase_is_retried() {
     result.expect("erase retry test failed");
 }
 
-/// The drain refuses to run while the queue holds a debt against a bucket
-/// this process is not wired to.
+/// The drain refuses to run while the queue holds a debt against an object
+/// store this process is not wired to.
 ///
-/// Before the queue carried a backend, store and queue were matched by boot
+/// Before the queue named its store, store and queue were matched by boot
 /// convention alone: point a process at the right database and the wrong
 /// bucket and every drain "succeeded", deleting nothing and clearing the
 /// debt, so bytes an erase promised to destroy survived with no record that
@@ -1165,7 +1171,7 @@ async fn an_injected_deadlock_inside_owner_erase_is_retried() {
 /// must still drain a matching debt, or the guard would just be an outage.
 
 #[tokio::test]
-async fn a_drain_refuses_debts_owed_by_another_backend() {
+async fn a_drain_refuses_debts_owed_by_another_store() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -1184,9 +1190,9 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
 
         cold.put("cold/mine", b"wired bytes");
         sqlx::query(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
-             VALUES ('cold/mine', $1, 'wired-bucket'),
-                    ('cold/theirs', $1, 'other-bucket')",
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+             VALUES ('cold/mine', $1, 's3:test/wired-bucket'),
+                    ('cold/theirs', $1, 's3:test/other-bucket')",
         )
         .bind(owner.into_inner())
         .execute(pool)
@@ -1202,11 +1208,11 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
         match &refused {
             StorageError::ConstraintViolation(message) => {
                 assert!(
-                    message.contains("other-bucket=1"),
+                    message.contains("s3:test/other-bucket=1"),
                     "the operator is told which store is owed: {message}"
                 );
                 assert!(
-                    message.contains("wired-bucket"),
+                    message.contains("s3:test/wired-bucket"),
                     "and which store is wired: {message}"
                 );
             }
@@ -1224,7 +1230,7 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
         );
 
         // With the foreign debt gone the same wiring drains its own.
-        sqlx::query("DELETE FROM proxima_core.cold_purge_pending WHERE backend = 'other-bucket'")
+        sqlx::query("DELETE FROM proxima_core.cold_purge_pending WHERE object_store = 's3:test/other-bucket'")
             .execute(pool)
             .await?;
         let drained = pg
@@ -1246,7 +1252,7 @@ async fn a_drain_refuses_debts_owed_by_another_backend() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("backend-matched drain test failed");
+    result.expect("store-matched drain test failed");
 }
 
 /// Source scope can delete only blobs captured from its selected admissions.
@@ -1286,8 +1292,8 @@ async fn erase_source_scope_deletes_only_unshared_selected_blobs_and_objects() {
         cold.put(&unrelated_key, b"unrelated object");
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
-                 (owner_id, bucket, object_key, filename, mime, expected_byte_len, expires_at)
-             VALUES ($1, 'bucket', 'pending/2', 'draft.pdf', 'application/pdf', 1,
+                 (owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len, expires_at)
+             VALUES ($1, 'bucket', 's3:test/bucket', 'pending/2', 'draft.pdf', 'application/pdf', 1,
                      now() + interval '1 hour')",
         )
         .bind(owner.into_inner())

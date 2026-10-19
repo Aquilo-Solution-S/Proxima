@@ -1947,8 +1947,12 @@ impl ColdObjectStore for FailDeleteCold {
         Err(StorageError::Internal("cold delete refused".into()))
     }
 
-    fn backend(&self) -> &'static str {
-        "bucket"
+    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+        static ID: std::sync::LazyLock<proxima_core::ObjectStoreId> =
+            std::sync::LazyLock::new(|| {
+                proxima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
+            });
+        &ID
     }
 }
 
@@ -2115,8 +2119,8 @@ impl PurgeRecordingCold {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for PurgeRecordingCold {
-    fn backend(&self) -> &str {
-        self.inner.backend()
+    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+        self.inner.store_id()
     }
 
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
@@ -2132,6 +2136,11 @@ impl ColdObjectStore for PurgeRecordingCold {
 /// A captured plan must recheck durable authority before touching the provider.
 /// Retired and reassigned debts leave bytes alone; the unchanged debt still
 /// performs its actual deletion in the same pass.
+///
+/// A debt is keyed by (store, key), so "reassigned" now means the plan's debt
+/// for this store retired while a debt for the same key in ANOTHER store was
+/// recorded. That is a separate obligation: this store's plan is discharged,
+/// and the other store's debt survives untouched for its own drain.
 #[tokio::test]
 async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -2150,18 +2159,18 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
         let mut entries = Vec::new();
         for key in [retired_key, reassigned_key, current_key] {
             cold.put(key, bytes);
-            let (object_key, backend): (String, String) = sqlx::query_as(
-                "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+            let (object_key, object_store): (String, String) = sqlx::query_as(
+                "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
                  VALUES ($1, NULL, $2)
-                 RETURNING object_key, backend",
+                 RETURNING object_key, object_store",
             )
             .bind(key)
-            .bind(cold.backend())
+            .bind(cold.store_id().as_str())
             .fetch_one(pool)
             .await?;
             entries.push(ColdPurgeEntry {
                 object_key,
-                backend,
+                object_store,
             });
         }
         let plan = ColdPurgePlan::from_entries(entries);
@@ -2178,7 +2187,7 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
         );
         assert_eq!(
             sqlx::query(
-                "UPDATE proxima_core.cold_purge_pending SET backend = 'other-bucket'
+                "UPDATE proxima_core.cold_purge_pending SET object_store = 's3:test/other-bucket'
                  WHERE object_key = $1",
             )
             .bind(reassigned_key)
@@ -2197,7 +2206,8 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
                 outcome.failed,
                 outcome.pending
             ),
-            (3, 2, 1, true)
+            (3, 3, 0, false),
+            "this store's three planned debts are all retired or destroyed"
         );
         assert_eq!(
             *cold.deletes.lock().expect("cold delete calls"),
@@ -2208,14 +2218,14 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
         assert_eq!(cold.get(reassigned_key)?, bytes);
         assert!(matches!(cold.get(current_key), Err(StorageError::NotFound)));
         let remaining: Vec<(String, String)> = sqlx::query_as(
-            "SELECT object_key, backend FROM proxima_core.cold_purge_pending ORDER BY object_key",
+            "SELECT object_key, object_store FROM proxima_core.cold_purge_pending ORDER BY object_key",
         )
         .fetch_all(pool)
         .await?;
         assert_eq!(
             remaining,
-            vec![(reassigned_key.to_owned(), "other-bucket".to_owned())],
-            "the reassigned obligation survives with its actual backend"
+            vec![(reassigned_key.to_owned(), "s3:test/other-bucket".to_owned())],
+            "the reassigned obligation survives with its actual store"
         );
         Ok(())
     }
@@ -2259,20 +2269,20 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
             "erasing a memory owes the object store nothing"
         );
         let key = "objects/refused".to_owned();
-        let backend: String = sqlx::query_scalar(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
+        let object_store: String = sqlx::query_scalar(
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
              VALUES ($1, $2, $3)
-             RETURNING backend",
+             RETURNING object_store",
         )
         .bind(&key)
         .bind(owner.into_inner())
-        .bind(FailDeleteCold.backend())
+        .bind(FailDeleteCold.store_id().as_str())
         .fetch_one(tx.as_mut())
         .await?;
         tx.commit().await?;
         let plan = ColdPurgePlan::from_entries(vec![ColdPurgeEntry {
             object_key: key.clone(),
-            backend,
+            object_store,
         }]);
 
         let platform = pg.platform_scope_for_host();

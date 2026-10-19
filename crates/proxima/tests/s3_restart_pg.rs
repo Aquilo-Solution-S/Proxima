@@ -27,7 +27,7 @@ const BODY: &[u8] = b"cited S3 bytes must remain owed across a configuration cha
 struct EraseObservation {
     receipt: OwnerEraseOutcome,
     canonical_debt: Option<String>,
-    bucket: String,
+    store: String,
     versions_after_erase: usize,
 }
 
@@ -37,7 +37,7 @@ async fn reboot_without_s3_preserves_cited_object_purge_debt() -> TestResult<()>
         eprintln!("skipped: PROXIMA_S3_* unset");
         return Ok(());
     }
-    let observed = reboot_fixture(false).await?;
+    let observed = Box::pin(reboot_fixture(false)).await?;
     eprintln!("no-S3 reboot erase observation: {observed:?}");
     let OwnerEraseOutcome::Completed {
         cold_object_purge_pending,
@@ -49,7 +49,7 @@ async fn reboot_without_s3_preserves_cited_object_purge_debt() -> TestResult<()>
     assert!(
         observed.versions_after_erase == 0
             || (cold_object_purge_pending
-                && observed.canonical_debt.as_deref() == Some(observed.bucket.as_str())),
+                && observed.canonical_debt.as_deref() == Some(observed.store.as_str())),
         "retained S3 versions require a pending receipt and durable bucket-specific debt: {observed:?}",
     );
     Ok(())
@@ -61,7 +61,7 @@ async fn reboot_with_s3_physically_erases_cited_object_versions() -> TestResult<
         eprintln!("skipped: PROXIMA_S3_* unset");
         return Ok(());
     }
-    let observed = reboot_fixture(true).await?;
+    let observed = Box::pin(reboot_fixture(true)).await?;
     assert!(
         matches!(
             observed.receipt,
@@ -463,7 +463,7 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
         .await?;
     assert_eq!(uploads, 0);
     let canonical_debt: Option<String> = sqlx::query_scalar(
-        "SELECT backend FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        "SELECT object_store FROM proxima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(&canonical)
     .fetch_optional(&admin_pool(database).await?)
@@ -484,7 +484,7 @@ async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservatio
     Ok(EraseObservation {
         receipt,
         canonical_debt,
-        bucket: config.bucket,
+        store: config.object_store_id()?.to_string(),
         versions_after_erase,
     })
 }

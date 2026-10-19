@@ -253,7 +253,7 @@ async fn fresh_pg() -> (String, PgStorage) {
     (db_name, pg)
 }
 
-/// The `bucket` backend seeded by cited-blob fixtures, with in-memory bytes
+/// The `s3:test/bucket` store seeded by cited-blob fixtures, with in-memory bytes
 /// and a record of every destruction it is asked for.
 ///
 /// The count is the only witness that separates "both owners withheld" from
@@ -295,8 +295,12 @@ impl CountingColdStore {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for CountingColdStore {
-    fn backend(&self) -> &'static str {
-        "bucket"
+    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+        static ID: std::sync::LazyLock<proxima_core::ObjectStoreId> =
+            std::sync::LazyLock::new(|| {
+                proxima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
+            });
+        &ID
     }
 
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
@@ -1611,9 +1615,9 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
         let upload_id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
-                (owner_id, upload_id, bucket, object_key, filename, mime,
+                (owner_id, upload_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, content_hash, expires_at)
-             VALUES ($1, $2, 'test', 'pending/test', 'test.pdf',
+             VALUES ($1, $2, 'test', 's3:test/test', 'pending/test', 'test.pdf',
                      'application/pdf', 1, 'pending', $3,
                      now() + interval '1 hour')",
         )
@@ -1722,9 +1726,9 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
         let upload_id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
-                (upload_id, owner_id, bucket, object_key, filename, mime,
+                (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, sha256, expires_at)
-             VALUES ($1, $2, 'test', 'objects/' || $1::text, 'legacy.pdf',
+             VALUES ($1, $2, 'test', 's3:test/test', 'objects/' || $1::text, 'legacy.pdf',
                      'application/pdf', 1, 'pending', $3,
                      now() + interval '1 hour')",
         )
@@ -1828,13 +1832,13 @@ async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
 
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
-                (owner_id, bucket, object_key, filename, mime,
+                (owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, content_hash, expires_at)
              VALUES
-                ($1, 'test', 'pending/unstaged', 'lost.bin',
+                ($1, 'test', 's3:test/test', 'pending/unstaged', 'lost.bin',
                  'application/octet-stream', 1, 'pending', NULL,
                  now() + interval '1 hour'),
-                ($1, 'test', 'objects/unrelated', 'other.bin',
+                ($1, 'test', 's3:test/test', 'objects/unrelated', 'other.bin',
                  'application/octet-stream', 1, 'pending', $2,
                  now() + interval '1 hour')",
         )
@@ -1902,9 +1906,9 @@ async fn transfer_allows_aborted_and_expired_upload_cleanup() {
             let upload_id = Uuid::now_v7();
             sqlx::query(
                 "INSERT INTO proxima_core.blob_uploads
-                    (owner_id, upload_id, bucket, object_key, filename, mime,
+                    (owner_id, upload_id, bucket, object_store, object_key, filename, mime,
                      expected_byte_len, status, expires_at)
-                 VALUES ($1, $2, 'test', 'pending/test', 'test.pdf',
+                 VALUES ($1, $2, 'test', 's3:test/test', 'pending/test', 'test.pdf',
                      'application/pdf', 1, $3::proxima_core.blob_upload_status,
                          now() + interval '1 hour')",
             )
@@ -2032,10 +2036,10 @@ async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
         let terminal_upload = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
-                (upload_id, owner_id, bucket, object_key, filename, mime,
+                (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, sha256, content_hash, expires_at,
                  aborted_at)
-             VALUES ($1, $2, 'test', 'objects/' || $1::text, 'first.pdf',
+             VALUES ($1, $2, 'test', 's3:test/test', 'objects/' || $1::text, 'first.pdf',
                      'application/pdf', 3, 'aborted', $3, $3,
                      now() + interval '1 hour', now())",
         )
@@ -2999,9 +3003,9 @@ async fn seed_cited_blob(
     .await?;
     let upload_id: Uuid = sqlx::query_scalar(
         "INSERT INTO proxima_core.blob_uploads
-             (owner_id, bucket, object_key, filename, mime, expected_byte_len,
+             (owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len,
               status, blob_id, sha256, content_hash, expires_at, completed_at)
-         VALUES ($1, 'bucket', 'placeholder', 'f.bin', 'application/octet-stream', 3,
+         VALUES ($1, 'bucket', 's3:test/bucket', 'placeholder', 'f.bin', 'application/octet-stream', 3,
                  'completed', $2, $3, $3, now() + interval '1 day', now())
          RETURNING upload_id",
     )
@@ -3033,10 +3037,10 @@ async fn seed_malformed_completed_upload(
     let upload_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.blob_uploads
-             (upload_id, owner_id, bucket, object_key, filename, mime,
+             (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
               expected_byte_len, status, blob_id, sha256, content_hash,
               expires_at, completed_at)
-         VALUES ($1, $2, 'bucket', 'objects/' || $1::text, '',
+         VALUES ($1, $2, 'bucket', 's3:test/bucket', 'objects/' || $1::text, '',
                  'application/octet-stream', 3, 'completed', $3, $4, $4,
                  now() + interval '1 day', now() + interval '1 minute')",
     )
@@ -3388,10 +3392,10 @@ async fn a_blob_mount_copies_only_source_owned_upload_rows() {
         let foreign_upload = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
-                (upload_id, owner_id, bucket, object_key, filename, mime,
+                (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, blob_id, sha256, content_hash,
                  expires_at, completed_at)
-             VALUES ($1, $2, 'foreign', 'objects/foreign', 'foreign.bin',
+             VALUES ($1, $2, 'foreign', 's3:test/foreign', 'objects/foreign', 'foreign.bin',
                      'application/octet-stream', 3, 'completed', $3, $4, $4,
                      now() + interval '1 day', now())",
         )
@@ -3467,10 +3471,10 @@ async fn an_in_place_blob_move_refuses_a_foreign_upload_pointer() {
         let foreign_upload = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
-                (upload_id, owner_id, bucket, object_key, filename, mime,
+                (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, blob_id, sha256, content_hash,
                  expires_at, completed_at)
-             VALUES ($1, $2, 'foreign', 'objects/foreign-in-place', 'foreign.bin',
+             VALUES ($1, $2, 'foreign', 's3:test/foreign', 'objects/foreign-in-place', 'foreign.bin',
                      'application/octet-stream', 3, 'completed', $3, $4, $4,
                      now() + interval '1 day', now())",
         )

@@ -2635,16 +2635,17 @@ async fn mount_blob_for_destination(
     // that actually uploaded bytes, because an intermediate row never had
     // an object of its own.
     //
-    // `status`, `sha256`, `etag` and the byte length are copied because
-    // they describe the OBJECT, which is the thing being shared; the expiry
+    // `status`, `object_store`, `sha256`, `etag` and the byte length are
+    // copied because they describe the OBJECT, which is the thing being shared; the expiry
     // and completion timestamps are copied for the same reason. Only the
     // identity columns differ.
     let mounted_uploads = sqlx::query(
         "INSERT INTO proxima_core.blob_uploads
-             (owner_id, bucket, object_key, filename, mime, expected_byte_len,
+             (owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len,
               status, blob_id, sha256, content_hash, etag, expires_at, completed_at,
               mounted_from_upload_id)
-         SELECT $2, u.bucket, u.object_key, u.filename, u.mime, u.expected_byte_len,
+         SELECT $2, u.bucket, u.object_store, u.object_key, u.filename, u.mime,
+                u.expected_byte_len,
                 u.status, $3, u.sha256, u.content_hash, u.etag, u.expires_at, u.completed_at,
                 COALESCE(u.mounted_from_upload_id, u.upload_id)
           FROM proxima_core.blob_uploads u

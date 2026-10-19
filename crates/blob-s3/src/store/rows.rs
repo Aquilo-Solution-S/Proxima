@@ -33,6 +33,9 @@ pub(super) use proxima_storage_pg::access::owner_columns::UploadStatus;
 #[derive(Debug, Clone)]
 pub(super) struct BlobLocation {
     pub(super) bucket: String,
+    /// The store the row's bytes were published to; the read gate refuses
+    /// a row naming any other.
+    pub(super) object_store: String,
     pub(super) object_key: String,
     /// The upload row's own primary key. The read gate re-derives the
     /// canonical key from it and demands a byte-exact match, which is what
@@ -51,6 +54,8 @@ pub(super) struct BlobReadRecord {
     pub(super) cited_object_id: Uuid,
     pub(super) content_hash: [u8; 32],
     pub(super) bucket: String,
+    /// See [`BlobLocation::object_store`].
+    pub(super) object_store: String,
     pub(super) object_key: String,
     /// See [`BlobLocation::upload_id`].
     pub(super) upload_id: Uuid,
@@ -315,7 +320,7 @@ pub(super) async fn load_blob_location_on_connection(
     // a stale upload left behind by a partial transfer cannot locate bytes
     // for the blob's new owner.
     const SQL: &str = with_live_blob_upload!(
-        "SELECT u.bucket, u.object_key, u.upload_id, u.mounted_from_upload_id
+        "SELECT u.bucket, u.object_store, u.object_key, u.upload_id, u.mounted_from_upload_id
            FROM proxima_core.blob b
            JOIN",
         "WHERE b.blob_id = $1
@@ -333,6 +338,7 @@ pub(super) async fn load_blob_location_on_connection(
     {
         return Ok(BlobLocation {
             bucket: row.get("bucket"),
+            object_store: row.get("object_store"),
             object_key: row.get("object_key"),
             upload_id: row.get("upload_id"),
             mounted_from_upload_id: row.get("mounted_from_upload_id"),
@@ -352,7 +358,7 @@ pub(super) async fn load_blob_read_record_on_connection(
     blob_id: Uuid,
 ) -> Result<Option<BlobReadRecord>, BlobError> {
     const SQL: &str = with_live_blob_upload!(
-        "SELECT b.blob_id, b.content_hash, u.bucket, u.object_key, u.upload_id,
+        "SELECT b.blob_id, b.content_hash, u.bucket, u.object_store, u.object_key, u.upload_id,
                 u.mounted_from_upload_id,
                 u.sha256, u.expected_byte_len AS byte_len, u.mime, u.filename
            FROM proxima_core.blob b
@@ -381,6 +387,7 @@ pub(super) async fn load_blob_read_record_on_connection(
             cited_object_id: row.get("blob_id"),
             content_hash: hash32(&row.get::<Vec<u8>, _>("content_hash"), "content_hash")?,
             bucket: row.get("bucket"),
+            object_store: row.get("object_store"),
             object_key: row.get("object_key"),
             upload_id: row.get("upload_id"),
             mounted_from_upload_id: row.get("mounted_from_upload_id"),

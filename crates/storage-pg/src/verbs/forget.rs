@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use proxima_core::flavor::{EraseLeg, ForgetLeg, KeyShape};
 use proxima_core::owner_inverse::OwnerSurfaces;
-use proxima_core::{ColdObjectStore, OwnerId, StorageError};
+use proxima_core::{ColdObjectStore, ObjectStoreId, OwnerId, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -13,20 +13,21 @@ use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::sidecars::PgSidecarRegistryFrozen;
 
-// The persisted key derivation lives in core, the lowest crate shared by
-// storage-pg and blob-s3; re-exported here so the storage path names it.
 /// The in-process purge stub dev and test hosts wire when no object store
-/// is configured. It names its own backend, so it drains only debts it was
-/// handed and never an S3 bucket's.
+/// is configured. It is [`ObjectStoreId::memory`], so it drains only debts it
+/// was handed and never an S3 store's.
 #[derive(Debug, Default)]
 pub struct MemoryColdStore;
 
+static MEMORY_STORE_ID: std::sync::LazyLock<ObjectStoreId> =
+    std::sync::LazyLock::new(ObjectStoreId::memory);
+
 #[async_trait::async_trait]
 impl ColdObjectStore for MemoryColdStore {
-    fn backend(&self) -> &'static str {
-        // This cannot be an S3 bucket name. A host that boots without its
-        // S3 configuration must not acknowledge that bucket's durable debts.
-        "memory://"
+    fn store_id(&self) -> &ObjectStoreId {
+        // This cannot be an S3 store. A host that boots without its S3
+        // configuration must not acknowledge that store's durable debts.
+        &MEMORY_STORE_ID
     }
 
     async fn delete(&self, _key: &str) -> Result<(), StorageError> {
@@ -99,12 +100,13 @@ pub struct ColdPurgePlan {
 
 /// One debt: the key, and the object store that holds those bytes.
 ///
-/// The backend travels with the key because the queue outlives the process
-/// that wrote it, and a redeployment may wire another bucket.
+/// The store travels with the key because the queue outlives the process
+/// that wrote it, and a redeployment may wire another store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColdPurgeEntry {
     pub object_key: String,
-    pub backend: String,
+    /// The stored [`ObjectStoreId`] text the debt was incurred against.
+    pub object_store: String,
 }
 
 impl ColdPurgePlan {
@@ -177,14 +179,14 @@ pub(crate) async fn purge_cold_objects_after_commit_with_platform(
         // Never delete against the wrong store, and never silently drop the
         // debt either: the row stays, `failed` counts it, and the receipt
         // reports the erase as still owing bytes. An operator draining the
-        // queue gets the typed refusal with the offending backend named.
-        if !proxima_core::cold_backend_matches(cold.backend(), &entry.backend) {
+        // queue gets the typed refusal with the offending store named.
+        if entry.object_store != cold.store_id().as_str() {
             outcome.failed = outcome.failed.saturating_add(1);
             tracing::warn!(
                 key,
-                row_backend = entry.backend,
-                store_backend = cold.backend(),
-                "cold purge debt names a backend this store is not; leaving it queued"
+                row_store = entry.object_store,
+                wired_store = %cold.store_id(),
+                "purge debt names an object store this process is not wired to; leaving it queued"
             );
             continue;
         }
@@ -211,7 +213,6 @@ pub(crate) async fn purge_cold_objects_after_commit_with_platform(
 /// simply fails the compare, which leaves the debt queued for retry.
 #[derive(sqlx::FromRow)]
 struct ColdPurgeVersion {
-    backend: String,
     row_xmin: String,
     row_ctid: String,
 }
@@ -224,9 +225,11 @@ async fn purge_current_cold_debt(
 ) -> Result<(), StorageError> {
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
     let version = sqlx::query_as::<_, ColdPurgeVersion>(
-        "SELECT backend, xmin::text AS row_xmin, ctid::text AS row_ctid
-           FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        "SELECT xmin::text AS row_xmin, ctid::text AS row_ctid
+           FROM proxima_core.cold_purge_pending
+          WHERE object_store = $1 AND object_key = $2",
     )
+    .bind(cold.store_id().as_str())
     .bind(object_key)
     .fetch_optional(tx.as_mut())
     .await
@@ -237,13 +240,6 @@ async fn purge_current_cold_debt(
         // authorizes deleting whatever may now occupy the same object key.
         return Ok(());
     };
-    if !proxima_core::cold_backend_matches(cold.backend(), &version.backend) {
-        return Err(StorageError::Unavailable(format!(
-            "cold purge debt for {object_key} now names backend {:?}, not {:?}",
-            version.backend,
-            cold.backend()
-        )));
-    }
     // No database transaction or connection remains held during provider I/O.
     // A producer may publish bytes and renew this debt while delete is in
     // flight; its new row version must survive our earlier acknowledgement.
@@ -251,7 +247,7 @@ async fn purge_current_cold_debt(
         Ok(()) | Err(StorageError::NotFound) => {}
         Err(error) => return Err(error),
     }
-    if !clear_cold_purge_pending(pool, platform, object_key, &version).await? {
+    if !clear_cold_purge_pending(pool, platform, cold.store_id(), object_key, &version).await? {
         return Err(StorageError::Unavailable(format!(
             "cold purge debt for {object_key} changed during deletion; leaving it for retry"
         )));
@@ -267,17 +263,18 @@ async fn purge_current_cold_debt(
 async fn clear_cold_purge_pending(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,
+    store: &ObjectStoreId,
     object_key: &str,
     version: &ColdPurgeVersion,
 ) -> Result<bool, StorageError> {
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
     let deleted = sqlx::query(
         "DELETE FROM proxima_core.cold_purge_pending
-          WHERE object_key = $1 AND backend = $2
+          WHERE object_store = $1 AND object_key = $2
             AND xmin::text = $3 AND ctid::text = $4",
     )
+    .bind(store.as_str())
     .bind(object_key)
-    .bind(&version.backend)
     .bind(&version.row_xmin)
     .bind(&version.row_ctid)
     .execute(tx.as_mut())
@@ -1407,9 +1404,9 @@ async fn gc_unreferenced_blobs(
         .map_err(map_err)
         .map(|rows| {
             rows.into_iter()
-                .map(|(object_key, backend)| ColdPurgeEntry {
+                .map(|(object_key, object_store)| ColdPurgeEntry {
                     object_key,
-                    backend,
+                    object_store,
                 })
                 .collect()
         })
@@ -1426,23 +1423,24 @@ WITH orphans AS MATERIALIZED (
            )
 ),
 enqueued AS (
-    INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, backend)
-    SELECT DISTINCT ON (u.object_key) u.object_key, u.owner_id, u.bucket
+    INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+    SELECT DISTINCT ON (u.object_store, u.object_key) u.object_key, u.owner_id, u.object_store
       FROM proxima_core.blob_uploads u
       JOIN orphans o ON o.blob_id = u.blob_id
      WHERE NOT EXISTS (
                SELECT 1
                  FROM proxima_core.blob_uploads other
                 WHERE other.object_key = u.object_key
+                           AND other.object_store = u.object_store
                   AND other.upload_id <> u.upload_id
                   AND NOT EXISTS (
                           SELECT 1 FROM orphans o2 WHERE o2.blob_id = other.blob_id
                       )
            )
-     ORDER BY u.object_key, u.upload_id
-    ON CONFLICT (object_key) DO UPDATE
-       SET enqueued_at = now(), backend = EXCLUDED.backend
-    RETURNING object_key, backend
+     ORDER BY u.object_store, u.object_key, u.upload_id
+    ON CONFLICT (object_store, object_key) DO UPDATE
+       SET enqueued_at = now()
+    RETURNING object_key, object_store
 ),
 d_uploads AS (
     DELETE FROM proxima_core.blob_uploads u
@@ -1457,7 +1455,7 @@ d_blobs AS (
 -- `d_uploads` and `d_blobs` are read by nothing on purpose: a
 -- data-modifying WITH clause runs exactly once and to completion whether
 -- or not the primary query reads its output.
-SELECT object_key, backend FROM enqueued";
+SELECT object_key, object_store FROM enqueued";
 
 // The forget/erase/hydrate suite. Crate-internal because it works at this
 // layer deliberately: it stamps `sidecar_tables` lists by hand — including a

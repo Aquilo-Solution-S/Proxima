@@ -81,6 +81,16 @@ it. Configure the public address before signing; a signed link cannot be
 rewritten to another address or path. Both endpoint settings use the same
 HTTPS or allowed-plaintext host policy.
 
+Every upload and every purge debt names the object store that holds its
+bytes. By default the name is derived from `PROXIMA_S3_ENDPOINT_URL` and
+`PROXIMA_S3_BUCKET` (scheme and host lowercased, default port and trailing
+slash dropped; `aws/<bucket>` with no endpoint). Set `PROXIMA_S3_STORE_ID`
+to a stable name (`[A-Za-z0-9._-]`, up to 64 characters) when processes
+that share one store reach it through different endpoint URLs, or when
+several stores share one endpoint and bucket. A purge drain only deletes
+debt owed to the store it is wired to; debt for any other store is left in
+place, never cleared.
+
 ## Probes and shutdown
 
 With health endpoints enabled, anonymous `/healthz` is liveness and `/readyz`

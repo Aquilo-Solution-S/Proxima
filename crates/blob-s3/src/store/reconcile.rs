@@ -35,6 +35,7 @@ struct LiveUploadCursor {
 struct LiveUploadRow {
     cited_object_id: Uuid,
     bucket: String,
+    object_store: String,
     object_key: String,
     upload_id: Uuid,
     mounted_from_upload_id: Option<Uuid>,
@@ -55,6 +56,7 @@ impl LiveUploadRow {
 #[derive(Debug, sqlx::FromRow)]
 struct CompletedClaimRow {
     bucket: String,
+    object_store: String,
     object_key: String,
     upload_id: Uuid,
     mounted_from_upload_id: Option<Uuid>,
@@ -154,7 +156,8 @@ impl CitedBlobStore {
                 // row is allowed to name is the one derived from its own
                 // `upload_id`, and nothing else in the canonical prefix
                 // counts as this row's object.
-                if row.bucket != self.config.bucket
+                if row.object_store != self.store_id.as_str()
+                    || row.bucket != self.config.bucket
                     || !locator_was_minted_here(
                         &row.object_key,
                         row.upload_id,
@@ -250,7 +253,8 @@ impl CitedBlobStore {
                 // The same provenance rule the read gate applies: a locator
                 // this store did not mint is a foreign locator, not a
                 // missing object.
-                if row.bucket != self.config.bucket
+                if row.object_store != self.store_id.as_str()
+                    || row.bucket != self.config.bucket
                     || !locator_was_minted_here(
                         &row.object_key,
                         row.upload_id,
@@ -305,7 +309,7 @@ impl CitedBlobStore {
         loop {
             let mut tx = self.begin_reconcile_transaction().await?;
             let page = sqlx::query_as::<_, CompletedClaimRow>(
-                "SELECT bucket, object_key, upload_id, mounted_from_upload_id
+                "SELECT bucket, object_store, object_key, upload_id, mounted_from_upload_id
                    FROM proxima_core.blob_uploads
                   WHERE status = 'completed'
                     AND ($1::uuid IS NULL OR upload_id > $1)
@@ -325,7 +329,8 @@ impl CitedBlobStore {
 
             for row in &page {
                 after = Some(row.upload_id);
-                if row.bucket == self.config.bucket
+                if row.object_store == self.store_id.as_str()
+                    && row.bucket == self.config.bucket
                     && locator_was_minted_here(
                         &row.object_key,
                         row.upload_id,
@@ -448,7 +453,8 @@ async fn load_live_upload_page(
     after: Option<LiveUploadCursor>,
 ) -> Result<Vec<LiveUploadRow>, StorageError> {
     const SQL: &str = with_live_blob_upload!(
-        "SELECT b.blob_id AS cited_object_id, u.bucket, u.object_key, u.upload_id,
+        "SELECT b.blob_id AS cited_object_id, u.bucket, u.object_store, u.object_key,
+                u.upload_id,
                 u.mounted_from_upload_id, u.completed_at,
                 u.expected_byte_len AS byte_len, u.filename
            FROM proxima_core.blob b

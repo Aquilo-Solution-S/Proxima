@@ -312,10 +312,10 @@ async fn amplify_rows(pool: &sqlx::PgPool, source: Uuid, ids: &[Uuid]) -> TestRe
     // bytes are written to every additional object's key in the real bucket.
     sqlx::query(
         "INSERT INTO proxima_core.blob_uploads
-            (upload_id, owner_id, bucket, object_key, filename, mime,
+            (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
              expected_byte_len, status, blob_id, sha256, etag, expires_at,
              completed_at, content_hash)
-         SELECT extra.upload_id, u.owner_id, u.bucket,
+         SELECT extra.upload_id, u.owner_id, u.bucket, u.object_store,
                 'objects/' || extra.upload_id::text, u.filename, u.mime,
                 u.expected_byte_len, u.status, u.blob_id, u.sha256, u.etag,
                 u.expires_at, u.completed_at, u.content_hash

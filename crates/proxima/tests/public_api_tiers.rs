@@ -1024,6 +1024,7 @@ fn host_api_can_configure_the_blob_lane_without_the_environment() {
         upload_ttl_seconds: 900,
         read_ttl_seconds: 300,
         max_blob_bytes: None,
+        store_id: None,
     };
     assert_eq!(config.bucket, "some-bucket");
 

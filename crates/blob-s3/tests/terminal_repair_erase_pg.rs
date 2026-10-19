@@ -35,8 +35,8 @@ impl ColdObjectStore for DeferPurge {
         ))
     }
 
-    fn backend(&self) -> &str {
-        self.0.backend()
+    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+        self.0.store_id()
     }
 }
 
@@ -56,7 +56,7 @@ enum Probe {
 }
 
 struct Observation {
-    bucket: String,
+    store: String,
     canonical_debt: Option<String>,
     canonical_versions_after_drain: usize,
     pending_versions_after_drain: usize,
@@ -87,8 +87,8 @@ async fn terminal_locator_repair_preserves_owner_erase_debt() -> TestResult<()> 
     );
     assert_eq!(
         observed.canonical_debt.as_deref(),
-        Some(observed.bucket.as_str()),
-        "erasing the terminal upload must owe its canonical object to the correct bucket",
+        Some(observed.store.as_str()),
+        "erasing the terminal upload must owe its canonical object to the correct store",
     );
     assert_eq!(observed.canonical_versions_after_drain, 0);
     assert_eq!(observed.pending_versions_after_drain, 0);
@@ -277,7 +277,7 @@ async fn run_race(database: &str) -> TestResult<Observation> {
     .await?;
     assert_eq!(rows, (0, 0, 0));
     let canonical_debt: Option<String> = sqlx::query_scalar(
-        "SELECT backend FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        "SELECT object_store FROM proxima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(&canonical)
     .fetch_optional(pool)
@@ -324,7 +324,7 @@ async fn run_race(database: &str) -> TestResult<Observation> {
     }
     pool.close().await;
     Ok(Observation {
-        bucket: config.bucket,
+        store: config.object_store_id()?.to_string(),
         canonical_debt,
         canonical_versions_after_drain: canonical_left.len(),
         pending_versions_after_drain: pending_left.len(),

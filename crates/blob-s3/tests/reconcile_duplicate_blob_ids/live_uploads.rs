@@ -310,10 +310,10 @@ async fn insert_distinct_lost_uploads(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.blob_uploads
-            (upload_id, owner_id, bucket, object_key, filename, mime,
+            (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
              expected_byte_len, status, blob_id, sha256, etag, expires_at,
              completed_at, content_hash)
-         SELECT extra.id, u.owner_id, u.bucket, 'objects/' || extra.id::text,
+         SELECT extra.id, u.owner_id, u.bucket, u.object_store, 'objects/' || extra.id::text,
                 u.filename, u.mime, u.expected_byte_len, u.status, extra.id,
                 u.sha256, u.etag, u.expires_at,
                 CASE WHEN extra.ordinal > cardinality($1::uuid[]) - 2 THEN NULL

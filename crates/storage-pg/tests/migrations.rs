@@ -585,9 +585,9 @@ async fn blob_upload_content_hash_rejects_noncanonical_length() {
         let upload = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
-                (upload_id, owner_id, bucket, object_key, filename, mime,
+                (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, expires_at)
-             VALUES ($1, $2, 'bucket', 'objects/test', 'test',
+             VALUES ($1, $2, 'bucket', 's3:test/bucket', 'objects/test', 'test',
                      'application/octet-stream', 1, now() + interval '1 day')",
         )
         .bind(upload)

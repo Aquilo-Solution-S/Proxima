@@ -67,6 +67,8 @@ pub struct CitedBlobStore {
     /// this store's global operations.
     system_authority: std::sync::Arc<std::sync::OnceLock<SystemAuthorityBinding>>,
     platform_scope: PgPlatformScope,
+    /// Computed once from the config: what upload rows and debt record.
+    store_id: proxima_core::ObjectStoreId,
 }
 
 impl CitedBlobStore {
@@ -74,7 +76,8 @@ impl CitedBlobStore {
     ///
     /// # Errors
     /// Returns [`BlobError::Config`] when the configured endpoint violates the
-    /// HTTPS-or-loopback-or-named-host transport policy.
+    /// HTTPS-or-loopback-or-named-host transport policy, or the store has no
+    /// valid identity ([`S3RuntimeConfig::object_store_id`]).
     pub fn new(
         pool: sqlx::PgPool,
         mut config: S3RuntimeConfig,
@@ -100,8 +103,10 @@ impl CitedBlobStore {
         validate_presign_ttl("PROXIMA_S3_UPLOAD_TTL_SECONDS", config.upload_ttl_seconds)?;
         validate_presign_ttl("PROXIMA_S3_READ_TTL_SECONDS", config.read_ttl_seconds)?;
         config.max_blob_bytes.get_or_insert(DEFAULT_MAX_BLOB_BYTES);
+        let store_id = config.object_store_id()?;
 
         Ok(Self {
+            store_id,
             pool,
             config,
             client: tokio::sync::OnceCell::new(),
@@ -158,6 +163,13 @@ impl CitedBlobStore {
 
     pub(super) fn bucket(&self) -> &str {
         &self.config.bucket
+    }
+
+    /// The identity of the object store this store writes to: what its
+    /// upload rows and purge debt record.
+    #[must_use]
+    pub fn store_id(&self) -> &proxima_core::ObjectStoreId {
+        &self.store_id
     }
 }
 

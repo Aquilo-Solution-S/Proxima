@@ -373,14 +373,13 @@ async fn compose_pg_sidecars<A: FlavorBundle>(
 }
 
 /// Wire the purge store over S3 when it is configured. A database-only host
-/// keeps the in-process stub, whose own backend name never matches a
-/// bucket's debts: forget and restore need no object store (#488). Cited
-/// uploads and the purge store must name the same backend.
+/// keeps the in-process stub, whose `memory:` store id never matches an S3
+/// store's debts: forget and restore need no object store (#488). Cited
+/// uploads and the purge store must name the same store.
 fn compose_blob_stores(
     pg: PgStorage,
     s3: Option<proxima_blob_s3::S3RuntimeConfig>,
 ) -> Result<(PgStorage, Option<CitedBlobStore>), ProximaError> {
-    let configured_bucket = s3.as_ref().map(|s3| s3.bucket.clone());
     let blobs = s3
         .map(|s3| {
             CitedBlobStore::new(
@@ -391,32 +390,30 @@ fn compose_blob_stores(
         })
         .transpose()
         .map_err(|error| ProximaError::Config(error.to_string()))?;
-    let pg = wire_cold_store(pg, blobs.as_ref(), configured_bucket.as_deref())?;
+    let pg = wire_cold_store(pg, blobs.as_ref())?;
     Ok((pg, blobs))
 }
 
 fn wire_cold_store(
     pg: PgStorage,
     blobs: Option<&CitedBlobStore>,
-    configured_bucket: Option<&str>,
 ) -> Result<PgStorage, ProximaError> {
     let Some(store) = blobs else {
         return Ok(pg);
     };
     let cold = store.cold_store();
-    // Assert the composition the purge queue's `backend` column
-    // depends on. `cold_purge_pending` records the bucket an
-    // upload row named, and the drain refuses any row whose
-    // backend is not the wired store's — so a store wired against
-    // a different bucket than the one uploads publish to must
-    // fail here, at boot, not silently stop reclaiming bytes.
-    let configured_bucket = configured_bucket.unwrap_or_default();
-    if ColdObjectStore::backend(&cold) != configured_bucket {
+    // Assert the composition the purge queue's `object_store` column
+    // depends on. Upload rows and every debt copied from them record the
+    // cited store's identity, and the drain touches only rows naming the
+    // wired purge store — so a purge store naming another store than the
+    // one uploads publish to must fail here, at boot, not silently stop
+    // reclaiming bytes.
+    if ColdObjectStore::store_id(&cold) != store.store_id() {
         return Err(ProximaError::Config(format!(
-            "object purge store reports backend {:?} but cited uploads publish to \
-             bucket {configured_bucket:?}; the purge queue and the object store \
-             must name one backend",
-            ColdObjectStore::backend(&cold),
+            "object purge store is {} but cited uploads publish to {}; the purge \
+             queue and the object store must name one store",
+            ColdObjectStore::store_id(&cold),
+            store.store_id(),
         )));
     }
     Ok(pg.with_cold(Arc::new(cold)))

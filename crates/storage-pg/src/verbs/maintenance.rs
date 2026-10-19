@@ -49,17 +49,17 @@ pub(crate) async fn retry_cold_object_purges(
             "cold purge retry batch_size must be positive".into(),
         ));
     }
-    refuse_foreign_backends(pool, platform, cold.backend()).await?;
+    refuse_foreign_stores(pool, platform, cold.store_id().as_str()).await?;
     let mut tx = begin_platform(pool, platform).await?;
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT object_key, backend
+        "SELECT object_key, object_store
            FROM proxima_core.cold_purge_pending
-          WHERE backend = $2
+          WHERE object_store = $2
           ORDER BY enqueued_at, object_key
           LIMIT $1",
     )
     .bind(options.batch_size)
-    .bind(cold.backend())
+    .bind(cold.store_id().as_str())
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -76,9 +76,9 @@ pub(crate) async fn retry_cold_object_purges(
     let plan = crate::verbs::forget::ColdPurgePlan::from_entries(
         rows.into_iter()
             .map(
-                |(object_key, backend)| crate::verbs::forget::ColdPurgeEntry {
+                |(object_key, object_store)| crate::verbs::forget::ColdPurgeEntry {
                     object_key,
-                    backend,
+                    object_store,
                 },
             )
             .collect(),
@@ -99,28 +99,28 @@ pub(crate) async fn retry_cold_object_purges(
 /// Refuse the drain while the queue holds a debt against another object store.
 ///
 /// Not a skip, and not a best-effort filter. A `cold_purge_pending` row naming
-/// a backend this store is not means the deployment's queue and its wired
-/// `ColdObjectStore` disagree about which bucket holds the bytes — and the two
+/// a store this one is not means the deployment's queue and its wired
+/// `ColdObjectStore` disagree about which store holds the bytes — and the two
 /// wrong answers are both worse than stopping. Draining anyway against the
 /// wired store deletes nothing and clears the debt, so bytes an erase promised
 /// to destroy survive with no record that they do. Skipping the rows silently
 /// leaves a queue that never empties and never says why. The operator is the
 /// only party that can fix the wiring, so the operator is told.
-async fn refuse_foreign_backends(
+async fn refuse_foreign_stores(
     pool: &PgPool,
     platform: &PgPlatformScope,
-    store_backend: &str,
+    wired_store: &str,
 ) -> Result<(), StorageError> {
     let mut tx = begin_platform(pool, platform).await?;
     let foreign: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT backend, count(*)::bigint
+        "SELECT object_store, count(*)::bigint
            FROM proxima_core.cold_purge_pending
-          WHERE backend <> $1
-          GROUP BY backend
-          ORDER BY backend
+          WHERE object_store <> $1
+          GROUP BY object_store
+          ORDER BY object_store
           LIMIT 4",
     )
-    .bind(store_backend)
+    .bind(wired_store)
     .fetch_all(tx.as_mut())
     .await
     .map_err(map_err)?;
@@ -130,13 +130,14 @@ async fn refuse_foreign_backends(
     }
     let named = foreign
         .iter()
-        .map(|(backend, count)| format!("{backend}={count}"))
+        .map(|(store, count)| format!("{store}={count}"))
         .collect::<Vec<_>>()
         .join(", ");
     Err(StorageError::ConstraintViolation(format!(
-        "cold purge queue holds debts against object stores this process is not wired to \
-         ({named}); the wired store is {store_backend:?}. Wire the store those objects were \
-         published to, or the erase that promised to destroy them cannot keep its promise."
+        "purge queue holds debts against object stores this process is not wired to \
+         ({named}); the wired store is {wired_store:?}. Wire the store those objects were \
+         published to (PROXIMA_S3_STORE_ID, or its endpoint and bucket), or the erase that \
+         promised to destroy them cannot keep its promise."
     )))
 }
 

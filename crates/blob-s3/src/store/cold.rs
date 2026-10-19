@@ -1,6 +1,6 @@
 //! S3 adapter for cold Memory objects.
 
-use proxima_core::{ColdObjectStore, StorageError};
+use proxima_core::{ColdObjectStore, ObjectStoreId, StorageError};
 
 use super::CitedBlobStore;
 
@@ -21,10 +21,10 @@ impl CitedBlobStore {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for S3ColdStore {
-    /// The bucket, which is exactly what `blob_uploads.bucket` records and
-    /// what the durable purge queue matches a debt against.
-    fn backend(&self) -> &str {
-        self.store.bucket()
+    /// Exactly what `blob_uploads.object_store` records and what the durable
+    /// purge queue matches a debt against.
+    fn store_id(&self) -> &ObjectStoreId {
+        self.store.store_id()
     }
 
     async fn delete(&self, key: &str) -> Result<(), StorageError> {

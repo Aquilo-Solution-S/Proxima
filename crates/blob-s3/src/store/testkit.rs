@@ -36,6 +36,7 @@ pub(super) fn store_config(
         upload_ttl_seconds: 900,
         read_ttl_seconds: 300,
         max_blob_bytes,
+        store_id: None,
     }
 }
 

@@ -219,9 +219,9 @@ async fn export_carries_forgotten_rows_and_sketches() {
         .await?;
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
-                (owner_id, bucket, object_key, filename, mime, expected_byte_len, status,
+                (owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len, status,
                  blob_id, sha256, etag, expires_at, completed_at, content_hash)
-             VALUES ($1, 'leak-scan-bucket', 'uploads/leak-scan-object', 'a.zip',
+             VALUES ($1, 'leak-scan-bucket', 's3:test/leak-scan-bucket', 'uploads/leak-scan-object', 'a.zip',
                      'application/zip', 3, 'completed', $2, $3, 'leak-scan-etag',
                      now() + interval '1 hour', now(), $3)",
         )

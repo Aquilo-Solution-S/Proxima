@@ -829,9 +829,18 @@ async fn drop_cooled_migration_keeps_only_upload_purge_rows() -> TestResult {
     .execute(&admin)
     .await?;
 
+    // Through 0040 only: 0042 refuses a store that still holds purge debt.
+    let mut through_0040 = core_migrator();
+    through_0040.migrations = std::borrow::Cow::Owned(
+        through_0040
+            .iter()
+            .filter(|migration| migration.version <= 40)
+            .cloned()
+            .collect(),
+    );
     let mut connection = platform.acquire().await?;
     let mut transaction = begin_migration_transaction(&mut connection).await?;
-    core_migrator().run(transaction.as_mut()).await?;
+    through_0040.run(transaction.as_mut()).await?;
     transaction.commit().await?;
     drop(connection);
 

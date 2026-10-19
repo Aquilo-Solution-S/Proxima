@@ -81,6 +81,11 @@
 //! is each cooled line becoming a `memory` line with `forgotten_at` set, and
 //! the section counts moving with them. Nothing else moved.
 //!
+//! Issue #482 names the object store on every upload row
+//! (`blob_uploads.object_store`). Checked, not assumed: with every token
+//! replaced by one placeholder and that one field removed, both files are
+//! line-identical to the previous goldens.
+//!
 //! ## What this does NOT cover
 //!
 //! Read the claim narrowly. This is an EQUIVALENCE gate over a corpus, and a
@@ -138,15 +143,19 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// The pinned corpus names every cited upload's synthetic backend `bucket`.
+/// The pinned corpus names every cited upload's synthetic store `s3:test/bucket`.
 /// Model that store explicitly while retaining its in-memory test transport.
 #[derive(Default)]
 struct CorpusColdStore(MemoryColdStore);
 
 #[async_trait::async_trait]
 impl ColdObjectStore for CorpusColdStore {
-    fn backend(&self) -> &'static str {
-        "bucket"
+    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+        static ID: std::sync::LazyLock<proxima_core::ObjectStoreId> =
+            std::sync::LazyLock::new(|| {
+                proxima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
+            });
+        &ID
     }
 
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
@@ -338,9 +347,9 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     ] {
         sqlx::query(
             "INSERT INTO proxima_core.blob_uploads
-                 (owner_id, bucket, object_key, filename, mime, expected_byte_len,
+                 (owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len,
                   status, blob_id, sha256, expires_at, completed_at)
-             VALUES ($1, 'bucket', $2, 'f.pdf', 'application/pdf', 1,
+             VALUES ($1, 'bucket', 's3:test/bucket', $2, 'f.pdf', 'application/pdf', 1,
                      $3::proxima_core.blob_upload_status, $4, $5,
                      TIMESTAMPTZ '2030-01-01 00:00:00Z',
                      CASE WHEN $6 THEN TIMESTAMPTZ '2026-01-01 00:00:00Z' ELSE NULL END)",

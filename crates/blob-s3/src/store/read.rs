@@ -84,12 +84,13 @@ impl CitedBlobStore {
         tx.commit().await.map_err(BlobError::Db)?;
         // Only the upload lane writes locator rows, but SigV4 presigning is
         // offline, with no S3 existence check: a row this store did not
-        // mint (another deployment's bucket, a hand-written row) would sign
+        // mint (another deployment's store, a hand-written row) would sign
         // a working GET for any object the substrate's role can read.
         // Presign only locators this store itself minted, and answer
         // anything else exactly like a missing row so a probe cannot learn
         // whether such a row exists.
-        if row.bucket != self.config.bucket
+        if row.object_store != self.store_id.as_str()
+            || row.bucket != self.config.bucket
             || !locator_was_minted_here(&row.object_key, row.upload_id, row.mounted_from_upload_id)
         {
             return Err(BlobError::State("cited object not found for Owner".into()));

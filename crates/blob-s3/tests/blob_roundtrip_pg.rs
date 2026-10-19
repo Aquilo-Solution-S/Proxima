@@ -42,6 +42,9 @@ mod public_endpoint;
 #[path = "blob_roundtrip_pg/lifecycle.rs"]
 mod lifecycle;
 
+#[path = "blob_roundtrip_pg/store_identity.rs"]
+mod store_identity;
+
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.
@@ -274,6 +277,7 @@ fn s3_config_for_dev() -> S3RuntimeConfig {
         upload_ttl_seconds: 900,
         read_ttl_seconds: 900,
         max_blob_bytes: None,
+        store_id: None,
     }
 }
 
@@ -1330,15 +1334,24 @@ async fn forge_uploaded_blob_row(
     sqlx::query(
         "INSERT INTO proxima_core.blob_uploads
             (owner_id, bucket, object_key, filename, mime, expected_byte_len,
-             status, blob_id, sha256, expires_at, completed_at)
+             status, blob_id, sha256, expires_at, completed_at, object_store)
          VALUES ($1, $2, $3, 'forged.pdf', 'application/pdf', 1,
-                 'completed', $4, $5, now() + interval '1 hour', now())",
+                 'completed', $4, $5, now() + interval '1 hour', now(), $6)",
     )
     .bind(owner_id)
     .bind(bucket)
     .bind(object_key)
     .bind(blob_id)
     .bind(vec![content_hash_seed; 32])
+    // The store a row in this bucket would record: only the key is forged.
+    .bind(
+        proxima_core::ObjectStoreId::derive_s3(
+            std::env::var("PROXIMA_S3_ENDPOINT_URL").ok().as_deref(),
+            bucket,
+        )
+        .expect("forged store id")
+        .to_string(),
+    )
     .execute(pool)
     .await
     .expect("forged blob_uploads row");
@@ -3611,13 +3624,13 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
     );
 
     let debt: (String, Option<Uuid>) = sqlx::query_as(
-        "SELECT backend, owner_id FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        "SELECT object_store, owner_id FROM proxima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(&canonical_key)
     .fetch_one(&pool)
     .await
     .expect("the key the erase could not have seen is owed by the stage");
-    assert_eq!(debt.0, config.bucket);
+    assert_eq!(debt.0, store.store_id().as_str());
     assert_eq!(debt.1, None);
     assert!(
         head(&config.client(), &config.bucket, &canonical_key)
@@ -3848,18 +3861,19 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         matches!(error, BlobError::State(ref message) if message == "upload not found for Owner")
     );
     assert_s3_key_versions_absent(&config, &pending_key).await;
-    // The debt is durable and names the bucket it is owed against. The owner
+    // The debt is durable and names the store it is owed against. The owner
     // is NULL because the owner row is exactly what was erased.
     let debt: (String, Option<Uuid>) = sqlx::query_as(
-        "SELECT backend, owner_id FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        "SELECT object_store, owner_id FROM proxima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(&canonical_key)
     .fetch_one(&pool)
     .await
     .expect("the orphaned canonical object is owed");
     assert_eq!(
-        debt.0, config.bucket,
-        "the debt names the publishing bucket"
+        debt.0,
+        store.store_id().as_str(),
+        "the debt names the publishing store"
     );
     assert_eq!(debt.1, None, "an erased owner cannot be referenced");
     // Enqueue is not destruction: the bytes are still there until a drain.

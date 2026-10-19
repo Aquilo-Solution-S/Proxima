@@ -27,8 +27,12 @@ impl ColdObjectStore for CountingCold {
         Err(StorageError::Internal("forget called delete".into()))
     }
 
-    fn backend(&self) -> &'static str {
-        "bucket"
+    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+        static ID: std::sync::LazyLock<proxima_core::ObjectStoreId> =
+            std::sync::LazyLock::new(|| {
+                proxima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
+            });
+        &ID
     }
 }
 
