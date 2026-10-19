@@ -631,13 +631,14 @@ pub use {
 /// [`PgStorage`].
 pub use {
     proxima_core::{
-        ColdObjectStore, owner_inverse::CascadedDetail, owner_inverse::HostStateLifecycleSurface,
-        owner_inverse::OwnerSurfaces, owner_inverse::OwnerSurfacesError,
-        storage_ports::HostStateEraseSelection, storage_ports::HostStateFactCopyLocator,
+        ColdObjectStore, ObjectStoreId, PurgeDeleted, owner_inverse::CascadedDetail,
+        owner_inverse::HostStateLifecycleSurface, owner_inverse::OwnerSurfaces,
+        owner_inverse::OwnerSurfacesError, storage_ports::HostStateEraseSelection,
+        storage_ports::HostStateFactCopyLocator,
     },
     proxima_storage_pg::{
         ColdPurgeRetryOptions, ColdPurgeRetryOutcome, EmbeddingMaintenanceLock,
-        StorageMaintenanceLock, access::scope_surfaces::ScopeSurfaces,
+        StorageMaintenanceLock, StuckPurgeDebt, access::scope_surfaces::ScopeSurfaces,
     },
 };
 

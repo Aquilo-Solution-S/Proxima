@@ -303,13 +303,15 @@ impl ColdObjectStore for CountingColdStore {
         &ID
     }
 
-    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+    async fn delete(&self, key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
         self.deletes
             .lock()
             .expect("delete log")
             .push(key.to_owned());
-        self.objects.lock().expect("objects").remove(key);
-        Ok(())
+        let removed = self.objects.lock().expect("objects").remove(key);
+        Ok(proxima_core::PurgeDeleted::from_versions(u64::from(
+            removed.is_some(),
+        )))
     }
 }
 

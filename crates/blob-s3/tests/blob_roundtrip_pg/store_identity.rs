@@ -53,16 +53,16 @@ async fn drain(
 ) -> Result<proxima_storage_pg::ColdPurgeRetryOutcome, StorageError> {
     pg.clone()
         .with_cold(Arc::new(store.cold_store()))
-        .retry_cold_object_purges(proxima_storage_pg::ColdPurgeRetryOptions {
-            batch_size: 10,
-            dry_run: false,
-        })
+        .retry_cold_object_purges(
+            proxima_storage_pg::ColdPurgeRetryOptions::default().batch_size(10),
+        )
         .await
 }
 
 /// Acceptance: a debt owed to store A is never discharged by a drain wired
 /// to store B, whether B differs by endpoint or by operator id. The bytes and
-/// the debt row both survive; wiring A back purges them.
+/// the debt row both survive and the outcome names A as owed; wiring A back
+/// purges them.
 #[tokio::test]
 async fn a_drain_wired_to_another_store_leaves_the_debt_and_the_bytes() {
     if !S3RuntimeConfig::present_in_env() {
@@ -87,12 +87,18 @@ async fn a_drain_wired_to_another_store_leaves_the_debt_and_the_bytes() {
     for other in others {
         let store_b = lifecycle_store(&pg, &other);
         assert_ne!(store_b.store_id(), store_a.store_id());
-        let refused = drain(&pg, &store_b)
+        let skipped = drain(&pg, &store_b)
             .await
-            .expect_err("a debt for another store is not this drain's to clear");
-        assert!(
-            refused.to_string().contains(store_a.store_id().as_str()),
-            "the refusal names the store that is owed: {refused}"
+            .expect("a drain wired to another store still runs");
+        assert_eq!(
+            (skipped.selected, skipped.purged, skipped.foreign),
+            (0, 0, 1),
+            "a debt for another store is not this drain's to attempt"
+        );
+        assert_eq!(
+            skipped.foreign_stores,
+            vec![(store_a.store_id().clone(), 1)],
+            "the outcome names the store that is owed"
         );
         assert_eq!(
             debts(&pool, &key).await,
@@ -155,7 +161,7 @@ async fn the_same_key_owed_in_two_stores_is_two_debts() {
     let renewed = sqlx::query(
         "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
          VALUES ($1, NULL, $2)
-         ON CONFLICT (object_store, object_key) DO UPDATE SET enqueued_at = now()",
+         ON CONFLICT (object_store, object_key) DO UPDATE SET enqueued_at = now(), next_attempt_at = now()",
     )
     .bind(&key)
     .bind(store_b.store_id().as_str())

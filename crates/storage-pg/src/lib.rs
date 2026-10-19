@@ -30,7 +30,10 @@ use std::sync::Arc;
 pub use verbs::fact_embeddings::{
     EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
 };
-pub use verbs::maintenance::{ColdPurgeRetryOptions, ColdPurgeRetryOutcome};
+pub use verbs::maintenance::{
+    ColdPurgeRetryOptions, ColdPurgeRetryOutcome, MAX_FOREIGN_PURGE_STORES, MAX_STUCK_PURGE_DEBTS,
+    StuckPurgeDebt,
+};
 
 use crate::error::internal;
 use crate::pgvector::set_hnsw_search_sql;
@@ -1407,14 +1410,20 @@ impl PgStorage {
         Ok(locked.then_some(conn))
     }
 
-    /// Retry a bounded batch of durable exact-key cold/object-store purge debts.
-    /// Object deletion occurs without an open database transaction; successful
-    /// keys are reconciled afterward in short idempotent transactions.
+    /// Drain one bounded batch of the wired object store's due purge debts.
+    ///
+    /// Only debts naming the wired store and due now are selected, oldest
+    /// schedule first. Each is deleted with no database transaction open,
+    /// then cleared, or its failed attempt is recorded and the debt backs
+    /// off, so a failing key never holds back the keys behind it. Debts
+    /// owed to any other store are left untouched and counted as foreign.
+    /// Call again while the outcome's `due` is non-zero to work through a
+    /// backlog.
     ///
     /// # Errors
     ///
     /// Returns storage errors while reading or reconciling pending rows, and a
-    /// constraint violation for a non-positive batch size.
+    /// constraint violation for a non-positive batch size or stuck threshold.
     pub async fn retry_cold_object_purges(
         &self,
         options: ColdPurgeRetryOptions,

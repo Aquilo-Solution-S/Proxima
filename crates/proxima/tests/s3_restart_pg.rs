@@ -388,7 +388,7 @@ async fn upload_without_arrived_bytes_expires() -> TestResult<()> {
 async fn reboot_fixture(keep_s3: bool) -> TestResult<EraseObservation> {
     let database = unique_db_name("proxima_s3_reboot");
     create_db(&database).await?;
-    let result = run_reboot(&database, keep_s3).await;
+    let result = Box::pin(run_reboot(&database, keep_s3)).await;
     drop_db(&database).await?;
     result
 }
@@ -527,17 +527,14 @@ async fn recover_and_cleanup(
         .await?
         .with_cold(Arc::new(cold.clone()));
         let retried = maintenance
-            .retry_cold_object_purges(ColdPurgeRetryOptions {
-                batch_size: 10,
-                dry_run: false,
-            })
+            .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(10))
             .await?;
         assert_eq!(
             (
                 retried.selected,
                 retried.purged,
                 retried.failed,
-                retried.remaining
+                retried.remaining()
             ),
             (1, 1, 0, 0)
         );

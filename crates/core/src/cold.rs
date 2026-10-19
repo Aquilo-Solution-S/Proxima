@@ -6,10 +6,46 @@
 
 use crate::StorageError;
 
+/// What one exact-key delete found.
+///
+/// A purge debt can name a key that never existed (an erase owes every key an
+/// upload implies, whatever was actually written), so "nothing was there" is
+/// a normal answer that discharges the debt, and is counted apart from a
+/// removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PurgeDeleted {
+    /// The key had object versions (or delete markers), now all gone.
+    Removed { versions: u64 },
+    /// The key held nothing.
+    Absent,
+}
+
+impl PurgeDeleted {
+    /// `Removed` for a positive count, `Absent` for zero.
+    #[must_use]
+    pub const fn from_versions(versions: u64) -> Self {
+        if versions == 0 {
+            Self::Absent
+        } else {
+            Self::Removed { versions }
+        }
+    }
+}
+
 /// Deletes objects the durable purge queue names.
+///
+/// The queue drain is written against this port and a target id
+/// ([`Self::store_id`]) only, so another purge target can share the queue.
 #[async_trait::async_trait]
 pub trait ColdObjectStore: Send + Sync {
-    async fn delete(&self, key: &str) -> Result<(), StorageError>;
+    /// Delete every version of exactly `key`.
+    ///
+    /// # Errors
+    /// Any error leaves the debt queued; the drain records the attempt and
+    /// backs off. Return [`PurgeDeleted::Absent`], not an error, for a key
+    /// that holds nothing.
+    async fn delete(&self, key: &str) -> Result<PurgeDeleted, StorageError>;
 
     /// The identity of the object store this adapter deletes from.
     ///
@@ -175,8 +211,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ColdObjectStore for PurgeOnly {
-        async fn delete(&self, _key: &str) -> Result<(), StorageError> {
-            Ok(())
+        async fn delete(&self, _key: &str) -> Result<PurgeDeleted, StorageError> {
+            Ok(PurgeDeleted::Absent)
         }
 
         fn store_id(&self) -> &ObjectStoreId {
@@ -188,6 +224,15 @@ mod tests {
         ObjectStoreId::derive_s3(endpoint, bucket)
             .expect("valid S3 identity")
             .to_string()
+    }
+
+    #[test]
+    fn a_zero_version_delete_is_absent() {
+        assert_eq!(PurgeDeleted::from_versions(0), PurgeDeleted::Absent);
+        assert_eq!(
+            PurgeDeleted::from_versions(3),
+            PurgeDeleted::Removed { versions: 3 }
+        );
     }
 
     #[test]

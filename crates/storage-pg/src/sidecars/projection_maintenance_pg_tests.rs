@@ -956,7 +956,7 @@ struct RefusingCold {
 
 #[async_trait::async_trait]
 impl proxima_core::ColdObjectStore for RefusingCold {
-    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
+    async fn delete(&self, _key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Err(StorageError::Internal("restore must not delete".into()))
     }

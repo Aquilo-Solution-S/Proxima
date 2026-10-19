@@ -22,7 +22,7 @@ struct CountingCold {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for CountingCold {
-    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
+    async fn delete(&self, _key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Err(StorageError::Internal("forget called delete".into()))
     }

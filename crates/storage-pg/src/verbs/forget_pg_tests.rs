@@ -1943,7 +1943,7 @@ struct FailDeleteCold;
 
 #[async_trait::async_trait]
 impl ColdObjectStore for FailDeleteCold {
-    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
+    async fn delete(&self, _key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
         Err(StorageError::Internal("cold delete refused".into()))
     }
 
@@ -2123,13 +2123,16 @@ impl ColdObjectStore for PurgeRecordingCold {
         self.inner.store_id()
     }
 
-    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+    async fn delete(&self, key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
         self.deletes
             .lock()
             .expect("cold delete calls")
             .push(key.to_owned());
-        self.objects.lock().expect("objects").remove(key);
-        self.inner.delete(key).await
+        let removed = self.objects.lock().expect("objects").remove(key);
+        self.inner.delete(key).await?;
+        Ok(proxima_core::PurgeDeleted::from_versions(u64::from(
+            removed.is_some(),
+        )))
     }
 }
 

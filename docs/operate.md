@@ -166,8 +166,12 @@ Embeddings can be rebuilt from retained content; lost content cannot.
 
 `proxima-mcp maintain-storage` retries committed object-purge debt and performs
 the selected storage maintenance actions. A pending purge is outstanding work,
-not completed deletion. Configure the correct object backend before draining;
-foreign-backend debt is refused.
+not completed deletion. A failed delete backs its debt off, doubling the delay
+per attempt, so it never holds back other debts. The report gives `due`
+(selectable now), `deferred` (backing off) and `stuck` (failed repeatedly; each
+is listed with its key, owner, attempt count and last error). Debt owed to another
+object store is left in place and listed by store, and the command exits
+non-zero until a process configured for that store drains it.
 
 Watch the publication publisher and intake health. An unavailable intake retries
 captured records; a full pending bound refuses a new listenable write atomically.

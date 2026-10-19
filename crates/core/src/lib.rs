@@ -60,7 +60,7 @@ pub use capability::*;
 pub use citations::*;
 pub use cold::{
     ColdObjectStore, MAX_OBJECT_STORE_ID_BYTES, MAX_OPERATOR_STORE_ID_BYTES, ObjectStoreId,
-    ObjectStoreIdError,
+    ObjectStoreIdError, PurgeDeleted,
 };
 pub use cursor::*;
 pub use edge::*;

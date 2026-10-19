@@ -506,23 +506,79 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
 
     if config.retry_cold_object_purges {
         let outcome = storage
-            .retry_cold_object_purges(ColdPurgeRetryOptions {
-                batch_size: config.batch_size,
-                dry_run: config.dry_run,
-            })
+            .retry_cold_object_purges(
+                ColdPurgeRetryOptions::default()
+                    .batch_size(config.batch_size)
+                    .dry_run(config.dry_run),
+            )
             .await
             .map_err(|err| ProximaError::Storage(err.to_string()))?;
-        print_cold_purge_retry_report(&outcome, dry_run_suffix);
+        for line in cold_purge_retry_report(&outcome, dry_run_suffix) {
+            println!("{line}");
+        }
+        if outcome.foreign > 0 {
+            // The drain left them in place; the operator still has to wire
+            // the store they are owed to, so this pass is not a success.
+            return Err(ProximaError::Storage(format!(
+                "purge queue holds {} debt(s) owed to object stores this process is not \
+                 wired to; run the drain with the PROXIMA_S3_* settings (or \
+                 PROXIMA_S3_STORE_ID) of the store each is owed to",
+                outcome.foreign
+            ))
+            .into());
+        }
     }
 
     Ok(())
 }
 
-fn print_cold_purge_retry_report(outcome: &ColdPurgeRetryOutcome, dry_run_suffix: &str) {
-    println!(
-        "cold-object-purge: selected={} purged={} failed={} remaining={}{dry_run_suffix}",
-        outcome.selected, outcome.purged, outcome.failed, outcome.remaining
-    );
+/// The report lines for one drain: the counts, then each stuck debt and each
+/// other store owed debt.
+fn cold_purge_retry_report(outcome: &ColdPurgeRetryOutcome, dry_run_suffix: &str) -> Vec<String> {
+    let mut lines = vec![format!(
+        "cold-object-purge: selected={} purged={} absent={} failed={} due={} deferred={} \
+         stuck={} foreign={}{dry_run_suffix}",
+        outcome.selected,
+        outcome.purged,
+        outcome.absent,
+        outcome.failed,
+        outcome.due,
+        outcome.deferred,
+        outcome.stuck_count,
+        outcome.foreign,
+    )];
+    for debt in &outcome.stuck {
+        lines.push(stuck_debt_line(
+            &debt.object_key,
+            debt.owner_id.as_ref(),
+            debt.attempts,
+            &debt.next_attempt_at,
+            debt.last_error.as_deref(),
+        ));
+    }
+    for (store, count) in &outcome.foreign_stores {
+        lines.push(format!(
+            "cold-object-purge: foreign store={store} debts={count}"
+        ));
+    }
+    lines
+}
+
+/// One stuck debt, named with its owner (`-` once the owner is erased) and
+/// its last error.
+fn stuck_debt_line(
+    object_key: &str,
+    owner: Option<&proxima_core::OwnerId>,
+    attempts: u32,
+    next_attempt_at: &dyn std::fmt::Display,
+    last_error: Option<&str>,
+) -> String {
+    let owner = owner.map_or_else(|| "-".to_owned(), ToString::to_string);
+    format!(
+        "cold-object-purge: stuck key={object_key} owner={owner} attempts={attempts} \
+         next_attempt_at={next_attempt_at} last_error={}",
+        last_error.unwrap_or("-"),
+    )
 }
 
 fn reconcile_scope(scope: ReconcileScope) -> EmbeddingReconcileScope {
@@ -974,6 +1030,52 @@ mod tests {
 
     fn tool(name: &str) -> ToolName {
         ToolName::parse(name).expect("a tool name")
+    }
+
+    #[test]
+    fn the_purge_report_names_foreign_stores() {
+        let mut outcome = ColdPurgeRetryOutcome::default();
+        outcome.selected = 3;
+        outcome.purged = 2;
+        outcome.absent = 1;
+        outcome.deferred = 4;
+        outcome.foreign = 5;
+        outcome.foreign_stores = vec![(
+            proxima_core::ObjectStoreId::operator("other").expect("valid id"),
+            5,
+        )];
+        let lines = cold_purge_retry_report(&outcome, "");
+        assert_eq!(
+            lines,
+            vec![
+                "cold-object-purge: selected=3 purged=2 absent=1 failed=0 due=0 deferred=4 \
+                 stuck=0 foreign=5"
+                    .to_owned(),
+                "cold-object-purge: foreign store=s3:id/other debts=5".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stuck_debt_is_named_with_its_owner_and_last_error() {
+        let owner = proxima_core::OwnerId::from(uuid::Uuid::nil());
+        assert_eq!(
+            stuck_debt_line(
+                "objects/k",
+                Some(&owner),
+                9,
+                &"2026-10-19 20:00:00 +00:00:00",
+                Some("access denied"),
+            ),
+            "cold-object-purge: stuck key=objects/k \
+             owner=00000000-0000-0000-0000-000000000000 attempts=9 \
+             next_attempt_at=2026-10-19 20:00:00 +00:00:00 last_error=access denied"
+        );
+        assert_eq!(
+            stuck_debt_line("objects/k", None, 8, &"t", None),
+            "cold-object-purge: stuck key=objects/k owner=- attempts=8 next_attempt_at=t \
+             last_error=-"
+        );
     }
 
     fn keys<const N: usize>(ids: [&str; N]) -> Vec<ScopeKey> {

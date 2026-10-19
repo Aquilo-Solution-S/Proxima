@@ -158,7 +158,7 @@ impl ColdObjectStore for CorpusColdStore {
         &ID
     }
 
-    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+    async fn delete(&self, key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
         self.0.delete(key).await
     }
 }

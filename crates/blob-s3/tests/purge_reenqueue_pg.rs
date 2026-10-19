@@ -32,11 +32,11 @@ impl ColdObjectStore for PauseAfterDelete {
         self.inner.store_id()
     }
 
-    async fn delete(&self, key: &str) -> Result<(), StorageError> {
-        self.inner.delete(key).await?;
+    async fn delete(&self, key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
+        let deleted = self.inner.delete(key).await?;
         self.deleted.notify_one();
         self.release.notified().await;
-        Ok(())
+        Ok(deleted)
     }
 }
 
@@ -125,17 +125,17 @@ async fn assert_reenqueue_survives(preserve_timestamp: bool) -> TestResult<()> {
         (
             observed.outcome.purged,
             observed.outcome.failed,
-            observed.outcome.remaining
+            observed.outcome.due
         ),
         (0, 1, 1),
-        "the stale completion must report the renewed debt as pending",
+        "the stale completion must report the renewed debt as due now",
     );
     assert_eq!(
         (
             observed.subsequent_retry.selected,
             observed.subsequent_retry.purged,
             observed.subsequent_retry.failed,
-            observed.subsequent_retry.remaining
+            observed.subsequent_retry.remaining()
         ),
         (1, 1, 0, 0),
     );
@@ -165,10 +165,7 @@ async fn run_race(
     }));
     let purge_task = tokio::spawn(async move {
         purging
-            .retry_cold_object_purges(ColdPurgeRetryOptions {
-                batch_size: 1,
-                dry_run: false,
-            })
+            .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(1))
             .await
     });
     let _abort = AbortOnDrop(purge_task.abort_handle());
@@ -221,10 +218,7 @@ async fn run_race(
     let subsequent_retry = pg
         .clone()
         .with_cold(Arc::new(store.cold_store()))
-        .retry_cold_object_purges(ColdPurgeRetryOptions {
-            batch_size: 1,
-            dry_run: false,
-        })
+        .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(1))
         .await?;
     let versions_after_retry = version_count(client, bucket, key).await?;
     let store_after_retry = sqlx::query_scalar(
@@ -260,7 +254,7 @@ async fn enqueue_modelled_producer(
         "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
          VALUES ($1, NULL, $2)
          ON CONFLICT (object_store, object_key) DO UPDATE
-            SET enqueued_at = COALESCE($3, now())
+            SET enqueued_at = COALESCE($3, now()), next_attempt_at = now()
          RETURNING enqueued_at",
     )
     .bind(key)

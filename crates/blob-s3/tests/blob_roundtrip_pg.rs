@@ -3895,10 +3895,9 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
     let drained = pg
         .clone()
         .with_cold(Arc::new(store.cold_store()))
-        .retry_cold_object_purges(proxima_storage_pg::ColdPurgeRetryOptions {
-            batch_size: 10,
-            dry_run: false,
-        })
+        .retry_cold_object_purges(
+            proxima_storage_pg::ColdPurgeRetryOptions::default().batch_size(10),
+        )
         .await
         .expect("the drain accepts a debt against the bucket it is wired to");
     assert_eq!(

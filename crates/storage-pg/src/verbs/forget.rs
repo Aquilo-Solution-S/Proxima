@@ -5,7 +5,9 @@ use std::collections::BTreeSet;
 
 use proxima_core::flavor::{EraseLeg, ForgetLeg, KeyShape};
 use proxima_core::owner_inverse::OwnerSurfaces;
-use proxima_core::{ColdObjectStore, ObjectStoreId, OwnerId, StorageError};
+use proxima_core::{ColdObjectStore, ObjectStoreId, OwnerId, PurgeDeleted, StorageError};
+
+use crate::verbs::maintenance::PurgeBackoff;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -30,8 +32,8 @@ impl ColdObjectStore for MemoryColdStore {
         &MEMORY_STORE_ID
     }
 
-    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
-        Ok(())
+    async fn delete(&self, _key: &str) -> Result<PurgeDeleted, StorageError> {
+        Ok(PurgeDeleted::Absent)
     }
 }
 
@@ -137,7 +139,10 @@ impl ColdPurgePlan {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ColdPurgeOutcome {
     pub attempted: u64,
+    /// Deleted, or already retired by another drain.
     pub purged: u64,
+    /// The key held nothing; the debt is cleared.
+    pub absent: u64,
     pub failed: u64,
     /// At least one durable row could not be reconciled. This deliberately
     /// over-reports when object deletion succeeded but the database write did
@@ -150,10 +155,10 @@ pub(crate) struct ColdPurgeOutcome {
 ///
 /// Best effort by construction: the erase is already committed, so a refusing
 /// object store cannot undo it. A key whose destruction (or whose mark clear)
-/// fails keeps its `cold_purge_pending` row, which is the durable record an
-/// operator retry reads — the same over-report-pending-rather-than-lose-it rule
-/// the cited-object purge follows. Counts reconciled plan entries, including
-/// debts already retired by another drain before provider I/O begins.
+/// fails keeps its `cold_purge_pending` row, which is the durable record the
+/// drain reads; the failed attempt is recorded so backoff starts at the first
+/// failure. Counts reconciled plan entries, including debts already retired
+/// by another drain before provider I/O begins.
 #[cfg(test)]
 pub(crate) async fn purge_cold_objects_after_commit(
     pool: &PgPool,
@@ -170,6 +175,24 @@ pub(crate) async fn purge_cold_objects_after_commit_with_platform(
     cold: &dyn ColdObjectStore,
     plan: &ColdPurgePlan,
 ) -> ColdPurgeOutcome {
+    purge_cold_objects_with_backoff(pool, platform, cold, plan, PurgeBackoff::default()).await
+}
+
+/// How one debt was discharged.
+enum Discharged {
+    Removed,
+    Absent,
+    /// Another drain cleared it before this one looked.
+    Retired,
+}
+
+pub(crate) async fn purge_cold_objects_with_backoff(
+    pool: &PgPool,
+    platform: &crate::PgPlatformScope,
+    cold: &dyn ColdObjectStore,
+    plan: &ColdPurgePlan,
+    backoff: PurgeBackoff,
+) -> ColdPurgeOutcome {
     let mut outcome = ColdPurgeOutcome {
         attempted: u64::try_from(plan.entries().len()).unwrap_or(u64::MAX),
         ..ColdPurgeOutcome::default()
@@ -178,8 +201,8 @@ pub(crate) async fn purge_cold_objects_after_commit_with_platform(
         let key = entry.object_key.as_str();
         // Never delete against the wrong store, and never silently drop the
         // debt either: the row stays, `failed` counts it, and the receipt
-        // reports the erase as still owing bytes. An operator draining the
-        // queue gets the typed refusal with the offending store named.
+        // reports the erase as still owing bytes. A drain wired to the store
+        // that holds the bytes discharges it.
         if entry.object_store != cold.store_id().as_str() {
             outcome.failed = outcome.failed.saturating_add(1);
             tracing::warn!(
@@ -190,8 +213,11 @@ pub(crate) async fn purge_cold_objects_after_commit_with_platform(
             );
             continue;
         }
-        match purge_current_cold_debt(pool, platform, cold, key).await {
-            Ok(()) => outcome.purged = outcome.purged.saturating_add(1),
+        match purge_current_cold_debt(pool, platform, cold, key, backoff).await {
+            Ok(Discharged::Removed | Discharged::Retired) => {
+                outcome.purged = outcome.purged.saturating_add(1);
+            }
+            Ok(Discharged::Absent) => outcome.absent = outcome.absent.saturating_add(1),
             Err(error) => {
                 outcome.failed = outcome.failed.saturating_add(1);
                 tracing::warn!(
@@ -202,7 +228,7 @@ pub(crate) async fn purge_cold_objects_after_commit_with_platform(
             }
         }
     }
-    outcome.pending = outcome.purged != outcome.attempted;
+    outcome.pending = outcome.purged.saturating_add(outcome.absent) != outcome.attempted;
     outcome
 }
 
@@ -222,7 +248,8 @@ async fn purge_current_cold_debt(
     platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
     object_key: &str,
-) -> Result<(), StorageError> {
+    backoff: PurgeBackoff,
+) -> Result<Discharged, StorageError> {
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
     let version = sqlx::query_as::<_, ColdPurgeVersion>(
         "SELECT xmin::text AS row_xmin, ctid::text AS row_ctid
@@ -238,28 +265,106 @@ async fn purge_current_cold_debt(
     let Some(version) = version else {
         // Another drain already retired this entry. A stale plan no longer
         // authorizes deleting whatever may now occupy the same object key.
-        return Ok(());
+        return Ok(Discharged::Retired);
     };
     // No database transaction or connection remains held during provider I/O.
     // A producer may publish bytes and renew this debt while delete is in
     // flight; its new row version must survive our earlier acknowledgement.
-    match cold.delete(object_key).await {
-        Ok(()) | Err(StorageError::NotFound) => {}
-        Err(error) => return Err(error),
-    }
+    let discharged = match cold.delete(object_key).await {
+        Ok(PurgeDeleted::Absent) | Err(StorageError::NotFound) => Discharged::Absent,
+        Ok(_) => Discharged::Removed,
+        Err(error) => {
+            // The same version guard as the clear: a debt renewed while the
+            // delete was in flight is due now and keeps its fresh schedule.
+            if let Err(record) = record_purge_failure(
+                pool,
+                platform,
+                cold.store_id(),
+                object_key,
+                &version,
+                backoff,
+                &error,
+            )
+            .await
+            {
+                tracing::warn!(%record, key = object_key, "could not record a failed purge attempt");
+            }
+            return Err(error);
+        }
+    };
     if !clear_cold_purge_pending(pool, platform, cold.store_id(), object_key, &version).await? {
         return Err(StorageError::Unavailable(format!(
             "cold purge debt for {object_key} changed during deletion; leaving it for retry"
         )));
     }
-    Ok(())
+    Ok(discharged)
+}
+
+/// Longest failure text a debt keeps, in bytes.
+const MAX_PURGE_ERROR_BYTES: usize = 1024;
+
+/// The failure text a debt records: control characters replaced, bounded on
+/// a character boundary.
+fn purge_error_text(error: &StorageError) -> String {
+    let text: String = error
+        .to_string()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if text.len() <= MAX_PURGE_ERROR_BYTES {
+        return text;
+    }
+    let mut end = MAX_PURGE_ERROR_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
+/// Record one failed attempt and back the debt off, if it is still the
+/// version the attempt observed.
+async fn record_purge_failure(
+    pool: &PgPool,
+    platform: &crate::PgPlatformScope,
+    store: &ObjectStoreId,
+    object_key: &str,
+    version: &ColdPurgeVersion,
+    backoff: PurgeBackoff,
+    error: &StorageError,
+) -> Result<bool, StorageError> {
+    let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
+    // Delay after the nth failure: min(base * 2^(n-1), max). `attempts` is
+    // the count before this failure, so it is the exponent.
+    let updated = sqlx::query(
+        "UPDATE proxima_core.cold_purge_pending
+            SET attempts = attempts + 1,
+                last_attempt_at = now(),
+                last_error = $5,
+                next_attempt_at = now() + make_interval(secs => LEAST(
+                    $6::double precision * power(2::double precision, LEAST(attempts, 40)),
+                    $7::double precision))
+          WHERE object_store = $1 AND object_key = $2
+            AND xmin::text = $3 AND ctid::text = $4",
+    )
+    .bind(store.as_str())
+    .bind(object_key)
+    .bind(&version.row_xmin)
+    .bind(&version.row_ctid)
+    .bind(purge_error_text(error))
+    .bind(backoff.base.as_secs_f64())
+    .bind(backoff.max.as_secs_f64())
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(updated.rows_affected() == 1)
 }
 
 /// A completed provider deletion retires only the queue version it observed.
 ///
-/// The queue IS the debt. `pending_cold_purge_count` answers "is anything
-/// owed" by counting rows, not by trusting a flag that a crash between two
-/// writes could leave set forever.
+/// The queue IS the debt. The drain answers "is anything owed" by counting
+/// rows, not by trusting a flag that a crash between two writes could leave
+/// set forever.
 async fn clear_cold_purge_pending(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,
@@ -1439,7 +1544,7 @@ enqueued AS (
            )
      ORDER BY u.object_store, u.object_key, u.upload_id
     ON CONFLICT (object_store, object_key) DO UPDATE
-       SET enqueued_at = now()
+       SET enqueued_at = now(), next_attempt_at = now()
     RETURNING object_key, object_store
 ),
 d_uploads AS (

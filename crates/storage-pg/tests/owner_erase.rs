@@ -58,7 +58,7 @@ impl ColdObjectStore for RefusingDeleteCold {
         &ID
     }
 
-    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
+    async fn delete(&self, _key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
         Err(StorageError::Unavailable("delete refused".into()))
     }
 }
@@ -106,9 +106,11 @@ impl ColdObjectStore for BucketNamedCold {
         &self.store
     }
 
-    async fn delete(&self, key: &str) -> Result<(), StorageError> {
-        self.objects.lock().expect("objects").remove(key);
-        Ok(())
+    async fn delete(&self, key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
+        let removed = self.objects.lock().expect("objects").remove(key);
+        Ok(proxima_core::PurgeDeleted::from_versions(u64::from(
+            removed.is_some(),
+        )))
     }
 }
 
@@ -1012,11 +1014,10 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
         .execute(pool)
         .await?;
 
+        // The erase's own post-commit attempt failed and backed its debt
+        // off, so the only due debt is the second one.
         let failed_retry = pg
-            .retry_cold_object_purges(ColdPurgeRetryOptions {
-                batch_size: 1,
-                dry_run: false,
-            })
+            .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(1))
             .await?;
         assert_eq!(
             (
@@ -1026,42 +1027,67 @@ async fn failed_cold_purge_is_attributed_and_bounded_retry_clears_audit() {
             ),
             (1, 0, 1)
         );
-        assert_eq!(failed_retry.remaining, 2);
+        assert_eq!((failed_retry.due, failed_retry.deferred), (0, 2));
+        assert_eq!(failed_retry.remaining(), 2);
+        let attempts: Vec<(i32, Option<String>)> = sqlx::query_as(
+            "SELECT attempts, last_error FROM proxima_core.cold_purge_pending ORDER BY object_key",
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(attempts.len(), 2);
+        for (count, error) in &attempts {
+            assert_eq!(*count, 1, "each failure is recorded once");
+            assert!(
+                error.as_deref().is_some_and(|e| e.contains("delete refused")),
+                "{error:?}"
+            );
+        }
 
         let retry_pg = PgStorage::connect_for_tests(url.clone())
             .await?
             .with_cold(Arc::new(BucketNamedCold::new("bucket")));
-        let dry_run = retry_pg
-            .retry_cold_object_purges(ColdPurgeRetryOptions {
-                batch_size: 1,
-                dry_run: true,
-            })
+        let idle = retry_pg
+            .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(1))
             .await?;
         assert_eq!(
-            (dry_run.selected, dry_run.purged, dry_run.remaining),
+            (idle.selected, idle.deferred),
+            (0, 2),
+            "a backed-off debt is not retried early"
+        );
+        sqlx::query(
+            "UPDATE proxima_core.cold_purge_pending SET next_attempt_at = now() - interval '1 second'",
+        )
+        .execute(pool)
+        .await?;
+        let dry_run = retry_pg
+            .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(1).dry_run(true))
+            .await?;
+        assert_eq!(
+            (dry_run.selected, dry_run.purged, dry_run.remaining()),
             (1, 0, 2)
         );
         let first = retry_pg
-            .retry_cold_object_purges(ColdPurgeRetryOptions {
-                batch_size: 1,
-                dry_run: false,
-            })
+            .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(1))
             .await?;
-        assert_eq!((first.selected, first.purged, first.failed), (1, 1, 0));
-        assert_eq!(first.remaining, 1);
+        // These fixtures never wrote bytes, so the keys clear as absent.
+        assert_eq!(
+            (first.selected, first.purged, first.absent, first.failed),
+            (1, 0, 1, 0)
+        );
+        assert_eq!(first.remaining(), 1);
         assert_eq!(
             pending_debts(pool).await?,
             1,
             "the first of two keys clears its own debt and no more"
         );
         let second = retry_pg
-            .retry_cold_object_purges(ColdPurgeRetryOptions {
-                batch_size: 1,
-                dry_run: false,
-            })
+            .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(1))
             .await?;
-        assert_eq!((second.selected, second.purged, second.failed), (1, 1, 0));
-        assert_eq!(second.remaining, 0);
+        assert_eq!(
+            (second.selected, second.purged, second.absent, second.failed),
+            (1, 0, 1, 0)
+        );
+        assert_eq!(second.remaining(), 0);
         assert_eq!(pending_debts(pool).await?, 0);
         Ok(())
     }
@@ -1160,18 +1186,19 @@ async fn an_injected_deadlock_inside_owner_erase_is_retried() {
     result.expect("erase retry test failed");
 }
 
-/// The drain refuses to run while the queue holds a debt against an object
-/// store this process is not wired to.
+/// The drain leaves debts owed to another object store untouched, names
+/// them, and still drains its own.
 ///
 /// Before the queue named its store, store and queue were matched by boot
 /// convention alone: point a process at the right database and the wrong
 /// bucket and every drain "succeeded", deleting nothing and clearing the
 /// debt, so bytes an erase promised to destroy survived with no record that
-/// they did. The refusal is what makes that mis-wiring loud. The same pass
-/// must still drain a matching debt, or the guard would just be an outage.
+/// they did. A foreign debt is never selected, attempted or cleared; the
+/// outcome counts and names it so the mis-wiring is loud, and the wired
+/// store's own debts are not held hostage by it.
 
 #[tokio::test]
-async fn a_drain_refuses_debts_owed_by_another_store() {
+async fn a_drain_skips_and_names_debts_owed_by_another_store() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -1198,51 +1225,41 @@ async fn a_drain_refuses_debts_owed_by_another_store() {
         .execute(pool)
         .await?;
 
-        let refused = pg
-            .retry_cold_object_purges(ColdPurgeRetryOptions {
-                batch_size: 10,
-                dry_run: false,
-            })
-            .await
-            .expect_err("a foreign debt stops the drain");
-        match &refused {
-            StorageError::ConstraintViolation(message) => {
-                assert!(
-                    message.contains("s3:test/other-bucket=1"),
-                    "the operator is told which store is owed: {message}"
-                );
-                assert!(
-                    message.contains("s3:test/wired-bucket"),
-                    "and which store is wired: {message}"
-                );
-            }
-            other => panic!("expected a constraint violation, got {other:?}"),
-        }
-        assert_eq!(
-            pending_debts(pool).await?,
-            2,
-            "a refused drain destroys nothing and clears nothing"
-        );
-        assert_eq!(
-            cold.get("cold/mine")?,
-            b"wired bytes".to_vec(),
-            "including the debt it could have discharged"
-        );
-
-        // With the foreign debt gone the same wiring drains its own.
-        sqlx::query("DELETE FROM proxima_core.cold_purge_pending WHERE object_store = 's3:test/other-bucket'")
-            .execute(pool)
-            .await?;
+        let foreign_before: (i32, time::OffsetDateTime, time::OffsetDateTime) = sqlx::query_as(
+            "SELECT attempts, next_attempt_at, enqueued_at FROM proxima_core.cold_purge_pending
+              WHERE object_store = 's3:test/other-bucket'",
+        )
+        .fetch_one(pool)
+        .await?;
         let drained = pg
-            .retry_cold_object_purges(ColdPurgeRetryOptions {
-                batch_size: 10,
-                dry_run: false,
-            })
+            .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(10))
             .await?;
         assert_eq!(
             (drained.selected, drained.purged, drained.failed),
-            (1, 1, 0)
+            (1, 1, 0),
+            "the wired store's own debt drains"
         );
+        assert_eq!(drained.foreign, 1);
+        assert_eq!(
+            drained
+                .foreign_stores
+                .iter()
+                .map(|(store, count)| (store.as_str().to_owned(), *count))
+                .collect::<Vec<_>>(),
+            vec![("s3:test/other-bucket".to_owned(), 1)],
+            "the operator is told which store is owed"
+        );
+        assert_eq!(drained.remaining(), 0, "nothing else is owed to the wired store");
+        let foreign_after: (i32, time::OffsetDateTime, time::OffsetDateTime) = sqlx::query_as(
+            "SELECT attempts, next_attempt_at, enqueued_at FROM proxima_core.cold_purge_pending
+              WHERE object_store = 's3:test/other-bucket'",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(foreign_after, foreign_before, "the foreign debt is untouched");
+        sqlx::query("DELETE FROM proxima_core.cold_purge_pending WHERE object_store = 's3:test/other-bucket'")
+            .execute(pool)
+            .await?;
         assert_eq!(pending_debts(pool).await?, 0);
         assert!(
             matches!(cold.get("cold/mine"), Err(StorageError::NotFound)),

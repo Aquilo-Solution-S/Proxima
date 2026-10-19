@@ -318,7 +318,7 @@ facade_names! {
 
     // Needed by `PgStorage`'s public methods; host API only like `PgStorage`.
     pg_storage_methods {
-        host_only: [CascadedDetail, ColdObjectStore, ColdPurgeRetryOptions, ColdPurgeRetryOutcome, EmbeddingMaintenanceLock, HostStateEraseSelection, HostStateFactCopyLocator, HostStateLifecycleSurface, OwnerSurfaces, OwnerSurfacesError, ScopeSurfaces, StorageMaintenanceLock],
+        host_only: [CascadedDetail, ColdObjectStore, ColdPurgeRetryOptions, ColdPurgeRetryOutcome, EmbeddingMaintenanceLock, HostStateEraseSelection, HostStateFactCopyLocator, HostStateLifecycleSurface, ObjectStoreId, OwnerSurfaces, OwnerSurfacesError, PurgeDeleted, ScopeSurfaces, StorageMaintenanceLock, StuckPurgeDebt],
         both_tiers: [],
     }
 

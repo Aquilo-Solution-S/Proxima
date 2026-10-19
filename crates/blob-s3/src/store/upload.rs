@@ -797,7 +797,7 @@ impl CitedBlobStore {
             "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
              VALUES ($1, NULL, $2)
              ON CONFLICT (object_store, object_key) DO UPDATE
-                SET enqueued_at = now()",
+                SET enqueued_at = now(), next_attempt_at = now()",
         )
         .bind(canonical_key)
         .bind(self.store_id.as_str())

@@ -29,7 +29,7 @@ struct DeferPurge(Arc<dyn ColdObjectStore>);
 
 #[async_trait::async_trait]
 impl ColdObjectStore for DeferPurge {
-    async fn delete(&self, _key: &str) -> Result<(), StorageError> {
+    async fn delete(&self, _key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
         Err(StorageError::Unavailable(
             "test defers post-commit deletion".into(),
         ))
@@ -297,13 +297,15 @@ async fn run_race(database: &str) -> TestResult<Observation> {
         BODY,
         "debt precedes physical destruction"
     );
+    // The deferred post-commit attempt backed the debt off; a later drain
+    // finds it due.
+    sqlx::query("UPDATE proxima_core.cold_purge_pending SET next_attempt_at = now()")
+        .execute(pool)
+        .await?;
     let drained = pg
         .clone()
         .with_cold(Arc::new(store.cold_store()))
-        .retry_cold_object_purges(ColdPurgeRetryOptions {
-            batch_size: 10,
-            dry_run: false,
-        })
+        .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(10))
         .await?;
     assert_eq!(
         (drained.selected, drained.purged, drained.failed),

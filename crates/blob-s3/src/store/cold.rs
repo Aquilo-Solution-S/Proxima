@@ -1,6 +1,6 @@
 //! S3 adapter for cold Memory objects.
 
-use proxima_core::{ColdObjectStore, ObjectStoreId, StorageError};
+use proxima_core::{ColdObjectStore, ObjectStoreId, PurgeDeleted, StorageError};
 
 use super::CitedBlobStore;
 
@@ -27,13 +27,13 @@ impl ColdObjectStore for S3ColdStore {
         self.store.store_id()
     }
 
-    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+    async fn delete(&self, key: &str) -> Result<PurgeDeleted, StorageError> {
         let client = self
             .store
             .client()
             .await
             .map_err(|err| StorageError::Unavailable(err.to_string()))?;
-        super::erase::purge_exact_key(client, self.store.bucket(), key).await?;
-        Ok(())
+        let versions = super::erase::purge_exact_key(client, self.store.bucket(), key).await?;
+        Ok(PurgeDeleted::from_versions(versions))
     }
 }

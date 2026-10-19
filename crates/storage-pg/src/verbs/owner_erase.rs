@@ -1721,7 +1721,7 @@ async fn enqueue_blob_object_keys(
                     )
               ORDER BY u.object_store, u.object_key, u.upload_id
              ON CONFLICT (object_store, object_key) DO UPDATE
-                SET enqueued_at = now()
+                SET enqueued_at = now(), next_attempt_at = now()
              RETURNING object_key, object_store",
         )
         .bind(owner_id)
@@ -1747,7 +1747,7 @@ async fn enqueue_blob_object_keys(
                     )
               ORDER BY u.object_store, u.object_key, u.upload_id
              ON CONFLICT (object_store, object_key) DO UPDATE
-                SET enqueued_at = now()
+                SET enqueued_at = now(), next_attempt_at = now()
              RETURNING object_key, object_store",
         )
         .fetch_all(&mut **tx)

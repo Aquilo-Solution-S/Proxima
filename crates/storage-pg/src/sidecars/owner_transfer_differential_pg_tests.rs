@@ -99,6 +99,12 @@
 //! used to carry an empty `backend`. Checked, not assumed: with every token
 //! replaced by one placeholder and those two fields removed, the file is
 //! line-identical to the previous golden.
+//!
+//! The same issue then adds the debt's backoff columns (`attempts`,
+//! `next_attempt_at`, `last_attempt_at`, `last_error`) to that one row; the
+//! extra timestamp token renumbers the tokens after it. Checked the same
+//! way: with the placeholder and those four fields removed, nothing else
+//! moved.
 #![allow(
     clippy::doc_markdown,
     clippy::format_push_string,
