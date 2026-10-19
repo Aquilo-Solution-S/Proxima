@@ -168,6 +168,10 @@ pub(super) async fn load_upload_optional_for_update(
     }))
 }
 
+/// Expire a pending row past its TTL under the owner fence and row lock.
+///
+/// Returns the status the row now has: `Pending` for a staged row (one with
+/// a recorded content identity), which never expires.
 pub(super) async fn mark_upload_expired_on_connection(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     owner: &OwnerId,
@@ -182,16 +186,24 @@ pub(super) async fn mark_upload_expired_on_connection(
     if row.status != UploadStatus::Pending {
         return Ok(row.status);
     }
-    sqlx::query(
+    // A staged row is not expirable: its bytes are verified and published
+    // under the canonical key, and only a finish (or an abort) may decide it.
+    let expired = sqlx::query(
         "UPDATE proxima_core.blob_uploads SET status = 'expired', error_message = 'upload expired'
-          WHERE owner_id = $1 AND upload_id = $2 AND status = 'pending'",
+          WHERE owner_id = $1 AND upload_id = $2 AND status = 'pending'
+            AND content_hash IS NULL",
     )
     .bind(owner.into_inner())
     .bind(upload_id)
     .execute(&mut **tx)
     .await
-    .map_err(BlobError::Db)?;
-    Ok(UploadStatus::Expired)
+    .map_err(BlobError::Db)?
+    .rows_affected();
+    Ok(if expired == 1 {
+        UploadStatus::Expired
+    } else {
+        UploadStatus::Pending
+    })
 }
 
 pub(super) async fn load_staged_payload_on_connection(

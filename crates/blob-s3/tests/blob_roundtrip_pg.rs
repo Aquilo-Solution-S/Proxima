@@ -39,6 +39,9 @@ use uuid::Uuid;
 #[path = "blob_roundtrip_pg/public_endpoint.rs"]
 mod public_endpoint;
 
+#[path = "blob_roundtrip_pg/lifecycle.rs"]
+mod lifecycle;
+
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.
@@ -1092,12 +1095,12 @@ async fn staged_upload(
 /// A completion racing an abort resolves one way or the other, and the
 /// caller is never told a committed write failed.
 ///
-/// `finish_upload` runs after the transaction that recorded the artefact
-/// and its Fact has committed, so if an abort wins that window the
-/// completion must still report success — the corpus already holds the
-/// artefact, and the upload id is spent either way. The disjunction is the
-/// assertion: either the abort won and nothing was recorded, or the
-/// completion won and it is consistent.
+/// The Fact transaction settles the upload row, so the two decisions meet
+/// on the row lock: if the abort wins, the Fact transaction is refused and
+/// rolls back (an upload has one outcome); if the completion wins, the abort
+/// reports `aborted: false`. The disjunction is the assertion: either the
+/// abort won and nothing was recorded, or the completion won and it is
+/// consistent.
 #[tokio::test]
 async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed() {
     if !S3RuntimeConfig::present_in_env() {

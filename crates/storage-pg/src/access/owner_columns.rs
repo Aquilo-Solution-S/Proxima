@@ -1734,13 +1734,18 @@ pub enum UploadStatus {
 pub enum FinishTransitionDecision {
     WonPending,
     AlreadyFinished,
-    OvertookTerminal,
 }
 
 /// Classify a locked upload publication result.
 ///
+/// An upload has one outcome. Once an abort or an expiry is recorded, the
+/// upload is final and no Fact may publish it: the abort or expiry is free
+/// to let go of its bytes, so a late finish is refused rather than allowed
+/// to cite them.
+///
 /// # Errors
-/// Refuses contradictory object identities or affected-row counts.
+/// [`StorageError::Conflict`] when the row is already aborted or expired;
+/// refuses contradictory object identities or affected-row counts.
 pub fn finish_transition_decision(
     observed_status: UploadStatus,
     observed_cited_object_id: Option<Uuid>,
@@ -1748,7 +1753,10 @@ pub fn finish_transition_decision(
     rows_affected: u64,
 ) -> Result<FinishTransitionDecision, StorageError> {
     match rows_affected {
-        1 => Ok(FinishTransitionDecision::WonPending),
+        1 if observed_status == UploadStatus::Pending => Ok(FinishTransitionDecision::WonPending),
+        1 => Err(StorageError::ConstraintViolation(
+            "upload finish transitioned a non-pending row".into(),
+        )),
         0 => match observed_status {
             UploadStatus::Completed if observed_cited_object_id == Some(cited_object_id) => {
                 Ok(FinishTransitionDecision::AlreadyFinished)
@@ -1756,9 +1764,12 @@ pub fn finish_transition_decision(
             UploadStatus::Completed => Err(StorageError::ConstraintViolation(
                 "upload already completed against a different cited object".into(),
             )),
-            UploadStatus::Aborted | UploadStatus::Expired => {
-                Ok(FinishTransitionDecision::OvertookTerminal)
-            }
+            UploadStatus::Aborted => Err(StorageError::Conflict(
+                "upload is aborted; prepare and stage the bytes again".into(),
+            )),
+            UploadStatus::Expired => Err(StorageError::Conflict(
+                "upload is expired; prepare and stage the bytes again".into(),
+            )),
             UploadStatus::Pending => Err(StorageError::ConstraintViolation(
                 "upload finish did not transition pending row".into(),
             )),
@@ -1777,8 +1788,10 @@ pub fn finish_transition_decision(
 /// Completed replays perform no write. No transaction control or S3 I/O.
 ///
 /// # Errors
-/// Refuses absent uploads, unstaged or mismatched bytes, and contradictory
-/// completed objects. Database faults retain their storage error class.
+/// [`StorageError::Conflict`] for an aborted or expired upload (one outcome
+/// per upload). Refuses absent uploads, unstaged or mismatched bytes, and
+/// contradictory completed objects. Database faults retain their storage
+/// error class.
 pub async fn complete_upload_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
@@ -1802,15 +1815,10 @@ pub async fn complete_upload_in_tx(
         .map_err(map_err)?
         .ok_or_else(|| StorageError::ConstraintViolation("upload not found for Owner".into()))?;
 
-    match status {
-        UploadStatus::Completed => {
-            finish_transition_decision(status, blob_id, cited_object_id, 0)?;
-            return Ok(bucket);
-        }
-        UploadStatus::Aborted | UploadStatus::Expired => {
-            finish_transition_decision(status, blob_id, cited_object_id, 0)?;
-        }
-        UploadStatus::Pending => {}
+    if status != UploadStatus::Pending {
+        // Completed replays the same object; aborted and expired are final.
+        finish_transition_decision(status, blob_id, cited_object_id, 0)?;
+        return Ok(bucket);
     }
     let hash = hash
         .as_deref()
@@ -1842,23 +1850,17 @@ pub async fn complete_upload_in_tx(
     let changed = sqlx::query(
         "UPDATE proxima_core.blob_uploads
             SET object_key = $1, status = 'completed', blob_id = $2, completed_at = now()
-          WHERE owner_id = $3 AND upload_id = $4 AND status = $5",
+          WHERE owner_id = $3 AND upload_id = $4 AND status = 'pending'",
     )
     .bind(key)
     .bind(cited_object_id)
     .bind(owner.into_inner())
     .bind(upload_id)
-    .bind(status)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?
     .rows_affected();
     finish_transition_decision(status, blob_id, cited_object_id, changed)?;
-    if changed != 1 {
-        return Err(StorageError::ConstraintViolation(
-            "late upload finish did not transition terminal row".into(),
-        ));
-    }
     Ok(bucket)
 }
 

@@ -124,19 +124,22 @@ mod tests {
             Err(BlobError::State(message))
                 if message.contains("different cited object")
         ));
-        // An abort or an expiry that reached the row first does NOT fail the
-        // completion: `cited_object_id` exists only because the corpus
-        // transaction committed, so the write being reported on succeeded.
-        assert_eq!(
-            finish_transition_decision(UploadStatus::Aborted, None, object, 0)
-                .expect("an abort that lost the race cannot fail a committed write"),
-            FinishTransitionDecision::OvertookTerminal
-        );
-        assert_eq!(
-            finish_transition_decision(UploadStatus::Expired, None, object, 0)
-                .expect("an expiry sweep cannot fail a committed write"),
-            FinishTransitionDecision::OvertookTerminal
-        );
+        // One outcome per upload: an abort or expiry that reached the row
+        // first is final, so a late finish is a conflict, never a completion.
+        assert!(matches!(
+            finish_transition_decision(UploadStatus::Aborted, None, object, 0),
+            Err(BlobError::Storage(proxima_core::StorageError::Conflict(message)))
+                if message.contains("aborted")
+        ));
+        assert!(matches!(
+            finish_transition_decision(UploadStatus::Expired, None, object, 0),
+            Err(BlobError::Storage(proxima_core::StorageError::Conflict(message)))
+                if message.contains("expired")
+        ));
+        assert!(matches!(
+            finish_transition_decision(UploadStatus::Aborted, None, object, 1),
+            Err(BlobError::State(message)) if message.contains("non-pending")
+        ));
         assert!(matches!(
             finish_transition_decision(UploadStatus::Pending, None, object, 0),
             Err(BlobError::State(message)) if message.contains("did not transition")

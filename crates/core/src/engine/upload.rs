@@ -143,7 +143,10 @@ impl Engine {
     /// # Errors
     ///
     /// Returns the blob store's failures mapped like any write (a missing,
-    /// expired, aborted, or length-mismatched upload is `InvalidArgument`);
+    /// expired, aborted, or length-mismatched upload is `InvalidArgument`;
+    /// an upload aborted or expired after it was staged is refused in the
+    /// Fact transaction as a storage `Conflict`, also `InvalidArgument`, and
+    /// nothing is written — an upload has one outcome);
     /// `Forbidden` when `authz` resolves no single writable owner;
     /// `InvalidArgument` when the Fact write is rejected; and `Internal`
     /// when the resolved write owner is not the owner the artefact was
