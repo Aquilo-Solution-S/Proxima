@@ -859,7 +859,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         // a generated UPDATE repoints, and there are two.
         transfer: TransferRule::FollowOrDedupe {
             dedupe_key: &["owner_id", "schema_id", "content_hash"],
-            remaps: &["memory.blob_id", "cooled.blob_id"],
+            remaps: &["memory.blob_id"],
         },
         erase: EraseRule::ByOwner,
         export: ExportRule::Allowlist(&["blob_id", "schema_id", "content_hash"]),
@@ -911,7 +911,7 @@ const KERNEL_SURFACES: &[Surface] = &[
         // also has an object in S3 that two owners may now name.
         transfer: TransferRule::FollowOrDedupe {
             dedupe_key: &["owner_id", "schema_id", "content_hash"],
-            remaps: &["memory.content_id", "cooled.content_id"],
+            remaps: &["memory.content_id"],
         },
         // NOT a cascade: `gc_unreferenced_content` is a Rust function, not a
         // constraint, so a `Cascade` claim naming it would be unfalsifiable

@@ -432,9 +432,6 @@ async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
 
         let rows: i64 = sqlx::query_scalar::<_, i64>(
             "SELECT count(*)::bigint FROM proxima_core.memory
-              WHERE handle = $1
-             UNION ALL
-             SELECT count(*)::bigint FROM proxima_core.cooled
               WHERE handle = $1",
         )
         .bind(first.handle)
@@ -1490,11 +1487,7 @@ async fn concurrent_forgets_of_both_sources_both_commit() {
                FROM unnest(
                     (SELECT origins || refs FROM proxima_core.memory WHERE t = $1)
                ) AS p(id)
-              WHERE EXISTS (SELECT 1 FROM proxima_core.memory h WHERE h.t = p.id)
-                 OR EXISTS (
-                        SELECT 1 FROM proxima_core.cooled c
-                         WHERE c.t = p.id AND c.kind = 'fact'
-                    )",
+              WHERE EXISTS (SELECT 1 FROM proxima_core.memory h WHERE h.t = p.id)",
         )
         .bind(dep.memory_id.into_inner())
         .fetch_one(&pool)

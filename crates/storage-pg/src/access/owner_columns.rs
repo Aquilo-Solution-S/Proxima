@@ -398,9 +398,8 @@ async fn lock_scope_fence(
 /// locked its row first, which is a `40P01` and exactly what the bounded
 /// retry around both transactions is for.
 ///
-/// `cooled.object_key` is deliberately NOT in this namespace. It is
-/// `cold/<t>`: one object per Memory version, already fenced by the lifecycle
-/// `t` lock, and never shared. Only `blob_uploads` keys are many-to-one.
+/// Only `blob_uploads` keys are many-to-one, so only they are in this
+/// namespace.
 ///
 /// Takers: owner and source-scope erase (every key they might owe), upload
 /// abort, the stage locator write, blob GC, and the two transfer legs that
@@ -1457,9 +1456,9 @@ pub(crate) async fn visible_home_owner<'e>(
         .copied()
         .map(OwnerId::into_inner)
         .collect();
-    // The entity discriminant is authorization data. Memory visibility spans
-    // the hot spine and the cooled identity table, while Goal visibility stays
-    // on its own spine. The candidate-owner uniqueness guard makes a malformed
+    // The entity discriminant is authorization data. Memory visibility is the
+    // memory spine, forgotten rows included, while Goal visibility stays on
+    // its own spine. The candidate-owner uniqueness guard makes a malformed
     // duplicate `(entity, owner)` state fail closed instead of authorizing the
     // first row returned by PostgreSQL.
     let row: Option<(uuid::Uuid, String)> = match entity {
@@ -1467,8 +1466,6 @@ pub(crate) async fn visible_home_owner<'e>(
             sqlx::query_as(
                 "WITH candidates AS (
                      SELECT owner_id, kind FROM proxima_core.memory WHERE t = $1 /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
-                     UNION
-                     SELECT owner_id, kind FROM proxima_core.cooled WHERE t = $1
                  )
                  SELECT c.owner_id, c.kind::text
                    FROM candidates c
@@ -1518,11 +1515,9 @@ fn access_kind(stored: &str) -> Result<AccessKind, StorageError> {
 ///
 /// Same `(handle, t)`: a transfer is an owner UPDATE, not a copy. Head and
 /// every version on the handle move together (`MemoryHeadAligned`), including
-/// cooled stubs (owner only: cold keys are owner-free). A request may name a
-/// cooled `t`; when the series is fully cooled, its cooled identity resolves
-/// the handle and the transfer moves every cooled stub even though
-/// `memory_head` no longer exists. A live series still requires its existing
-/// source-owned head to participate in the compare-and-set.
+/// forgotten versions, which keep their row and flag. A request may name a
+/// forgotten `t`. The series' existing source-owned head participates in the
+/// compare-and-set.
 /// Returns `true` iff a row under `from_owner` matched and was updated.
 ///
 /// Sidecars follow the memory unless their surface declares `RetainAtSource`.
@@ -1593,7 +1588,7 @@ pub(crate) async fn transfer_to_owner(
         .await?;
         if !transferred {
             // A false persist can follow real writes: when the head is gone
-            // or changed owner after the series reads, cooled/blob/content
+            // or changed owner after the series reads, blob/content
             // rows are already re-homed to the destination in this
             // transaction. Roll back so they revert to
             // the prior owner.
@@ -1651,17 +1646,8 @@ async fn transfer_memory_t(
 ) -> Result<bool, StorageError> {
     let handle: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT handle
-           FROM (
-                 SELECT handle, 1 AS live
-                   FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
-                  WHERE t = $1 AND owner_id = $2
-                 UNION ALL
-                 SELECT handle, 0 AS live
-                   FROM proxima_core.cooled
-                  WHERE t = $1 AND owner_id = $2
-                ) identity
-          ORDER BY live DESC
-          LIMIT 1",
+           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
+          WHERE t = $1 AND owner_id = $2",
     )
     .bind(t)
     .bind(from_id)
@@ -1675,8 +1661,6 @@ async fn transfer_memory_t(
 }
 
 const SERIES_TS_SQL: &str = "SELECT t FROM proxima_core.memory WHERE handle = $1 AND owner_id = $2 /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
-     UNION
-     SELECT t FROM proxima_core.cooled WHERE handle = $1 AND owner_id = $2
      ORDER BY t";
 
 /// Acquire the transfer's complete lifecycle boundary in the global order:
@@ -1912,12 +1896,6 @@ async fn ensure_series_uploads_published(
                      WHERE m.handle = $2
                        AND m.owner_id = $1
                        AND m.blob_id IS NOT NULL
-                    UNION
-                    SELECT c.blob_id
-                      FROM proxima_core.cooled c
-                     WHERE c.handle = $2
-                       AND c.owner_id = $1
-                       AND c.blob_id IS NOT NULL
                 )
                 AND (
                     u.status = 'pending'
@@ -1984,7 +1962,7 @@ async fn transfer_memory_handle(
 ) -> Result<bool, StorageError> {
     // The destination's `owners` row is not seeded anywhere, so mint it (or
     // confirm its kind) BEFORE any statement below binds `to_id` into
-    // an `owner_id` FK — `blob`, `content`, `cooled`, `memory_head`,
+    // an `owner_id` FK — `blob`, `content`, `memory_head`,
     // `memory`, `sketch` and embeddings all reference
     // `proxima_core.owners`.
     let to_id = ensure_owner_row(tx.as_mut(), &to_owner).await?;
@@ -1998,10 +1976,10 @@ async fn transfer_memory_handle(
         // series merely because it now occupies the captured handle.
         return Ok(false);
     }
-    // A head is mandatory whenever a hot row exists. The only valid headless
-    // series is therefore one made entirely of cooled stubs; accepting a
-    // missing head while a hot row remains would turn a live-head race into a
-    // transfer that moves sidecars without moving the spine.
+    // A head is mandatory whenever a row exists, forgotten or not (forget
+    // keeps the row and its head, #488). Accepting a missing head here would
+    // turn a live-head race into a transfer that moves sidecars without
+    // moving the spine.
     let head: Option<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
         "SELECT t, owner_id FROM proxima_core.memory_head
           WHERE handle = $1",
@@ -2012,9 +1990,8 @@ async fn transfer_memory_handle(
     .map_err(map_err)?;
     let expected_head_t = if let Some((head_t, head_owner)) = head {
         if head_owner != from_id {
-            // Preserve the existing live-head denial: a cooled member can
-            // outlive a head that has already left this owner, but it must not
-            // let the stale owner move the series' other rows.
+            // Preserve the existing live-head denial: a stale owner must not
+            // move the series' other rows once its head has left.
             return Ok(false);
         }
         if !ts.contains(&head_t) {
@@ -2024,27 +2001,16 @@ async fn transfer_memory_handle(
         }
         Some(head_t)
     } else {
-        let hot_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (
-                 SELECT 1 FROM proxima_core.memory WHERE handle = $1 /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
-             )",
-        )
-        .bind(handle)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(map_err)?;
-        if hot_exists {
-            return Err(StorageError::Retryable(
-                "memory head disappeared while the series still had hot rows".into(),
-            ));
-        }
-        None
+        // `ts` is non-empty, so the series has rows and must have a head.
+        return Err(StorageError::Retryable(
+            "memory head disappeared while the series still had rows".into(),
+        ));
     };
     ensure_series_uploads_published(tx, handle, from_id).await?;
     // Order, and all of it load-bearing.
     //
-    // The two dedupe surfaces run FIRST because both read the series' hot
-    // and cooled rows under the SOURCE owner to find what the series
+    // The two dedupe surfaces run FIRST because both read the series' rows,
+    // live and forgotten, under the SOURCE owner to find what the series
     // cites, and the generated re-home is what stops those reads from
     // matching.
     //
@@ -2263,12 +2229,8 @@ async fn transfer_cited_blobs(
 ) -> Result<(), StorageError> {
     let leg = dedupe_leg(surfaces, BLOB_SURFACE)?;
     let blob_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT blob_id
+        "SELECT DISTINCT blob_id
            FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
-          WHERE handle = $1 AND owner_id = $2 AND blob_id IS NOT NULL
-         UNION
-         SELECT blob_id
-           FROM proxima_core.cooled
           WHERE handle = $1 AND owner_id = $2 AND blob_id IS NOT NULL",
     )
     .bind(handle)
@@ -2364,8 +2326,8 @@ fn dedupe_lookup_sql(
 /// generated from the surface's declared `remaps`.
 ///
 /// Scoped by `handle` and not by owner: the hot rows have not changed hands
-/// at this point in the transfer, and the cooled rows change hands in the
-/// generated re-home later in the same transaction. Scoping by owner here
+/// at this point in the transfer; they change hands in the generated re-home
+/// later in the same transaction. Scoping by owner here
 /// would remap nothing or everything depending on the order.
 fn remap_sql(entry: &str) -> Result<String, StorageError> {
     let (table, column) = entry
@@ -2457,12 +2419,6 @@ async fn transfer_one_cited_blob(
         "SELECT EXISTS (
              SELECT 1
                FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
-              WHERE blob_id = $1
-                AND handle <> $2
-                AND owner_id <> $3
-             UNION ALL
-             SELECT 1
-               FROM proxima_core.cooled
               WHERE blob_id = $1
                 AND handle <> $2
                 AND owner_id <> $3
@@ -2762,12 +2718,8 @@ async fn transfer_content_for_handle(
         "SELECT DISTINCT c.content_id, c.schema_id, c.content_hash
            FROM proxima_core.content c
            JOIN (
-                 SELECT content_id
+                 SELECT DISTINCT content_id
                    FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
-                  WHERE handle = $1 AND owner_id = $2 AND content_id IS NOT NULL
-                 UNION
-                 SELECT content_id
-                   FROM proxima_core.cooled
                   WHERE handle = $1 AND owner_id = $2 AND content_id IS NOT NULL
                 ) series_content ON series_content.content_id = c.content_id",
     )
@@ -3007,12 +2959,12 @@ mod tests {
     }
 
     /// A remap names the REFERRING table, which is not the surface being
-    /// deduped: `blob`'s remaps are columns on `memory` and `cooled`.
+    /// deduped: `blob`'s remap is a column on `memory`.
     #[test]
     fn a_remap_repoints_the_referring_table_not_the_surface() {
         assert_eq!(
-            remap_sql("cooled.blob_id").expect("a remap generates"),
-            "UPDATE proxima_core.cooled SET blob_id = $3 \
+            remap_sql("memory.blob_id").expect("a remap generates"),
+            "UPDATE proxima_core.memory SET blob_id = $3 \
              WHERE handle = $1 AND blob_id = $2"
         );
         assert!(
@@ -3043,8 +2995,8 @@ mod tests {
             }
         }
         assert_eq!(
-            seen, 4,
-            "blob and content each declare two referring columns"
+            seen, 2,
+            "blob and content each declare one referring column"
         );
     }
 

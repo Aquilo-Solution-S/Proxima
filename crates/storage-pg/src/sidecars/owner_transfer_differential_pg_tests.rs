@@ -85,6 +85,13 @@
 //! Checked, not assumed: strip the three new rows from the regenerated file
 //! and re-canonicalise the tokens, and every relation holds the same multiset
 //! of rows as the previous golden, section for section, count for count.
+//!
+//! #488 regenerated it once more: forget keeps the row and its sidecars, so
+//! each series' forgotten tail is a `memory` row with `forgotten_at` set and
+//! keeps its `agent_note_v1` row, where it used to be a `cooled` stub with
+//! the note deleted. Checked, not assumed: with every token replaced by one
+//! placeholder, the only diff is the three cooled lines becoming memory
+//! lines, three note lines staying, and the counts moving with them.
 #![allow(
     clippy::doc_markdown,
     clippy::format_push_string,
@@ -317,36 +324,17 @@ async fn embed(pool: &PgPool, t: Uuid, owner: OwnerId) -> Result<(), Box<dyn std
     Ok(())
 }
 
-/// Cool the hot row into a `cooled` stub, the way `forget` does, so the
-/// transferred series carries a cold tail.
-async fn cool(pool: &PgPool, t: Uuid, at: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // One transaction, because that is what forget does: the sidecar row and
-    // the memory row that stamps it leave together, or neither leaves. Split
-    // across three autocommit statements this fixture would be an orphaning
-    // delete, which the database refuses.
+/// Forget the row the way `forget` does since #488: mark it and delete what
+/// search derives from it. The row and its sidecar stay, so the transferred
+/// series carries a forgotten tail.
+async fn forget_row(pool: &PgPool, t: Uuid, at: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut tx = pool.begin().await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.cooled
-             (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id,
-              ingest_key, origins, refs, goal_refs, cooled_at, \"by\", via)
-         SELECT m.t, m.handle, m.owner_id, m.kind, 'cold/' || m.t::text, m.blob_id,
-                m.content_id, m.source_id, m.ingest_key, m.origins, m.refs, m.goal_refs,
-                $2::timestamptz, m.\"by\", m.via
-           FROM proxima_core.memory m WHERE m.t = $1",
-    )
-    .bind(t)
-    .bind(at)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("UPDATE proxima_core.memory SET forgotten_at = $2::timestamptz WHERE t = $1")
+        .bind(t)
+        .bind(at)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
-        .bind(t)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
-        .bind(t)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
         .bind(t)
         .execute(&mut *tx)
         .await?;
@@ -389,7 +377,7 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     object_key_labels.insert(destination_upload, "objects/dedupe-destination".to_owned());
 
     // ── The three transferred series ────────────────────────────────────
-    // Each is two hot versions plus a cooled tail, on a named source so the
+    // Each is two live versions plus a forgotten tail, on a named source so the
     // Drop leg (`ingest_keys`) has receipts to destroy.
     let mut transferred = Vec::new();
     for (n, blob) in [
@@ -427,9 +415,9 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
             false,
         )
         .await?;
-        // The oldest version cools: the series carries a cold tail whose
-        // owner must follow even though the row is not in `memory`.
-        cool(pool, first.into_inner(), "2026-02-02 00:00:00Z").await?;
+        // The oldest version is forgotten: the series carries a forgotten
+        // tail whose owner must follow with the rest.
+        forget_row(pool, first.into_inner(), "2026-02-02 00:00:00Z").await?;
         embed(pool, second.into_inner(), source).await?;
         embed(pool, third.into_inner(), source).await?;
         // The other `RetainAtSource` surface: a captured publication record.
@@ -481,8 +469,8 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     .bind(vec![12u8; 32])
     .fetch_one(pool)
     .await?;
-    // Every hot row of the in-place series names `shared`; its cooled tail
-    // names `solo`, which nothing else does — so the transfer must re-home
+    // Every live row of the in-place series names `shared`; its forgotten
+    // tail names `solo`, which nothing else does — so the transfer must re-home
     // one and remap-then-GC the other.
     sqlx::query(
         "UPDATE proxima_core.memory SET content_id = $2
@@ -493,8 +481,9 @@ pub async fn seed(pool: &PgPool) -> Result<Corpus, Box<dyn std::error::Error>> {
     .execute(pool)
     .await?;
     sqlx::query(
-        "UPDATE proxima_core.cooled SET content_id = $2
-          WHERE handle = (SELECT handle FROM proxima_core.memory WHERE t = $1)",
+        "UPDATE proxima_core.memory SET content_id = $2
+          WHERE handle = (SELECT handle FROM proxima_core.memory WHERE t = $1)
+            AND forgotten_at IS NOT NULL",
     )
     .bind(transferred[0].into_inner())
     .bind(solo)
@@ -663,8 +652,8 @@ pub async fn dump_database(
         // compares, and `publication_outbox_pg_tests` pins the lanes. 0029's
         // other-store origins are skipped only because the pinned baseline
         // lacks them: they are a flavor #0 surface (#478), keyed on a memory
-        // `t` with no owner column, so they follow the memory, hot or
-        // cooled, that a transfer moves. 0034's
+        // `t` with no owner column, so they follow the memory, live or
+        // forgotten, that a transfer moves. 0034's
         // publication counter moves with the series head;
         // `publication_outbox_pg_tests` pins it.
         if matches!(

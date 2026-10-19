@@ -91,8 +91,18 @@ impl OwnerAccessReadPort for PgStorage {
             crate::owner_scope::require_owner_scope(owner_scope)?,
         )
         .await?;
-        let result =
-            access::owner_columns::visible_home_owner(tx.as_mut(), entity, read_owners).await;
+        // A forgotten memory still has a home: transfer moves it and an entry
+        // read must answer for it as before #488, when the cooled stub was
+        // owner-visible. Owner RLS hides forgotten rows unless the lifecycle
+        // scope is on, so the lookup runs inside it and leaves before commit.
+        let result = async {
+            let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+            let found =
+                access::owner_columns::visible_home_owner(tx.as_mut(), entity, read_owners).await;
+            lifecycle.leave(tx.as_mut()).await?;
+            found
+        }
+        .await;
         crate::owner_scope::finish_transaction(tx, result).await
     }
 

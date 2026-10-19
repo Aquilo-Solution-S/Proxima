@@ -98,7 +98,7 @@ struct Version {
 /// Every version of every series named by `ts`, any owner, with its schema.
 const VERSIONS_OF_SQL: &str = "\
 WITH handles AS (
-    SELECT handle FROM proxima_core.memory WHERE t = ANY($1::uuid[])
+    SELECT DISTINCT handle FROM proxima_core.memory WHERE t = ANY($1::uuid[])
 )
 SELECT m.t, m.handle, m.owner_id, m.schema_id
   FROM proxima_core.memory m JOIN handles h ON h.handle = m.handle";
@@ -302,7 +302,7 @@ macro_rules! newest_versions_cte {
     () => {
         "\
 WITH own AS (
-    SELECT handle FROM proxima_core.memory
+    SELECT DISTINCT handle FROM proxima_core.memory
      WHERE owner_id = $1 AND schema_id = $2
 ), versions AS (
     SELECT m.handle, m.t FROM proxima_core.memory m JOIN own USING (handle)

@@ -391,7 +391,7 @@ async fn lock_forget_footprint_tx(
     // only the source handle here would invert the order and leave the
     // dependent handle outside this operation's serialization domain.
     let dependent_handles: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+        "SELECT DISTINCT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
@@ -584,70 +584,6 @@ async fn run_forget_legs(
             .map_err(map_err)?;
     }
     Ok(())
-}
-
-/// Put `t` in the state a forget left before #488: a `cooled` stub naming a
-/// cold object, the row and its stamped sidecars deleted, the head rewound.
-///
-/// Test-only. Forget no longer produces this state, but `cooled` and its
-/// readers (erase, export, transfer, purge) stay until #488 S15/S16, and their
-/// tests need a cooled row to read. Writes a placeholder object under the
-/// cold key and returns the key.
-#[cfg(any(test, feature = "test-fixtures"))]
-pub async fn cool_legacy_for_tests(
-    pg: &crate::PgStorage,
-    cold: &dyn ColdObjectStore,
-    t: Uuid,
-) -> Result<String, StorageError> {
-    let key = cold_object_key(t);
-    cold.put(&key, b"legacy cold object (test fixture)").await?;
-    let mut tx = pg.pool_for_tests().begin().await.map_err(map_err)?;
-    let (handle, sidecar_tables): (Uuid, Vec<String>) = sqlx::query_as(
-        "SELECT handle, sidecar_tables FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (test fixture: legacy cool reads the row in either state) */
-          WHERE t = $1",
-    )
-    .bind(t)
-    .fetch_one(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    sqlx::query(
-        "INSERT INTO proxima_core.cooled
-            (t, handle, owner_id, kind, object_key, blob_id, content_id, source_id, ingest_key,
-             origins, refs, goal_refs, \"by\", via)
-         SELECT t, handle, owner_id, kind, $2, blob_id, content_id, source_id, ingest_key,
-                origins, refs, goal_refs, \"by\", via
-           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (test fixture: legacy cool reads the row in either state) */
-          WHERE t = $1",
-    )
-    .bind(t)
-    .bind(&key)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
-    let mut legs: Vec<(&str, &str)> = Vec::new();
-    for table in &sidecar_tables {
-        if is_owner_pinned(&pg.sidecars, table)
-            || !matches!(pg.surfaces.forget_leg(table), ForgetLeg::Marked)
-        {
-            continue;
-        }
-        legs.push((
-            table.as_str(),
-            pg.sidecars.memory_key_column(table).unwrap_or("t"),
-        ));
-    }
-    legs.extend(pg.surfaces.generated_forget_legs());
-    // A pre-#488 cool deleted the sketch too; forget keeps it since S14.
-    legs.push(("proxima_core.sketch", "t"));
-    run_forget_legs(&mut tx, legs, t).await?;
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1") /* FORGET-POLICY: includes-forgotten (test fixture: legacy cool reads the row in either state) */
-        .bind(t)
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?;
-    sync_memory_head(&mut tx, handle).await?;
-    tx.commit().await.map_err(map_err)?;
-    Ok(key)
 }
 
 /// The surfaces [`erase_memory`] deletes with a hand-written statement of
@@ -1086,7 +1022,8 @@ async fn erase_memory_in_lifecycle(
 /// SET: erasing one version of a series says nothing about whether the
 /// blob is still cited, and asking per-version would answer "still cited"
 /// for every version but the last. `proxima_core.blob` is referenced by
-/// `memory.blob_id`, `cooled.blob_id` and `blob_uploads.blob_id` and by
+/// `memory.blob_id`, `cooled.blob_id` (empty since 0038) and
+/// `blob_uploads.blob_id` and by
 /// nothing else, so once the admissions are gone the reference question is
 /// answerable in one statement, which is what `gc_unreferenced_blobs`
 /// below is.
@@ -1263,7 +1200,7 @@ async fn snapshot_series_for_erase_tx(
 
 const SNAPSHOT_SERIES_FOR_ERASE_SQL: &str = "\
 WITH handles AS (
-    SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+    SELECT DISTINCT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
      WHERE t = ANY($1::uuid[]) AND owner_id = $2
 ), versions AS (
     SELECT m.handle, m.t FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
@@ -1396,7 +1333,7 @@ pub async fn lock_admissions_for_erase(
     // it yet; acquire every named series handle here so a later series erase
     // only re-enters handles this transaction already owns.
     let handles: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+        "SELECT DISTINCT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
           WHERE t = ANY($1::uuid[]) AND owner_id = $2
           ORDER BY handle",
     )
@@ -1506,7 +1443,7 @@ SELECT b.blob_id FROM proxima_core.blob b
 /// a shared object needs when several upload rows name it.
 /// `proxima_core.blob` is
 /// referenced by exactly three columns — `memory.blob_id`,
-/// `cooled.blob_id`, `blob_uploads.blob_id`, all `NO ACTION` — so "no
+/// `cooled.blob_id` (empty since 0038), `blob_uploads.blob_id`, all `NO ACTION` — so "no
 /// admission cites it" is the whole reference question. Citation schemas
 /// are opaque and have no sidecar table, which is why
 /// `OwnerSurfaces::for_registry` finds no cited-object family for

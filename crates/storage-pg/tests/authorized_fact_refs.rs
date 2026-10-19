@@ -10,7 +10,9 @@ use proxima_core::flavor::{
     KeyShape, ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
     TransferRule,
 };
-use proxima_core::storage_ports::{FactIngestPort, GoalWritePort, OwnerWritePermit};
+use proxima_core::storage_ports::{
+    FactIngestPort, GoalWritePort, MemoryAuthoringPort, OwnerWritePermit,
+};
 use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, AuthorizedNodeLinks, FactWriteCommand, InlineCitedObjectDraft,
 };
@@ -1412,7 +1414,7 @@ async fn receipt_replay_requires_identical_authorized_refs() {
 }
 
 #[tokio::test]
-async fn cooled_replay_requires_known_identical_refs() {
+async fn forgotten_replay_requires_known_identical_refs() {
     let (db_name, pg, registry) = bootstrap().await;
     let cold = std::sync::Arc::new(MemoryColdStore::default());
     let pg = pg.with_cold(cold);
@@ -1421,7 +1423,7 @@ async fn cooled_replay_requires_known_identical_refs() {
         let fact_a = seed_fact(&pg, owner).await?;
         let fact_b = seed_fact(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let first_draft = direct_draft("cooled-links", vec![fact_a.into_inner()]);
+        let first_draft = direct_draft("forgotten-links", vec![fact_a.into_inner()]);
         let first = AuthorizedFactWrite::new_with_links_for_tests(
             OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
             first_draft.clone(),
@@ -1436,8 +1438,12 @@ async fn cooled_replay_requires_known_identical_refs() {
             ),
         );
         let outcome = pg.ingest_authorized_fact_atomic(&first, &[]).await?;
-        pg.cool_legacy_for_tests(outcome.memory_id.into_inner())
-            .await?;
+        MemoryAuthoringPort::forget_memory(
+            &pg,
+            &OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
+            outcome.memory_id,
+        )
+        .await?;
 
         let replay = AuthorizedFactWrite::new_with_links_for_tests(
             OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
@@ -1460,7 +1466,7 @@ async fn cooled_replay_requires_known_identical_refs() {
 
         let changed = AuthorizedFactWrite::new_with_links_for_tests(
             OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
-            direct_draft("cooled-links", vec![fact_b.into_inner()]),
+            direct_draft("forgotten-links", vec![fact_b.into_inner()]),
             None,
             Vec::new(),
             AuthorizedNodeLinks::new_for_tests(
@@ -1474,48 +1480,12 @@ async fn cooled_replay_requires_known_identical_refs() {
         let error = pg
             .ingest_authorized_fact_atomic(&changed, &[])
             .await
-            .expect_err("cooled replay with changed refs must conflict");
+            .expect_err("forgotten replay with changed refs must conflict");
         assert!(matches!(error, StorageError::Conflict(message) if message.contains("refs")));
 
-        // Fixture-only simulation of a pre-0003 cooled row whose nullable
-        // declaration was never recorded. Production updates remain sealed;
-        // the trigger is disabled only inside this transaction and is
-        // restored before commit (rollback restores it automatically).
-        let mut legacy = pg.pool_for_tests().begin().await?;
-        sqlx::query("ALTER TABLE proxima_core.cooled DISABLE TRIGGER cooled_append_only")
-            .execute(&mut *legacy)
-            .await?;
-        sqlx::query("UPDATE proxima_core.cooled SET refs = NULL WHERE t = $1")
-            .bind(outcome.memory_id.into_inner())
-            .execute(&mut *legacy)
-            .await?;
-        sqlx::query("ALTER TABLE proxima_core.cooled ENABLE TRIGGER cooled_append_only")
-            .execute(&mut *legacy)
-            .await?;
-        legacy.commit().await?;
-        let unknown = AuthorizedFactWrite::new_with_links_for_tests(
-            OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
-            first_draft,
-            None,
-            Vec::new(),
-            AuthorizedNodeLinks::new_for_tests(
-                Vec::new(),
-                vec![
-                    EdgeEndpoint::memory(EntityKind::Fact, fact_a),
-                    EdgeEndpoint::goal(goal),
-                ],
-            ),
-        );
-        let error = pg
-            .ingest_authorized_fact_atomic(&unknown, &[])
-            .await
-            .expect_err("legacy cooled refs must not be fabricated");
-        assert!(
-            matches!(error, StorageError::Conflict(message) if message.contains("unavailable"))
-        );
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("cooled reference replay contract failed");
+    result.expect("forgotten reference replay contract failed");
 }

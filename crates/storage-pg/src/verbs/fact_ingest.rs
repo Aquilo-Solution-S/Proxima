@@ -462,10 +462,7 @@ async fn citation_object_for_t(
     // A replay may answer a forgotten Fact; its citation is still its own.
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
     let blob_id: Result<Option<Option<uuid::Uuid>>, StorageError> = sqlx::query_scalar(
-        "SELECT blob_id FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
-             UNION ALL
-             SELECT blob_id FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
-             LIMIT 1",
+        "SELECT blob_id FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
     )
     .bind(memory_id.into_inner())
     .bind(owner_id)

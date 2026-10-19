@@ -1767,9 +1767,8 @@ mod tests {
     /// accounted for, and FAIL when admit grows one more.
     ///
     /// Counting BINDS is not enough — a filter needs no bind at all.
-    /// `AND NOT EXISTS (SELECT 1 FROM proxima_core.cooled cl WHERE
-    /// cl.t = m.t)` adds a predicate and no `$n`, so the PREDICATE count is
-    /// pinned as well.
+    /// `AND m.forgotten_at IS NULL` adds a predicate and no `$n`, so the
+    /// PREDICATE count is pinned as well.
     #[test]
     fn every_admit_filter_is_mirrored_on_the_candidate_side() {
         // Admit's binds, and where the candidate side answers each.

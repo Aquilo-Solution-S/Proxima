@@ -139,7 +139,7 @@ pub async fn ensure_content_from_payloads(
     Ok(Some(ensure_content(tx, owner_id, schema_id, &hash).await?))
 }
 
-/// Drop Content rows no hot or cooled admission names.
+/// Drop Content rows no admission, live or forgotten, names.
 pub async fn gc_unreferenced_content(
     tx: &mut Transaction<'_, Postgres>,
     content_id: Uuid,
@@ -149,9 +149,6 @@ pub async fn gc_unreferenced_content(
           WHERE c.content_id = $1
             AND NOT EXISTS (
                     SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still names its content) */
-                )
-            AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.cooled k WHERE k.content_id = c.content_id
                 )",
     )
     .bind(content_id)
@@ -180,9 +177,6 @@ pub async fn gc_unreferenced_content_batch(
           WHERE c.content_id = ANY($1::uuid[])
             AND NOT EXISTS (
                     SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still names its content) */
-                )
-            AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.cooled k WHERE k.content_id = c.content_id
                 )",
     )
     .bind(content_ids)

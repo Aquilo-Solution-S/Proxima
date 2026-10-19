@@ -10,7 +10,6 @@ use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerId, SchemaId, Schema
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::forget::cold_object_key;
 use uuid::Uuid;
 
 /// The five sidecar legs exactly as the engine assembles them: from the
@@ -137,12 +136,11 @@ fn sketched(kind: &str, text: &str) -> FactWriteCommand {
     command
 }
 
-/// A forgotten admission's content is not in `memory` any more; it is an
-/// `object_key` in `cooled`. Exporting `memory` alone therefore returned a
-/// bundle that silently omitted every cooled admission — and the derived
-/// one-liners in `sketch` were never exported at all.
+/// A forgotten admission is a `memory` row with `forgotten_at` set (#488), so
+/// the bundle carries it with the live ones, marked, and its sketch with it.
+/// No storage locator of any kind enters the bundle.
 #[tokio::test]
-async fn export_carries_cooled_locators_and_sketches() {
+async fn export_carries_forgotten_rows_and_sketches() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -158,21 +156,19 @@ async fn export_carries_cooled_locators_and_sketches() {
         let hot = pg
             .ingest_fact_atomic(&permit, &sketched("fact", "Still hot"), None)
             .await?;
-        let cooled = pg
-            .ingest_fact_atomic(&permit, &sketched("fact", "Went cold\nbody"), None)
+        let forgotten = pg
+            .ingest_fact_atomic(&permit, &sketched("fact", "Forgotten\nbody"), None)
             .await?;
-        let cooled_t = cooled.memory_id.into_inner();
-        let key = cold_object_key(cooled_t);
-        pg.cool_legacy_for_tests(cooled_t).await?;
+        let forgotten_t = forgotten.memory_id.into_inner();
+        MemoryAuthoringPort::forget_memory(&pg, &permit, forgotten.memory_id).await?;
 
-        // A neighbour owner's cooled admission and sketch must not appear.
+        // A neighbour owner's forgotten admission and sketch must not appear.
         let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
         let neighbour = pg
             .ingest_fact_atomic(&other_permit, &sketched("fact", "Not yours"), None)
             .await?;
-        let neighbour_t = neighbour.memory_id.into_inner();
-        pg.cool_legacy_for_tests(neighbour_t).await?;
+        MemoryAuthoringPort::forget_memory(&pg, &other_permit, neighbour.memory_id).await?;
 
         // Populate the internal hard-erase witness while the owner still has
         // exportable rows. The witness is database metadata, never a public
@@ -242,21 +238,26 @@ async fn export_carries_cooled_locators_and_sketches() {
 
         assert_eq!(
             bundle.count("proxima_core.memory"),
-            1,
-            "the cooled admission left memory"
+            2,
+            "the forgotten admission stays in memory, and only the owner's are exported"
         );
-        let cooled_rows = bundle.table("proxima_core.cooled");
-        assert_eq!(bundle.count("proxima_core.cooled"), 1);
-        assert_eq!(cooled_rows.len(), 1);
-        assert_eq!(
-            cooled_rows[0]["t"].as_str(),
-            Some(cooled_t.to_string()).as_deref()
-        );
-        assert!(
-            cooled_rows[0].get("object_key").is_none() && cooled_rows[0].get("cold_digest").is_none(),
-            "the cooled allowlist carries the memory, not where its cold object lives: {:?}",
-            cooled_rows[0]
-        );
+        let mut marked: Vec<(String, bool)> = bundle
+            .table("proxima_core.memory")
+            .iter()
+            .map(|row| {
+                (
+                    row["t"].as_str().unwrap_or_default().to_owned(),
+                    !row["forgotten_at"].is_null(),
+                )
+            })
+            .collect();
+        marked.sort();
+        let mut expected = vec![
+            (hot.memory_id.into_inner().to_string(), false),
+            (forgotten_t.to_string(), true),
+        ];
+        expected.sort();
+        assert_eq!(marked, expected, "the forgotten row carries forgotten_at");
         let uploads = bundle.table("proxima_core.blob_uploads");
         assert_eq!(uploads.len(), 1, "the completed upload is exported");
         assert_eq!(uploads[0]["status"].as_str(), Some("completed"));
@@ -291,10 +292,6 @@ async fn export_carries_cooled_locators_and_sketches() {
         let mut leaks = Vec::new();
         storage_locators(&whole, "$", &mut leaks);
         assert!(leaks.is_empty(), "storage locators in the bundle: {leaks:?}");
-        assert!(
-            !serde_json::to_string(&whole)?.contains(key.as_str()),
-            "the cold object key leaked into the bundle"
-        );
         for locator in ["leak-scan-bucket", "uploads/leak-scan-object", "leak-scan-etag"] {
             assert!(
                 !serde_json::to_string(&whole)?.contains(locator),
@@ -305,15 +302,25 @@ async fn export_carries_cooled_locators_and_sketches() {
         let sketches = bundle.table("proxima_core.sketch");
         assert_eq!(
             bundle.count("proxima_core.sketch"),
-            1,
-            "forget deletes the cooled row's sketch; the hot one remains"
+            2,
+            "forget keeps the sketch (#488 S14); the neighbour's is not exported"
         );
-        assert_eq!(sketches.len(), 1);
-        assert_eq!(
-            sketches[0]["t"].as_str(),
-            Some(hot.memory_id.into_inner().to_string()).as_deref()
-        );
-        assert_eq!(sketches[0]["text"].as_str(), Some("Still hot"));
+        let mut texts: Vec<(String, String)> = sketches
+            .iter()
+            .map(|row| {
+                (
+                    row["t"].as_str().unwrap_or_default().to_owned(),
+                    row["text"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        texts.sort();
+        let mut expected_texts = vec![
+            (hot.memory_id.into_inner().to_string(), "Still hot".to_owned()),
+            (forgotten_t.to_string(), "Forgotten".to_owned()),
+        ];
+        expected_texts.sort();
+        assert_eq!(texts, expected_texts);
         assert!(
             sketches[0].get("search_tsv").is_none(),
             "the sketch allowlist names four columns; the generated lexical index \
@@ -328,7 +335,7 @@ async fn export_carries_cooled_locators_and_sketches() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("cooled/sketch export test failed");
+    result.expect("forgotten/sketch export test failed");
 }
 
 /// A citation is the `proxima_core.blob` row a Fact names, so citation

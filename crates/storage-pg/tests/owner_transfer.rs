@@ -605,12 +605,12 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
     result.expect("chunked embedding transfer failed");
 }
 
+/// A forgotten version moves with its series and stays forgotten (#488:
+/// forget keeps the row, so the transfer's re-home of `memory` covers it).
 #[tokio::test]
-async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
+async fn transfer_rehomes_forgotten_versions() {
     let (db_name, pg, _cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        use proxima_storage_pg::verbs::forget::cold_object_key;
-
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
@@ -637,9 +637,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             .bind(personal_content_id)
             .execute(pool)
             .await?;
-        // The cold dump records the spaces this series had vectors in, read
-        // off `proxima_core.embeddings` at cooling time and stamped with the
-        // giver as owner.
+        // Vectors the forget deletes with the rest of the derived state.
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
                 (entity_id, model_id, dim, chunk_ordinal, vec, owner_id)
@@ -652,8 +650,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         .bind(owner.into_inner())
         .execute(pool)
         .await?;
-        pg.cool_legacy_for_tests(first.memory_id.into_inner())
-            .await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
         let mut later = draft();
         later.handle = Some(first.handle);
         later.ingest_key = Some("k2".into());
@@ -670,34 +667,24 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             )
             .await?;
         assert!(transferred);
-        let cooled_writer: (Uuid, Option<Uuid>) =
-            sqlx::query_as("SELECT \"by\", via FROM proxima_core.cooled WHERE t = $1")
+        let forgotten_writer: (Uuid, Option<Uuid>) =
+            sqlx::query_as("SELECT \"by\", via FROM proxima_core.memory WHERE t = $1")
                 .bind(first.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(cooled_writer, (writer.by, writer.via));
-        let cooled_owner: uuid::Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.cooled WHERE t = $1")
-                .bind(first.memory_id.into_inner())
-                .fetch_one(pool)
-                .await?;
+        assert_eq!(forgotten_writer, (writer.by, writer.via));
+        let (forgotten_owner, still_forgotten): (uuid::Uuid, bool) = sqlx::query_as(
+            "SELECT owner_id, forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(first.memory_id.into_inner())
+        .fetch_one(pool)
+        .await?;
         assert_eq!(
-            cooled_owner,
+            forgotten_owner,
             dest.into_inner(),
-            "transfer must re-home cooled versions with the series"
+            "transfer must re-home forgotten versions with the series"
         );
-        let object_key: String =
-            sqlx::query_scalar("SELECT object_key FROM proxima_core.cooled WHERE t = $1")
-                .bind(first.memory_id.into_inner())
-                .fetch_one(pool)
-                .await?;
-        let expected = cold_object_key(first.memory_id.into_inner());
-        assert_eq!(object_key, expected);
-        assert!(
-            !object_key.contains(&owner.into_inner().to_string())
-                && !object_key.contains(&dest.into_inner().to_string()),
-            "the cold key is owner-free, so a transfer never has to re-mint it"
-        );
+        assert!(still_forgotten, "the transferred version stays forgotten");
         let blob_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
                 .bind(cited_object_id)
@@ -706,7 +693,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         assert_eq!(
             blob_owner,
             dest.into_inner(),
-            "a cooled citation follows its transferred series"
+            "a forgotten citation follows its transferred series"
         );
         let stale_ingest_keys: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE t = $1",
@@ -716,21 +703,21 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         .await?;
         assert_eq!(
             stale_ingest_keys, 0,
-            "transfer removes ingest keys for cooled versions too"
+            "transfer removes ingest keys for forgotten versions too"
         );
-        let cooled_content_owner: Uuid = sqlx::query_scalar(
+        let forgotten_content_owner: Uuid = sqlx::query_scalar(
             "SELECT c.owner_id
-               FROM proxima_core.cooled cooled
-               JOIN proxima_core.content c ON c.content_id = cooled.content_id
-              WHERE cooled.t = $1",
+               FROM proxima_core.memory m
+               JOIN proxima_core.content c ON c.content_id = m.content_id
+              WHERE m.t = $1",
         )
         .bind(first.memory_id.into_inner())
         .fetch_one(pool)
         .await?;
         assert_eq!(
-            cooled_content_owner,
+            forgotten_content_owner,
             dest.into_inner(),
-            "Content referenced only by a cooled version must follow it"
+            "Content referenced only by a forgotten version must follow it"
         );
         for witnessed_t in [first.memory_id.into_inner(), second.memory_id.into_inner()] {
             let witness: Option<String> = sqlx::query_scalar(
@@ -741,7 +728,7 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
             .await?;
             assert_eq!(
                 witness, None,
-                "transferring a cooled series must not create an erase witness"
+                "transferring a forgotten series must not create an erase witness"
             );
         }
         let personal_content_left: i64 = sqlx::query_scalar(
@@ -752,21 +739,21 @@ async fn transfer_rehomes_cooled_versions_and_remints_object_key() {
         .await?;
         assert_eq!(
             personal_content_left, 0,
-            "exclusive cooled Content is GC'd after its destination remap"
+            "exclusive forgotten Content is GC'd after its destination remap"
         );
 
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("transfer cooled remint failed");
+    result.expect("transfer of forgotten versions failed");
 }
 
-/// A caller may retain only an older cooled admission id while the series is
-/// still live. The cooled row supplies the handle, but the transfer must still
-/// move the hot head through its normal owner compare-and-set.
+/// A caller may retain only an older forgotten admission id while the series
+/// is still live. The forgotten row supplies the handle, but the transfer must
+/// still move the live head through its normal owner compare-and-set.
 #[tokio::test]
-async fn transfer_accepts_a_cooled_input_for_a_live_series() {
+async fn transfer_accepts_a_forgotten_input_for_a_live_series() {
     let (db_name, pg, _cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -774,12 +761,11 @@ async fn transfer_accepts_a_cooled_input_for_a_live_series() {
         let dest = destination();
         let pool = pg.pool_for_tests();
         let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
-        pg.cool_legacy_for_tests(first.memory_id.into_inner())
-            .await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
 
         let mut later = draft();
         later.handle = Some(first.handle);
-        later.ingest_key = Some("cooled-input-live-head".into());
+        later.ingest_key = Some("forgotten-input-live-head".into());
         let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
 
         assert!(
@@ -793,12 +779,12 @@ async fn transfer_accepts_a_cooled_input_for_a_live_series() {
             .await?
         );
 
-        let cooled_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.cooled WHERE t = $1")
+        let forgotten_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(first.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(cooled_owner, dest.into_inner());
+        assert_eq!(forgotten_owner, dest.into_inner());
         let hot_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(second.memory_id.into_inner())
@@ -816,7 +802,7 @@ async fn transfer_accepts_a_cooled_input_for_a_live_series() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("cooled input live-series transfer failed");
+    result.expect("forgotten input live-series transfer failed");
 }
 
 /// #488 S14: a forgotten memory transferred to another owner comes back under
@@ -898,11 +884,10 @@ async fn a_forgotten_memory_restores_under_the_owner_it_was_transferred_to() {
     result.expect("restore after transfer failed");
 }
 
-/// A series can be entirely cooled, leaving no `memory` or `memory_head` row.
-/// The cooled identity still names the series boundary, and every cooled stub
-/// moves atomically with the transfer.
+/// A series can be entirely forgotten. Forget keeps every row and the head
+/// (#488), so the transfer moves all of it atomically, head included.
 #[tokio::test]
-async fn transfer_moves_a_fully_cooled_headless_series() {
+async fn transfer_moves_a_fully_forgotten_series() {
     let (db_name, pg, _cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -910,26 +895,24 @@ async fn transfer_moves_a_fully_cooled_headless_series() {
         let dest = destination();
         let pool = pg.pool_for_tests();
         let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
-        pg.cool_legacy_for_tests(first.memory_id.into_inner())
-            .await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
 
         let mut later = draft();
         later.handle = Some(first.handle);
-        later.ingest_key = Some("cooled-input-headless".into());
+        later.ingest_key = Some("forgotten-input-series".into());
         let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
-        pg.cool_legacy_for_tests(second.memory_id.into_inner())
-            .await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, second.memory_id).await?;
 
-        let before: (i64, i64, i64) = sqlx::query_as(
+        let before: (i64, i64) = sqlx::query_as(
             "SELECT
-                 (SELECT count(*) FROM proxima_core.memory WHERE handle = $1),
-                 (SELECT count(*) FROM proxima_core.memory_head WHERE handle = $1),
-                 (SELECT count(*) FROM proxima_core.cooled WHERE handle = $1)",
+                 (SELECT count(*) FROM proxima_core.memory
+                   WHERE handle = $1 AND forgotten_at IS NOT NULL),
+                 (SELECT count(*) FROM proxima_core.memory_head WHERE handle = $1)",
         )
         .bind(first.handle)
         .fetch_one(pool)
         .await?;
-        assert_eq!(before, (0, 0, 2));
+        assert_eq!(before, (2, 1), "both versions forgotten, the head kept");
 
         assert!(
             pg.transfer_to_owner(
@@ -943,37 +926,37 @@ async fn transfer_moves_a_fully_cooled_headless_series() {
         );
 
         let owners: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT owner_id FROM proxima_core.cooled
+            "SELECT owner_id FROM proxima_core.memory
               WHERE handle = $1 ORDER BY t",
         )
         .bind(first.handle)
         .fetch_all(pool)
         .await?;
         assert_eq!(owners, vec![dest.into_inner(); 2]);
-        let after: (i64, i64, i64) = sqlx::query_as(
+        let after: (i64, Uuid) = sqlx::query_as(
             "SELECT
-                 (SELECT count(*) FROM proxima_core.memory WHERE handle = $1),
-                 (SELECT count(*) FROM proxima_core.memory_head WHERE handle = $1),
-                 (SELECT count(*) FROM proxima_core.cooled WHERE handle = $1)",
+                 (SELECT count(*) FROM proxima_core.memory
+                   WHERE handle = $1 AND forgotten_at IS NOT NULL),
+                 (SELECT owner_id FROM proxima_core.memory_head WHERE handle = $1)",
         )
         .bind(first.handle)
         .fetch_one(pool)
         .await?;
-        assert_eq!(after, (0, 0, 2));
+        assert_eq!(after, (2, dest.into_inner()), "still forgotten, head moved");
 
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("fully cooled headless transfer failed");
+    result.expect("fully forgotten transfer failed");
 }
 
-/// The public Engine must use the cooled identity for authorization too. A
+/// The public Engine must see a forgotten memory for authorization too. A
 /// direct storage transfer can prove the move, but an Engine call first asks
-/// `visible_home_owner`; omitting `cooled` there turns a valid headless Memory
+/// `visible_home_owner`; hiding forgotten rows there turns a valid Memory
 /// into a false public NotFound.
 #[tokio::test]
-async fn engine_transfer_accepts_a_fully_cooled_headless_memory() {
+async fn engine_transfer_accepts_a_forgotten_memory() {
     let (db_name, pg, _cold) = fresh_pg_with_cold().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -981,8 +964,7 @@ async fn engine_transfer_accepts_a_fully_cooled_headless_memory() {
         let destination = destination();
         let pool = pg.pool_for_tests();
         let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
-        pg.cool_legacy_for_tests(written.memory_id.into_inner())
-            .await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
 
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
@@ -1008,24 +990,27 @@ async fn engine_transfer_accepts_a_fully_cooled_headless_memory() {
             .transfer_to_owner(&authz, EntityId::Memory(written.memory_id), destination)
             .await?;
 
-        let cooled_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.cooled WHERE t = $1")
+        let forgotten_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(written.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
-        assert_eq!(cooled_owner, destination.into_inner());
-        let head_count: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
-        )
-        .bind(written.handle)
-        .fetch_one(pool)
-        .await?;
-        assert_eq!(head_count, 0, "headless transfer must not invent a head");
+        assert_eq!(forgotten_owner, destination.into_inner());
+        let head_owner: Uuid =
+            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory_head WHERE handle = $1")
+                .bind(written.handle)
+                .fetch_one(pool)
+                .await?;
+        assert_eq!(
+            head_owner,
+            destination.into_inner(),
+            "the kept head moves too"
+        );
         Ok(())
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("Engine headless transfer failed");
+    result.expect("Engine forgotten transfer failed");
 }
 
 #[tokio::test]
@@ -1110,7 +1095,7 @@ async fn engine_transfer_uses_folded_nested_destination_role() {
 }
 
 /// The transfer captures and locks the complete series handle before its
-/// cooled-row update. A same-handle source-owner ingest that arrives in that
+/// memory-row update. A same-handle source-owner ingest that arrives in that
 /// window must wait for the transfer, then fail cleanly once the series has
 /// moved rather than advancing a head behind the transfer's back.
 #[tokio::test]
@@ -1124,8 +1109,7 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
         let dest = destination();
         let pool = pg.pool_for_tests();
         let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
-        pg.cool_legacy_for_tests(first.memory_id.into_inner())
-            .await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
         let mut second_draft = draft();
         second_draft.handle = Some(first.handle);
         second_draft.ingest_key = Some("k2".into());
@@ -1144,7 +1128,7 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
              END
              $$;
              CREATE TRIGGER block_owner_transfer
-             BEFORE UPDATE OF owner_id ON proxima_core.cooled
+             BEFORE UPDATE OF owner_id ON proxima_core.memory
              FOR EACH ROW
              WHEN (OLD.owner_id IS DISTINCT FROM NEW.owner_id)
              EXECUTE FUNCTION public.block_owner_transfer();",
@@ -1242,13 +1226,8 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
         assert_eq!(head.0, second.memory_id.into_inner());
         assert_eq!(head.1, dest.into_inner());
         let unmoved_versions: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint
-               FROM (
-                     SELECT owner_id FROM proxima_core.memory WHERE handle = $1
-                     UNION ALL
-                     SELECT owner_id FROM proxima_core.cooled WHERE handle = $1
-                    ) versions
-              WHERE owner_id <> $2",
+            "SELECT count(*)::bigint FROM proxima_core.memory
+              WHERE handle = $1 AND owner_id <> $2",
         )
         .bind(first.handle)
         .bind(dest.into_inner())
@@ -2184,10 +2163,6 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
         let source_rows: i64 = sqlx::query_scalar::<_, i64>(
             "SELECT count(*)::bigint
                FROM proxima_core.memory
-              WHERE handle = $1 AND owner_id = $2
-             UNION ALL
-             SELECT count(*)::bigint
-               FROM proxima_core.cooled
               WHERE handle = $1 AND owner_id = $2",
         )
         .bind(first.handle)
@@ -2203,10 +2178,6 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
         let destination_rows: i64 = sqlx::query_scalar::<_, i64>(
             "SELECT count(*)::bigint
                FROM proxima_core.memory
-              WHERE handle = $1 AND owner_id = $2
-             UNION ALL
-             SELECT count(*)::bigint
-               FROM proxima_core.cooled
               WHERE handle = $1 AND owner_id = $2",
         )
         .bind(first.handle)
@@ -2390,9 +2361,9 @@ async fn transfer_does_not_move_a_handle_reused_after_complete_erase() {
     result.expect("handle reuse after complete erase was not fenced");
 }
 
-/// A caller can resolve a cooled Memory under its prior owner after the series
-/// head has already moved elsewhere. Transfer must return clean `false` and
-/// leave every hot/cold row untouched. The head DELETE
+/// A caller can resolve a forgotten Memory under its prior owner after the
+/// series head has already moved elsewhere. Transfer must return clean
+/// `false` and leave every row untouched. The head DELETE
 /// variant is not statically constructible (`memory.handle` FK-references
 /// `memory_head`), so the probe diverges the head owner, which
 /// `memory_head_t_only` admits.
@@ -2400,21 +2371,17 @@ async fn transfer_does_not_move_a_handle_reused_after_complete_erase() {
 async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        use proxima_storage_pg::verbs::forget::cold_object_key;
-
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let dest = destination();
         let pool = pg.pool_for_tests();
         let first = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
-        pg.cool_legacy_for_tests(first.memory_id.into_inner())
-            .await?;
+        MemoryAuthoringPort::forget_memory(&pg, &permit, first.memory_id).await?;
         let mut later = draft();
         later.handle = Some(first.handle);
         later.ingest_key = Some("k2".into());
         let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
         assert_eq!(second.handle, first.handle);
-        let personal_key = cold_object_key(first.memory_id.into_inner());
 
         let usurper = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
@@ -2450,20 +2417,18 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
             "a lost head is the clean not-transferred false, not an error"
         );
 
-        let (cooled_owner, cooled_key): (Uuid, String) =
-            sqlx::query_as("SELECT owner_id, object_key FROM proxima_core.cooled WHERE t = $1")
-                .bind(first.memory_id.into_inner())
-                .fetch_one(pool)
-                .await?;
+        let (forgotten_owner, still_forgotten): (Uuid, bool) = sqlx::query_as(
+            "SELECT owner_id, forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+        )
+        .bind(first.memory_id.into_inner())
+        .fetch_one(pool)
+        .await?;
         assert_eq!(
-            cooled_owner,
+            forgotten_owner,
             owner.into_inner(),
-            "the rolled-back transfer must not re-home the cooled row"
+            "the rolled-back transfer must not re-home the forgotten row"
         );
-        assert_eq!(
-            cooled_key, personal_key,
-            "the rolled-back transfer must keep the personal object key"
-        );
+        assert!(still_forgotten, "the forgotten row stays forgotten");
         let hot_owner: Uuid =
             sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
                 .bind(second.memory_id.into_inner())

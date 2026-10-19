@@ -552,15 +552,12 @@ async fn load_ingest_replay(
     // Forget keeps the `ingest_keys` row, so a source re-delivering a
     // forgotten admission still replays: the row is read in the lifecycle
     // scope, which sees it (#488), and the replay says it is forgotten. A
-    // legacy cooled row has NULL refs; accepting it as an empty vector would
-    // silently bless a changed declaration.
+    // row without its declared refs is refused rather than read as empty,
+    // which would silently bless a changed declaration.
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
     let replay_row: Result<Option<ReplayRow>, StorageError> = sqlx::query_as(
         "SELECT handle, refs, goal_refs, forgotten_at IS NOT NULL
-           FROM proxima_core.memory WHERE t = $1 AND owner_id = $2
-         UNION ALL
-         SELECT handle, refs, goal_refs, true FROM proxima_core.cooled WHERE t = $1 AND owner_id = $2
-         LIMIT 1",
+           FROM proxima_core.memory WHERE t = $1 AND owner_id = $2",
     )
     .bind(replay_t)
     .bind(owner_id)
@@ -568,14 +565,11 @@ async fn load_ingest_replay(
     .await
     .map_err(map_err);
     lifecycle.leave(tx.as_mut()).await?;
-    let replay_row = replay_row?.ok_or_else(|| {
-        internal(format!(
-            "ingest key claims t {replay_t} with no hot or cooled row"
-        ))
-    })?;
+    let replay_row = replay_row?
+        .ok_or_else(|| internal(format!("ingest key claims t {replay_t} with no memory row")))?;
     let (Some(stored_refs), Some(stored_goal_refs)) = (replay_row.1, replay_row.2) else {
         return Err(StorageError::Conflict(
-            "fact replay references are unavailable for cooled admission".into(),
+            "fact replay references are unavailable for this admission".into(),
         ));
     };
     if stored_refs != refs || stored_goal_refs != goal_refs {
@@ -661,8 +655,8 @@ async fn replay_decision(
 /// first claimed (docs/concepts.md), and a retried re-observation is
 /// found here and replays. The newest admission is displaced when its handle
 /// has moved on to another row — the source went back to a state an earlier
-/// observation already recorded. A cooled admission is never admitted again:
-/// forget keeps its key replaying.
+/// observation already recorded. A forgotten admission is never admitted
+/// again: forget keeps its key replaying.
 async fn latest_observation(
     tx: &mut Transaction<'_, Postgres>,
     receipt: IngestReceipt<'_>,
