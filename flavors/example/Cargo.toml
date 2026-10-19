@@ -28,6 +28,7 @@ uuid = { workspace = true }
 proxima = { path = "../../crates/proxima", features = ["testkit"] }
 proxima-example = { path = ".", features = ["testkit"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+toml = { workspace = true }
 
 [lints]
 workspace = true

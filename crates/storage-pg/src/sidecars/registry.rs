@@ -799,4 +799,115 @@ mod owner_mode_agreement_tests {
         reg.check_keep_is_owner_pinned(&frozen)
             .expect("DumpThenDelete admits Follows");
     }
+
+    /// `Follows` needs somewhere to stamp the owner. A `Follow` surface with
+    /// no `owner_column` never reaches the PG check: core freeze refuses it
+    /// first as a surface no transfer leg can move, so no frozen registry can
+    /// pair a `Follows` registration with one.
+    #[test]
+    fn freeze_refuses_follows_declared_follow_without_owner_column() {
+        static CONTRACT: FlavorContract = FlavorContract {
+            flavor_id: FLAVOR,
+            ordinal: 94,
+            schemas: &[SchemaContract {
+                id: SchemaRef::new(FLAVOR, "stamp", 1),
+                kind: PayloadKind::Fact,
+                sidecar_table: Some(TABLE),
+                search: SearchProjectionDecl::None {
+                    why: "owner-mode freeze fixture",
+                },
+                embedding: EmbeddingRecipe::Never {
+                    why: "owner-mode freeze fixture",
+                },
+                transfer: TransferRule::Follow,
+                provenance: Provenance::None,
+                surfaces: &[surface(
+                    TransferRule::Follow,
+                    ForgetRule::DumpThenDelete,
+                    None,
+                )],
+                natural_key_columns: &[],
+            }],
+            state_surfaces: &[],
+            scopes: &[],
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            projection: ProjectionDecl::None {
+                why: "owner-mode freeze fixture",
+            },
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+        };
+        let mut registry = proxima_core::FlavorRegistry::new();
+        registry.add_fact_schema_or_panic_for_tests::<StampFixture>();
+        registry.add_contract_or_panic_for_tests(&CONTRACT);
+        let err = registry
+            .try_freeze()
+            .expect_err("core freeze refuses a Follow surface without owner_column");
+        assert!(
+            matches!(
+                err,
+                proxima_core::flavor::FlavorRegistryError::UnmovableSurface {
+                    flavor_id: FLAVOR,
+                    table: TABLE,
+                }
+            ),
+            "expected UnmovableSurface for {TABLE}, got {err:?}"
+        );
+    }
+
+    /// The symmetric case: a `Follow` surface with `owner_column` set expects
+    /// `Follows`, so a `None` registration (which never stamps the owner
+    /// column) is refused.
+    #[test]
+    fn freeze_refuses_none_declared_follow_with_owner_column() {
+        static CONTRACT: FlavorContract = FlavorContract {
+            flavor_id: FLAVOR,
+            ordinal: 95,
+            schemas: &[SchemaContract {
+                id: SchemaRef::new(FLAVOR, "stamp", 1),
+                kind: PayloadKind::Fact,
+                sidecar_table: Some(TABLE),
+                search: SearchProjectionDecl::None {
+                    why: "owner-mode freeze fixture",
+                },
+                embedding: EmbeddingRecipe::Never {
+                    why: "owner-mode freeze fixture",
+                },
+                transfer: TransferRule::Follow,
+                provenance: Provenance::None,
+                surfaces: &[surface(
+                    TransferRule::Follow,
+                    ForgetRule::DumpThenDelete,
+                    Some("owner_id"),
+                )],
+                natural_key_columns: &[],
+            }],
+            state_surfaces: &[],
+            scopes: &[],
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            projection: ProjectionDecl::None {
+                why: "owner-mode freeze fixture",
+            },
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+        };
+        let frozen = freeze_contract(&CONTRACT);
+        let err = pg_registry_with(SidecarOwnerMode::None)
+            .check_owner_pinned_against_contracts(&frozen)
+            .expect_err("None vs Follow with owner_column");
+        let StorageError::ConstraintViolation(message) = err else {
+            panic!("expected ConstraintViolation, got {err:?}");
+        };
+        for named in [
+            "OWNER=None",
+            "TransferRule::Follow with Surface.owner_column set",
+            TABLE,
+        ] {
+            assert!(message.contains(named), "refusal names {named}: {message}");
+        }
+    }
 }
