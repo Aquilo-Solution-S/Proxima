@@ -763,3 +763,122 @@ async fn goal_evidence_naming_a_forgotten_memory_is_refused_as_absent() {
     .await;
     result.expect("goal evidence forgotten");
 }
+
+/// #488 review r3: a replay matches any version of its series, not only the
+/// head. With v1 (sources [A]) and v2 (sources [B]) under one key, forgetting
+/// v2 moves the head back to v1; replaying v2's exact write still answers
+/// v2 with `forgotten: true` and writes nothing. The same holds for an
+/// episode's derive. (An interpretation's handle folds in its subjects, so
+/// two versions of one interpretation series always carry equal pins.)
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one fixture, two replaying writes
+async fn replaying_a_forgotten_older_version_answers_forgotten_and_does_not_revive() {
+    let split_db = clone_split_core_db("proxima_derive_replay_version")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(split_db.runtime_url().to_owned())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let memory_rows = || async {
+            let admin = sqlx::PgPool::connect(&db_url(split_db.name())).await?;
+            let rows: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM proxima_core.memory WHERE schema_id <> 'core/write-act-v1'",
+            )
+            .fetch_one(&admin)
+            .await?;
+            admin.close().await;
+            Ok::<i64, Box<dyn std::error::Error>>(rows)
+        };
+        let mut sources = Vec::new();
+        for body in ["versource alpha", "versource beta"] {
+            let handle = call(
+                "core_remember",
+                serde_json::json!({"title": body, "body": body, "tags": []}),
+            )
+            .await?["handle"]
+                .as_str()
+                .ok_or("handle")?
+                .to_owned();
+            sources.push(handle);
+        }
+        let derive = |source: &str| {
+            serde_json::json!({
+                "kind": "Abstraction", "title": "probevtwo secret", "body": "probevtwo secret",
+                "tags": [], "source_handles": [source], "model_id": "test-model",
+                "idempotency_key": "probe-version-key",
+            })
+        };
+        let episode = |body: &str, key: &str| {
+            serde_json::json!({
+                "remember": [{"title": body, "body": body, "idempotency_key": key}],
+                "derive": {"title": "probevepisode secret", "body": "probevepisode secret",
+                    "source_handles": ["remember:0"], "model_id": "test-model",
+                    "idempotency_key": "probe-episode-key"},
+            })
+        };
+        let v1 = call("core_derive", derive(&sources[0])).await?;
+        let v2 = call("core_derive", derive(&sources[1])).await?;
+        let v2_handle = v2["handle"].as_str().ok_or("handle")?.to_owned();
+        assert_ne!(v1["handle"], v2["handle"], "v2 is a new version: {v1} {v2}");
+        let e1 = call("core_episode_commit", episode("epver one", "epver-1")).await?;
+        let e2 = call("core_episode_commit", episode("epver two", "epver-2")).await?;
+        let e2_derived = e2["derived"].as_str().ok_or("derived")?.to_owned();
+        assert_ne!(
+            e1["derived"], e2["derived"],
+            "episode v2 is a new version: {e1} {e2}"
+        );
+
+        for handle in [&v2_handle, &e2_derived] {
+            call("core_forget", serde_json::json!({"memory": handle})).await?;
+        }
+        let rows = memory_rows().await?;
+
+        let replay = call("core_derive", derive(&sources[1])).await?;
+        assert_eq!(replay["handle"], v2_handle.as_str(), "derive: {replay}");
+        assert_eq!(replay["idempotent_replay"], true, "derive: {replay}");
+        assert_eq!(replay["forgotten"], true, "derive: {replay}");
+        let replay = call("core_episode_commit", episode("epver two", "epver-2")).await?;
+        assert_eq!(replay["derived"], e2_derived.as_str(), "episode: {replay}");
+
+        assert_eq!(memory_rows().await?, rows, "a replay wrote a memory row");
+        for needle in ["probevtwo", "probevepisode"] {
+            let found = call(
+                "core_search_memories",
+                serde_json::json!({"query": needle, "mode": "lexical"}),
+            )
+            .await?;
+            let hits = handles(&found, "memories", "handle");
+            assert!(
+                !hits.contains(&v2_handle) && !hits.contains(&e2_derived),
+                "{needle}: a forgotten version is searchable again: {found}"
+            );
+            assert!(hits.len() <= 1, "{needle}: only v1 may be found: {found}");
+        }
+        for handle in [&v2_handle, &e2_derived] {
+            let read = read_test_model_resource(
+                &tools,
+                authz.clone(),
+                owner,
+                &format!("proxima://memory/{handle}"),
+            )
+            .await;
+            assert!(read.is_err(), "{handle} stays forgotten: {read:?}");
+        }
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("replay of a forgotten older version");
+}

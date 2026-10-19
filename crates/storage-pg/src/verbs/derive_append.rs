@@ -218,8 +218,9 @@ async fn admit_derived(
 }
 
 /// A replay of the write that made the series head answers with that head,
-/// also when it is forgotten: the probe runs in the lifecycle scope, so a
-/// forgotten head's pins are compared like a live one's, and a match
+/// also when it is forgotten, and a replay of a forgotten older version
+/// answers with that version: the probe always runs in the lifecycle scope,
+/// so forgotten rows' pins are compared like live ones, and a match
 /// answers `forgotten` without writing (#488 "a replay answers, it does not
 /// revive"). Without the scope the forgotten row's pins read as empty, the
 /// comparison failed, and the write appended a new live version.
@@ -267,6 +268,44 @@ async fn derived_replay_in_lifecycle(
                 }));
             }
         }
+    }
+    // Forget moves the head back to the newest live version, so a replay of
+    // a forgotten older-than-head write no longer meets it at the head
+    // (#488 review r3). It still answers: any forgotten version with the
+    // same pins is that write. A live non-head version that matches is not
+    // a replay; re-deriving it appends a version that becomes head, as
+    // before #488.
+    let incoming_origins = pin_memory_ids(input.origins);
+    let forgotten_version: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT t FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a replay answers for a forgotten version) */
+          WHERE handle = $1 AND owner_id = $2
+            AND kind = $3::proxima_core.memory_kind AND schema_id = $4
+            AND forgotten_at IS NOT NULL AND origins = $5::uuid[]
+          ORDER BY t DESC
+          LIMIT 1",
+    )
+    .bind(handle)
+    .bind(draft.owner.into_inner())
+    .bind(kind)
+    .bind(draft.schema_id.as_str())
+    .bind(&incoming_origins)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if let Some(t) = forgotten_version {
+        let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
+        let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
+        let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(input.references);
+        if stored_refs != refs || stored_goal_refs != goal_refs {
+            return Err(StorageError::Conflict(
+                "derived replay changed declared refs".into(),
+            ));
+        }
+        return Ok(Some(DerivedOutcome {
+            memory_id: MemoryId::new(t),
+            idempotent_replay: true,
+            forgotten: true,
+        }));
     }
     Ok(None)
 }

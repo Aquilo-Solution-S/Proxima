@@ -759,7 +759,7 @@ MEMORY_CENSUS_PLATFORM_CALLEES = (
 LIVE_ONLY_FILTER = re.compile(r"\bforgotten_at IS NULL\b")
 LIVE_ONLY_WINDOW = 8
 LIVE_ONLY_RLS_REASON = "under owner RLS"
-EXPECTED_MEMORY_READS = {"live-only": 25, "includes-forgotten": 72}
+EXPECTED_MEMORY_READS = {"live-only": 25, "includes-forgotten": 73}
 
 
 def in_memory_census(text: str, suffix: str, rel: str = "") -> bool:
