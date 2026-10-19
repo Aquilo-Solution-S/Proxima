@@ -50,6 +50,9 @@ pub(crate) struct Booted {
     /// database actually published.
     pub(crate) origin_scope: OriginScope,
     pub(crate) blobs: Option<CitedBlobStore>,
+    /// The serving storage with the object store wired as its cold store:
+    /// what the object-purge feature drains through.
+    pub(crate) storage: PgStorage,
     /// The host-only drain over captured publication records.
     ///
     /// Deliberately absent from `StoragePorts`, `Engine` and `ToolCtx` — a
@@ -132,6 +135,13 @@ pub(crate) async fn boot<A: FlavorBundle>(
     let pool = pg.clone_pool_for_backend();
     let platform_scope = pg.platform_scope_for_host();
     let (pg, blobs) = compose_blob_stores(pg, config.s3.clone())?;
+    if let Some(store) = &blobs {
+        // Stores do not move: debt owed to another one means this process
+        // is configured for the wrong store. Refuse before serving.
+        crate::object_maintenance::refuse_foreign_purge_debt_at_boot(&pg, store)
+            .await
+            .map_err(|error| ProximaError::Config(error.to_string()))?;
+    }
 
     let engine = compose_engine(
         registry,
@@ -184,6 +194,7 @@ pub(crate) async fn boot<A: FlavorBundle>(
         publication_origin_eligibility,
         origin_scope,
         blobs,
+        storage: pg.clone(),
         outbox,
         outbox_retention,
         outbox_consumers,

@@ -18,10 +18,12 @@ use tokio_util::sync::CancellationToken;
 use crate::RuntimeConfig;
 use crate::bundle::FlavorBundle;
 use crate::in_process_outbox::{self, Drain, Proceed, Settings};
+use crate::object_maintenance::ObjectPurgeHealth;
 use crate::workers::{FlavorWorker, FlavorWorkerContext};
 
 /// One runtime feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Feature {
     /// Starts when a bind address is configured (`PROXIMA_MCP_BIND` /
     /// `mcp_bind`). `run()` listens; `build()` hands the router to the host.
@@ -38,16 +40,23 @@ pub enum Feature {
     /// Starts when the publisher runs AND a retention horizon is configured
     /// (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` / `published_retention`).
     PublishedRecordPrune,
+    /// Starts when an object store is configured (`PROXIMA_S3_*` / `s3`),
+    /// unless its interval is zero (`PROXIMA_OBJECT_PURGE_INTERVAL_SECS` /
+    /// `object_purge_interval`): sweeps expired uploads and drains due
+    /// object purge debt, in this process, under the storage maintenance
+    /// lock.
+    ObjectPurge,
 }
 
 impl Feature {
     /// Every feature, in boot-report order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Mcp,
         Self::FlavorWorkers,
         Self::EmbeddingWorker,
         Self::OutboxPublisher,
         Self::PublishedRecordPrune,
+        Self::ObjectPurge,
     ];
 
     /// The `feature=` value of this feature's boot-report line.
@@ -59,6 +68,7 @@ impl Feature {
             Self::EmbeddingWorker => "embedding-worker",
             Self::OutboxPublisher => "outbox-publisher",
             Self::PublishedRecordPrune => "published-record-prune",
+            Self::ObjectPurge => "object-purge",
         }
     }
 
@@ -69,6 +79,7 @@ impl Feature {
             Self::EmbeddingWorker => 2,
             Self::OutboxPublisher => 3,
             Self::PublishedRecordPrune => 4,
+            Self::ObjectPurge => 5,
         }
     }
 }
@@ -77,8 +88,8 @@ impl Feature {
 ///
 /// [`BuiltProxima::feature_control`](crate::BuiltProxima::feature_control) and
 /// [`RunningProxima::feature_control`](crate::RunningProxima::feature_control)
-/// return it for the [`Feature::EmbeddingWorker`] and the
-/// [`Feature::OutboxPublisher`] only. It is owned and cheap to clone, so a host
+/// return it for the [`Feature::EmbeddingWorker`], the
+/// [`Feature::OutboxPublisher`] and the [`Feature::ObjectPurge`] only. It is owned and cheap to clone, so a host
 /// can move one into a signal handler and still call `shutdown(self)` later.
 ///
 /// A host cannot build one; it only receives them from the runtime:
@@ -275,7 +286,7 @@ impl FeatureDecision {
 /// Every feature's decision for one boot, in [`Feature::ALL`] order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootReport {
-    decisions: [FeatureDecision; 5],
+    decisions: [FeatureDecision; 6],
 }
 
 impl BootReport {
@@ -310,6 +321,16 @@ pub(crate) struct FeatureInputs<'a> {
     pub(crate) cancel: &'a CancellationToken,
     pub(crate) config: &'a RuntimeConfig,
     pub(crate) publication: PublicationHandles,
+    /// The object store and what draining it needs; `None` without one.
+    pub(crate) objects: Option<ObjectPurgeHandles>,
+}
+
+/// What the object-purge feature runs over, when an object store is wired.
+pub(crate) struct ObjectPurgeHandles {
+    pub(crate) storage: proxima_storage_pg::PgStorage,
+    pub(crate) blobs: proxima_blob_s3::CitedBlobStore,
+    pub(crate) authority: Arc<proxima_core::authz::SystemAuthority>,
+    pub(crate) health: ObjectPurgeHealth,
 }
 
 /// The host-only publication handles, moved into the tasks that use them.
@@ -324,6 +345,7 @@ pub(crate) struct Features {
     workers: Vec<FlavorWorker>,
     embedding: Option<(QuiesceGate, JoinHandle<()>)>,
     publisher: Option<Publisher>,
+    object_purge: Option<(QuiesceGate, JoinHandle<()>)>,
 }
 
 /// The outbox publisher's task and one pause gate per consumer drain.
@@ -353,6 +375,10 @@ impl Features {
         let gates = match feature {
             Feature::EmbeddingWorker => self.embedding.as_ref().map(|(gate, _)| vec![gate.clone()]),
             Feature::OutboxPublisher => self.publisher.as_ref().map(|(gates, _)| gates.clone()),
+            Feature::ObjectPurge => self
+                .object_purge
+                .as_ref()
+                .map(|(gate, _)| vec![gate.clone()]),
             // Serving continues by definition; the other two claim no
             // queue row through the runtime's gate.
             Feature::Mcp | Feature::FlavorWorkers | Feature::PublishedRecordPrune => None,
@@ -376,6 +402,11 @@ impl Features {
             && let Err(err) = publisher.await
         {
             tracing::warn!(error = %err, "outbox publisher join failed");
+        }
+        if let Some((_, object_purge)) = self.object_purge
+            && let Err(err) = object_purge.await
+        {
+            tracing::warn!(error = %err, "object purge worker join failed");
         }
     }
 }
@@ -426,6 +457,7 @@ pub(crate) fn start<A: FlavorBundle>(mcp: FeatureDecision, inputs: &FeatureInput
     };
 
     let (publisher, publisher_decision, prune_decision) = start_publisher(inputs);
+    let (object_purge, object_purge_decision) = start_object_purge(inputs);
     let report = BootReport {
         decisions: [
             mcp,
@@ -433,6 +465,7 @@ pub(crate) fn start<A: FlavorBundle>(mcp: FeatureDecision, inputs: &FeatureInput
             embedding_decision,
             publisher_decision,
             prune_decision,
+            object_purge_decision,
         ],
     };
     report.log();
@@ -441,7 +474,55 @@ pub(crate) fn start<A: FlavorBundle>(mcp: FeatureDecision, inputs: &FeatureInput
         workers,
         embedding,
         publisher,
+        object_purge,
     }
+}
+
+/// The expired-upload sweep and purge-debt drain, on by default whenever an
+/// object store is configured.
+fn start_object_purge(
+    inputs: &FeatureInputs<'_>,
+) -> (Option<(QuiesceGate, JoinHandle<()>)>, FeatureDecision) {
+    let Some(objects) = &inputs.objects else {
+        return (
+            None,
+            FeatureDecision::off(
+                Feature::ObjectPurge,
+                "no object store configured (PROXIMA_S3_* / s3)",
+            ),
+        );
+    };
+    let Some(interval) = inputs.config.object_purge_interval else {
+        return (
+            None,
+            FeatureDecision::off(
+                Feature::ObjectPurge,
+                "an object store is configured but the interval is 0 \
+                 (PROXIMA_OBJECT_PURGE_INTERVAL_SECS / object_purge_interval)",
+            ),
+        );
+    };
+    let worker = crate::object_maintenance::ObjectPurgeWorker {
+        storage: objects.storage.clone(),
+        blobs: objects.blobs.clone(),
+        authority: objects.authority.clone(),
+        interval,
+        health: objects.health.clone(),
+    };
+    (
+        Some(crate::object_maintenance::spawn_object_purge_worker(
+            worker,
+            inputs.cancel.child_token(),
+        )),
+        FeatureDecision::started(
+            Feature::ObjectPurge,
+            format!(
+                "an object store is configured (PROXIMA_S3_* / s3); every {}s \
+                 (PROXIMA_OBJECT_PURGE_INTERVAL_SECS / object_purge_interval)",
+                interval.as_secs()
+            ),
+        ),
+    )
 }
 
 /// The publisher, and the prune that rides on it.
@@ -609,8 +690,8 @@ fn spawn_embedding_worker(
         // no embedding client was configured never got a job (and exhausted
         // `failed` jobs stay dead), so one reconcile pass before the first
         // drain keeps a restart from leaving them silently unsearchable.
-        // Recurring maintenance stays outside the process
-        // (`proxima-mcp maintain-embeddings`).
+        // Recurring scans and reports stay outside the process
+        // (`proxima-mcp maintain-embeddings`); owed work drains here.
         match engine
             .reconcile_embeddings(
                 proxima_core::EmbeddingReconcileScope::MissingOnly,

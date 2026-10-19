@@ -639,7 +639,8 @@ pub use {
     },
     proxima_storage_pg::{
         ColdPurgeRetryOptions, ColdPurgeRetryOutcome, EmbeddingMaintenanceLock,
-        StorageMaintenanceLock, StuckPurgeDebt, access::scope_surfaces::ScopeSurfaces,
+        ObjectPurgePassOutcome, StorageMaintenanceLock, StuckPurgeDebt,
+        access::scope_surfaces::ScopeSurfaces,
     },
 };
 

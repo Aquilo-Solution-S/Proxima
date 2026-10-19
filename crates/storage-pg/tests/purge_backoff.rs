@@ -373,3 +373,57 @@ async fn non_positive_options_are_refused() -> TestResult {
     let _ = drop_db(&db_name).await;
     result
 }
+
+/// The in-process pass drains batch after batch until nothing is due, and
+/// a pass that finds the storage maintenance lock held skips with only the
+/// census: the same lock `maintain-storage` takes.
+#[tokio::test]
+async fn an_object_purge_pass_drains_or_skips_under_the_maintenance_lock() -> TestResult {
+    let (db_name, pg) = fresh().await?;
+    let result: TestResult = async {
+        let all = keys(0..150);
+        let failing: BTreeSet<String> = keys(0..10).into_iter().collect();
+        let store = Arc::new(FlakyStore::new(all.clone(), failing));
+        let pg = pg.with_cold(store.clone());
+        owe(pg.pool_for_tests(), &all).await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+             VALUES ('objects/elsewhere', NULL, 's3:test/other')",
+        )
+        .execute(pg.pool_for_tests())
+        .await?;
+        let options = ColdPurgeRetryOptions::default().batch_size(40);
+
+        let held = pg
+            .try_storage_maintenance_lock()
+            .await?
+            .expect("nobody else holds the lock");
+        let skipped = pg.run_object_purge_pass(options, 100).await?;
+        assert!(skipped.skipped);
+        assert_eq!(
+            (
+                skipped.batches,
+                skipped.purged,
+                skipped.due,
+                skipped.foreign
+            ),
+            (0, 0, 150, 1),
+            "a skipped pass reports the census and touches nothing"
+        );
+        assert_eq!(store.held(), 150);
+        drop(held);
+
+        let pass = pg.run_object_purge_pass(options, 100).await?;
+        assert!(!pass.skipped);
+        assert_eq!(pass.batches, 4, "150 due keys in batches of 40");
+        assert_eq!((pass.purged, pass.failed), (140, 10));
+        assert_eq!((pass.due, pass.deferred, pass.owed()), (0, 10, 10));
+        assert_eq!((pass.foreign, pass.stuck_count), (1, 0));
+        assert_eq!(store.held(), 10);
+        assert_eq!(debt_count(pg.pool_for_tests()).await?, 11);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result
+}

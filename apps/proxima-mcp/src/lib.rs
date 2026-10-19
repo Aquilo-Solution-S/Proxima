@@ -454,12 +454,14 @@ fn maintenance_platform_url() -> Result<String, CliError> {
     )
 }
 
-/// One storage-maintenance pass: the cold-object purge drain, when
-/// `--retry-cold-object-purges` asks for it. Serialized across
+/// One storage-maintenance pass: the expired-upload sweep, when
+/// `--sweep-expired-uploads` asks for it, then the cold-object purge drain,
+/// when `--retry-cold-object-purges` does. The same lock serializes it with
+/// the in-process drain of every Proxima server on this database. Serialized across
 /// processes by its own Postgres advisory lock — an overlapping pass skips
 /// with exit 0, like `maintain-embeddings`.
 async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), CliError> {
-    let s3 = (config.retry_cold_object_purges && !config.dry_run)
+    let s3 = ((config.retry_cold_object_purges && !config.dry_run) || config.sweep_expired_uploads)
         .then(|| {
             S3RuntimeConfig::from_env().map_err(|err| {
                 ProximaError::Config(format!(
@@ -476,7 +478,7 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
     )
     .await?;
 
-    let storage = if let Some(s3) = s3 {
+    let (storage, sweeper) = if let Some(s3) = s3 {
         let mut registry = FlavorRegistry::new();
         <ProximaMcpApp as FlavorBundle>::register(&mut registry).map_err(ProximaError::from)?;
         let registry = registry.try_freeze().map_err(ProximaError::from)?;
@@ -492,11 +494,18 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
             storage.platform_scope_for_host(),
         )
         .map_err(|err| ProximaError::Config(err.to_string()))?;
-        storage
+        // This command is its own boot: its engine's authority is the one
+        // the store answers host-wide operations to.
+        let (_, authority) = proxima::Engine::new(registry).into_system_authority();
+        blobs
+            .bind_system_authority(&authority)
+            .map_err(|err| ProximaError::Config(err.to_string()))?;
+        let storage = storage
             .with_sidecars(sidecars)
-            .with_cold(Arc::new(blobs.cold_store()))
+            .with_cold(Arc::new(blobs.cold_store()));
+        (storage, Some((blobs, authority)))
     } else {
-        storage
+        (storage, None)
     };
 
     let Some(_lock) = storage
@@ -509,6 +518,27 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
     };
 
     let dry_run_suffix = if config.dry_run { " (dry-run)" } else { "" };
+
+    if config.sweep_expired_uploads {
+        let (blobs, authority) = sweeper.as_ref().ok_or_else(|| {
+            ProximaError::Config("the expired-upload sweep needs the PROXIMA_S3_* block".into())
+        })?;
+        let limit = u32::try_from(config.batch_size).unwrap_or(u32::MAX);
+        let mut expired = 0_u64;
+        let mut owed = 0_u64;
+        let remaining = loop {
+            let batch = blobs
+                .sweep_expired_uploads(authority, limit)
+                .await
+                .map_err(|err| ProximaError::Storage(err.to_string()))?;
+            expired += batch.expired;
+            owed += batch.owed;
+            if batch.expired == 0 || batch.remaining == 0 {
+                break batch.remaining;
+            }
+        };
+        println!("upload-expiry-sweep: expired={expired} owed={owed} remaining={remaining}");
+    }
 
     if config.retry_cold_object_purges {
         let outcome = storage

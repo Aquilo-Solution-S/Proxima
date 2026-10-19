@@ -198,12 +198,24 @@ fn assert_all(report: &BootReport, state: FeatureState) {
     }
 }
 
-/// Every feature is started.
+/// Every feature is started; the object-purge feature only when the test
+/// environment provides an object store.
 fn assert_configured_started(report: &BootReport) {
-    assert_all(report, FeatureState::Started);
+    for decision in report.decisions() {
+        let expected = if decision.feature == Feature::ObjectPurge && !s3_present() {
+            FeatureState::Off
+        } else {
+            FeatureState::Started
+        };
+        assert_eq!(decision.state, expected, "{decision:?}");
+    }
 }
 
-/// Only the two workers that claim queue rows through the runtime's gate have
+fn s3_present() -> bool {
+    proxima::S3RuntimeConfig::present_in_env()
+}
+
+/// Only the workers that claim queue rows through the runtime's gate have
 /// a control; every other feature, started or off, has none. Each control
 /// quiesces and resumes. Returns the handles for the after-shutdown check.
 async fn exercise_controls(
@@ -213,7 +225,8 @@ async fn exercise_controls(
     for feature in Feature::ALL {
         let controlled = match feature {
             Feature::EmbeddingWorker | Feature::OutboxPublisher => true,
-            Feature::Mcp | Feature::FlavorWorkers | Feature::PublishedRecordPrune => false,
+            Feature::ObjectPurge => s3_present(),
+            _ => false,
         };
         let handle = control(feature);
         assert_eq!(handle.is_some(), controlled, "{feature}");
@@ -286,6 +299,7 @@ async fn an_unconfigured_boot_starts_nothing_and_says_why_per_feature() {
     assert!(reason(Feature::EmbeddingWorker).contains("embed_client"));
     assert!(reason(Feature::OutboxPublisher).contains("outbox_intake"));
     assert!(reason(Feature::PublishedRecordPrune).contains("no retention"));
+    assert!(reason(Feature::ObjectPurge).contains("no object store"));
 
     tokio::time::timeout(Duration::from_secs(10), built.shutdown())
         .await
@@ -300,7 +314,7 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
     let owner = company_owner(Uuid::now_v7());
     let subject = UserId::new(Uuid::now_v7());
     let app = || {
-        Proxima::<WorkerApp>::app()
+        let app = Proxima::<WorkerApp>::app()
             .database_url(db.runtime_url())
             .store_number(0)
             .platform_database_url(db.platform_url())
@@ -317,7 +331,12 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
                 PublicationSource::new("urn:proxima:features-test").expect("publication source"),
             ))
             .outbox_intake(Arc::new(DiscardIntake))
-            .published_retention(Duration::from_mins(1))
+            .published_retention(Duration::from_mins(1));
+        if s3_present() {
+            app.s3(proxima::S3RuntimeConfig::from_env().expect("S3 test config"))
+        } else {
+            app
+        }
     };
 
     // build(): every feature starts; MCP is assembled and handed over.

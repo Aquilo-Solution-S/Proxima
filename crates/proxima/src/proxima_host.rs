@@ -34,6 +34,8 @@ pub struct ProximaHost {
     pub(crate) blobs: Option<CitedBlobStore>,
     pub(crate) owner: Option<OwnerId>,
     pub(crate) services: FlavorServices,
+    /// What the object-purge feature last saw of the purge queue.
+    pub(crate) object_purge_health: crate::object_maintenance::ObjectPurgeHealth,
 }
 
 impl ProximaHost {
@@ -203,6 +205,7 @@ impl ProximaHost {
             blobs: None,
             owner: None,
             services: FlavorServices::default(),
+            object_purge_health: crate::object_maintenance::ObjectPurgeHealth::default(),
         }
     }
 }

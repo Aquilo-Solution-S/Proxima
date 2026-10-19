@@ -147,7 +147,14 @@ newly-owed), and the drain removes it.
 Reports three separate numbers, which are three different problems:
   missing   an artefact the corpus claims to hold whose object is absent.
             A CITATION THAT CANNOT BE RESOLVED. This is the one to alert on
-  orphans   objects no row claims: cost and retention, nothing broken
+  orphans   objects no row claims and no purge debt owes: cost and
+            retention, nothing broken
+  owed      objects with purge debt: the drain removes them
+  newly-owed
+            canonical objects only an aborted or expired upload implies,
+            put after it ended: owed now, so the drain removes them
+  stale-transfers
+            pending/ transfer keys no in-flight upload claims
   foreign   rows naming another bucket, or any key other than the one
             derived from the row's own upload id. Neither loss nor waste -
             a hand-written locator, not something this host minted
@@ -166,7 +173,11 @@ Usage: proxima-mcp maintain-storage [OPTIONS]
 
 One storage-maintenance pass. Passes are serialized by a Postgres advisory
 lock; when another pass holds it, this run prints a skip notice and exits 0
-— safe to fire from cron.
+— safe to fire from cron. A Proxima server with an object store runs the
+same sweep and drain in-process under the same lock
+(PROXIMA_OBJECT_PURGE_INTERVAL_SECS); this command is for a host that runs
+no server, to name stuck debt, or to name and drain debt owed to another
+store, which a server refuses to start over.
 
 Neither action is a promise to a user. The drain finishes destruction a
 committed owner erase already owes the object store; the prune is log
@@ -180,7 +191,12 @@ Actions (at least one):
   --retry-cold-object-purges
                            Retry a bounded batch of exact object-store keys
                            left by committed owner erases. Live retry
-                           requires the serving host's PROXIMA_S3_* block
+                           requires the serving host's PROXIMA_S3_* block.
+                           Exits non-zero while debt is owed to another
+                           object store
+  --sweep-expired-uploads  Expire uploads whose TTL passed before they were
+                           staged, owing both of their keys. Requires the
+                           PROXIMA_S3_* block; not with --dry-run
 
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
@@ -235,6 +251,7 @@ pub enum ReconcileScope {
 pub struct StorageMaintenanceConfig {
     pub database_url: String,
     pub retry_cold_object_purges: bool,
+    pub sweep_expired_uploads: bool,
     pub batch_size: i64,
     pub dry_run: bool,
 }
@@ -244,6 +261,7 @@ impl std::fmt::Debug for StorageMaintenanceConfig {
         f.debug_struct("StorageMaintenanceConfig")
             .field("database_url", &"<redacted>")
             .field("retry_cold_object_purges", &self.retry_cold_object_purges)
+            .field("sweep_expired_uploads", &self.sweep_expired_uploads)
             .field("batch_size", &self.batch_size)
             .field("dry_run", &self.dry_run)
             .finish()
@@ -420,6 +438,7 @@ pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
 ) -> Result<StorageMaintenanceConfig, ArgsError> {
     let mut database_url: Option<String> = None;
     let mut retry_cold_object_purges = false;
+    let mut sweep_expired_uploads = false;
     let mut batch_size: i64 = 1000;
     let mut dry_run = false;
 
@@ -428,6 +447,7 @@ pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
         match flag.as_str() {
             "-h" | "--help" => return Err(ArgsError::Help),
             "--retry-cold-object-purges" => retry_cold_object_purges = true,
+            "--sweep-expired-uploads" => sweep_expired_uploads = true,
             "--dry-run" => dry_run = true,
             f => {
                 let value = iter
@@ -450,9 +470,15 @@ pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
         }
     }
 
-    if !retry_cold_object_purges {
+    if !retry_cold_object_purges && !sweep_expired_uploads {
         return Err(ArgsError::Invalid(
-            "maintain-storage requires --retry-cold-object-purges".into(),
+            "maintain-storage requires --retry-cold-object-purges or --sweep-expired-uploads"
+                .into(),
+        ));
+    }
+    if sweep_expired_uploads && dry_run {
+        return Err(ArgsError::Invalid(
+            "--sweep-expired-uploads has no dry run".into(),
         ));
     }
 
@@ -461,6 +487,7 @@ pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
     Ok(StorageMaintenanceConfig {
         database_url,
         retry_cold_object_purges,
+        sweep_expired_uploads,
         batch_size,
         dry_run,
     })
@@ -562,6 +589,21 @@ mod tests {
         assert!(cfg.retry_cold_object_purges);
         assert_eq!(cfg.batch_size, 17);
         assert!(cfg.dry_run);
+    }
+
+    #[test]
+    fn storage_maintenance_sweep_is_an_action_without_a_dry_run() {
+        let cfg = parse_storage_maintenance_args(["--sweep-expired-uploads".to_string()])
+            .expect("the sweep alone is a valid pass");
+        assert!(cfg.sweep_expired_uploads);
+        assert!(!cfg.retry_cold_object_purges);
+        let err = parse_storage_maintenance_args([
+            "--sweep-expired-uploads".to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect_err("no dry run");
+        assert!(err.to_string().contains("no dry run"));
+        assert!(STORAGE_MAINTENANCE_USAGE.contains("--sweep-expired-uploads"));
     }
 
     #[test]

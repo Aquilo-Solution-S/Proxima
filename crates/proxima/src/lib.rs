@@ -143,6 +143,7 @@ pub mod host;
 mod in_process_outbox;
 mod mcp_edge;
 mod migrations;
+mod object_maintenance;
 mod outbox_http;
 #[cfg(test)]
 mod outbox_test_fixture;
@@ -156,6 +157,7 @@ pub mod testkit;
 mod workers;
 
 pub use host::*;
+pub use object_maintenance::{ObjectMaintenanceOutcome, object_maintenance_pass};
 pub use proxima_core::authz::SystemAuthority;
 
 /// One Owner per embedded host: a Group principal.

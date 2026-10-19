@@ -77,7 +77,9 @@ upload or a failed transfer-key delete are reached too. A key that never
 existed clears as absent. An upload whose TTL passes before it is staged
 expires, when it is next touched or when the expired-upload sweep
 (`CitedBlobStore::sweep_expired_uploads`) reaches it, and owes both keys the
-same way.
+same way. A server with an object store runs the sweep and the purge drain in
+its own process; a debt that keeps failing stays queued, never dropped, and is
+counted in the readiness answer (see [operate](operate.md)).
 
 Each erased target leaves a payload-free, owner-free identity/kind witness.
 Retained source pins stay byte-for-byte; rendering reports a redacted target.

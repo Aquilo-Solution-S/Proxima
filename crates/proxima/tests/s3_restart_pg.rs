@@ -593,7 +593,10 @@ async fn boot(
         .store_number(0)
         .platform_database_url(platform_url)
         .owner(owner)
-        .served_surface(ServedSurface::All);
+        .served_surface(ServedSurface::All)
+        // These tests observe debt and expiry, then drive the pass by hand;
+        // the runtime's own drain would race them.
+        .object_purge_interval(std::time::Duration::ZERO);
     if let Some(s3) = s3 {
         app = app.s3(s3);
     }

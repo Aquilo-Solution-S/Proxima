@@ -83,6 +83,9 @@ pub struct RuntimeBuilder {
     /// keeps published records forever, which is both the default and what
     /// `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS=0` spells.
     published_retention: Option<Duration>,
+    /// How often the runtime sweeps expired uploads and drains object purge
+    /// debt. `None` leaves the default; zero turns it off.
+    object_purge_interval: Option<Duration>,
     outbox_consumers: OutboxConsumers,
     /// The built-in HTTP sink `PROXIMA_OUTBOX_HTTP_URL` configures; added
     /// as the consumer `http` at [`Self::resolve`].
@@ -143,6 +146,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("publication", &self.publication)
             .field("published_retention", &self.published_retention)
+            .field("object_purge_interval", &self.object_purge_interval)
             .field("outbox_http", &self.outbox_http)
             .field(
                 "has_host_state_participant",
@@ -209,6 +213,7 @@ impl RuntimeBuilder {
                 .or(base.embedding_runtime_policy),
             publication: self.publication.or(base.publication),
             published_retention: self.published_retention.or(base.published_retention),
+            object_purge_interval: self.object_purge_interval.or(base.object_purge_interval),
             outbox_consumers: base.outbox_consumers.overlaid_by(self.outbox_consumers),
             outbox_http: self.outbox_http.or(base.outbox_http),
             duplicate_host_state_participant: self.duplicate_host_state_participant
@@ -299,6 +304,19 @@ impl RuntimeBuilder {
     #[must_use]
     pub const fn published_retention(mut self, horizon: Duration) -> Self {
         self.published_retention = Some(horizon);
+        self
+    }
+
+    /// How often the runtime sweeps expired uploads and drains object purge
+    /// debt while an object store is configured. Env equivalent:
+    /// `PROXIMA_OBJECT_PURGE_INTERVAL_SECS`; default 60 s.
+    ///
+    /// `Duration::ZERO` turns the in-process drain off, for a deployment
+    /// that runs `proxima-mcp maintain-storage` on its own schedule instead.
+    /// Setting this suppresses the environment read.
+    #[must_use]
+    pub const fn object_purge_interval(mut self, interval: Duration) -> Self {
+        self.object_purge_interval = Some(interval);
         self
     }
 
@@ -783,6 +801,9 @@ impl RuntimeBuilder {
         if self.published_retention.is_none() {
             self.published_retention = crate::config::published_retention_from_lookup(&lookup)?;
         }
+        if self.object_purge_interval.is_none() {
+            self.object_purge_interval = crate::config::object_purge_interval_from_lookup(&lookup)?;
+        }
         if self.outbox_http.is_none() {
             self.outbox_http = crate::outbox_http::HttpIntake::from_lookup(&lookup)?.map(Arc::new);
         }
@@ -951,6 +972,24 @@ impl RuntimeBuilder {
 
     /// Resolve the builder into pure config plus host-provided runtime parts.
     ///
+    /// One floor, both doors. The environment path refuses a sub-minute
+    /// horizon while parsing; a host that set it programmatically would
+    /// otherwise get a prune loop that runs every minute over a horizon
+    /// shorter than its own interval.
+    fn check_published_retention(&self) -> Result<(), ProximaError> {
+        if let Some(horizon) = self.published_retention
+            && horizon < crate::config::MIN_PUBLISHED_RETENTION
+        {
+            return Err(ProximaError::Config(format!(
+                "published retention is {}s, under the {}s floor; leave it unset to \
+                 keep published records forever",
+                horizon.as_secs(),
+                crate::config::MIN_PUBLISHED_RETENTION.as_secs(),
+            )));
+        }
+        Ok(())
+    }
+
     /// # Errors
     ///
     /// Returns `ProximaError::Config` for missing required config and
@@ -988,20 +1027,7 @@ impl RuntimeBuilder {
                 .unwrap_or(default_revalidation.epoch_check_interval),
         };
         validate_revalidation_config(stream_revalidation)?;
-        // One floor, both doors. The environment path refuses a sub-minute
-        // horizon while parsing; a host that set it programmatically would
-        // otherwise get a prune loop that runs every minute over a horizon
-        // shorter than its own interval.
-        if let Some(horizon) = self.published_retention
-            && horizon < crate::config::MIN_PUBLISHED_RETENTION
-        {
-            return Err(ProximaError::Config(format!(
-                "published retention is {}s, under the {}s floor; leave it unset to \
-                 keep published records forever",
-                horizon.as_secs(),
-                crate::config::MIN_PUBLISHED_RETENTION.as_secs(),
-            )));
-        }
+        self.check_published_retention()?;
         let served_surface = self.served_surface.ok_or_else(|| {
             ProximaError::Config(
                 "served_surface is required: pass ServedSurface::All to serve all registered commands \
@@ -1056,6 +1082,11 @@ impl RuntimeBuilder {
             embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
             publication: self.publication.unwrap_or_default(),
             published_retention: self.published_retention,
+            object_purge_interval: Some(
+                self.object_purge_interval
+                    .unwrap_or(crate::config::DEFAULT_OBJECT_PURGE_INTERVAL),
+            )
+            .filter(|interval| !interval.is_zero()),
             outbox_consumers: self.outbox_consumers,
         };
         config.validate()?;
@@ -1152,6 +1183,11 @@ pub struct RuntimeConfig {
     /// the engine never sees it, and the only port that can act on it is
     /// host-held.
     pub published_retention: Option<Duration>,
+    /// How often the runtime sweeps expired uploads and drains object purge
+    /// debt while an object store is configured
+    /// (`PROXIMA_OBJECT_PURGE_INTERVAL_SECS`, default 60 s). `None` when
+    /// turned off with `0`.
+    pub object_purge_interval: Option<Duration>,
     /// The host intakes the captured outbox is delivered to, in this
     /// process, by consumer name ([`RuntimeBuilder::outbox_consumer`],
     /// [`RuntimeBuilder::outbox_intake`]).
@@ -1232,6 +1268,7 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("embedding_runtime_policy", &self.embedding_runtime_policy)
             .field("publication", &self.publication)
             .field("published_retention", &self.published_retention)
+            .field("object_purge_interval", &self.object_purge_interval)
             .field("outbox_consumers", &self.outbox_consumers)
             .finish_non_exhaustive()
     }
@@ -1940,6 +1977,7 @@ mod tests {
         RuntimeConfig {
             publication: PublicationConfig::default(),
             published_retention: None,
+            object_purge_interval: Some(crate::config::DEFAULT_OBJECT_PURGE_INTERVAL),
             outbox_consumers: OutboxConsumers::default(),
             database_url: "postgres://localhost/proxima".to_string(),
             store_number: 0,

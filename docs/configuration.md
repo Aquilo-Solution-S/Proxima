@@ -69,6 +69,7 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_OUTBOX_HTTP_TOKEN_FILE | HTTP bearer token file | authenticated HTTP delivery | [HTTP outbox](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/outbox_http.rs) |
 | PROXIMA_OUTBOX_HTTP_CA_FILE | HTTP CA bundle | private receiver CA | [HTTP outbox](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/outbox_http.rs) |
 | PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS | published-record retention | reclaim delivered records | [outbox config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/config.rs) |
+| PROXIMA_OBJECT_PURGE_INTERVAL_SECS | object-purge drain cadence; `0` turns it off | in-process expired-upload sweep and purge drain | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/config.rs) |
 | PROXIMA_S3_MAX_BLOB_BYTES | cited blob size ceiling | S3 blob storage | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
 | PROXIMA_S3_BUCKET | S3 bucket | enable S3 storage | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |
 | PROXIMA_S3_REGION | S3 region | S3 storage | [S3 config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/blob-s3/src/config.rs) |

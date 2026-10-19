@@ -46,6 +46,33 @@ pub(crate) const ENV_OUTBOX_MAX_PAYLOAD_BYTES: &str = "PROXIMA_OUTBOX_MAX_PAYLOA
 pub(crate) const ENV_OUTBOX_PUBLISHED_RETENTION_SECS: &str =
     "PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS";
 
+/// Environment key for how often the runtime sweeps expired uploads and
+/// drains object purge debt; `0` turns the in-process drain off.
+pub(crate) const ENV_OBJECT_PURGE_INTERVAL_SECS: &str = "PROXIMA_OBJECT_PURGE_INTERVAL_SECS";
+
+/// How often the object-purge feature runs when nothing says otherwise.
+pub(crate) const DEFAULT_OBJECT_PURGE_INTERVAL: Duration = Duration::from_mins(1);
+
+/// Read the object-purge interval. `Some(Duration::ZERO)` is the explicit
+/// opt-out; `None` leaves the default.
+///
+/// # Errors
+///
+/// [`ProximaError::Config`] for a non-numeric value.
+pub(crate) fn object_purge_interval_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<Duration>, ProximaError> {
+    let Some(raw) = lookup(ENV_OBJECT_PURGE_INTERVAL_SECS) else {
+        return Ok(None);
+    };
+    let seconds: u64 = raw.parse().map_err(|_| {
+        ProximaError::Config(format!(
+            "{ENV_OBJECT_PURGE_INTERVAL_SECS} must be a whole number of seconds, got {raw:?}"
+        ))
+    })?;
+    Ok(Some(Duration::from_secs(seconds)))
+}
+
 /// Shortest retention horizon an operator may configure.
 ///
 /// A horizon under a minute is indistinguishable from "delete on delivery",

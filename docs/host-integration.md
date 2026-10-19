@@ -48,6 +48,16 @@ also starts configured listeners and background workers. Authenticated MCP
 requests carry a server-resolved `AuthzContext`; callers never supply a
 resolved owner or role.
 
+With an object store configured, the runtime sweeps expired uploads and drains
+object-purge debt itself (`RuntimeBuilder::object_purge_interval`, default 60
+seconds, zero turns it off); a host built on the runtime writes no code for it.
+A library host that composes `PgStorage` and `CitedBlobStore` without the
+runtime calls `proxima::object_maintenance_pass` on a cadence no longer than
+the upload TTL. The pass takes the same storage maintenance lock as the
+runtime and `maintain-storage`, and skips when another pass holds it. Both
+the runtime's boot and the pass refuse while the purge queue holds debt for
+another object store; see [operate](operate.md).
+
 Migration ledgers are checked before any schema change. A recorded version
 must be shipped by a composed source using that same ledger; sources sharing
 a ledger are checked as one set. Separate ledgers are never populated from

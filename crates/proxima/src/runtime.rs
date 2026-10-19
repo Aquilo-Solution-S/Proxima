@@ -375,6 +375,14 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// [`RuntimeBuilder::object_purge_interval`]: how often the runtime sweeps
+    /// expired uploads and drains object purge debt; zero turns it off.
+    #[must_use]
+    pub fn object_purge_interval(mut self, interval: std::time::Duration) -> Self {
+        self.overlay = self.overlay.object_purge_interval(interval);
+        self
+    }
+
     /// [`RuntimeBuilder::outbox_intake`]: set, the outbox publisher starts and
     /// delivers to `intake` in this process, as the consumer `default`.
     #[must_use]
@@ -534,6 +542,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
                 blobs: booted.blobs.clone(),
                 owner: config.owner,
                 services: parts.services.clone(),
+                object_purge_health: crate::object_maintenance::ObjectPurgeHealth::default(),
             },
         };
         let owner_access = runtime_owner_access(
@@ -589,7 +598,9 @@ impl<A: FlavorApp + 'static> Proxima<A> {
 /// authorities, and the features the runtime started and owns.
 struct Runtime {
     host: ProximaHost,
-    system_authority: SystemAuthority,
+    /// Shared with the object-purge worker, which sweeps every owner's
+    /// expired uploads under it.
+    system_authority: Arc<SystemAuthority>,
     host_state_maintenance_authority: Option<proxima_core::engine::HostStateMaintenanceAuthority>,
     handle: EngineHandle,
     /// The runtime's own token. Every task it started observes a child of
@@ -619,6 +630,16 @@ impl Runtime {
         config: &crate::RuntimeConfig,
         mcp: FeatureDecision,
     ) -> Self {
+        let system_authority = Arc::new(booted.system_authority);
+        let objects = host
+            .blobs
+            .clone()
+            .map(|blobs| crate::features::ObjectPurgeHandles {
+                storage: booted.storage.clone(),
+                blobs,
+                authority: system_authority.clone(),
+                health: host.object_purge_health.clone(),
+            });
         let features = crate::features::start::<A>(
             mcp,
             &FeatureInputs {
@@ -630,11 +651,12 @@ impl Runtime {
                     outbox: booted.outbox.clone(),
                     retention: booted.outbox_retention,
                 },
+                objects,
             },
         );
         Self {
             host,
-            system_authority: booted.system_authority,
+            system_authority,
             host_state_maintenance_authority: booted.host_state_maintenance_authority,
             handle: booted.handle,
             _cancel_on_drop: cancel.clone().drop_guard(),
@@ -684,7 +706,7 @@ macro_rules! runtime_handle_methods {
         }
 
         #[must_use]
-        pub const fn system_authority(&self) -> &SystemAuthority {
+        pub fn system_authority(&self) -> &SystemAuthority {
             &self.runtime.system_authority
         }
 
@@ -1189,6 +1211,7 @@ fn build_router<A: FlavorApp>(
             app_ctx.host().pool.clone(),
             cancel.clone(),
             app_ctx.host().engine.clone(),
+            app_ctx.host().object_purge_health.clone(),
         )
     } else {
         Router::new()

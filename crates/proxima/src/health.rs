@@ -2,7 +2,8 @@
 //!
 //! Served on the MCP listener below the Host guard and bearer auth: an
 //! orchestrator probes the pod address with no token. Answers contain only
-//! process readiness and sanitized embedding-configuration status codes.
+//! process readiness, sanitized embedding-configuration status codes, and
+//! the object purge queue's counts as the in-process drain last saw them.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,6 +15,8 @@ use axum::routing::get;
 use proxima_core::Engine;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
+
+use crate::object_maintenance::ObjectPurgeHealth;
 
 /// Process liveness.
 pub const HEALTHZ_PATH: &str = "/healthz";
@@ -30,9 +33,15 @@ struct Probe {
     pool: PgPool,
     cancel: CancellationToken,
     engine: Arc<Engine>,
+    objects: ObjectPurgeHealth,
 }
 
-pub(crate) fn router(pool: PgPool, cancel: CancellationToken, engine: Arc<Engine>) -> Router {
+pub(crate) fn router(
+    pool: PgPool,
+    cancel: CancellationToken,
+    engine: Arc<Engine>,
+    objects: ObjectPurgeHealth,
+) -> Router {
     Router::new()
         .route(HEALTHZ_PATH, get(|| async { (StatusCode::OK, "ok") }))
         .route(READYZ_PATH, get(ready))
@@ -40,6 +49,7 @@ pub(crate) fn router(pool: PgPool, cancel: CancellationToken, engine: Arc<Engine
             pool,
             cancel,
             engine,
+            objects,
         })
 }
 
@@ -50,19 +60,26 @@ async fn ready(State(probe): State<Probe>) -> (StatusCode, String) {
     match tokio::time::timeout(READY_TIMEOUT, sqlx::query("SELECT 1").execute(&probe.pool)).await {
         Ok(Ok(_)) => {
             let faults = probe.engine.embedding_configuration_faults();
-            if faults.is_empty() {
-                (StatusCode::OK, "ready".into())
+            let mut answer = if faults.is_empty() {
+                "ready".to_owned()
             } else {
                 let statuses = faults
                     .into_iter()
                     .map(|fault| fault.status().to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
-                (
-                    StatusCode::OK,
-                    format!("degraded: embedding configuration fault: HTTP {statuses}"),
-                )
+                format!("degraded: embedding configuration fault: HTTP {statuses}")
+            };
+            // Counts only, from the object-purge feature's last pass: the
+            // probe is anonymous and must not touch the queue itself.
+            // Readiness asks whether this replica can serve traffic now;
+            // background purge debt does not change that, so it never
+            // degrades the answer. Alert on `stuck` instead.
+            if let Some(objects) = probe.objects.snapshot() {
+                answer.push('\n');
+                answer.push_str(&objects.line());
             }
+            (StatusCode::OK, answer)
         }
         _ => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -85,6 +102,7 @@ mod tests {
             engine: Arc::new(Engine::new(
                 proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
             )),
+            objects: ObjectPurgeHealth::default(),
         };
         assert_eq!(
             ready(State(probe.clone())).await,

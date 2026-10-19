@@ -180,6 +180,120 @@ impl ColdPurgeRetryOutcome {
     }
 }
 
+/// Outcome of one object-purge pass: batches drained until no due debt is
+/// left (or the batch bound is reached), and the queue the wired store is
+/// left with.
+///
+/// `skipped` means another process held the storage maintenance lock and
+/// this pass drained nothing; the queue counts are still current.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ObjectPurgePassOutcome {
+    pub skipped: bool,
+    /// Batches this pass ran.
+    pub batches: u32,
+    pub purged: u64,
+    pub absent: u64,
+    pub failed: u64,
+    /// Wired-store debts selectable now, after the pass.
+    pub due: u64,
+    /// Wired-store debts backing off after a failure.
+    pub deferred: u64,
+    /// Wired-store debts with at least `stuck_after` failed attempts.
+    pub stuck_count: u64,
+    /// Up to [`MAX_STUCK_PURGE_DEBTS`] of them, named with owner, attempts
+    /// and last error.
+    pub stuck: Vec<StuckPurgeDebt>,
+    /// Debts owed to other stores, never touched by this pass.
+    pub foreign: u64,
+    pub foreign_stores: Vec<(ObjectStoreId, u64)>,
+}
+
+impl ObjectPurgePassOutcome {
+    /// Debts still owed to the wired store: `due + deferred`.
+    #[must_use]
+    pub const fn owed(&self) -> u64 {
+        self.due.saturating_add(self.deferred)
+    }
+
+    fn take_census(&mut self, census: PurgeQueueCensus) {
+        self.due = census.due;
+        self.deferred = census.deferred;
+        self.stuck_count = census.stuck_count;
+        self.stuck = census.stuck;
+        self.foreign = census.foreign;
+        self.foreign_stores = census.foreign_stores;
+    }
+}
+
+/// Drain due debts in batches until none is due or `max_batches` ran. The
+/// caller holds the storage maintenance lock.
+pub(crate) async fn drain_due_purge_debt(
+    pool: &PgPool,
+    platform: &PgPlatformScope,
+    cold: &dyn ColdObjectStore,
+    options: ColdPurgeRetryOptions,
+    max_batches: u32,
+) -> Result<ObjectPurgePassOutcome, StorageError> {
+    let mut pass = ObjectPurgePassOutcome::default();
+    if options.dry_run {
+        return Err(StorageError::ConstraintViolation(
+            "an object purge pass does not dry-run; use retry_cold_object_purges".into(),
+        ));
+    }
+    loop {
+        if pass.batches >= max_batches {
+            break;
+        }
+        let batch = retry_cold_object_purges(pool, platform, cold, options).await?;
+        pass.batches += 1;
+        pass.purged += batch.purged;
+        pass.absent += batch.absent;
+        pass.failed += batch.failed;
+        let drained_nothing = batch.selected == 0;
+        pass.take_census(PurgeQueueCensus {
+            due: batch.due,
+            deferred: batch.deferred,
+            foreign: batch.foreign,
+            stuck_count: batch.stuck_count,
+            stuck: batch.stuck,
+            foreign_stores: batch.foreign_stores,
+        });
+        if drained_nothing || pass.due == 0 {
+            return Ok(pass);
+        }
+    }
+    if pass.batches == 0 {
+        let census =
+            purge_queue_census(platform, cold.store_id(), options.stuck_threshold()).await?;
+        pass.take_census(census);
+    }
+    Ok(pass)
+}
+
+/// The queue counts of a pass that drained nothing; `skipped` when it
+/// could not take the maintenance lock.
+pub(crate) async fn undrained_purge_pass(
+    platform: &PgPlatformScope,
+    cold: &dyn ColdObjectStore,
+    options: ColdPurgeRetryOptions,
+    skipped: bool,
+) -> Result<ObjectPurgePassOutcome, StorageError> {
+    if options.stuck_threshold() < 1 {
+        return Err(StorageError::ConstraintViolation(
+            "cold purge retry stuck_after must be positive".into(),
+        ));
+    }
+    let mut pass = ObjectPurgePassOutcome {
+        skipped,
+        ..ObjectPurgePassOutcome::default()
+    };
+    pass.take_census(
+        purge_queue_census(platform, cold.store_id(), options.stuck_threshold()).await?,
+    );
+    Ok(pass)
+}
+
 /// The purge queue as one store sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct PurgeQueueCensus {

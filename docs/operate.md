@@ -89,7 +89,11 @@ to a stable name (`[A-Za-z0-9._-]`, up to 64 characters) when processes
 that share one store reach it through different endpoint URLs, or when
 several stores share one endpoint and bucket. A purge drain only deletes
 debt owed to the store it is wired to; debt for any other store is left in
-place, never cleared.
+place, never cleared. A store does not move, so a server, or a library host's
+`proxima::object_maintenance_pass`, refuses to start while the queue holds
+debt for another store. The error names the configured store, the store found
+and the count: fix the `PROXIMA_S3_*` settings, or drain that debt with
+`maintain-storage` configured for the store it names.
 
 ## Probes and shutdown
 
@@ -97,7 +101,13 @@ With health endpoints enabled, anonymous `/healthz` is liveness and `/readyz`
 checks database reachability, shutdown state and observed embedding-client
 configuration faults. A paused client keeps readiness at HTTP 200 with a named
 degraded body, such as `degraded: embedding configuration fault: HTTP 401`,
-containing only sanitized status codes. Readiness returns 503 only when the
+containing only sanitized status codes. With an object store, the body adds the
+purge queue as the last drain pass left it, counts only:
+`object-purge: owed=… due=… deferred=… stuck=…`. Purge debt never changes
+readiness: readiness answers whether this replica can serve traffic now, and
+background debt does not change that. Alert on `stuck` above zero, and run
+`maintain-storage --retry-cold-object-purges` to see each stuck debt's key,
+owner and last error. Readiness returns 503 only when the
 database is unavailable or shutdown has started; liveness continues to answer.
 These routes sit outside bearer and Host guards; expose them according to
 deployment policy.
@@ -170,9 +180,18 @@ Embeddings can be rebuilt from retained content; lost content cannot.
 
 ## External deletion and publication
 
-`proxima-mcp maintain-storage` retries committed object-purge debt and performs
-the selected storage maintenance actions. A pending purge is outstanding work,
-not completed deletion. A failed delete backs its debt off, doubling the delay
+A server with an object store drains what it owes by itself, as it drains
+embedding jobs: every `PROXIMA_OBJECT_PURGE_INTERVAL_SECS` (default 60, `0`
+turns it off) it sweeps uploads whose TTL passed before they were staged and
+retries due object-purge debt. The first pass runs at boot, so a restart pays
+what the previous process left owed. Scans and reports stay commands
+(`maintain-blobs`, `maintain-embeddings`). `proxima-mcp maintain-storage` runs
+the same sweep (`--sweep-expired-uploads`) and drain
+(`--retry-cold-object-purges`) for a host that runs no server, to list stuck
+debt by key, or to name and drain another store's debt. Every pass, in-process or not, takes one storage
+maintenance advisory lock, so passes on one database never overlap; a pass that
+finds the lock held skips. A pending purge is outstanding work, not completed
+deletion. A failed delete backs its debt off, doubling the delay
 per attempt, so it never holds back other debts. The report gives `due`
 (selectable now), `deferred` (backing off) and `stuck` (failed repeatedly; each
 is listed with its key, owner, attempt count and last error). Debt owed to another

@@ -32,7 +32,7 @@ pub use verbs::fact_embeddings::{
 };
 pub use verbs::maintenance::{
     ColdPurgeRetryOptions, ColdPurgeRetryOutcome, MAX_FOREIGN_PURGE_STORES, MAX_STUCK_PURGE_DEBTS,
-    StuckPurgeDebt,
+    ObjectPurgePassOutcome, StuckPurgeDebt,
 };
 
 use crate::error::internal;
@@ -1433,6 +1433,80 @@ impl PgStorage {
             &self.platform_scope,
             self.cold.as_ref(),
             options,
+        )
+        .await
+    }
+
+    /// One object-purge pass: take the storage maintenance lock, then drain
+    /// the wired store's due debts in batches of `options`' size until none
+    /// is due or `max_batches` ran.
+    ///
+    /// This is the loop every host would otherwise write, and the one the
+    /// Proxima runtime runs on its own cadence. When another process holds
+    /// the lock (another runtime, or `proxima-mcp maintain-storage`), the
+    /// pass drains nothing and reports `skipped`, with current queue counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the lock, the drain or the census, and a
+    /// constraint violation for invalid options or a dry run.
+    pub async fn run_object_purge_pass(
+        &self,
+        options: ColdPurgeRetryOptions,
+        max_batches: u32,
+    ) -> Result<ObjectPurgePassOutcome, StorageError> {
+        let Some(lock) = self.try_storage_maintenance_lock().await? else {
+            return verbs::maintenance::undrained_purge_pass(
+                &self.platform_scope,
+                self.cold.as_ref(),
+                options,
+                true,
+            )
+            .await;
+        };
+        self.drain_due_object_purge_debt(&lock, options, max_batches)
+            .await
+    }
+
+    /// [`Self::run_object_purge_pass`] for a caller that already holds the
+    /// storage maintenance lock, and so may combine the drain with other
+    /// maintenance under one lock.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::run_object_purge_pass`].
+    pub async fn drain_due_object_purge_debt(
+        &self,
+        _held: &StorageMaintenanceLock,
+        options: ColdPurgeRetryOptions,
+        max_batches: u32,
+    ) -> Result<ObjectPurgePassOutcome, StorageError> {
+        verbs::maintenance::drain_due_purge_debt(
+            &self.pool,
+            &self.platform_scope,
+            self.cold.as_ref(),
+            options,
+            max_batches,
+        )
+        .await
+    }
+
+    /// The queue the wired store sees, without draining: due, deferred and
+    /// stuck debts, and debt owed to other stores.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the census, and a constraint violation
+    /// for a non-positive stuck threshold.
+    pub async fn object_purge_census(
+        &self,
+        options: ColdPurgeRetryOptions,
+    ) -> Result<ObjectPurgePassOutcome, StorageError> {
+        verbs::maintenance::undrained_purge_pass(
+            &self.platform_scope,
+            self.cold.as_ref(),
+            options,
+            false,
         )
         .await
     }
