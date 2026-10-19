@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use proxima_core::storage_ports::OwnerWritePermit;
+use proxima_core::verbs::fact_ingest::FactIngestOutcome;
 use proxima_core::{
     EdgeEndpoint, EdgeKind, EntityKind, MemoryId, MemoryOperatorKind, OwnerId, SchemaId,
     SchemaVersion, SidecarPayload, StorageError,
@@ -77,6 +78,18 @@ pub(crate) struct DerivedOutcome {
     /// The replay matched a forgotten memory: nothing was written and it
     /// stays forgotten.
     pub forgotten: bool,
+}
+
+/// A derived write that reaches the admission answers with its outcome; a
+/// lost request-ledger race answers with the replay it found, forgotten or not.
+impl From<FactIngestOutcome> for DerivedOutcome {
+    fn from(outcome: FactIngestOutcome) -> Self {
+        Self {
+            memory_id: outcome.memory_id,
+            idempotent_replay: outcome.idempotent_replay,
+            forgotten: outcome.forgotten,
+        }
+    }
 }
 
 /// Content resolution is shared with the Fact routes and lives with the
@@ -230,16 +243,9 @@ async fn admit_derived(
         input.content.payloads,
     )
     .await?;
-    let ingested = super::memory_timeseries::materialize_prepared_memory_admission(
-        tx, prepared, None, content_id,
-    )
-    .await?;
-    let outcome = DerivedOutcome {
-        memory_id: ingested.memory_id,
-        idempotent_replay: ingested.idempotent_replay,
-        forgotten: false,
-    };
-    Ok(outcome)
+    super::memory_timeseries::materialize_prepared_memory_admission(tx, prepared, None, content_id)
+        .await
+        .map(DerivedOutcome::from)
 }
 
 /// A replay of the write that made the series head answers with that head,
