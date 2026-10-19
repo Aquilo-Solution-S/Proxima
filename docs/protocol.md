@@ -107,10 +107,14 @@ Goal transitions append a later version. `core_goal` `mark_achieved` on a goal
 with decompose children is refused as `InvalidArgument` on `goal` while a
 child is open, with the message prefix `goal has open children: ` followed by
 each open child's current handle, or when every child is Abandoned, with
-`goal children are all abandoned; achieve at least one child first`. Pause's
-`pending: keep|discard` is an instruction for the host's queue. The host decides how to execute that
-instruction; Proxima persists intent and state. Hard deletion uses the explicit
-host or flavor-scoped inverse paths in [data and erasure](data-and-erasure.md).
+`goal children are all abandoned; achieve at least one child first`.
+`transition` `abandon` on a goal with an open decompose child is refused the
+same way, as `InvalidArgument` on `goal` with the prefix
+`goal has open children: `; a goal whose children are all closed abandons.
+Pause's `pending: keep|discard` is an instruction for the host's queue. The
+host decides how to execute that instruction; Proxima persists intent and
+state. Hard deletion uses the explicit host or flavor-scoped inverse paths in
+[data and erasure](data-and-erasure.md).
 
 Caller scope names exact command/action and resource keys. A deployment's
 served surface always includes declared reads and core resources; that does

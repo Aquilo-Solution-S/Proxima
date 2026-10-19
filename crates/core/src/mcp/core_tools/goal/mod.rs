@@ -144,7 +144,7 @@ pub struct CoreGoalTool;
 pub enum CoreGoalArgs {
     /// Create an Active goal assigned to a Perspective.
     Set(GoalSetArgs),
-    /// Pause, resume, or abandon a goal.
+    /// Pause, resume, or abandon a goal; abandon is refused while a child goal is Active or Paused.
     Transition(GoalTransitionArgs),
     /// Replace an Active goal's title, text and payload; omitted evidence carries over.
     Modify(GoalModifyArgs),
@@ -170,7 +170,8 @@ impl McpTool for CoreGoalTool {
          assign goals to a Perspective: pass target_perspective unless the host supplies a caller \
          Perspective. A pause names what happens to work already queued for the goal: pending is \
          keep or discard. A parent is marked achieved only after its children: none Active or \
-         Paused, at least one Achieved.";
+         Paused, at least one Achieved. An open goal never sits under a closed one: achieve and \
+         abandon a parent after its children.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = CORE_GOAL_PRODUCES_SCHEMA_IDS;
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
@@ -311,7 +312,7 @@ pub struct GoalTransitionArgs {
     )]
     pub goal: String,
     #[schemars(
-        description = "pause and abandon apply to an Active goal, resume to a Paused one. Use mark_achieved to achieve."
+        description = "pause and abandon apply to an Active goal, resume to a Paused one. Use mark_achieved to achieve. abandon is refused while a child goal is still Active or Paused."
     )]
     pub transition: GoalTransition,
     #[schemars(
@@ -483,7 +484,7 @@ pub struct GoalDecomposeArgs {
     pub parent_goal: String,
     #[schemars(
         length(min = 1, max = 50),
-        description = "Child goals to create, 1 to 50; each starts Active under the parent; the parent can be marked achieved once no child is open and one is achieved."
+        description = "Child goals to create, 1 to 50; each starts Active under the parent; the parent can be achieved or abandoned once no child is open (achieving also needs one achieved child)."
     )]
     pub children: Vec<ChildGoalInput>,
     #[schemars(
