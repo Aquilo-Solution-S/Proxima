@@ -10,7 +10,7 @@
 ///
 /// The split this type makes is between IMPLEMENTING and INVOKING. A flavor
 /// implements [`super::PgMemorySidecar`] /
-/// [`crate::verbs::fact_ingest::PgFactSidecar`] — the `pg_sidecar!` macro
+/// `PgFactSidecar` (crate-private) — the `pg_sidecar!` macro
 /// writes the body — and names this type in the signature it implements. It
 /// cannot construct one, because the field is crate-private, so it cannot
 /// call what it implemented. Same `_private: ()` idiom as the core write

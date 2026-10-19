@@ -62,11 +62,6 @@ mod rls_guard;
 pub mod sidecars;
 mod store_wide;
 pub use store_wide::STORE_WIDE_TABLES;
-pub mod query {
-    pub use crate::verbs::query::{
-        ActiveGoalTargetRow, MAX_SNAPSHOT_EDGES, active_goals_for_memory_targets_on_connection,
-    };
-}
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
 mod tuning;

@@ -13,7 +13,11 @@ use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 ///
 /// Returns a storage error when the backend or schema resolver rejects a
 /// requested row.
-pub async fn load_memory_by_id(
+#[allow(
+    dead_code,
+    reason = "#474 C3: pool wrapper was public API; ports use *_on_connection"
+)]
+pub(crate) async fn load_memory_by_id(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
     memory_id: MemoryId,
@@ -25,7 +29,7 @@ pub async fn load_memory_by_id(
 
 /// # Errors
 /// Returns storage errors from query execution or invalid stored data.
-pub async fn load_memory_by_id_on_connection(
+pub(crate) async fn load_memory_by_id_on_connection(
     connection: &mut PgConnection,
     pg_sidecars: &PgSidecarRegistryFrozen,
     memory_id: MemoryId,
@@ -47,7 +51,11 @@ pub async fn load_memory_by_id_on_connection(
 ///
 /// Returns a storage error when the backend or schema resolver rejects a
 /// requested row.
-pub async fn load_memories_by_ids(
+#[allow(
+    dead_code,
+    reason = "#474 C3: pool wrapper was public API; ports use *_on_connection"
+)]
+pub(crate) async fn load_memories_by_ids(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
     read_owners: &[proxima_core::OwnerId],
@@ -67,7 +75,7 @@ pub async fn load_memories_by_ids(
 
 /// # Errors
 /// Returns storage errors from query execution or invalid stored data.
-pub async fn load_memories_by_ids_on_connection(
+pub(crate) async fn load_memories_by_ids_on_connection(
     connection: &mut PgConnection,
     pg_sidecars: &PgSidecarRegistryFrozen,
     read_owners: &[proxima_core::OwnerId],
@@ -97,7 +105,11 @@ pub async fn load_memories_by_ids_on_connection(
 ///
 /// Returns a storage error when an admitted identity disappears, changes, or
 /// has an invalid sidecar declaration.
-pub async fn load_memory_graph_payloads(
+#[allow(
+    dead_code,
+    reason = "#474 C3: pool wrapper was public API; ports use *_on_connection"
+)]
+pub(crate) async fn load_memory_graph_payloads(
     pool: &PgPool,
     pg_sidecars: &PgSidecarRegistryFrozen,
     identities: &[MemoryGraphIdentity],
@@ -117,7 +129,7 @@ pub async fn load_memory_graph_payloads(
 
 /// # Errors
 /// Returns storage errors from query execution or invalid stored data.
-pub async fn load_memory_graph_payloads_on_connection(
+pub(crate) async fn load_memory_graph_payloads_on_connection(
     connection: &mut PgConnection,
     pg_sidecars: &PgSidecarRegistryFrozen,
     identities: &[MemoryGraphIdentity],

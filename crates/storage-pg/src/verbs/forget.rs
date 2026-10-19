@@ -87,7 +87,7 @@ fn is_owner_pinned(sidecars: &PgSidecarRegistryFrozen, table: &str) -> bool {
 ///
 /// An erase marks each locator in `proxima_core.cold_purge_pending` inside the
 /// transaction that deletes its upload row, and destroys the object only
-/// after that transaction commits ([`purge_cold_objects_after_commit`]).
+/// after that transaction commits (`purge_cold_objects_after_commit`).
 /// Deleting from inside the transaction loses the object outright when the
 /// transaction later rolls back — the locator comes back, the bytes do not —
 /// and a crash between commit and destruction leaves a reclaimable mark rather
@@ -152,7 +152,11 @@ pub struct ColdPurgeOutcome {
 /// operator retry reads — the same over-report-pending-rather-than-lose-it rule
 /// the cited-object purge follows. Counts reconciled plan entries, including
 /// debts already retired by another drain before provider I/O begins.
-pub async fn purge_cold_objects_after_commit(
+#[allow(
+    dead_code,
+    reason = "#474 C3: was public; tests/`with_platform` cover the drain"
+)]
+pub(crate) async fn purge_cold_objects_after_commit(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
@@ -670,7 +674,7 @@ const LOCK_LIVE_OWNED_SQL: &str = "SELECT handle, kind::text FROM proxima_core.m
 /// before returning. No object store is involved.
 ///
 /// The caller holds `tx`; nothing here commits.
-pub async fn forget_memory(
+pub(crate) async fn forget_memory(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
@@ -1110,7 +1114,11 @@ async fn erase_memory_series_after_snapshot(
 /// # Errors
 ///
 /// Returns storage errors from the expansion query.
-pub async fn expand_series_for_erase(
+#[allow(
+    dead_code,
+    reason = "#474 C3: was public helper; series erase uses snapshot path"
+)]
+pub(crate) async fn expand_series_for_erase(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
     ts: &[Uuid],
@@ -1243,7 +1251,11 @@ SELECT m.handle, m.t FROM proxima_core.memory m /* FORGET-POLICY: includes-forgo
 /// # Errors
 ///
 /// Returns storage errors from the query.
-pub async fn admissions_outside_owner(
+#[allow(
+    dead_code,
+    reason = "#474 C3: was public helper; lock_admissions_for_erase is the seam"
+)]
+pub(crate) async fn admissions_outside_owner(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
     ts: &[Uuid],
@@ -1259,6 +1271,7 @@ pub async fn admissions_outside_owner(
         .map_err(map_err)
 }
 
+#[allow(dead_code, reason = "#474 C3: pairs with admissions_outside_owner")]
 const ADMISSIONS_OUTSIDE_OWNER_SQL: &str = "\
 SELECT c.t
   FROM unnest($1::uuid[]) AS c(t)
@@ -1310,7 +1323,7 @@ SELECT c.t
 /// # Errors
 ///
 /// Returns storage errors from the lock statement.
-pub async fn lock_admissions_for_erase(
+pub(crate) async fn lock_admissions_for_erase(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
     ts: &[Uuid],
