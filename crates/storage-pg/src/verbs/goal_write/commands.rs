@@ -220,7 +220,8 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         },
         // Abandon refuses while a decompose child is open, checked after the
         // lifecycle lock on the parent head t, which a decompose child also
-        // takes through its dependency_t. Pause and resume keep the goal open.
+        // takes through its dependency_t, whatever the prior (Active or Paused).
+        // Pause and resume keep the goal open.
         if req.transition == proxima_core::verbs::goal_write::GoalTransitionKind::Abandon {
             PostLockGuard::NoOpenChildren
         } else {

@@ -182,8 +182,8 @@ impl Engine {
 
     /// Transition a Goal head to Paused, Active, or Abandoned.
     ///
-    /// Abandon is refused while any decompose child's current head is Active
-    /// or Paused: an open goal never sits under a closed one. Pause and resume
+    /// Abandon takes an Active or Paused goal in one write; it is refused
+    /// while any decompose child's current head is Active or Paused: an open goal never sits under a closed one. Pause and resume
     /// are not affected.
     ///
     /// # Errors

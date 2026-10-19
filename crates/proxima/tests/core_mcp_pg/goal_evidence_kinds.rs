@@ -145,7 +145,7 @@ impl Env {
         .await
     }
 
-    async fn admin(&self) -> TestResult<sqlx::PgPool> {
+    pub(super) async fn admin(&self) -> TestResult<sqlx::PgPool> {
         Ok(sqlx::PgPool::connect(&db_url(self.split_db.name())).await?)
     }
 
@@ -159,6 +159,22 @@ impl Env {
                 .await?;
         admin.close().await;
         Ok(ids.into_iter().map(|id| id.to_string()).collect())
+    }
+
+    /// The series' versions (state, t), oldest first. This host publishes no
+    /// goal-change records, so the goal rows are the history.
+    pub(super) async fn history_of(&self, handle: &str) -> TestResult<Vec<(String, Uuid)>> {
+        let admin = self.admin().await?;
+        let rows = sqlx::query_as(
+            "SELECT state::text, t FROM proxima_core.goal
+              WHERE handle = (SELECT handle FROM proxima_core.goal WHERE t = $1)
+              ORDER BY t",
+        )
+        .bind(Uuid::parse_str(handle)?)
+        .fetch_all(&admin)
+        .await?;
+        admin.close().await;
+        Ok(rows)
     }
 
     async fn goal_rows(&self) -> TestResult<i64> {

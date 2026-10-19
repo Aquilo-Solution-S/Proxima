@@ -5,6 +5,9 @@
 
 use std::sync::Arc;
 
+use proxima_core::publication::{
+    PublicationExtensions, PublicationLimits, PublicationSource, PublicationStamp,
+};
 use proxima_core::storage_ports::{FactIngestPort, GoalWritePort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::{
@@ -24,6 +27,7 @@ use proxima_storage_pg::verbs::forget::MemoryColdStore;
 use uuid::Uuid;
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
+type History = (String, String, i32, Option<Uuid>, Option<String>);
 
 fn fact_draft(kind: &str) -> FactWriteCommand {
     FactWriteCommand {
@@ -66,11 +70,27 @@ struct Tree {
     owner: OwnerId,
     permit: OwnerWritePermit,
     registry: FlavorRegistryFrozen,
+    /// Set by `new_listenable`: goal writes carry a publication stamp, so
+    /// each one also records a `core/goal-change-v1` change.
+    feed: Option<(PublicationSource, PublicationExtensions)>,
     fact: MemoryId,
     perspective: MemoryId,
 }
 
 impl Tree {
+    /// A tree whose goal writes publish `core/goal-change-v1` records.
+    async fn new_listenable() -> TestResult<Self> {
+        let mut tree = Self::new().await?;
+        let mut listenable = FlavorRegistry::new();
+        listenable.publish_goal_changes();
+        tree.registry = listenable.freeze_or_panic_for_tests();
+        tree.feed = Some((
+            PublicationSource::new("urn:proxima:goal-tree-test")?,
+            PublicationExtensions::default(),
+        ));
+        Ok(tree)
+    }
+
     async fn new() -> TestResult<Self> {
         let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
         if let Err(e) = create_core_db(&db_name).await {
@@ -97,6 +117,7 @@ impl Tree {
             owner,
             permit,
             registry: FlavorRegistry::new().freeze_or_panic_for_tests(),
+            feed: None,
             fact: fact.memory_id,
             perspective: perspective.memory_id,
         })
@@ -106,7 +127,9 @@ impl Tree {
         GoalAtomicContext {
             registry: &self.registry,
             author_self_perspective_id: None,
-            publication: None,
+            publication: self.feed.as_ref().map(|(source, extensions)| {
+                PublicationStamp::new(source, None, extensions, PublicationLimits::default())
+            }),
         }
     }
 
@@ -272,6 +295,40 @@ impl Tree {
                 &self.permit,
             )
             .await
+    }
+
+    async fn resume_raw(
+        &self,
+        prior: GoalId,
+        request: &str,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        self.pg
+            .transition_goal_atomic(
+                &TransitionGoalAtomicRequest {
+                    owner: self.owner,
+                    prior_goal_id: prior,
+                    transition: GoalTransitionKind::Resume,
+                    authorship: GoalAuthorship::User,
+                    request_id: key(request),
+                    context: self.context(),
+                },
+                &self.permit,
+            )
+            .await
+    }
+
+    /// The series' goal-change records: kind, state, revision, prior, pending.
+    async fn history(&self, goal: GoalId) -> TestResult<Vec<History>> {
+        Ok(sqlx::query_as(
+            "SELECT c.change_kind::text, c.state::text, c.revision, c.prior_t, c.pending::text
+               FROM proxima_core.goal_change_v1 c
+               JOIN proxima_core.goal g ON g.t = c.goal_t
+              WHERE g.handle = (SELECT handle FROM proxima_core.goal WHERE t = $1)
+              ORDER BY c.revision",
+        )
+        .bind(goal.into_inner())
+        .fetch_all(self.pg.pool_for_tests())
+        .await?)
     }
 
     async fn handle_of(&self, goal: GoalId) -> TestResult<Uuid> {
@@ -1073,4 +1130,310 @@ async fn a_racing_abandon_first_refuses_the_decompose() {
     }
     .await;
     tree.finish(result, "G6 abandon").await;
+}
+
+// ============================================================
+// Abandon from Paused (refs #515)
+// ============================================================
+
+/// The exact invalid-transition refusal, as an error rather than a panic.
+fn refused_transition(
+    result: Result<GoalWriteOutcome, StorageError>,
+    expected: &str,
+    what: &str,
+) -> TestResult<()> {
+    match result {
+        Err(StorageError::ConstraintViolation(m)) if m == expected => Ok(()),
+        other => {
+            Err(format!("{what}: expected ConstraintViolation({expected:?}), got {other:?}").into())
+        }
+    }
+}
+
+fn delta(after: &[i64], before: &[i64]) -> Vec<i64> {
+    after.iter().zip(before).map(|(a, b)| a - b).collect()
+}
+
+/// P1: a Paused goal abandons in one write, with the same footprint as an
+/// Active abandon.
+#[tokio::test]
+async fn a_paused_goal_abandons_in_one_write() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let active = tree.create("p1-active", &[]).await?;
+        let before = tree.counts().await?;
+        tree.abandon(active, "p1-active-abandon").await?;
+        let active_delta = delta(&tree.counts().await?, &before);
+
+        let g = tree.create("p1-g", &[]).await?;
+        let paused = tree.pause(g, "p1-pause").await?;
+        let before = tree.counts().await?;
+        let out = tree.abandon(paused, "p1-abandon").await?;
+        let paused_delta = delta(&tree.counts().await?, &before);
+        assert_eq!(
+            tree.head_of(g).await?,
+            out.goal_id.into_inner(),
+            "the abandon is the head"
+        );
+        assert_eq!(
+            paused_delta, active_delta,
+            "goal, change, declaration, memory, outbox: same footprint as an Active abandon"
+        );
+        assert_eq!(paused_delta[0], 1, "one goal row");
+        assert_eq!(paused_delta[2], 1, "one replay declaration");
+        assert_eq!(paused_delta[4], 0, "no outbox row");
+        let (state, close): (String, Option<Uuid>) =
+            sqlx::query_as("SELECT state::text, close_fact_t FROM proxima_core.goal WHERE t = $1")
+                .bind(out.goal_id.into_inner())
+                .fetch_one(tree.pg.pool_for_tests())
+                .await?;
+        assert_eq!(state, "Abandoned");
+        assert!(close.is_some(), "a terminal row carries its close fact");
+        eprintln!("P1 delta (goal, change, declaration, memory, outbox): {paused_delta:?}");
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "P1").await;
+}
+
+/// P2: no Active version between the pause and the abandon.
+#[tokio::test]
+async fn a_paused_abandon_has_no_active_version_between() {
+    let tree = Tree::new_listenable().await.expect("fixture");
+    let result = async {
+        let g = tree.create("p2-g", &[]).await?;
+        let paused = tree.pause(g, "p2-pause").await?;
+        tree.abandon(paused, "p2-abandon").await?;
+        let s = |v: &str| v.to_owned();
+        assert_eq!(
+            tree.history(g).await?,
+            vec![
+                (s("set"), s("Active"), 1, None, None),
+                (
+                    s("pause"),
+                    s("Paused"),
+                    2,
+                    Some(g.into_inner()),
+                    Some(s("keep"))
+                ),
+                (
+                    s("abandon"),
+                    s("Abandoned"),
+                    3,
+                    Some(paused.into_inner()),
+                    None
+                ),
+            ]
+        );
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "P2").await;
+}
+
+/// P3: closed goals still refuse abandon, and the refusal writes nothing.
+#[tokio::test]
+async fn closed_goals_still_refuse_abandon() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let x = tree.create("p3-x", &[]).await?;
+        let x = tree.abandon(x, "p3-x-abandon").await?.goal_id;
+        let y = tree.create("p3-y", &[]).await?;
+        let y = tree.achieve(y, "p3-y-achieve").await?.goal_id;
+        let before = tree.counts().await?;
+        refused_transition(
+            tree.abandon(x, "p3-x-again").await,
+            "invalid goal transition: Abandoned -> Abandoned",
+            "P3 abandoned",
+        )?;
+        refused_transition(
+            tree.abandon(y, "p3-y-abandon").await,
+            "invalid goal transition: Achieved -> Abandoned",
+            "P3 achieved",
+        )?;
+        assert_eq!(tree.counts().await?, before, "refusals write nothing");
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "P3").await;
+}
+
+/// P4: a Paused abandon replays, and abandoning its result again is refused.
+#[tokio::test]
+async fn a_paused_abandon_replays_and_then_refuses() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let g = tree.create("p4-g", &[]).await?;
+        let paused = tree.pause(g, "p4-pause").await?;
+        let first = tree.abandon(paused, "p4-abandon").await?;
+        let before = tree.counts().await?;
+        let replay = tree.abandon(paused, "p4-abandon").await?;
+        assert!(replay.idempotent_replay, "{replay:?}");
+        assert_eq!(replay.goal_id, first.goal_id);
+        assert_eq!(tree.counts().await?, before, "a replay writes nothing");
+        refused_transition(
+            tree.abandon(first.goal_id, "p4-again").await,
+            "invalid goal transition: Abandoned -> Abandoned",
+            "P4",
+        )?;
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "P4").await;
+}
+
+/// P5: a Paused parent with an open child is still refused; children close
+/// first, a Paused child in one write too.
+#[tokio::test]
+async fn a_paused_parent_with_an_open_child_is_refused() {
+    let tree = Tree::new().await.expect("fixture");
+    let pool = tree.pg.pool_for_tests();
+    let result = async {
+        let p = tree.create("p5-p", &[]).await?;
+        let children = tree.decompose(p, &["p5-a", "p5-b"]).await?;
+        let (a, b) = (children[0], children[1]);
+        let b_paused = tree.pause(b, "p5-b-pause").await?;
+        let p_paused = tree.pause(p, "p5-p-pause").await?;
+        let before = tree.counts().await?;
+        let mut open = refused_open(tree.abandon(p_paused, "p5-p-abandon-early").await, "P5")?;
+        let mut wanted = vec![a, b_paused];
+        open.sort();
+        wanted.sort();
+        assert_eq!(open, wanted, "the open child heads");
+        assert_eq!(tree.counts().await?, before, "a refusal writes nothing");
+        assert_tree_invariant(pool, "P5 refused").await?;
+        tree.abandon(a, "p5-a-abandon").await?;
+        tree.abandon(b_paused, "p5-b-abandon").await?;
+        let out = tree.abandon(p_paused, "p5-p-abandon").await?;
+        assert_eq!(tree.head_of(p).await?, out.goal_id.into_inner());
+        assert_tree_invariant(pool, "P5 done").await?;
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "P5").await;
+}
+
+/// P6: a Paused chain closes only bottom-up.
+#[tokio::test]
+async fn a_paused_chain_closes_only_bottom_up() {
+    let tree = Tree::new().await.expect("fixture");
+    let pool = tree.pg.pool_for_tests();
+    let result = async {
+        let p = tree.create("p6-p", &[]).await?;
+        let a = tree.decompose(p, &["p6-a"]).await?[0];
+        let a1 = tree.decompose(a, &["p6-a1"]).await?[0];
+        let p_paused = tree.pause(p, "p6-p-pause").await?;
+        let a_paused = tree.pause(a, "p6-a-pause").await?;
+        assert_tree_invariant(pool, "P6 paused").await?;
+        let open = refused_open(tree.abandon(p_paused, "p6-p-abandon-early").await, "P6 p")?;
+        assert_eq!(open, vec![a_paused], "P names A's head");
+        assert_tree_invariant(pool, "P6 p refused").await?;
+        let open = refused_open(tree.abandon(a_paused, "p6-a-abandon-early").await, "P6 a")?;
+        assert_eq!(open, vec![a1], "A names A1");
+        assert_tree_invariant(pool, "P6 a refused").await?;
+        tree.abandon(a1, "p6-a1-abandon").await?;
+        assert_tree_invariant(pool, "P6 a1").await?;
+        tree.abandon(a_paused, "p6-a-abandon").await?;
+        assert_tree_invariant(pool, "P6 a").await?;
+        tree.abandon(p_paused, "p6-p-abandon").await?;
+        assert_tree_invariant(pool, "P6 p").await?;
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "P6").await;
+}
+
+async fn head_state(tree: &Tree, goal: GoalId) -> TestResult<String> {
+    Ok(sqlx::query_scalar(
+        "SELECT g.state::text FROM proxima_core.goal_head h
+           JOIN proxima_core.goal g ON g.t = h.t
+          WHERE h.handle = (SELECT handle FROM proxima_core.goal WHERE t = $1)",
+    )
+    .bind(goal.into_inner())
+    .fetch_one(tree.pg.pool_for_tests())
+    .await?)
+}
+
+/// P7a: abandon takes the Paused head's lock first; the queued resume loses.
+#[tokio::test]
+async fn a_racing_abandon_first_refuses_the_resume() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let g = tree.create("p7a-g", &[]).await?;
+        let paused = tree.pause(g, "p7a-pause").await?;
+        let pool = tree.pg.pool_for_tests();
+        let before = tree.counts().await?;
+        let blocker = hold_lifecycle_lock(pool, paused.into_inner()).await?;
+        let (abandoned, resumed, released) = tokio::join!(
+            tree.abandon(paused, "p7a-abandon"),
+            async {
+                await_lock_waiters(pool, 1, "P7a abandon queued").await?;
+                Ok::<_, Box<dyn std::error::Error>>(tree.resume_raw(paused, "p7a-resume").await)
+            },
+            async {
+                await_lock_waiters(pool, 2, "P7a resume queued").await?;
+                blocker.commit().await?;
+                Ok::<_, Box<dyn std::error::Error>>(())
+            },
+        );
+        released?;
+        abandoned?;
+        let err = match resumed? {
+            Ok(out) => return Err(format!("P7a: the queued resume must lose, got {out:?}").into()),
+            Err(err) => err,
+        };
+        eprintln!("P7a loser: {err:?}");
+        assert!(matches!(err, StorageError::Conflict(_)), "P7a: {err:?}");
+        assert_eq!(head_state(&tree, g).await?, "Abandoned");
+        assert_eq!(
+            tree.counts().await?[0] - before[0],
+            1,
+            "exactly one new goal row"
+        );
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "P7a").await;
+}
+
+/// P7b: resume takes the Paused head's lock first; the queued abandon loses.
+#[tokio::test]
+async fn a_racing_resume_first_refuses_the_abandon() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let g = tree.create("p7b-g", &[]).await?;
+        let paused = tree.pause(g, "p7b-pause").await?;
+        let pool = tree.pg.pool_for_tests();
+        let before = tree.counts().await?;
+        let blocker = hold_lifecycle_lock(pool, paused.into_inner()).await?;
+        let (resumed, abandoned, released) = tokio::join!(
+            tree.resume_raw(paused, "p7b-resume"),
+            async {
+                await_lock_waiters(pool, 1, "P7b resume queued").await?;
+                Ok::<_, Box<dyn std::error::Error>>(tree.abandon(paused, "p7b-abandon").await)
+            },
+            async {
+                await_lock_waiters(pool, 2, "P7b abandon queued").await?;
+                blocker.commit().await?;
+                Ok::<_, Box<dyn std::error::Error>>(())
+            },
+        );
+        released?;
+        resumed?;
+        let err = match abandoned? {
+            Ok(out) => return Err(format!("P7b: the queued abandon must lose, got {out:?}").into()),
+            Err(err) => err,
+        };
+        eprintln!("P7b loser: {err:?}");
+        assert!(matches!(err, StorageError::Conflict(_)), "P7b: {err:?}");
+        assert_eq!(head_state(&tree, g).await?, "Active");
+        assert_eq!(
+            tree.counts().await?[0] - before[0],
+            1,
+            "exactly one new goal row"
+        );
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "P7b").await;
 }

@@ -42,7 +42,7 @@ impl GoalState {
     /// Legality of a plain lifecycle transition (the `GoalWrite` transition
     /// verb) from `self` to `next`.
     ///
-    /// Matrix: `Active → {Active, Paused, Abandoned}`, `Paused → {Active}`.
+    /// Matrix: `Active → {Active, Paused, Abandoned}`, `Paused → {Active, Abandoned}`.
     /// `Achieved` is **never** a legal target here — achievement carries
     /// mandatory evidence and flows through the dedicated achieve path, not a
     /// plain transition. `Achieved`/`Abandoned` are terminal (no outgoing
@@ -55,7 +55,7 @@ impl GoalState {
         matches!(
             (self, next),
             (Self::Active, Self::Active | Self::Paused | Self::Abandoned)
-                | (Self::Paused, Self::Active)
+                | (Self::Paused, Self::Active | Self::Abandoned)
         )
     }
 
@@ -95,8 +95,8 @@ pub enum GoalTransitionKind {
     Pause { pending: PendingWork },
     /// Paused to Active.
     Resume,
-    /// Active to Abandoned; refused while a decompose child is Active or
-    /// Paused.
+    /// Active or Paused to Abandoned; refused while a decompose child is
+    /// Active or Paused.
     Abandon,
 }
 
@@ -721,11 +721,23 @@ mod goal_state_matrix_tests {
     }
 
     #[test]
-    fn paused_may_only_resume_to_active() {
+    fn paused_may_resume_or_abandon_only() {
         assert!(GoalState::Paused.may_transition_to(GoalState::Active));
         assert!(!GoalState::Paused.may_transition_to(GoalState::Paused));
-        assert!(!GoalState::Paused.may_transition_to(GoalState::Abandoned));
+        assert!(GoalState::Paused.may_transition_to(GoalState::Abandoned));
         assert!(!GoalState::Paused.may_transition_to(GoalState::Achieved));
+    }
+
+    #[test]
+    fn closed_states_admit_no_transition() {
+        for prior in [GoalState::Achieved, GoalState::Abandoned] {
+            for next in ALL {
+                assert!(
+                    !prior.may_transition_to(next),
+                    "{prior:?} -> {next:?} must be rejected: {prior:?} is terminal"
+                );
+            }
+        }
     }
 
     #[test]

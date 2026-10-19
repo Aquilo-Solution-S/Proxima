@@ -312,11 +312,11 @@ pub struct GoalTransitionArgs {
     )]
     pub goal: String,
     #[schemars(
-        description = "pause and abandon apply to an Active goal, resume to a Paused one. Use mark_achieved to achieve. abandon is refused while a child goal is still Active or Paused."
+        description = "pause applies to an Active goal, resume to a Paused one, abandon to an Active or Paused one. Use mark_achieved to achieve. abandon is refused while a child goal is still Active or Paused."
     )]
     pub transition: GoalTransition,
     #[schemars(
-        description = "Required for pause, refused for resume and abandon. keep: the scheduler holds the work it queued for this goal and runs it after a resume. discard: it drops that work, ready or waiting to retry. Running work finishes either way. null is the same as omitting it."
+        description = "Required for pause, refused for resume and abandon. keep: the scheduler holds the work it queued for this goal and runs it after a resume; abandoning the goal drops it. discard: it drops that work, ready or waiting to retry. Running work finishes either way. null is the same as omitting it."
     )]
     pub pending: Option<PendingWork>,
     #[schemars(
