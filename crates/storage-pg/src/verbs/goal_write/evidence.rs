@@ -3,32 +3,28 @@ use super::{
     OwnerId, Postgres, StorageError, SystemOrigin, Transaction, map_err,
 };
 
-pub(super) fn validate_operator_goal_evidence(
+/// An operator-authored Goal write (set, modify, decompose child) must carry
+/// evidence. No kind check: the kind rule is `validate_evidence_in_owner`'s.
+/// User-authored goals may carry empty evidence.
+pub(super) fn require_operator_evidence_nonempty(
     authorship: &GoalAuthorship,
     evidence: &[EvidenceTarget],
 ) -> Result<(), StorageError> {
-    if !matches!(
+    if matches!(
         authorship,
         GoalAuthorship::System(SystemOrigin::Operator { .. })
-    ) {
-        return Ok(());
-    }
-    if evidence.is_empty() {
-        return Err(StorageError::ConstraintViolation(
-            "operator-authored Goal requires non-empty Abstraction evidence".into(),
-        ));
-    }
-    if evidence
-        .iter()
-        .any(|target| target.kind != EntityKind::Abstraction)
+    ) && evidence.is_empty()
     {
         return Err(StorageError::ConstraintViolation(
-            "operator-authored Goal evidence must be Abstraction".into(),
+            "operator-authored Goal requires non-empty evidence".into(),
         ));
     }
     Ok(())
 }
 
+/// The one evidence-kind rule for every goal write (set, modify, decompose
+/// child, episode goal, `mark_achieved`): a live owned Fact or Abstraction; a
+/// Perspective is refused.
 pub(super) async fn validate_evidence_in_owner(
     tx: &mut Transaction<'_, Postgres>,
     _owner: &OwnerId,

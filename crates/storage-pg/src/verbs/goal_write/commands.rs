@@ -8,10 +8,10 @@ use super::{
     draft_from_stored, insert_or_replay_goal, internal, lifecycle_outcome,
     load_goal_evidence_exact, load_prior_goal, lock_prepared_goal_writes, map_err,
     modify_replay_declaration, persist_prepared_goal_insert, prepare_goal_insert,
-    record_goal_replay_declaration, require_goal_replay, resolve_decompose_replay_set,
-    resolve_goal_replay, transition_replay_declaration, validate_active_head,
-    validate_evidence_in_owner, validate_goal_achievement, validate_goal_transition,
-    validate_operator_goal_evidence,
+    record_goal_replay_declaration, require_goal_replay, require_operator_evidence_nonempty,
+    resolve_decompose_replay_set, resolve_goal_replay, transition_replay_declaration,
+    validate_active_head, validate_evidence_in_owner, validate_goal_achievement,
+    validate_goal_transition,
 };
 use crate::error::with_bounded_retry;
 
@@ -118,7 +118,7 @@ pub(crate) async fn create_goal_in_tx(
         return Ok(replay);
     }
     let evidence = validate_evidence_in_owner(tx, &owner, req.draft.topology.evidence()).await?;
-    validate_operator_goal_evidence(&req.draft.authorship, &evidence)?;
+    require_operator_evidence_nonempty(&req.draft.authorship, &evidence)?;
     let inserted = insert_or_replay_goal(
         tx,
         sidecars,
@@ -170,7 +170,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         GoalAuthorship::System(SystemOrigin::Operator { .. })
     ) {
         return Err(StorageError::ConstraintViolation(
-            "operator-authored Goal transition requires explicit Abstraction evidence".into(),
+            "operator-authored Goal transition is not supported".into(),
         ));
     }
     let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
@@ -387,7 +387,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
         request_id: req.request_id.as_str(),
         evidence: &evidence,
     });
-    validate_operator_goal_evidence(&draft.authorship, &evidence)?;
+    require_operator_evidence_nonempty(&draft.authorship, &evidence)?;
     let inserted = insert_or_replay_goal(
         &mut tx,
         sidecars,
@@ -455,7 +455,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
     )> = Vec::with_capacity(req.children.len());
     for (child, declaration) in req.children.iter().zip(&declarations) {
         let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &child.evidence).await?;
-        validate_operator_goal_evidence(&req.authorship, &evidence)?;
+        require_operator_evidence_nonempty(&req.authorship, &evidence)?;
         let draft = child_draft(
             &req.owner,
             req.parent_goal_id,

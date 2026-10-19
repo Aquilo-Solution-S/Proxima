@@ -36,6 +36,9 @@ mod forgotten_targets;
 #[path = "core_mcp_pg/forgotten_reads.rs"]
 mod forgotten_reads;
 
+#[path = "core_mcp_pg/goal_evidence_kinds.rs"]
+mod goal_evidence_kinds;
+
 #[path = "core_mcp_pg/memory_reads_alike.rs"]
 mod memory_reads_alike;
 

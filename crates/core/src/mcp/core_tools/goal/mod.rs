@@ -262,7 +262,7 @@ impl McpTool for CoreGoalTool {
 async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput, McpToolError> {
     if args.evidence.is_empty() {
         return Err(McpToolError::InvalidInput(
-            "goal set requires >=1 Abstraction evidence handle motivating the goal".into(),
+            "goal set requires >=1 Fact or Abstraction evidence handle motivating the goal".into(),
         ));
     }
     let payload = encode_goal_payload(&ctx, args.payload)?;
@@ -445,7 +445,7 @@ async fn goal_modify(
 ) -> Result<GoalWriteOutput, McpToolError> {
     if args.evidence.as_ref().is_some_and(Vec::is_empty) {
         return Err(McpToolError::InvalidInput(
-            "operator-authored Goal evidence must contain at least one Abstraction handle".into(),
+            "Goal evidence must contain at least one Fact or Abstraction handle".into(),
         ));
     }
     let prior = ctx.resolve_goal(&args.goal)?;
@@ -645,7 +645,7 @@ pub(crate) fn resolve_operator_goal_evidence(
 ) -> Result<Vec<GoalEvidenceRef>, McpToolError> {
     if evidence.is_empty() {
         return Err(McpToolError::InvalidInput(
-            "operator-authored Goal evidence must contain at least one Abstraction handle".into(),
+            "Goal evidence must contain at least one Fact or Abstraction handle".into(),
         ));
     }
     resolve_evidence(ctx, evidence)
@@ -1029,7 +1029,7 @@ mod tests {
     async fn goal_set_accepts_nonempty_evidence_before_payload_resolution() {
         // With evidence present the empty-evidence guard must pass; the call
         // then fails later on the unregistered schema, proving the guard
-        // only fires on empty evidence (an Abstraction handle is accepted).
+        // only fires on empty evidence (a Fact or Abstraction handle is accepted).
         let err = goal_set(
             test_ctx(),
             goal_set_args(vec![format!("{}", uuid::Uuid::now_v7())]),

@@ -764,6 +764,141 @@ async fn goal_evidence_naming_a_forgotten_memory_is_refused_as_absent() {
     result.expect("goal evidence forgotten");
 }
 
+/// #513: Goal evidence may be a Fact, so a forgotten Fact is refused on set,
+/// modify and decompose exactly as an unknown id is (`entry not found`),
+/// each after a live-Fact control that is accepted.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one fixture, three goal writes
+async fn goal_evidence_naming_a_forgotten_fact_is_refused_as_absent() {
+    let split_db = clone_split_core_db("proxima_goal_forgotten_fact")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(split_db.runtime_url().to_owned())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let handle = |made: serde_json::Value| -> Result<String, &'static str> {
+            Ok(made["handle"].as_str().ok_or("handle")?.to_owned())
+        };
+        let remember = |title: &'static str| {
+            call(
+                "core_remember",
+                serde_json::json!({"title": title, "body": title, "tags": []}),
+            )
+        };
+        let base = handle(remember("ff base").await?)?;
+        let abs = handle(
+            call(
+                "core_derive",
+                serde_json::json!({
+                    "kind": "Abstraction", "title": "ff abs", "body": "ff abs", "tags": [],
+                    "source_handles": [base.clone()], "model_id": "test-model",
+                }),
+            )
+            .await?,
+        )?;
+        let target = handle(
+            call(
+                "core_interpret",
+                serde_json::json!({"claim": "ff target", "confidence": 80, "subjects": [base.clone()]}),
+            )
+            .await?,
+        )?;
+        let set_goal = |evidence: String, key: &'static str| {
+            call(
+                "core_goal",
+                serde_json::json!({
+                    "action": "set", "schema_id": "core/simple-text-v1",
+                    "title": key, "text": key, "body": {},
+                    "evidence": [evidence], "target_perspective": target.clone(),
+                    "idempotency_key": key,
+                }),
+            )
+        };
+        let modify_goal = |goal: String, evidence: String, key: &'static str| {
+            call(
+                "core_goal",
+                serde_json::json!({
+                    "action": "modify", "goal": goal, "schema_id": "core/simple-text-v1",
+                    "title": key, "text": key, "body": {},
+                    "evidence": [evidence], "idempotency_key": key,
+                }),
+            )
+        };
+        let decompose_goal = |parent: String, evidence: String, key: &'static str| {
+            call(
+                "core_goal",
+                serde_json::json!({
+                    "action": "decompose", "parent_goal": parent,
+                    "children": [{"schema_id": "core/simple-text-v1", "title": key,
+                        "text": key, "body": {}, "evidence": [evidence]}],
+                    "target_perspective": target.clone(), "idempotency_key": key,
+                }),
+            )
+        };
+        let parity = |cited: proxima::CoreMcpError,
+                      missing: proxima::CoreMcpError,
+                      gone: &str,
+                      absent: &str,
+                      what: &str| {
+            assert_eq!(observed(&cited, gone), observed(&missing, absent), "{what}");
+            assert!(format!("{cited:?}").contains("entry not found"), "{what}: {cited:?}");
+        };
+
+        // set
+        let gone = handle(remember("ff set").await?)?;
+        set_goal(gone.clone(), "ff-set-control").await?;
+        call("core_forget", serde_json::json!({"memory": gone})).await?;
+        let absent = absent_local_id(&gone)?;
+        let cited = set_goal(gone.clone(), "ff-set-gone").await.expect_err("set gone");
+        let missing = set_goal(absent.clone(), "ff-set-absent").await.expect_err("set absent");
+        parity(cited, missing, &gone, &absent, "set");
+
+        // modify
+        let gone = handle(remember("ff modify").await?)?;
+        let head = handle(set_goal(abs.clone(), "ff-mod-head").await?)?;
+        let head = handle(modify_goal(head, gone.clone(), "ff-mod-control").await?)?;
+        call("core_forget", serde_json::json!({"memory": gone})).await?;
+        let absent = absent_local_id(&gone)?;
+        let cited = modify_goal(head.clone(), gone.clone(), "ff-mod-gone")
+            .await
+            .expect_err("modify gone");
+        let missing = modify_goal(head.clone(), absent.clone(), "ff-mod-absent")
+            .await
+            .expect_err("modify absent");
+        parity(cited, missing, &gone, &absent, "modify");
+
+        // decompose
+        let gone = handle(remember("ff decompose").await?)?;
+        let parent = handle(set_goal(abs.clone(), "ff-dec-parent").await?)?;
+        decompose_goal(parent.clone(), gone.clone(), "ff-dec-control").await?;
+        call("core_forget", serde_json::json!({"memory": gone})).await?;
+        let absent = absent_local_id(&gone)?;
+        let cited = decompose_goal(parent.clone(), gone.clone(), "ff-dec-gone")
+            .await
+            .expect_err("decompose gone");
+        let missing = decompose_goal(parent.clone(), absent.clone(), "ff-dec-absent")
+            .await
+            .expect_err("decompose absent");
+        parity(cited, missing, &gone, &absent, "decompose");
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("goal evidence forgotten Fact");
+}
+
 /// #488 review r3: a replay matches any version of its series, not only the
 /// head. With v1 (sources [A]) and v2 (sources [B]) under one key, forgetting
 /// v2 moves the head back to v1; replaying v2's exact write still answers
@@ -1247,6 +1382,7 @@ async fn a_new_stance_on_a_forgotten_replay_slot_is_refused() {
 /// refused like a new stance or derive on that slot: `entry not found`, not
 /// "evidence does not exist". No live row comes to pin the forgotten memory.
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // one fixture, three slot kinds and controls
 async fn a_new_goal_on_a_forgotten_replay_slot_says_entry_not_found() {
     let split_db = clone_split_core_db("proxima_episode_forgotten_goal")
         .await
@@ -1335,8 +1471,44 @@ async fn a_new_goal_on_a_forgotten_replay_slot_says_entry_not_found() {
             "a live row pins the forgotten stance"
         );
 
+        // #513: evidence `remember:0` replays a forgotten Fact.
+        let with_goal_on = |tag: &str, evidence: &str| {
+            let mut episode = with_goal(tag);
+            episode["goal"][0]["evidence"] = serde_json::json!([evidence]);
+            episode
+        };
+        let first = call("core_episode_commit", base("fu-rf")).await?;
+        let fact = first["remembered"][0].as_str().ok_or("fact")?.to_owned();
+        call("core_forget", serde_json::json!({"memory": fact})).await?;
+        // The base episode's own derive and stance were committed over the
+        // Fact before it was forgotten; the refused goal adds no pin.
+        let pins_before = live_pins(fact.clone()).await?;
+        refused(
+            call("core_episode_commit", with_goal_on("fu-rf", "remember:0")).await,
+            "evidence remember:0",
+        );
+        assert_eq!(
+            live_pins(fact.clone()).await?,
+            pins_before,
+            "the refused goal pinned the forgotten Fact"
+        );
+        let admin = sqlx::PgPool::connect(&db_url(split_db.name())).await?;
+        let goal_pins: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxima_core.goal WHERE $1 = ANY(evidence_t)")
+                .bind(Uuid::parse_str(&fact)?)
+                .fetch_one(&admin)
+                .await?;
+        admin.close().await;
+        assert_eq!(goal_pins, 0, "a goal row cites the forgotten Fact");
+
         // Control: the same goal over live slots is accepted.
         let made = call("core_episode_commit", with_goal("fu-ok")).await?;
+        assert_eq!(made["goals"].as_array().map(Vec::len), Some(1), "{made}");
+        let made = call(
+            "core_episode_commit",
+            with_goal_on("fu-rf-ok", "remember:0"),
+        )
+        .await?;
         assert_eq!(made["goals"].as_array().map(Vec::len), Some(1), "{made}");
         built.shutdown().await;
         Ok(())

@@ -557,7 +557,8 @@ impl EpisodeWrite<'_> {
         for (idx, item) in items.iter().enumerate() {
             if item.evidence.is_empty() {
                 return Err(McpToolError::InvalidInput(
-                    "goal set requires >=1 Abstraction evidence handle motivating the goal".into(),
+                    "goal set requires >=1 Fact or Abstraction evidence handle motivating the goal"
+                        .into(),
                 ));
             }
             let payload = encode_goal_payload(ctx, item.payload.clone())?;
@@ -674,12 +675,18 @@ fn resolve_goal_evidence(
     let mut resolved = Vec::with_capacity(evidence.len());
     for handle in evidence {
         if let Some(slot) = resolve_local_slot(slots, handle)? {
-            if slot.class != MemoryHandleClass::Abstraction {
-                return Err(McpToolError::InvalidInput(
-                    "operator-authored Goal evidence must be Abstraction".into(),
-                ));
+            // A forgotten replay slot needs no case here: storage refuses it
+            // and the unit of work answers "entry not found".
+            match slot.class {
+                MemoryHandleClass::Fact | MemoryHandleClass::Abstraction => {
+                    resolved.push(GoalEvidenceRef::new(slot.id));
+                }
+                MemoryHandleClass::Perspective => {
+                    return Err(McpToolError::InvalidInput(
+                        "Goal evidence must reference a Fact or Abstraction".into(),
+                    ));
+                }
             }
-            resolved.push(GoalEvidenceRef::new(slot.id));
         } else {
             resolved.extend(super::goal::resolve_operator_goal_evidence(
                 ctx,

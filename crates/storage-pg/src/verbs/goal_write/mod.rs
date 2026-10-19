@@ -29,7 +29,7 @@ mod types;
 
 use edges::assert_goal_topology_references;
 use evidence::{
-    load_goal_evidence_exact, validate_evidence_in_owner, validate_operator_goal_evidence,
+    load_goal_evidence_exact, require_operator_evidence_nonempty, validate_evidence_in_owner,
 };
 use insert::{
     PreparedGoalInsert, insert_or_replay_goal, persist_prepared_goal_insert, prepare_goal_insert,
