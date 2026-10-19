@@ -322,14 +322,19 @@ impl PgSidecarRegistry {
         Ok(())
     }
 
-    /// The macro flag and the contract must agree about which sidecars stay
-    /// with the source owner on transfer.
+    /// The macro's owner mode and the contract must agree about which
+    /// sidecars carry an owner and what that owner does on transfer.
+    ///
+    /// The mapping is three-way: `SidecarOwnerMode::Pinned` ⇔
+    /// `TransferRule::RetainAtSource`; `SidecarOwnerMode::Follows` ⇔
+    /// `TransferRule::Follow` with `Surface.owner_column` set; anything else
+    /// ⇔ `SidecarOwnerMode::None`.
     ///
     /// The two are read by different code: core builds the owner-inverse
     /// table lists from the contract, and the Postgres adapter appends its
-    /// owner-pinned leg from the macro flag. A schema owner-pinned in
-    /// storage and `Follow` in the contract is a wrong-owner bundle rather
-    /// than a crash, which is why they are compared here.
+    /// pinned leg and stamps `owner_id` from the macro mode. A disagreement
+    /// is a wrong-owner bundle or an unstamped row rather than a crash,
+    /// which is why they are compared here.
     ///
     /// EVERY LINKED FLAVOR THAT SHIPS A CONTRACT IS CHECKED. Schemas whose
     /// flavor registered no contract are skipped: a flavor without a
@@ -391,6 +396,26 @@ impl PgSidecarRegistry {
         Ok(())
     }
 
+    /// `pg_sidecar!(key: …)` and the contract `Surface`'s
+    /// `KeyShape::MemoryT { column }` are the same fact, and this is what
+    /// compares them.
+    ///
+    /// WHY IT MATTERS THAT THEY DISAGREE SILENTLY. The two are read by
+    /// different generators: the typed `INSERT` and the batch read spell the
+    /// macro's column, while the projection `INSERT`, the substring arm and
+    /// the snippet lookup spell the `Surface`'s. A disagreement therefore
+    /// writes the sidecar row on one column and looks for it on another —
+    /// a table whose rows exist and whose projection is empty, with nothing
+    /// failing anywhere. Neither generator can notice: each is internally
+    /// consistent with the declaration it reads.
+    ///
+    /// A table with NO surface is skipped rather than refused. The
+    /// projection and embedding lanes already refuse it at core freeze when
+    /// they need one (`ProjectedSidecarNotMemoryKeyed`,
+    /// `EmbeddedSidecarNotMemoryKeyed`); a sidecar that is neither projected
+    /// nor embedded has made no second claim for this check to compare
+    /// against, and inventing one here would be this function asserting a
+    /// declaration nobody wrote.
     fn check_memory_key_against_contracts(
         &self,
         registry: &proxima_core::FlavorRegistryFrozen,

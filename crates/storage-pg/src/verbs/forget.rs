@@ -498,9 +498,9 @@ async fn delete_memory_dependents(
         // table was declared as one the forget does not touch, and the walk
         // is about to destroy it. `freeze_against`'s
         // `check_keep_is_owner_pinned` makes that unreachable — `Keep`
-        // requires `owner_pinned`, and owner-pinned tables were skipped
-        // above — so this is the assertion that the boot check ran, not a
-        // second policy.
+        // requires `SidecarOwnerMode::Pinned`, and Pinned tables were
+        // skipped above — so this is the assertion that the boot check ran,
+        // not a second policy.
         let key_column = match surfaces.forget_leg(table) {
             ForgetLeg::Marked => sidecars.memory_key_column(table).unwrap_or("t"),
             ForgetLeg::Kept { why } => {
