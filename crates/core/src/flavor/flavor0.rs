@@ -611,8 +611,8 @@ const KERNEL_SURFACES: &[Surface] = &[
         export: ExportRule::Allowlist(&["t", "owner_id", "kind", "text"]),
         forget: ForgetRule::Keep {
             why: "the sketch is the only copy of a memory's rendered text, which a \
-                  restore needs back; it is read only for ids already admitted, which a \
-                  forgotten memory's id is not",
+                  restore needs back; every sketch read joins a live memory or a goal \
+                  with the same t, so a forgotten memory's sketch is not returned",
         },
         // The sketch has no reader: the search verb scans exactly the four
         // declared sidecars, and export strips the column.

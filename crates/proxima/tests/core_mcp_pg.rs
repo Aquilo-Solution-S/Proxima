@@ -33,6 +33,9 @@ mod other_stores;
 #[path = "core_mcp_pg/forgotten_targets.rs"]
 mod forgotten_targets;
 
+#[path = "core_mcp_pg/forgotten_reads.rs"]
+mod forgotten_reads;
+
 #[path = "core_mcp_pg/memory_reads_alike.rs"]
 mod memory_reads_alike;
 

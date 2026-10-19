@@ -82,6 +82,20 @@ pub async fn upsert_sketch(
     Ok(())
 }
 
+/// A sketch row is readable only through its parent: a live memory, or a
+/// goal, with the same `t`. The sketch outlives a forget (a restore needs the
+/// text back), so a read that started from a caller-supplied id must not
+/// return a forgotten memory's sketch. The explicit `forgotten_at IS NULL`
+/// keeps that true in the lifecycle scope too; owner RLS on `memory` and
+/// `goal` decides what the reader may see at all.
+macro_rules! sketch_parent_readable {
+    () => {
+        "(EXISTS (SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: live-only (a forgotten memory's sketch is not readable) */ \
+           WHERE m.t = s.t AND m.forgotten_at IS NULL) \
+          OR EXISTS (SELECT 1 FROM proxima_core.goal g WHERE g.t = s.t))"
+    };
+}
+
 /// The persisted sketch text of each memory in `ids` that has one: the
 /// memory's own text, the display body a read falls back to when the schema
 /// names no body field and the payload has no `body`/`text` key. Callers
@@ -93,12 +107,14 @@ pub async fn load_sketch_texts_on_connection(
     if ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let rows: Vec<(Uuid, String)> =
-        sqlx::query_as("SELECT s.t, s.text FROM proxima_core.sketch s WHERE s.t = ANY($1::uuid[])")
-            .bind(ids)
-            .fetch_all(&mut *connection)
-            .await
-            .map_err(map_err)?;
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(concat!(
+        "SELECT s.t, s.text FROM proxima_core.sketch s WHERE s.t = ANY($1::uuid[]) AND ",
+        sketch_parent_readable!(),
+    ))
+    .bind(ids)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(map_err)?;
     Ok(rows.into_iter().collect())
 }
 
@@ -116,7 +132,10 @@ pub async fn load_sketches_on_connection(
         .copied()
         .map(OwnerId::into_inner)
         .collect();
-    let rows: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as("SELECT s.t, s.owner_id, s.kind::text, s.text FROM proxima_core.sketch s JOIN proxima_core.owners o ON o.owner_id = s.owner_id WHERE s.t = ANY($1::uuid[]) AND s.owner_id = ANY($2::uuid[])").bind(&ts).bind(&owners).fetch_all(&mut *connection).await.map_err(map_err)?;
+    let rows: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as(concat!(
+        "SELECT s.t, s.owner_id, s.kind::text, s.text FROM proxima_core.sketch s JOIN proxima_core.owners o ON o.owner_id = s.owner_id WHERE s.t = ANY($1::uuid[]) AND s.owner_id = ANY($2::uuid[]) AND ",
+        sketch_parent_readable!(),
+    )).bind(&ts).bind(&owners).fetch_all(&mut *connection).await.map_err(map_err)?;
     Ok(rows
         .into_iter()
         .filter_map(|(t, oid, k, text)| {
