@@ -459,10 +459,10 @@ pub(crate) async fn lock_forget_memories_tx(
 /// unregistered table is a constraint violation) and the owner-pin filter;
 /// the DB backs the other direction with `assert_sidecar_stamp_declared`.
 ///
-/// **The contract, for the `Deleted` legs.** The embedding triple and the
-/// sketch are derived rows nothing stamps — no lane records them on the
-/// memory — so there is no stamp to walk and the declaration is the only
-/// list.
+/// **The contract, for the `Deleted` legs.** The embedding triple is a set
+/// of derived rows nothing stamps — no lane records them on the memory — so
+/// there is no stamp to walk and the declaration is the only list. The
+/// sketch is not a leg since #488 S14: a restore needs its text back.
 ///
 /// Stamp legs run before declaration legs. Neither set holds a foreign key
 /// into the other.
@@ -520,8 +520,8 @@ async fn delete_memory_dependents(
 
 /// What a forget deletes: the rows search and embedding derive from the
 /// memory — every linked flavor's search projection row, and its `Deleted`
-/// legs (the embedding triple and the sketch). The memory row and its
-/// sidecar rows stay, hidden by `forgotten_at`; before #488 the projection
+/// legs (the embedding triple). The memory row, its sketch and its sidecar
+/// rows stay, hidden by `forgotten_at`; before #488 the projection
 /// went by cascade with the sidecar row the forget deleted.
 async fn delete_derived_dependents(
     tx: &mut Transaction<'_, Postgres>,
