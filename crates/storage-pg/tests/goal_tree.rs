@@ -254,6 +254,26 @@ impl Tree {
             .await
     }
 
+    async fn abandon(
+        &self,
+        prior: GoalId,
+        request: &str,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        self.pg
+            .transition_goal_atomic(
+                &TransitionGoalAtomicRequest {
+                    owner: self.owner,
+                    prior_goal_id: prior,
+                    transition: GoalTransitionKind::Abandon,
+                    authorship: GoalAuthorship::User,
+                    request_id: key(request),
+                    context: self.context(),
+                },
+                &self.permit,
+            )
+            .await
+    }
+
     async fn handle_of(&self, goal: GoalId) -> TestResult<Uuid> {
         Ok(
             sqlx::query_scalar("SELECT handle FROM proxima_core.goal WHERE t = $1")
@@ -602,7 +622,8 @@ async fn hold_lifecycle_lock(
     Ok(tx)
 }
 
-/// No Achieved parent head has an Active or Paused child head.
+/// No closed (Achieved or Abandoned) parent head has an Active or Paused
+/// child head: by induction, the depth-independent form of the rule.
 async fn assert_tree_invariant(pool: &sqlx::PgPool, what: &str) -> TestResult<()> {
     let broken: i64 = sqlx::query_scalar(
         "SELECT count(*)
@@ -610,11 +631,11 @@ async fn assert_tree_invariant(pool: &sqlx::PgPool, what: &str) -> TestResult<()
            JOIN proxima_core.goal_head ph ON ph.handle = p.handle AND ph.t = p.t
            JOIN proxima_core.goal c ON c.parent_handle = p.handle
            JOIN proxima_core.goal_head ch ON ch.handle = c.handle AND ch.t = c.t
-          WHERE p.state = 'Achieved' AND c.state IN ('Active', 'Paused')",
+          WHERE p.state IN ('Achieved', 'Abandoned') AND c.state IN ('Active', 'Paused')",
     )
     .fetch_one(pool)
     .await?;
-    assert_eq!(broken, 0, "{what}: an Achieved parent has an open child");
+    assert_eq!(broken, 0, "{what}: a closed parent has an open child");
     Ok(())
 }
 
@@ -701,4 +722,355 @@ async fn a_racing_achieve_first_refuses_the_decompose() {
     }
     .await;
     tree.finish(result, "G6").await;
+}
+
+// ============================================================
+// An open goal never sits under a closed one: abandon (refs #514)
+// ============================================================
+
+/// The open children a refusal names, as an error rather than a panic so a
+/// red run still drops its database.
+fn refused_open(
+    result: Result<GoalWriteOutcome, StorageError>,
+    what: &str,
+) -> TestResult<Vec<GoalId>> {
+    match result {
+        Err(StorageError::GoalChildrenOpen { open }) => Ok(open),
+        other => Err(format!("{what}: expected GoalChildrenOpen, got {other:?}").into()),
+    }
+}
+
+/// Closed heads with an open descendant at any depth (test-only recursive
+/// walk; product code checks one level, post-lock).
+async fn open_below_closed(pool: &sqlx::PgPool) -> TestResult<i64> {
+    Ok(sqlx::query_scalar(
+        "WITH RECURSIVE heads AS (
+             SELECT g.handle, g.state, g.parent_handle
+               FROM proxima_core.goal g
+               JOIN proxima_core.goal_head h ON h.handle = g.handle AND h.t = g.t
+         ), below(ancestor, descendant) AS (
+             SELECT parent_handle, handle FROM heads WHERE parent_handle IS NOT NULL
+             UNION
+             SELECT b.ancestor, c.handle FROM below b JOIN heads c ON c.parent_handle = b.descendant
+         )
+         SELECT count(*)
+           FROM below b
+           JOIN heads a ON a.handle = b.ancestor
+           JOIN heads d ON d.handle = b.descendant
+          WHERE a.state IN ('Achieved', 'Abandoned') AND d.state IN ('Active', 'Paused')",
+    )
+    .fetch_one(pool)
+    .await?)
+}
+
+/// T1: decompose P into A, B; abandoning P names both open children.
+#[tokio::test]
+async fn abandoning_a_parent_with_active_children_names_them() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let p = tree.create("t1-p", &[]).await?;
+        let children = tree.decompose(p, &["t1-a", "t1-b"]).await?;
+        let open = refused_open(tree.abandon(p, "t1-abandon").await, "T1")?;
+        assert_eq!(open, children);
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "T1").await;
+}
+
+/// T2: a Paused child blocks abandon and is named by its head t.
+#[tokio::test]
+async fn a_paused_child_blocks_abandon_by_its_head() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let p = tree.create("t2-p", &[]).await?;
+        let children = tree.decompose(p, &["t2-a"]).await?;
+        let paused = tree.pause(children[0], "t2-a-pause").await?;
+        let open = refused_open(tree.abandon(p, "t2-abandon").await, "T2")?;
+        assert_eq!(open, vec![paused]);
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "T2").await;
+}
+
+/// T3, hole (a): an Abandoned child cannot keep an open grandchild, and the
+/// parent closes only bottom-up.
+#[tokio::test]
+async fn an_abandoned_child_keeps_no_open_grandchild() {
+    let tree = Tree::new().await.expect("fixture");
+    let pool = tree.pg.pool_for_tests();
+    let result = async {
+        let p = tree.create("t3-p", &[]).await?;
+        let a = tree.decompose(p, &["t3-a"]).await?[0];
+        let a1 = tree.decompose(a, &["t3-a1"]).await?[0];
+        let open = refused_open(tree.abandon(a, "t3-a-abandon-early").await, "T3")?;
+        assert_eq!(open, vec![a1]);
+        assert_eq!(tree.head_of(a).await?, a.into_inner(), "A unchanged");
+        assert_tree_invariant(pool, "T3 refused").await?;
+        tree.achieve(a1, "t3-a1-achieve").await?;
+        tree.abandon(a, "t3-a-abandon").await?;
+        assert_tree_invariant(pool, "T3 A abandoned").await?;
+        match tree.achieve(p, "t3-p-achieve-early").await {
+            Err(StorageError::GoalChildrenAllAbandoned) => {}
+            other => {
+                return Err(format!("T3: expected GoalChildrenAllAbandoned, got {other:?}").into());
+            }
+        }
+        let b = tree.decompose(p, &["t3-b"]).await?[0];
+        tree.achieve(b, "t3-b-achieve").await?;
+        tree.achieve(p, "t3-p-achieve").await?;
+        assert_tree_invariant(pool, "T3 done").await?;
+        assert_eq!(open_below_closed(pool).await?, 0, "T3 any depth");
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "T3").await;
+}
+
+/// T4: children of an older parent version block abandon.
+#[tokio::test]
+async fn children_of_an_older_parent_version_block_abandon() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let p1 = tree.create("t4-p", &[]).await?;
+        let children = tree.decompose(p1, &["t4-a"]).await?;
+        let p2 = tree.modify(p1, "t4-modify").await?;
+        let p3 = tree.pause(p2, "t4-pause").await?;
+        let p4 = tree
+            .transition(p3, GoalTransitionKind::Resume, "t4-resume")
+            .await?;
+        let open = refused_open(tree.abandon(p4, "t4-abandon").await, "T4")?;
+        assert_eq!(open, children);
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "T4").await;
+}
+
+/// T5: a refused abandon writes nothing.
+#[tokio::test]
+async fn a_refused_abandon_writes_nothing() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let p = tree.create("t5-p", &[]).await?;
+        tree.decompose(p, &["t5-a"]).await?;
+        let before = tree.counts().await?;
+        let head = tree.head_of(p).await?;
+        refused_open(tree.abandon(p, "t5-abandon").await, "T5")?;
+        assert_eq!(
+            tree.counts().await?,
+            before,
+            "goal, change, declaration, memory, outbox"
+        );
+        assert_eq!(tree.head_of(p).await?, head, "parent head unchanged");
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "T5").await;
+}
+
+/// T6: decompose and abandon race on one parent; decompose takes the parent
+/// lock first. Only a check after abandon's lock sees the child.
+#[tokio::test]
+async fn a_racing_decompose_first_refuses_the_abandon() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let p = tree.create("t6-p", &[]).await?;
+        let pool = tree.pg.pool_for_tests();
+        let blocker = hold_lifecycle_lock(pool, p.into_inner()).await?;
+        let (decomposed, abandoned, released) = tokio::join!(
+            tree.decompose(p, &["t6-a"]),
+            async {
+                await_lock_waiters(pool, 1, "T6 decompose queued").await?;
+                Ok::<_, Box<dyn std::error::Error>>(tree.abandon(p, "t6-abandon").await)
+            },
+            async {
+                await_lock_waiters(pool, 2, "T6 abandon queued").await?;
+                blocker.commit().await?;
+                Ok::<_, Box<dyn std::error::Error>>(())
+            },
+        );
+        released?;
+        let children = decomposed?;
+        let open = refused_open(abandoned?, "T6")?;
+        assert_eq!(open, children);
+        assert_eq!(
+            tree.head_of(p).await?,
+            p.into_inner(),
+            "parent not abandoned"
+        );
+        assert_tree_invariant(pool, "T6").await?;
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "T6").await;
+}
+
+/// T8: depth 3 by the one-level rule alone: every close above an open level
+/// is refused, and the tree closes bottom-up.
+#[tokio::test]
+async fn a_three_level_tree_closes_only_bottom_up() {
+    let tree = Tree::new().await.expect("fixture");
+    let pool = tree.pg.pool_for_tests();
+    let result = async {
+        let p = tree.create("t8-p", &[]).await?;
+        let a = tree.decompose(p, &["t8-a"]).await?[0];
+        let a1 = tree.decompose(a, &["t8-a1"]).await?[0];
+        let a1x = tree.decompose(a1, &["t8-a1x"]).await?[0];
+        let levels = [(p, a, "p"), (a, a1, "a"), (a1, a1x, "a1")];
+        for (goal, child, label) in levels {
+            let open = refused_open(
+                tree.abandon(goal, &format!("t8-{label}-abandon-0")).await,
+                label,
+            )?;
+            assert_eq!(open, vec![child], "abandon {label}");
+            let open = refused_open(
+                tree.achieve(goal, &format!("t8-{label}-achieve-0")).await,
+                label,
+            )?;
+            assert_eq!(open, vec![child], "achieve {label}");
+        }
+        tree.achieve(a1x, "t8-a1x-achieve").await?;
+        // A and P still sit above an open level.
+        refused_open(tree.abandon(a, "t8-a-abandon-1").await, "a after a1x")?;
+        refused_open(tree.abandon(p, "t8-p-abandon-1").await, "p after a1x")?;
+        tree.achieve(a1, "t8-a1-achieve").await?;
+        refused_open(tree.abandon(p, "t8-p-abandon-2").await, "p after a1")?;
+        tree.abandon(a, "t8-a-abandon").await?;
+        tree.abandon(p, "t8-p-abandon").await?;
+        assert_tree_invariant(pool, "T8").await?;
+        assert_eq!(open_below_closed(pool).await?, 0, "T8 any depth");
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "T8").await;
+}
+
+/// G1/G2: abandon a goal without children, with all children closed (mixed),
+/// and with all children Abandoned (no "one Achieved" rule on abandon).
+#[tokio::test]
+async fn closed_children_or_none_admit_the_abandon() {
+    let tree = Tree::new().await.expect("fixture");
+    let pool = tree.pg.pool_for_tests();
+    let result = async {
+        let lone = tree.create("ag1-p", &[]).await?;
+        tree.abandon(lone, "ag1-abandon").await?;
+
+        let p = tree.create("ag2-p", &[]).await?;
+        let children = tree.decompose(p, &["ag2-a", "ag2-b"]).await?;
+        tree.achieve(children[0], "ag2-a-achieve").await?;
+        tree.abandon(children[1], "ag2-b-abandon").await?;
+        tree.abandon(p, "ag2-abandon").await?;
+
+        let p = tree.create("ag2b-p", &[]).await?;
+        let children = tree.decompose(p, &["ag2b-a", "ag2b-b"]).await?;
+        tree.abandon(children[0], "ag2b-a-abandon").await?;
+        tree.abandon(children[1], "ag2b-b-abandon").await?;
+        tree.abandon(p, "ag2b-abandon").await?;
+        assert_tree_invariant(pool, "G1/G2").await?;
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "G1/G2 abandon").await;
+}
+
+/// G3: pausing a parent over Active children is allowed, and so is resume.
+#[tokio::test]
+async fn pause_and_resume_ignore_open_children() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let p = tree.create("ag3-p", &[]).await?;
+        tree.decompose(p, &["ag3-a"]).await?;
+        let paused = tree.pause(p, "ag3-pause").await?;
+        tree.transition(paused, GoalTransitionKind::Resume, "ag3-resume")
+            .await?;
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "G3 pause").await;
+}
+
+/// G4: a plain dependency is not a child: abandoning X under an Active
+/// dependent Y is allowed.
+#[tokio::test]
+async fn a_plain_dependent_does_not_block_abandon() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let x = tree.create("ag4-x", &[]).await?;
+        tree.create("ag4-y", &[x]).await?;
+        tree.abandon(x, "ag4-abandon").await?;
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "G4 abandon").await;
+}
+
+/// G5: a successful abandon replays, writing nothing new.
+#[tokio::test]
+async fn an_abandoned_parent_replays() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let p = tree.create("ag5-p", &[]).await?;
+        let children = tree.decompose(p, &["ag5-a"]).await?;
+        tree.abandon(children[0], "ag5-a-abandon").await?;
+        let first = tree.abandon(p, "ag5-abandon").await?;
+        let before = tree.counts().await?;
+        let replay = tree.abandon(p, "ag5-abandon").await?;
+        assert!(replay.idempotent_replay, "{replay:?}");
+        assert_eq!(replay.goal_id, first.goal_id);
+        assert_eq!(tree.counts().await?, before, "a replay writes nothing");
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "G5 abandon").await;
+}
+
+/// G6: abandon takes the parent lock first; the queued decompose finds the
+/// parent terminal and adds no child.
+#[tokio::test]
+async fn a_racing_abandon_first_refuses_the_decompose() {
+    let tree = Tree::new().await.expect("fixture");
+    let result = async {
+        let p = tree.create("ag6-p", &[]).await?;
+        let pool = tree.pg.pool_for_tests();
+        let blocker = hold_lifecycle_lock(pool, p.into_inner()).await?;
+        let (abandoned, decomposed, released) = tokio::join!(
+            tree.abandon(p, "ag6-abandon"),
+            async {
+                await_lock_waiters(pool, 1, "G6 abandon queued").await?;
+                Ok::<_, Box<dyn std::error::Error>>(tree.decompose(p, &["ag6-a"]).await)
+            },
+            async {
+                await_lock_waiters(pool, 2, "G6 decompose queued").await?;
+                blocker.commit().await?;
+                Ok::<_, Box<dyn std::error::Error>>(())
+            },
+        );
+        released?;
+        abandoned?;
+        let Err(err) = decomposed? else {
+            return Err("G6: decompose after abandon must be refused".into());
+        };
+        let err = err
+            .downcast::<StorageError>()
+            .map_err(|e| format!("G6: not a StorageError: {e}"))?;
+        assert!(
+            matches!(
+                *err,
+                StorageError::Conflict(_) | StorageError::ConstraintViolation(_)
+            ),
+            "G6: {err:?}"
+        );
+        let children: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxima_core.goal WHERE parent_handle IS NOT NULL",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(children, 0, "no child row");
+        assert_tree_invariant(pool, "G6 abandon").await?;
+        Ok(())
+    }
+    .await;
+    tree.finish(result, "G6 abandon").await;
 }

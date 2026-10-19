@@ -69,10 +69,10 @@ pub enum StorageError {
     /// message, so the engine maps it without parsing a string.
     #[error("publication refused: {0}")]
     PublicationRefused(#[from] crate::publication::PublicationError),
-    /// `mark_achieved` on a goal with decompose children that are still
-    /// Active or Paused (#514). `open` names each open child by its current
-    /// head (the handle a caller passes to transition or `mark_achieved`),
-    /// in child creation order.
+    /// `mark_achieved` or abandon on a goal with decompose children that are
+    /// still Active or Paused (#514): an open goal never sits under a closed
+    /// one. `open` names each open child by its current head (the handle a
+    /// caller passes to transition or `mark_achieved`), in child handle order.
     #[error("goal has open children: {}", join_goal_ids(open))]
     GoalChildrenOpen { open: Vec<crate::GoalId> },
     /// `mark_achieved` on a goal whose decompose children are all Abandoned

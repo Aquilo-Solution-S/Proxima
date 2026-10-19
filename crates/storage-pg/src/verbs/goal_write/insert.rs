@@ -1,5 +1,5 @@
 use super::{
-    GoalAtomicContext, GoalDraft, GoalId, GoalState, GoalWritePreparation, InsertedGoal,
+    ChildRule, GoalAtomicContext, GoalDraft, GoalId, GoalState, GoalWritePreparation, InsertedGoal,
     PayloadKind, PgSidecarKey, PgSidecarRegistryFrozen, Postgres, RowColumns, StorageError,
     Transaction, lock_prepared_goal_write, persist_prepared_goal_write, prepare_goal_write,
 };
@@ -27,8 +27,11 @@ pub(super) struct PreparedGoalInsert<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PostLockGuard {
     None,
-    /// Achieve (#514): the series' decompose children are closed.
+    /// Achieve (#514): the series' decompose children are closed, and at
+    /// least one is Achieved.
     ChildrenClosed,
+    /// Abandon: no decompose child of the series is Active or Paused.
+    NoOpenChildren,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -58,11 +61,17 @@ pub(super) async fn insert_or_replay_goal(
             if let GoalWritePreparation::New(prepared_write) = &prepared.preparation {
                 lock_prepared_goal_write(&mut attempt, prepared_write).await?;
                 // A replay preparation skips this: a replayed achieve replays.
-                if guard == PostLockGuard::ChildrenClosed {
+                let rule = match guard {
+                    PostLockGuard::None => None,
+                    PostLockGuard::ChildrenClosed => Some(ChildRule::ClosedWithAchieved),
+                    PostLockGuard::NoOpenChildren => Some(ChildRule::NoneOpen),
+                };
+                if let Some(rule) = rule {
                     super::ensure_goal_children_closed(
                         &mut attempt,
                         &draft.owner(),
                         prepared_write.handle(),
+                        rule,
                     )
                     .await?;
                 }

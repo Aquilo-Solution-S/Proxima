@@ -95,7 +95,8 @@ pub enum GoalTransitionKind {
     Pause { pending: PendingWork },
     /// Paused to Active.
     Resume,
-    /// Active to Abandoned.
+    /// Active to Abandoned; refused while a decompose child is Active or
+    /// Paused.
     Abandon,
 }
 

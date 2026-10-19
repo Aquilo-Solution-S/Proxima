@@ -182,10 +182,16 @@ impl Engine {
 
     /// Transition a Goal head to Paused, Active, or Abandoned.
     ///
+    /// Abandon is refused while any decompose child's current head is Active
+    /// or Paused: an open goal never sits under a closed one. Pause and resume
+    /// are not affected.
+    ///
     /// # Errors
     ///
     /// Returns `Forbidden` when `authz` cannot access the request Owner or
-    /// lacks Goal write; `InvalidArgument`
+    /// lacks Goal write; `InvalidArgument` (field `goal`) when abandon meets an
+    /// open child (`goal has open children: <handle>, ...`, naming each open
+    /// child's current head); `InvalidArgument`
     /// or `NotFound` for rejected goal references; or `Internal` for storage
     /// failures.
     pub async fn transition_goal(

@@ -49,3 +49,55 @@ async fn mark_achieved_on_a_parent_waits_for_its_children() {
     env.shutdown().await;
     result.expect("mark_achieved waits for children");
 }
+
+/// T7: `core_goal transition abandon` on a parent with open children is
+/// refused as `InvalidArgument` naming them; once they are abandoned, the
+/// parent is.
+#[tokio::test]
+async fn transition_abandon_on_a_parent_waits_for_its_children() {
+    let env = Env::new("proxima_goal_tree_abandon_mcp")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let fact = env.remember("abandon fact").await?;
+        let target = env.interpret("abandon target", &fact).await?;
+        let parent = handle_of(&env.set_goal(&[&fact], &target, "abandon-parent").await?)?;
+        let out = env
+            .decompose_goal(&parent, &[&[&fact], &[&fact]], &target, "abandon-children")
+            .await?;
+        let children: Vec<String> = out["children"]
+            .as_array()
+            .ok_or("children")?
+            .iter()
+            .map(handle_of)
+            .collect::<Result<_, _>>()?;
+        let abandon = |goal: String, key: &'static str| {
+            env.call(
+                "core_goal",
+                serde_json::json!({
+                    "action": "transition", "goal": goal,
+                    "transition": "abandon", "idempotency_key": key,
+                }),
+            )
+        };
+        let refused = match abandon(parent.clone(), "abandon-parent-early").await {
+            Ok(out) => return Err(format!("a parent with open children is refused: {out}").into()),
+            Err(e) => e.to_string(),
+        };
+        assert!(refused.contains("InvalidArgument"), "{refused}");
+        assert!(refused.contains("goal has open children: "), "{refused}");
+        for child in &children {
+            assert!(
+                refused.contains(child.as_str()),
+                "{child} not named: {refused}"
+            );
+        }
+        abandon(children[0].clone(), "abandon-child-0").await?;
+        abandon(children[1].clone(), "abandon-child-1").await?;
+        abandon(parent, "abandon-parent-done").await?;
+        Ok(())
+    }
+    .await;
+    env.shutdown().await;
+    result.expect("transition abandon waits for children");
+}
