@@ -16,8 +16,9 @@ the state keeps its predecessor's text (the Goal write verbs carry it).
 
 The goal tree (#514): an open goal (Active or Paused) never sits under a
 closed one (Achieved or Abandoned). Each write checks one level: decompose
-needs an Active parent, achieve and abandon need no open child, and pause,
-resume and modify need nothing. `goalStep_preserves_inv` shows that keeps the
+needs an Active parent, achieve and abandon need no open child (abandon
+takes an Active or Paused goal, #515), and pause, resume and modify need
+nothing. `goalStep_preserves_inv` shows that keeps the
 rule, and `closed_ancestor_closes_descendant` that it holds at any depth.
 -/
 
@@ -50,6 +51,7 @@ def goalTransitionAdmitted : GoalState → GoalState → Prop
   | .Active,   .Achieved  => True
   | .Active,   .Abandoned => True
   | .Paused,   .Active    => True
+  | .Paused,   .Abandoned => True
   | _, _ => False
 
 -- ============================================================
@@ -413,8 +415,9 @@ structure ForestRelabel (F F' : GoalForest) (x : Handle) (old new : GoalState) :
   clock     : F'.clock = F.clock
 
 /-- One goal write. Each step states only its local precondition: decompose
-    needs an Active parent, achieve and abandon need no open child, and
-    pause, resume and modify need nothing new. -/
+    needs an Active parent, achieve and abandon need no open child (abandon
+    takes an Active or Paused goal), and pause, resume and modify need
+    nothing new. -/
 inductive GoalStep : GoalForest → GoalForest → Prop where
   | set {F F' : GoalForest} (x : Handle) :
       ForestBirth F F' x none → GoalStep F F'
@@ -430,8 +433,9 @@ inductive GoalStep : GoalForest → GoalForest → Prop where
       `GoalTreeClosed` covers it, and the invariant needs only `NoOpenChild`. -/
   | achieve {F F' : GoalForest} (x : Handle) :
       NoOpenChild F x → ForestRelabel F F' x .Active .Achieved → GoalStep F F'
-  | abandon {F F' : GoalForest} (x : Handle) :
-      NoOpenChild F x → ForestRelabel F F' x .Active .Abandoned → GoalStep F F'
+  | abandon {F F' : GoalForest} (x : Handle) {old : GoalState} :
+      old.isOpen = true → NoOpenChild F x → ForestRelabel F F' x old .Abandoned →
+      GoalStep F F'
 
 theorem relabel_isSome {F F' : GoalForest} {x : Handle} {old new : GoalState}
     (r : ForestRelabel F F' x old new) (h : Handle) :
@@ -611,9 +615,9 @@ theorem achieve_preserves {F F' : GoalForest} {x : Handle}
     (r : ForestRelabel F F' x .Active .Achieved) : GoalForestInv F' :=
   closing_relabel_preserves inv hchild r rfl
 
-theorem abandon_preserves {F F' : GoalForest} {x : Handle}
+theorem abandon_preserves {F F' : GoalForest} {x : Handle} {old : GoalState}
     (inv : GoalForestInv F) (hchild : NoOpenChild F x)
-    (r : ForestRelabel F F' x .Active .Abandoned) : GoalForestInv F' :=
+    (r : ForestRelabel F F' x old .Abandoned) : GoalForestInv F' :=
   closing_relabel_preserves inv hchild r rfl
 
 theorem goalStep_preserves_inv :
@@ -626,7 +630,19 @@ theorem goalStep_preserves_inv :
   | resume _ r => exact resume_preserves inv r
   | modify _ r => exact modify_preserves inv r
   | achieve _ hchild r => exact achieve_preserves inv hchild r
-  | abandon _ hchild r => exact abandon_preserves inv hchild r
+  | abandon _ _ hchild r => exact abandon_preserves inv hchild r
+
+/-- Every abandon the step model admits (from an open goal) is an admitted
+    transition of the state matrix: the model and `goalTransitionAdmitted`
+    agree on Active → Abandoned and Paused → Abandoned. -/
+theorem abandon_admitted :
+    ∀ old : GoalState, old.isOpen = true → goalTransitionAdmitted old .Abandoned := by
+  intro old h
+  cases old with
+  | Active => trivial
+  | Paused => trivial
+  | Achieved => simp [GoalState.isOpen] at h
+  | Abandoned => simp [GoalState.isOpen] at h
 
 def emptyForest : GoalForest where
   state  := fun _ => none
