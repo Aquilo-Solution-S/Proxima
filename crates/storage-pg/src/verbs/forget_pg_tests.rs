@@ -201,7 +201,7 @@ async fn append_in_own_transaction(
     }
 }
 
-async fn cool_one(
+async fn forget_one(
     pool: &sqlx::PgPool,
     owner: &OwnerId,
     t: Uuid,
@@ -583,7 +583,7 @@ async fn a_hard_erase_deletes_the_memorys_other_store_origins() {
 }
 
 #[tokio::test]
-async fn series_erase_linearizes_with_fully_cooled_headless_series() {
+async fn series_erase_linearizes_with_fully_forgotten_series() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -600,8 +600,8 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
         let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
         let first_t = first.memory_id.into_inner();
         let second_t = second.memory_id.into_inner();
-        cool_one(pool, &owner, first_t).await?;
-        cool_one(pool, &owner, second_t).await?;
+        forget_one(pool, &owner, first_t).await?;
+        forget_one(pool, &owner, second_t).await?;
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
@@ -613,16 +613,16 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
             "a fully forgotten series keeps its head on the newest forgotten version"
         );
 
-        // Append wins: the series erase captures the cooled handle and waits;
-        // the append recreates a head, and expansion after the lock must see
-        // both cooled versions plus the new hot version.
+        // Append wins: the series erase captures the forgotten handle and
+        // waits; the append moves the head, and expansion after the lock must
+        // see both forgotten versions plus the new live version.
         let mut append_holder = pool.begin().await?;
         lock_memory_handles_tx(&mut append_holder, &[first.handle]).await?;
         let erase_pool = pool.clone();
         let erase_owner = owner;
         let erase = tokio::spawn(async move {
             let mut tx = erase_pool.begin().await.map_err(|err| {
-                StorageError::Internal(format!("begin cooled series erase: {err}"))
+                StorageError::Internal(format!("begin forgotten series erase: {err}"))
             })?;
             let result = erase_memory_series(
                 &mut tx,
@@ -633,7 +633,7 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
             )
             .await?;
             tx.commit().await.map_err(|err| {
-                StorageError::Internal(format!("commit cooled series erase: {err}"))
+                StorageError::Internal(format!("commit forgotten series erase: {err}"))
             })?;
             Ok::<_, StorageError>(result)
         });
@@ -669,8 +669,8 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
         let second = pg.ingest_fact_atomic(&permit, &second_draft, None).await?;
         let first_t = first.memory_id.into_inner();
         let second_t = second.memory_id.into_inner();
-        cool_one(pool, &owner, first_t).await?;
-        cool_one(pool, &owner, second_t).await?;
+        forget_one(pool, &owner, first_t).await?;
+        forget_one(pool, &owner, second_t).await?;
         let mut erase_holder = pool.begin().await?;
         lock_memory_handles_tx(&mut erase_holder, &[first.handle]).await?;
         let append_pool = pool.clone();
@@ -721,7 +721,7 @@ async fn series_erase_linearizes_with_fully_cooled_headless_series() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("headless cooled series linearization failed");
+    result.expect("forgotten series linearization failed");
 }
 
 #[tokio::test]
@@ -974,34 +974,34 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
             );
         }
 
-        // A forget transition is not abandonment. Its cooled row remains the
+        // A forget transition is not abandonment. Its flagged row remains the
         // source of truth and therefore must not mint a witness until the
         // later hard erase deletes that row.
-        let cooled = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
-        let cooled_t = cooled.memory_id.into_inner();
+        let forgotten = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
+        let forgotten_t = forgotten.memory_id.into_inner();
         let mut tx = pool.begin().await?;
         forget_memory(
             &mut tx,
             &core_pg_sidecars(),
             &surfaces(),
-            cooled_t,
+            forgotten_t,
             owner.into_inner(),
         )
         .await?;
         tx.commit().await?;
-        assert_eq!(erased_pin_target_kind(pool, cooled_t).await?, None);
+        assert_eq!(erased_pin_target_kind(pool, forgotten_t).await?, None);
         let mut tx = pool.begin().await?;
         let plan = erase_memory(
             &mut tx,
             &core_pg_sidecars(),
             &erase_context(surfaces()),
             &owner,
-            cooled_t,
+            forgotten_t,
         )
         .await?;
         tx.commit().await?;
         assert_eq!(
-            erased_pin_target_kind(pool, cooled_t).await?,
+            erased_pin_target_kind(pool, forgotten_t).await?,
             Some("fact".to_owned())
         );
         let platform = pg.platform_scope_for_host();
@@ -1235,8 +1235,8 @@ async fn forgetting_every_source_keeps_what_rests_on_them_live() {
     result.expect("grounding-support forget/admit test failed");
 }
 
-/// Forget keeps `ingest_keys` and moves the handle to the cooled stub, so an
-/// at-least-once source re-delivering a cooled admission must still get the
+/// Forget keeps `ingest_keys` and the row, so an at-least-once source
+/// re-delivering a forgotten admission must still get the
 /// idempotent replay carrying the original handle and citation.
 #[tokio::test]
 async fn redelivering_a_forgotten_ingest_key_is_an_idempotent_replay() {
@@ -1250,7 +1250,7 @@ async fn redelivering_a_forgotten_ingest_key_is_an_idempotent_replay() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let mut sourced = draft(Some(("src/webhook", "delivery-cooled")));
+        let mut sourced = draft(Some(("src/webhook", "delivery-forgotten")));
         sourced.citation = Some(CitationSpec::v1("core/test-cited-object-v1", [7_u8; 32]).into());
         let written = pg.ingest_fact_atomic(&permit, &sourced, None).await?;
         let t = written.memory_id.into_inner();
@@ -1300,7 +1300,7 @@ async fn redelivering_a_forgotten_ingest_key_is_an_idempotent_replay() {
         );
 
         let hot: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory WHERE ingest_key = 'delivery-cooled'",
+            "SELECT count(*)::bigint FROM proxima_core.memory WHERE ingest_key = 'delivery-forgotten'",
         )
         .fetch_one(pool)
         .await?;

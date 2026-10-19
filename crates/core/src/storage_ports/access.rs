@@ -30,7 +30,7 @@ pub trait OwnerAccessReadPort: Send + Sync {
 pub trait OwnerTransferPort: Send + Sync {
     /// Transfer one memory **series** from the permit's owner to `to_owner`.
     /// Same `(handle, t)`; head and every version move together, including
-    /// cooled stubs. Returns `true` when a row existed under the permit's
+    /// forgotten ones. Returns `true` when a row existed under the permit's
     /// owner and was updated; `false` when no row matched (owner changed
     /// concurrently, or absent) — the caller treats `false` as a clean,
     /// non-panicking denial rather than a storage error. Goal entities are

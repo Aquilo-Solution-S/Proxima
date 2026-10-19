@@ -253,7 +253,7 @@ mod tests {
             ),
             // Real keys of other shapes that name the same id.
             pending_object_key(upload_id),
-            format!("cold/{upload_id}"),
+            format!("retired/{upload_id}"),
             upload_id.to_string(),
             String::new(),
         ] {

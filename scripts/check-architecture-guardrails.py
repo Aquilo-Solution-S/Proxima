@@ -914,6 +914,31 @@ def check_lifecycle_guc(findings: list[Finding]) -> None:
         findings.append(Finding(ROOT / rel, line_no, "app.proxima_lifecycle set outside PgLifecycleScope", line))
 
 
+COLD_VOCABULARY = re.compile(
+    r"cooled|hydrate_memor|COLD_FORMAT|cold_object_key|\"cold/",
+    re.IGNORECASE,
+)
+
+
+def cold_vocabulary_hits(text: str) -> list[tuple[int, str]]:
+    """Lines naming the removed cold path (#488): the cooled table, cold
+    hydration, the cold object format, its key function and `cold/` keys.
+    The purge port keeps its names (`ColdObjectStore`, `cold_store`,
+    `cold_purge_pending`, `retry_cold_object_purges`), which this does not
+    match."""
+    return [
+        (index, line)
+        for index, line in enumerate(text.splitlines(), start=1)
+        if ALLOW not in line and COLD_VOCABULARY.search(line)
+    ]
+
+
+def check_cold_vocabulary(findings: list[Finding]) -> None:
+    for path in production_src_files():
+        for line_no, line in cold_vocabulary_hits(path.read_text(encoding="utf-8")):
+            findings.append(Finding(path, line_no, "removed cold-path vocabulary (#488)", line))
+
+
 def run_self_test() -> int:
     """Assert the flavor core SQL detector fires on its committed fixture.
 
@@ -1021,6 +1046,10 @@ async fn ingest_fact_atomic(
         failures.append("memory census: a comma join to proxima_core.memory was not recognized as a read")
     if not in_memory_census("fn f() {}", ".rs", "crates/storage-pg/src/verbs/fact_embeddings/write.rs"):
         failures.append("memory census: a platform callee module was not put in the census")
+    cold_fixture = ROOT / "scripts/fixtures/architecture-guardrails/cold_vocabulary.rs"
+    cold_hits = [line for line, _text in cold_vocabulary_hits(cold_fixture.read_text(encoding="utf-8"))]
+    if cold_hits != [3, 4, 5, 6, 7]:
+        failures.append(f"cold vocabulary: expected lines 3-7 flagged and the purge port names allowed, got {cold_hits}")
     if failures:
         for failure in failures:
             print(f"self-test failed: {failure}: {rel}", file=sys.stderr)
@@ -1056,6 +1085,7 @@ def main() -> int:
     check_removed_flavor_vocabulary(findings)
     check_memory_reads(findings)
     check_lifecycle_guc(findings)
+    check_cold_vocabulary(findings)
 
     if findings:
         print("architecture guardrail violations:", file=sys.stderr)

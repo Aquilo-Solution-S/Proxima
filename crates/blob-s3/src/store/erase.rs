@@ -11,8 +11,8 @@
 //! lock, so the refcount that decided it is true at decision time — and the
 //! wired `ColdObjectStore` drains that queue after the commit. There is no
 //! second, owner-enumerating pass here. The `CitedObjectErasePort` that used
-//! to run one was vacuous by construction: it read `blob_uploads` and
-//! `cooled` for the owner AFTER the same transaction had deleted every one
+//! to run one was vacuous by construction: it read `blob_uploads` and the
+//! forgotten-memory locators for the owner AFTER the same transaction had deleted every one
 //! of those rows, so it always enumerated nothing and always reported a
 //! clean purge.
 

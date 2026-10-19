@@ -496,8 +496,8 @@ async fn ensure_pgvector_runtime_compatible(
 /// classifies every surface against an EMPTY bespoke list, because a surface
 /// handed over loose has no contract to have exempted it. Flavor #0's
 /// surfaces are not loose — they belong to a contract with a bespoke list —
-/// so classifying them that way gets the legs wrong, silently. `memory` and
-/// `cooled` come back `Keyed` instead of `Bespoke`, and `blob` and `content`
+/// so classifying them that way gets the legs wrong, silently. `memory`
+/// comes back `Keyed` instead of `Bespoke`, and `blob` and `content`
 /// come back `Unreachable` instead of `Deduped`; the freeze-time validation
 /// that a bespoke leg has a home never runs against them.
 ///

@@ -21,7 +21,7 @@ pub const MAX_ERASE_VERSIONS_PER_CALL: usize = 1024;
 
 /// What one [`crate::UnitOfWork::erase_own_series`] call selects.
 ///
-/// Every selected admission is expanded to its WHOLE series, hot and cooled:
+/// Every selected admission is expanded to its WHOLE series, live and forgotten:
 /// the erase never prunes a series' history. Every variant but `Ids` names
 /// one own schema, selects only `owner`'s series of it, and pages: a call
 /// stops at the cap and sets [`SeriesEraseReceipt::more_remaining`].
@@ -45,8 +45,8 @@ pub enum SeriesSelection {
     /// the sidecar's own columns — the
     /// [`crate::storage_ports::SidecarSessionRead`] shape — at least one.
     /// Any matching version selects its series: the unit is the series, not
-    /// the version. A cooled version's row lives in its cold object only, so
-    /// it matches nothing.
+    /// the version. A forgotten version keeps its sidecar row (#488), so it
+    /// matches like a live one.
     SidecarEquals {
         schema: SchemaId,
         predicates: Vec<(String, SidecarAtom)>,
@@ -56,8 +56,9 @@ pub enum SeriesSelection {
     /// `cutoff`, oldest value first, up to the cap. The clock is the one the
     /// payload declares, so a backfilled event ages by when it happened; a
     /// series whose newest version carries a later value keeps every
-    /// version. A newest version that is cooled, or holds `NULL` there, has
-    /// no value to compare and keeps its series.
+    /// version. A newest version that holds `NULL` there has no value to
+    /// compare and keeps its series; a forgotten one is compared like a live
+    /// one, since it keeps its sidecar row (#488).
     DeclaredBefore {
         schema: SchemaId,
         column: String,

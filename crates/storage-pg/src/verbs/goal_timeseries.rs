@@ -749,7 +749,7 @@ async fn validate_goal_targets_live(
     draft: &GoalWriteCommand,
     reserved_lifecycle: &[Option<Uuid>; 2],
 ) -> Result<(), StorageError> {
-    // Retained Goal rows may keep cooled or witnessed pins for historical
+    // Retained Goal rows may keep forgotten or witnessed pins for historical
     // validity; a new successor is fresh admission and must reauthorize hot,
     // readable assignment, evidence, and lifecycle targets. Hydrate first.
     if let Some(assignment) = draft.assignment_t {

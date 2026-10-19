@@ -71,7 +71,7 @@ request headers.
 Set `PROXIMA_S3_PUBLIC_ENDPOINT_URL` when holders of presigned upload and
 download links reach a different address from the host. The presigner shares
 the configured credentials, region, bucket, path style and lifetimes with the
-object client. Staging, verified reads, cold objects, reconciliation and erasure
+object client. Staging, verified reads, reconciliation and object purge
 use `PROXIMA_S3_ENDPOINT_URL`.
 
 SigV4 signs the Host, including its port, the complete path, including any
@@ -137,7 +137,8 @@ and recall; they are database operations.
 
 Back up PostgreSQL and every configured object store. PostgreSQL contains the
 graph, typed sidecars, delivery state, and embedding jobs. Object storage holds
-cited blobs and cooled objects. Use PostgreSQL WAL/PITR or standard dumps and
+cited blobs. Forgotten memories stay in PostgreSQL with their payloads, so a
+backup holds them until they are erased. Use PostgreSQL WAL/PITR or standard dumps and
 object-store versioning with compatible retention.
 
 Restore a logical dump with `pg_restore --single-transaction`, so deferred

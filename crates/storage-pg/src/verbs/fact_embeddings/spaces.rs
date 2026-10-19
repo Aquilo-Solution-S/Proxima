@@ -294,7 +294,7 @@ async fn purge_in_tx(
 /// Queue a series' hot head for every route space it has no vector in: a
 /// transfer's other leg, so the moved memory is embedded under the
 /// destination's route. A head under a non-embeddable schema, or one whose
-/// row is cooled, queues nothing.
+/// row is forgotten, queues nothing.
 pub(crate) async fn enqueue_series_head_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner_id: uuid::Uuid,

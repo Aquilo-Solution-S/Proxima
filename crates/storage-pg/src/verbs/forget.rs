@@ -86,12 +86,12 @@ fn is_owner_pinned(sidecars: &PgSidecarRegistryFrozen, table: &str) -> bool {
 /// Cold objects a committed erase still owes the object store.
 ///
 /// An erase marks each locator in `proxima_core.cold_purge_pending` inside the
-/// transaction that deletes its `cooled` row, and destroys the object only
+/// transaction that deletes its upload row, and destroys the object only
 /// after that transaction commits ([`purge_cold_objects_after_commit`]).
 /// Deleting from inside the transaction loses the object outright when the
 /// transaction later rolls back — the locator comes back, the bytes do not —
 /// and a crash between commit and destruction leaves a reclaimable mark rather
-/// than a `cooled` row naming nothing.
+/// than a row naming nothing.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ColdPurgePlan {
     entries: Vec<ColdPurgeEntry>,
@@ -350,9 +350,9 @@ pub(crate) async fn lock_lifecycle_targets_tx(
     lock_advisory_ids_tx(tx, "proxima-forget:", targets).await
 }
 
-/// Lock the source and every hot or cooled non-Fact depender before the source
-/// row is locked or cooled. `cooled_forget_grounding` takes the hot set as a
-/// SQL backstop; the re-read rejects a growing set rather than extending an
+/// Lock the source and every live or forgotten non-Fact depender before the
+/// source row is locked or forgotten. The memory forget-grounding trigger
+/// takes the live set as a SQL backstop; the re-read rejects a growing set rather than extending an
 /// already-held advisory set out of UUID order.
 async fn lock_forget_footprint_tx(
     tx: &mut Transaction<'_, Postgres>,
@@ -788,8 +788,8 @@ async fn restore_marked(
             .fetch_optional(tx.as_mut())
             .await
             .map_err(map_err)?;
-    // A `t` the probe found only in `cooled` has no row to restore: the
-    // pre-#488 form is not restorable (S15/S16 retire it).
+    // A `t` with no memory row has nothing to restore (#488 dropped the
+    // pre-#488 stub form with its table).
     let (locked_handle, kind, schema_id, sidecar_tables, language, forgotten) =
         row.ok_or(StorageError::NotFound)?;
     if locked_handle != handle || !reach.kinds.contains(&kind.as_str()) {
@@ -981,10 +981,9 @@ async fn erase_memory_in_lifecycle(
 /// this is the other half, and it is deliberately flavor-agnostic so the
 /// flavor never writes a `proxima_core` statement to get it.
 ///
-/// Expansion to the whole series matters: a superseded version that was
-/// cooled has no sidecar row left to be found by, so a caller that
-/// collected ids from its own tables would erase the live versions and
-/// leave the cooled ones behind.
+/// Expansion to the whole series matters: a caller that collected ids from
+/// its own tables, or matched only live versions, would erase some
+/// versions and leave the rest of the series behind.
 ///
 /// A cited blob goes when the last admission citing it does. That leg is
 /// here rather than in [`erase_memory`] because it is a question about the
@@ -1048,7 +1047,7 @@ async fn erase_memory_series_after_snapshot(
     }
     let versions = after.versions();
 
-    // Expansion includes every hot and cooled version before any cited blob
+    // Expansion includes every live and forgotten version before any cited blob
     // or row lock. Re-entering these locks in erase_memory is intentional: it
     // protects direct callers while preserving one global lock vocabulary.
     lock_lifecycle_targets_tx(tx, &versions).await?;

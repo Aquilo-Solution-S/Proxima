@@ -498,7 +498,7 @@ impl WriteSession for PgWriteSession {
         let session = *self;
         session.tx.commit().await.map_err(crate::error::map_err)?;
         // After commit and never before: a rollback after an object delete
-        // would restore the `cooled` locator over destroyed bytes. A failed
+        // would restore the upload row over destroyed bytes. A failed
         // purge leaves its `cold_purge_pending` row for the retry lane.
         if let Some(state) = session.series_erase {
             let outcome = verbs::forget::purge_cold_objects_after_commit_with_platform(

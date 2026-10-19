@@ -473,7 +473,7 @@ const STATE_SURFACES: &[Surface] = &[
                   bundle carries, not portable owner content",
         },
         forget: ForgetRule::Keep {
-            why: "Goal replay remains exact after a referenced Memory is cooled",
+            why: "Goal replay remains exact after a referenced Memory is forgotten",
         },
         lexical_language_column: None,
         counter: CounterRule::Uncounted {
@@ -702,8 +702,8 @@ const KERNEL_SURFACES: &[Surface] = &[
         // `origin` for a derivation's sources, `reference` for an
         // interpretation's subjects (#480).
         // No owner column; the owner policy finds the owner through the
-        // memory, hot OR cooled, so every verb reaches the rows of a
-        // forgotten memory too (#478).
+        // memory, live OR forgotten, so every verb reaches the rows of a
+        // forgotten memory too (#478, #488).
         key: KeyShape::MemoryT { column: "t" },
         owner_column: None,
         transfer: TransferRule::StaysOnKey,
@@ -1304,8 +1304,7 @@ const RESOURCES: &[ResourceContract] = &[
 /// Sixteen entries, and every one of them earns the exemption by needing
 /// something a generated `DELETE ... USING <selection set>` cannot express:
 /// a refcount anti-join before a shared object may go (`blob`,
-/// `blob_uploads`, `content`), a cold-purge row enqueued in the same
-/// transaction as the delete (`cooled`), a head table
+/// `blob_uploads`, `content`), a head table
 /// resynchronised rather than emptied (`memory_head`, `goal_head`), a
 /// series position deleted only once its series is gone
 /// (`publication_counter`), an

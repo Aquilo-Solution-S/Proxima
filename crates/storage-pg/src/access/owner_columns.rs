@@ -2110,7 +2110,7 @@ async fn persist_series_head_transfer(
 ///
 /// - [`TransferLeg::Rehomed`] sets the surface's declared owner column,
 ///   selecting on the column the key names against the series' `t` set and
-///   the source owner. That covers `cooled`, `memory`, `sketch`, the three
+///   the source owner. That covers `memory`, `sketch`, the three
 ///   embedding tables and EVERY flavor's projection with one statement shape.
 /// - [`TransferLeg::Dropped`] deletes them — one member, `ingest_keys`,
 ///   whose receipt proves admission by the SOURCE and does not travel.

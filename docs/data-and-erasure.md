@@ -75,7 +75,7 @@ renders as `forgotten target` (lineage node status `forgotten`), and lineage
 stops there; a reader without the owner or kind permit still sees a redacted
 target. Other stores' forgotten memories stay `unavailable`.
 New writes must resolve live targets and cannot use these witnesses to recreate
-erased identities. Exact historical restoration uses the sealed integrity path.
+erased identities.
 
 ## Publication copies
 
@@ -106,9 +106,9 @@ to the flavor contract.
 
 Selections can name explicit admissions, admission-time cutoffs, typed sidecar
 predicates, or a declared timestamp column. A cutoff selects a whole series only
-when its newest version qualifies. Cooled versions are included when the series
-is selected; their removed hot sidecars cannot independently match a sidecar
-predicate. Cross-owner, foreign-schema, or unerasable references refuse before
+when its newest version qualifies. Forgotten versions are included when the
+series is selected, and they keep their sidecar rows, so a sidecar predicate or
+a declared timestamp matches them as it matches live versions. Cross-owner, foreign-schema, or unerasable references refuse before
 deletion. Reference closure and transaction bounds are part of the typed API.
 
 The erase is the unit's sole operation. Dry-run uses the same selection and
@@ -130,11 +130,11 @@ operation's retry contract and inspect outstanding debt.
 
 Owner export returns a deterministic bundle of declared exportable rows. A
 count is derived from the exported rows, not a separately maintained total.
-Typed content, provenance, and cold references follow the export contracts;
+Typed content, provenance, and forgotten marks follow the export contracts;
 delivery envelopes and rebuildable infrastructure are not independent user
 facts. Export authority does not grant destruction authority.
 
 The executable inverse and lifecycle tests cover owner/source isolation,
-transfer, rollback, cold objects, shared blobs, host-state callbacks, and
+transfer, rollback, object purge, shared blobs, host-state callbacks, and
 publication origins. Operate the external purge lane and verify restored
 stores as described in [operate](operate.md).

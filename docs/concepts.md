@@ -27,7 +27,7 @@ and `via`, its caller session UUID or `null` for a direct principal call.
 The sealed request context supplies this pair. It grants no authority and is
 independent of ownership, payload authorship and grounding sources. Reads
 return the stored pair; an exact replay retains it, a new version captures its
-own writer, and transfer or cold-storage hydration preserves it.
+own writer, and transfer, forget and restore preserve it.
 
 Typed payload is owner-scoped `Content`. Content may be shared by admissions
 within its owner and schema, but shared content never collapses two `t` values.

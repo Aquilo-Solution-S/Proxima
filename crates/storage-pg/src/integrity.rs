@@ -870,7 +870,8 @@ impl std::fmt::Display for IntegrityFinding {
             } => write!(
                 f,
                 "{rows} memory row(s) name {sidecar_table} in sidecar_tables and have no row \
-                 in it. One already cooled before #488 has a dump that cannot equal its stamp. \
+                 in it. One whose sidecar a pre-#488 forget deleted has a dump that cannot \
+                 equal its stamp. \
                  There is NO \
                  repair from here: the payload the stamp promised was never written and \
                  nothing records what it should have said — decide per row whether to erase \

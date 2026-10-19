@@ -478,7 +478,7 @@ impl DerivedMemory {
 
 impl Engine {
     /// Read each unique memory's stored kind after authorizing it, in request order.
-    /// Cooled memories use the same authorized kind stream as hot memories.
+    /// Forgotten memories use the same authorized kind stream as live ones.
     ///
     /// # Errors
     ///

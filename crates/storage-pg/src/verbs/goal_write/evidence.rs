@@ -80,7 +80,7 @@ pub(super) async fn validate_evidence_in_owner(
 
 /// Read the exact prior Goal evidence vector for a storage-level omitted
 /// modify. This remains a Goal-column read: joining through Memory would turn
-/// a cooled or missing target into a shorter successor statement.
+/// a forgotten or missing target into a shorter successor statement.
 pub(super) async fn load_goal_evidence_exact(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,

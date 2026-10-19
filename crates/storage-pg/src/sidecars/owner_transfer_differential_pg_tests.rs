@@ -88,9 +88,10 @@
 //!
 //! #488 regenerated it once more: forget keeps the row and its sidecars, so
 //! each series' forgotten tail is a `memory` row with `forgotten_at` set and
-//! keeps its `agent_note_v1` row, where it used to be a `cooled` stub with
-//! the note deleted. Checked, not assumed: with every token replaced by one
-//! placeholder, the only diff is the three cooled lines becoming memory
+//! keeps its `agent_note_v1` row, where it used to be a stub row in the
+//! dropped stub table with the note deleted. Checked, not assumed: with
+//! every token replaced by one placeholder, the only diff is the three stub
+//! lines becoming memory
 //! lines, three note lines staying, and the counts moving with them.
 #![allow(
     clippy::doc_markdown,

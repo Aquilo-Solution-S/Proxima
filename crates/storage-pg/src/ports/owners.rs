@@ -92,7 +92,7 @@ impl OwnerAccessReadPort for PgStorage {
         )
         .await?;
         // A forgotten memory still has a home: transfer moves it and an entry
-        // read must answer for it as before #488, when the cooled stub was
+        // read must answer for it as before #488, when its stub row was
         // owner-visible. Owner RLS hides forgotten rows unless the lifecycle
         // scope is on, so the lookup runs inside it and leaves before commit.
         let result = async {

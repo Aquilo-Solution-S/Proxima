@@ -1187,8 +1187,8 @@ impl<'a> UnitOfWork<'a> {
     /// Hard-erase whole series of `flavor_id`'s own memory schemas under
     /// `owner` (docs/data-and-erasure.md).
     ///
-    /// Every selected admission is expanded to its whole series, hot and
-    /// cooled, and every series with a row referencing the set through a
+    /// Every selected admission is expanded to its whole series, live and
+    /// forgotten, and every series with a row referencing the set through a
     /// foreign key joins it: a reference to erased data is erased with it.
     /// The effect per version is the physical erase the owner erase runs —
     /// sidecars, embeddings, heads, captured publications, the erase witness
