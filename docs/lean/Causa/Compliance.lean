@@ -192,14 +192,20 @@ def pin_render_cold (memories : Set Memory) (stubs : Set Cooled) (id : MemoryId)
 def pin_render_unavailable (memories : Set Memory) (stubs : Set Cooled) (id : MemoryId) : Prop :=
   ¬ pin_render_hot memories id ∧ ¬ cold stubs id
 
-/-- Forget of a pinned `t` does not delete the pinning row. -/
-theorem pin_survives_target_cool
-    (memories : Set Memory) (stubs : Set Cooled) (m : Memory) (id : MemoryId)
+/-- Forget of a pinned `t` deletes neither the pinning row nor its target:
+    forget is a flag on the target row (#488). -/
+theorem pin_survives_target_forget
+    (memories : Set Memory) (m : Memory) (id : MemoryId)
     (hm : m ∈ memories)
     (_hpin : id ∈ memory_origins m ∨ id ∈ memory_refs m)
-    (hc : cold stubs id) :
-    pinExists memories stubs id ∧ m ∈ memories :=
-  ⟨Or.inr hc, hm⟩
+    (htarget : pinExists memories id) :
+    pinExists (forgetIn memories id) id ∧
+      ∃ m' : Memory, m' ∈ forgetIn memories id ∧ memory_t m' = memory_t m ∧
+        memory_origins m' = memory_origins m ∧ memory_refs m' = memory_refs m := by
+  refine ⟨pinExists_forgetIn memories id id htarget, ?_⟩
+  by_cases h : memory_t m = id
+  · exact ⟨m.forget, ⟨m, hm, Or.inl ⟨h, rfl⟩⟩, rfl, rfl, rfl⟩
+  · exact ⟨m, ⟨m, hm, Or.inr ⟨h, rfl⟩⟩, rfl, rfl, rfl⟩
 
 -- ============================================================
 -- Modeled hard-erase transitions

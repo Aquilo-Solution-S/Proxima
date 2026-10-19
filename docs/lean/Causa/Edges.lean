@@ -12,7 +12,7 @@ the Goal row (`assignment_t`, `dependency_t`, `evidence_t`, `close_fact_t`,
 `write_act_t`) and never appear in `memory.refs`.
 
 E1–E7 rebase:
-E1 existence   — live origin and refs t are a hot Memory.t or a cooled stub;
+E1 existence   — origin and refs t are a stored Memory.t, live or forgotten;
                 goal_refs resolves against the Goal spine. Retained historical
                 pins may also resolve through a kinded erase witness.
   E2 ownership   — the pin is on the declaring row; no separate owner column
@@ -45,9 +45,9 @@ def derivePins (m : Memory) :
    split is reflected by `goalReferenceTargetExists`; this union remains the
    target-existence predicate for the pre-split/live graph relation. -/
 def referenceTargetExists
-    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (memories : Set Memory) (goals : Set Goal)
     (id : Id) : Prop :=
-  pinExists memories cooled id ∨
+  pinExists memories id ∨
   ∃ g : Goal, g ∈ goals ∧ goal_t g = id
 
 /- A reference may point at a Goal, but no longer from the same column as a
@@ -58,28 +58,28 @@ def referenceTargetExists
 def goalReferenceTargetExists (goals : Set Goal) (id : GoalId) : Prop :=
   ∃ g : Goal, g ∈ goals ∧ goal_t g = id
 
-/-- Historical reference existence: a live/cooled Memory, a live Goal, or a
+/-- Historical reference existence: a stored Memory (live or forgotten), a live Goal, or a
     database-only erase witness. The mixed predicate is legacy-only; the
     typed predicates below are the retained graph contract after the split. -/
 def retainedReferenceTargetExists
-    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget) (id : Id) : Prop :=
-  referenceTargetExists memories goals cooled id ∨
+  referenceTargetExists memories goals id ∨
   erasedPinTargetExists targets id
 
 def retainedMemoryReferenceTargetExists
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget) (id : MemoryId) : Prop :=
-  pinExists memories cooled id ∨ recordedMemoryTargetExists targets id
+  pinExists memories id ∨ recordedMemoryTargetExists targets id
 
 def retainedGoalReferenceTargetExists
     (goals : Set Goal) (targets : Set ErasedPinTarget) (id : GoalId) : Prop :=
   goalReferenceTargetExists goals id ∨ recordedGoalTargetExists targets id
 
 def retainedOriginTargetExists
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget) (id : MemoryId) : Prop :=
-  pinExists memories cooled id ∨ recordedMemoryTargetExists targets id
+  pinExists memories id ∨ recordedMemoryTargetExists targets id
 
 theorem goal_is_reference_target
     (goals : Set Goal) (g : Goal) (hg : g ∈ goals) :
@@ -126,7 +126,7 @@ theorem a_row_without_goal_refs_resolves_to_itself
   simp [resolveVisibleGoalRefs, h]
 
 theorem retained_goal_is_reference_target
-    (_memories : Set Memory) (goals : Set Goal) (_cooled : Set Cooled)
+    (_memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget)
     (g : Goal) (hg : g ∈ goals) :
     retainedGoalReferenceTargetExists goals targets (goal_t g) := by
@@ -140,11 +140,11 @@ theorem erased_goal_is_retained_goal_reference
   exact Or.inr ⟨e, he, rfl, hk⟩
 
 theorem erased_memory_is_retained_memory_reference
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget)
     (e : ErasedPinTarget) (he : e ∈ targets)
     (hk : erased_pin_target_kind e ≠ .Goal) :
-    retainedMemoryReferenceTargetExists memories cooled targets
+    retainedMemoryReferenceTargetExists memories targets
       (erased_pin_target_t e) := by
   cases hkind : erased_pin_target_kind e with
   | Fact => exact Or.inr ⟨.Fact, e, he, rfl, hkind⟩
@@ -156,26 +156,26 @@ theorem erased_memory_is_retained_memory_reference
     caller's typed column. New retained graph proofs use the two predicates
     above instead. -/
 theorem erased_is_retained_reference_target
-    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget)
     (e : ErasedPinTarget) (he : e ∈ targets) :
-    retainedReferenceTargetExists memories goals cooled targets
+    retainedReferenceTargetExists memories goals targets
       (erased_pin_target_t e) := by
   exact Or.inr ⟨e, he, rfl⟩
 
 /-- Legacy-only mixed live carrier; typed retained proofs do not use it. -/
 theorem live_reference_target_is_retained
-    (memories : Set Memory) (goals : Set Goal) (cooled : Set Cooled)
+    (memories : Set Memory) (goals : Set Goal)
     (targets : Set ErasedPinTarget) (id : Id)
-    (h : referenceTargetExists memories goals cooled id) :
-    retainedReferenceTargetExists memories goals cooled targets id :=
+    (h : referenceTargetExists memories goals id) :
+    retainedReferenceTargetExists memories goals targets id :=
   Or.inl h
 
 theorem live_origin_target_is_retained
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget) (id : MemoryId)
-    (h : pinExists memories cooled id) :
-    retainedOriginTargetExists memories cooled targets id :=
+    (h : pinExists memories id) :
+    retainedOriginTargetExists memories targets id :=
   Or.inl h
 
 theorem pins_are_node_content (m : Memory) :
@@ -200,17 +200,17 @@ theorem fact_source_reaches_only_facts (m : Memory)
   m.fact_origins_empty hk
 
 /-- Layer rule on origins: A origins are Facts or Abstractions; P origins
-    are empty or A's. Targets may be hot or cooled. -/
+    are empty or A's. Targets may be live or forgotten. -/
 theorem origin_layer_rule
-    (memories : Set Memory) (cooled : Set Cooled) (m : Memory)
-    (hv : OriginKindValid memories cooled m) :
+    (memories : Set Memory) (m : Memory)
+    (hv : OriginKindValid memories m) :
     (memory_kind m = .Abstraction →
       ∀ id : MemoryId, id ∈ memory_origins m →
-        pinKindFactOrAbstraction memories cooled id) ∧
+        pinKindFactOrAbstraction memories id) ∧
     (memory_kind m = .Perspective →
       memory_origins m = [] ∨
       ∀ id : MemoryId, id ∈ memory_origins m →
-        pinKindIs memories cooled id .Abstraction ∧
+        pinKindIs memories id .Abstraction ∧
           MemoryKind.layer .Abstraction ≤ (memory_kind m).layer) := by
   constructor
   · intro habs id hid
@@ -226,11 +226,11 @@ theorem origin_layer_rule
       exact Nat.le_succ 1
 
 theorem abstraction_origin_fact_or_abstraction
-    (memories : Set Memory) (cooled : Set Cooled) (m : Memory) (id : MemoryId)
-    (hv : OriginKindValid memories cooled m)
+    (memories : Set Memory) (m : Memory) (id : MemoryId)
+    (hv : OriginKindValid memories m)
     (habs : memory_kind m = .Abstraction)
     (hid : id ∈ memory_origins m) :
-    pinKindFactOrAbstraction memories cooled id :=
+    pinKindFactOrAbstraction memories id :=
   hv.absFactOrAbs habs id hid
 
 /-- Interpretation is a Perspective with empty origins that refs a subject. -/

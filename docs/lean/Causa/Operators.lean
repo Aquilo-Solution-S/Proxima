@@ -146,11 +146,11 @@ theorem operator_inputs_match_phase :
 
 /-- Origins of a derived Abstraction sit at or below its layer (F→A / A→A). -/
 theorem operator_origin_row_not_upward :
-    ∀ (memories : Set Memory) (cooled : Set Cooled) (out : Memory) (id : MemoryId),
-      OriginKindValid memories cooled out →
+    ∀ (memories : Set Memory) (out : Memory) (id : MemoryId),
+      OriginKindValid memories out →
       memory_kind out = .Abstraction →
       id ∈ memory_origins out →
-      pinKindFactOrAbstraction memories cooled id :=
-  fun _ _ _ id hv houtk hin => hv.absFactOrAbs houtk id hin
+      pinKindFactOrAbstraction memories id :=
+  fun _ _ id hv houtk hin => hv.absFactOrAbs houtk id hin
 
 end Causa

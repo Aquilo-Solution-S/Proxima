@@ -246,35 +246,24 @@ theorem terminal_goal_closes_with_fact :
   exact g.terminal_close_fact h
 
 def GoalTerminalCloseFactValid
-    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled) : Prop :=
+    (goals : Set Goal) (memories : Set Memory) : Prop :=
   ∀ g : Goal, g ∈ goals → (goal_state g).terminal = true →
     (∃ m : Memory,
       m ∈ memories ∧
       goal_close_fact_t g = some (memory_t m) ∧
       memory_kind m = .Fact ∧
-      memory_owner m = goal_owner g) ∨
-    (∃ c : Cooled,
-      c ∈ cooled ∧
-      goal_close_fact_t g = some (cooled_t c) ∧
-      cooled_kind c = .Fact ∧
-      cooled_owner c = goal_owner g)
+      memory_owner m = goal_owner g)
 
 theorem terminal_goal_close_fact_member :
-    ∀ (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled),
-      GoalTerminalCloseFactValid goals memories cooled →
+    ∀ (goals : Set Goal) (memories : Set Memory),
+      GoalTerminalCloseFactValid goals memories →
       ∀ g : Goal,
         g ∈ goals →
         (goal_state g).terminal = true →
-        (∃ m : Memory, m ∈ memories ∧ goal_close_fact_t g = some (memory_t m)) ∨
-        (∃ c : Cooled, c ∈ cooled ∧ goal_close_fact_t g = some (cooled_t c)) := by
-  intro goals memories cooled hvalid g hg hterminal
-  cases hvalid g hg hterminal with
-  | inl hhot =>
-    obtain ⟨m, hm, hclose, _, _⟩ := hhot
-    exact Or.inl ⟨m, hm, hclose⟩
-  | inr hcold =>
-    obtain ⟨c, hc, hclose, _, _⟩ := hcold
-    exact Or.inr ⟨c, hc, hclose⟩
+        (∃ m : Memory, m ∈ memories ∧ goal_close_fact_t g = some (memory_t m)) := by
+  intro goals memories hvalid g hg hterminal
+  obtain ⟨m, hm, hclose, _, _⟩ := hvalid g hg hterminal
+  exact ⟨m, hm, hclose⟩
 
 -- ============================================================
 -- Heads and the active set
@@ -441,7 +430,7 @@ def GoalAssignmentValid (memories : Set Memory) (goals : Set Goal) : Prop :=
     ∃ self : Memory, goalAssignedToPerspective memories g self
 
 def RetainedGoalAssignmentValid
-    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
+    (goals : Set Goal) (memories : Set Memory)
   (targets : Set ErasedPinTarget) : Prop :=
   ∀ g : Goal, g ∈ goals →
     goal_assignment g = none ∨
@@ -450,11 +439,6 @@ def RetainedGoalAssignmentValid
       goal_assignment g = some (memory_t m) ∧
       memory_kind m = .Perspective ∧
       memory_owner m = goal_owner g) ∨
-    (∃ c : Cooled,
-      c ∈ cooled ∧
-      goal_assignment g = some (cooled_t c) ∧
-      cooled_kind c = .Perspective ∧
-      cooled_owner c = goal_owner g) ∨
     (∃ e : ErasedPinTarget,
       e ∈ targets ∧
       ∃ id : MemoryId,
@@ -463,9 +447,9 @@ def RetainedGoalAssignmentValid
       erased_pin_target_kind e = .Perspective)
 
 theorem goal_assignment_valid_retained_empty
-    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
+    (goals : Set Goal) (memories : Set Memory)
     (hvalid : GoalAssignmentValid memories goals) :
-    RetainedGoalAssignmentValid goals memories cooled (fun _ => False) := by
+    RetainedGoalAssignmentValid goals memories (fun _ => False) := by
   intro g hg
   cases hvalid g hg with
   | inl hnone => exact Or.inl hnone
@@ -516,22 +500,18 @@ theorem active_goal_for_self_has_assignment :
 /-- Evidence ids resolve to admitted Fact or Abstraction. No authorship
     field — operator-must-have-evidence is retired with the authorship blob. -/
 structure GoalEvidenceValid
-    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled) : Prop where
+    (goals : Set Goal) (memories : Set Memory) : Prop where
   resolved : ∀ g : Goal, g ∈ goals → ∀ i : MemoryId, i ∈ goal_evidence g →
     (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧
-      memory_kind m ≠ .Perspective) ∨
-    (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧
-      cooled_kind c ≠ .Perspective)
+      memory_kind m ≠ .Perspective)
 
 theorem goal_evidence_not_perspective :
-    ∀ goals memories cooled,
-      GoalEvidenceValid goals memories cooled →
+    ∀ goals memories,
+      GoalEvidenceValid goals memories →
       ∀ (g : Goal) (i : MemoryId), g ∈ goals → i ∈ goal_evidence g →
         (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧
-          memory_kind m ≠ .Perspective) ∨
-        (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧
-          cooled_kind c ≠ .Perspective) := by
-  intro goals memories cooled hvalid g i hg hi
+          memory_kind m ≠ .Perspective) := by
+  intro goals memories hvalid g i hg hi
   exact hvalid.resolved g hg i hi
 
 theorem memory_kind_ne_perspective_cases (kind : MemoryKind)
@@ -539,18 +519,16 @@ theorem memory_kind_ne_perspective_cases (kind : MemoryKind)
   cases kind <;> simp_all
 
 def RetainedGoalEvidenceValid
-    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
+    (goals : Set Goal) (memories : Set Memory)
     (targets : Set ErasedPinTarget) : Prop :=
   ∀ g : Goal, g ∈ goals → ∀ i : MemoryId, i ∈ goal_evidence g →
     (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧
       (memory_kind m = .Fact ∨ memory_kind m = .Abstraction)) ∨
-    (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧
-      (cooled_kind c = .Fact ∨ cooled_kind c = .Abstraction)) ∨
     (∃ e : ErasedPinTarget, e ∈ targets ∧ erased_pin_target_t e = i ∧
       (erased_pin_target_kind e = .Fact ∨ erased_pin_target_kind e = .Abstraction))
 
 def RetainedGoalTerminalCloseFactValid
-    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
+    (goals : Set Goal) (memories : Set Memory)
     (targets : Set ErasedPinTarget) : Prop :=
   ∀ g : Goal, g ∈ goals → (goal_state g).terminal = true →
     (∃ m : Memory,
@@ -558,36 +536,24 @@ def RetainedGoalTerminalCloseFactValid
       goal_close_fact_t g = some (memory_t m) ∧
       memory_kind m = .Fact ∧
       memory_owner m = goal_owner g) ∨
-    (∃ c : Cooled,
-      c ∈ cooled ∧
-      goal_close_fact_t g = some (cooled_t c) ∧
-      cooled_kind c = .Fact ∧
-      cooled_owner c = goal_owner g) ∨
     (∃ e : ErasedPinTarget,
       e ∈ targets ∧
       goal_close_fact_t g = some (erased_pin_target_t e) ∧
       erased_pin_target_kind e = .Fact)
 
 theorem goal_evidence_valid_retained_empty
-    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
-    (hvalid : GoalEvidenceValid goals memories cooled) :
-    RetainedGoalEvidenceValid goals memories cooled (fun _ => False) := by
+    (goals : Set Goal) (memories : Set Memory)
+    (hvalid : GoalEvidenceValid goals memories) :
+    RetainedGoalEvidenceValid goals memories (fun _ => False) := by
   intro g hg i hi
-  cases hvalid.resolved g hg i hi with
-  | inl hhot =>
-      obtain ⟨m, hm, hid, hk⟩ := hhot
-      exact Or.inl ⟨m, hm, hid, memory_kind_ne_perspective_cases _ hk⟩
-  | inr hcold =>
-      obtain ⟨c, hc, hid, hk⟩ := hcold
-      exact Or.inr (Or.inl ⟨c, hc, hid, memory_kind_ne_perspective_cases _ hk⟩)
+  obtain ⟨m, hm, hid, hk⟩ := hvalid.resolved g hg i hi
+  exact Or.inl ⟨m, hm, hid, memory_kind_ne_perspective_cases _ hk⟩
 
 theorem goal_terminal_close_valid_retained_empty
-    (goals : Set Goal) (memories : Set Memory) (cooled : Set Cooled)
-    (hvalid : GoalTerminalCloseFactValid goals memories cooled) :
-    RetainedGoalTerminalCloseFactValid goals memories cooled (fun _ => False) := by
+    (goals : Set Goal) (memories : Set Memory)
+    (hvalid : GoalTerminalCloseFactValid goals memories) :
+    RetainedGoalTerminalCloseFactValid goals memories (fun _ => False) := by
   intro g hg hterminal
-  cases hvalid g hg hterminal with
-  | inl hhot => exact Or.inl hhot
-  | inr hcold => exact Or.inr (Or.inl hcold)
+  exact Or.inl (hvalid g hg hterminal)
 
 end Causa

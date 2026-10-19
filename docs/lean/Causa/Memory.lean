@@ -198,6 +198,10 @@ structure Memory where
   blob_id    : Option BlobId
   content_id : Option ContentId
   tick       : Instant
+  /-- Forget sets this flag and restore clears it (#488). The row, its
+      payload and its pins stay where they are; readers that serve live
+      memory skip a forgotten row. -/
+  forgotten  : Bool
   /-- Fact origins are empty (UML §2). -/
   fact_origins_empty : kind = .Fact → origins = []
   /-- A Perspective never cites (UML §4). -/
@@ -218,19 +222,20 @@ def memory_goal_refs : Memory → List GoalId := Memory.goal_refs
 def memory_blob_id : Memory → Option BlobId := Memory.blob_id
 def memory_content_id : Memory → Option ContentId := Memory.content_id
 def memory_tick : Memory → Instant := Memory.tick
+def memory_forgotten : Memory → Bool := Memory.forgotten
 
 theorem memory_field_projection
     (handle : Handle) (t : MemoryId) (kind : MemoryKind) (owner : Owner)
     (writer : WriterAttribution)
     (origins refs : List MemoryId) (goal_refs : List GoalId)
     (blob_id : Option BlobId)
-    (content_id : Option ContentId) (tick : Instant)
+    (content_id : Option ContentId) (tick : Instant) (forgotten : Bool)
     (fact_origins_empty : kind = .Fact → origins = [])
     (perspective_never_cites : kind = .Perspective → blob_id = none)
     (blob_fa_only : blob_id ≠ none → kind = .Fact ∨ kind = .Abstraction) :
     memory_t
       (Memory.mk handle t kind owner writer origins refs goal_refs blob_id content_id
-        tick fact_origins_empty perspective_never_cites blob_fa_only) = t := rfl
+        tick forgotten fact_origins_empty perspective_never_cites blob_fa_only) = t := rfl
 
 /-- `t` uniqueness is a table/store invariant. -/
 def MemoryIdUnique (memories : Set Memory) : Prop :=
@@ -363,7 +368,70 @@ theorem perspective_head_is_memory_head :
   exact h.2
 
 -- ============================================================
--- Cold stub (UML §5c) — forget leaves this, not a tombstone flag
+-- Forgetting (#488) — a flag on the row, not a move to a stub
+-- ============================================================
+
+/-- Forget sets the flag and nothing else. -/
+def Memory.forget (m : Memory) : Memory := { m with forgotten := true }
+
+/-- Restore clears the flag and nothing else. -/
+def Memory.restore (m : Memory) : Memory := { m with forgotten := false }
+
+theorem forget_keeps_t (m : Memory) : memory_t m.forget = memory_t m := rfl
+theorem forget_keeps_handle (m : Memory) : memory_handle m.forget = memory_handle m := rfl
+theorem forget_keeps_kind (m : Memory) : memory_kind m.forget = memory_kind m := rfl
+theorem forget_keeps_owner (m : Memory) : memory_owner m.forget = memory_owner m := rfl
+theorem forget_keeps_origins (m : Memory) : memory_origins m.forget = memory_origins m := rfl
+theorem forget_keeps_refs (m : Memory) : memory_refs m.forget = memory_refs m := rfl
+theorem forget_keeps_content (m : Memory) :
+    memory_content_id m.forget = memory_content_id m := rfl
+theorem forget_marks (m : Memory) : memory_forgotten m.forget = true := rfl
+
+/-- Restoring a memory that was live before the forget gives back the very
+    same row: nothing was moved, so nothing has to be put back. -/
+theorem restore_after_forget (m : Memory) (hlive : memory_forgotten m = false) :
+    m.forget.restore = m := by
+  cases m
+  simp only [memory_forgotten] at hlive
+  simp only [Memory.forget, Memory.restore, hlive]
+
+/-- The store after forgetting the row `id`: every row stays, that one is
+    flagged. -/
+def forgetIn (memories : Set Memory) (id : MemoryId) : Set Memory :=
+  fun m' => ∃ m : Memory, m ∈ memories ∧
+    ((memory_t m = id ∧ m' = m.forget) ∨ (memory_t m ≠ id ∧ m' = m))
+
+/-- A row survives a forget, keeping `t`, kind and owner. -/
+theorem forgetIn_keeps_row
+    (memories : Set Memory) (id : MemoryId) (m : Memory) (hm : m ∈ memories) :
+    ∃ m' : Memory, m' ∈ forgetIn memories id ∧ memory_t m' = memory_t m ∧
+      memory_kind m' = memory_kind m ∧ memory_owner m' = memory_owner m := by
+  by_cases h : memory_t m = id
+  · exact ⟨m.forget, ⟨m, hm, Or.inl ⟨h, rfl⟩⟩, rfl, rfl, rfl⟩
+  · exact ⟨m, ⟨m, hm, Or.inr ⟨h, rfl⟩⟩, rfl, rfl, rfl⟩
+
+/-- The forgotten row is flagged afterwards. -/
+theorem forgetIn_marks
+    (memories : Set Memory) (id : MemoryId) (m : Memory) (hm : m ∈ memories)
+    (ht : memory_t m = id) :
+    m.forget ∈ forgetIn memories id ∧ memory_forgotten m.forget = true :=
+  ⟨⟨m, hm, Or.inl ⟨ht, rfl⟩⟩, rfl⟩
+
+/-- Forget adds no row: everything after it was there before, maybe now
+    flagged. -/
+theorem forgetIn_adds_nothing
+    (memories : Set Memory) (id : MemoryId) (m' : Memory)
+    (hm' : m' ∈ forgetIn memories id) :
+    ∃ m : Memory, m ∈ memories ∧ memory_t m' = memory_t m ∧
+      memory_kind m' = memory_kind m ∧ memory_owner m' = memory_owner m := by
+  obtain ⟨m, hm, h⟩ := hm'
+  rcases h with ⟨_, he⟩ | ⟨_, he⟩ <;> subst he
+  · exact ⟨m, hm, rfl, rfl, rfl⟩
+  · exact ⟨_, hm, rfl, rfl, rfl⟩
+
+-- ============================================================
+-- Cooled stub — superseded by the flag above; Compliance still states
+-- `wipeable` over it until S19 of #488 removes it.
 -- ============================================================
 
 structure Cooled where
@@ -384,21 +452,38 @@ def CooledIdUnique (cooled : Set Cooled) : Prop :=
     cooled_t c1 = cooled_t c2 →
     c1 = c2
 
-def pinExists (memories : Set Memory) (cooled : Set Cooled) (id : MemoryId) : Prop :=
-  (∃ m : Memory, m ∈ memories ∧ memory_t m = id) ∨
-  (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = id)
+/-- A pin target exists when a row with that `t` is stored, live or
+    forgotten: forget keeps the row (#488). -/
+def pinExists (memories : Set Memory) (id : MemoryId) : Prop :=
+  ∃ m : Memory, m ∈ memories ∧ memory_t m = id
 
-/-- Kind of a pinned `t`: hot row or cooled stub. Forget must not break layering. -/
+/-- Kind of a pinned `t`. The row keeps its kind when forgotten, so forget
+    cannot break layering. -/
 def pinKindIs
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (id : MemoryId) (k : MemoryKind) : Prop :=
-  (∃ tgt : Memory, tgt ∈ memories ∧ memory_t tgt = id ∧ memory_kind tgt = k) ∨
-  (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = id ∧ cooled_kind c = k)
+  ∃ tgt : Memory, tgt ∈ memories ∧ memory_t tgt = id ∧ memory_kind tgt = k
 
 /-- B1 — A origins are Fact or Abstraction (F→A and A→A). -/
 def pinKindFactOrAbstraction
-    (memories : Set Memory) (cooled : Set Cooled) (id : MemoryId) : Prop :=
-  pinKindIs memories cooled id .Fact ∨ pinKindIs memories cooled id .Abstraction
+    (memories : Set Memory) (id : MemoryId) : Prop :=
+  pinKindIs memories id .Fact ∨ pinKindIs memories id .Abstraction
+
+/-- Forget keeps every pin target. -/
+theorem pinExists_forgetIn
+    (memories : Set Memory) (forgotten id : MemoryId)
+    (h : pinExists memories id) : pinExists (forgetIn memories forgotten) id := by
+  obtain ⟨m, hm, ht⟩ := h
+  obtain ⟨m', hm', ht', _, _⟩ := forgetIn_keeps_row memories forgotten m hm
+  exact ⟨m', hm', ht'.trans ht⟩
+
+/-- Forget keeps the kind of every pin target. -/
+theorem pinKindIs_forgetIn
+    (memories : Set Memory) (forgotten id : MemoryId) (k : MemoryKind)
+    (h : pinKindIs memories id k) : pinKindIs (forgetIn memories forgotten) id k := by
+  obtain ⟨m, hm, ht, hk⟩ := h
+  obtain ⟨m', hm', ht', hk', _⟩ := forgetIn_keeps_row memories forgotten m hm
+  exact ⟨m', hm', ht'.trans ht, hk'.trans hk⟩
 
 def ErasedTargetsDisjointMemories
     (targets : Set ErasedPinTarget) (memories : Set Memory) : Prop :=
@@ -427,43 +512,43 @@ theorem erased_target_not_cooled
   hdisjoint e he c hc
 
 def recordedPinKindIs
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget)
     (id : MemoryId) (kind : MemoryKind) : Prop :=
-  pinKindIs memories cooled id kind ∨ recordedMemoryTargetKind targets id kind
+  pinKindIs memories id kind ∨ recordedMemoryTargetKind targets id kind
 
 def recordedPinKindFactOrAbstraction
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget) (id : MemoryId) : Prop :=
-  recordedPinKindIs memories cooled targets id .Fact ∨
-  recordedPinKindIs memories cooled targets id .Abstraction
+  recordedPinKindIs memories targets id .Fact ∨
+  recordedPinKindIs memories targets id .Abstraction
 
 structure RetainedOriginKindValid
-    (memories : Set Memory) (cooled : Set Cooled)
+    (memories : Set Memory)
     (targets : Set ErasedPinTarget) (m : Memory) : Prop where
   factEmpty : memory_kind m = .Fact → memory_origins m = []
   absFactOrAbs : memory_kind m = .Abstraction →
     ∀ id : MemoryId, id ∈ memory_origins m →
-      recordedPinKindFactOrAbstraction memories cooled targets id
+      recordedPinKindFactOrAbstraction memories targets id
   perspAbsOrEmpty : memory_kind m = .Perspective →
     memory_origins m = [] ∨
     ∀ id : MemoryId, id ∈ memory_origins m →
-      recordedPinKindIs memories cooled targets id .Abstraction
+      recordedPinKindIs memories targets id .Abstraction
 
 -- ============================================================
 -- Origin kind CHECKs (UML §2) — Tesla valve, no extra if
 -- ============================================================
 
 structure OriginKindValid
-    (memories : Set Memory) (cooled : Set Cooled) (m : Memory) : Prop where
+    (memories : Set Memory) (m : Memory) : Prop where
   factEmpty : memory_kind m = .Fact → memory_origins m = []
   absFactOrAbs : memory_kind m = .Abstraction →
     ∀ id : MemoryId, id ∈ memory_origins m →
-      pinKindFactOrAbstraction memories cooled id
+      pinKindFactOrAbstraction memories id
   perspAbsOrEmpty : memory_kind m = .Perspective →
     memory_origins m = [] ∨
     ∀ id : MemoryId, id ∈ memory_origins m →
-      pinKindIs memories cooled id .Abstraction
+      pinKindIs memories id .Abstraction
 
 /-- A Fact never originates from anything. THEOREM from the row field. -/
 theorem facts_declare_no_origins (m : Memory) (hk : memory_kind m = .Fact) :

@@ -18,13 +18,11 @@ theorem principle_1_facts_below_perspective :
 /-- P2 rebase: declared evidence is never a Perspective. Authorship-gated
     "operator goals carry evidence" retired with the authorship blob. -/
 theorem principle_2_goal_evidence_not_perspective :
-    ∀ goals memories cooled,
-      GoalEvidenceValid goals memories cooled →
+    ∀ goals memories,
+      GoalEvidenceValid goals memories →
       ∀ (g : Goal) (i : MemoryId), g ∈ goals → i ∈ goal_evidence g →
         (∃ m : Memory, m ∈ memories ∧ memory_t m = i ∧
-          memory_kind m ≠ .Perspective) ∨
-        (∃ c : Cooled, c ∈ cooled ∧ cooled_t c = i ∧
-          cooled_kind c ≠ .Perspective) :=
+          memory_kind m ≠ .Perspective) :=
   goal_evidence_not_perspective
 
 theorem principle_3_operators_never_output_facts :
@@ -69,40 +67,40 @@ theorem principle_epistemic_operator_output_not_fact :
     observation, not a revision. -/
 
 theorem principle_5_memories_grounded_in_facts :
-    ∀ memories goals heads cooled,
-      MemoryGraphValid memories goals heads cooled →
-      ∀ m : Memory, m ∈ memories → GroundsInFact memories cooled m :=
+    ∀ memories goals heads,
+      MemoryGraphValid memories goals heads →
+      ∀ m : Memory, m ∈ memories → GroundsInFact memories m :=
   memory_grounds_in_facts
 
 /-- The retained post-erase surface is intentionally a validity shape, not a
     grounding theorem: an erased witness has no owner, payload, or live
     descent edge from which Fact grounding could be reconstructed. -/
 theorem principle_retained_committed_store_has_graph :
-    ∀ memories goals heads cooled targets,
-      RetainedCommittedStoreValid memories goals heads cooled targets →
-      RetainedMemoryGraphValid memories goals heads cooled targets :=
-  fun _ _ _ _ _ hstore => hstore.graph
+    ∀ memories goals heads targets,
+      RetainedCommittedStoreValid memories goals heads targets →
+      RetainedMemoryGraphValid memories goals heads targets :=
+  fun _ _ _ _ hstore => hstore.graph
 
 theorem principle_epistemic_abstraction_grounded_in_facts :
-    ∀ memories goals heads cooled,
-      MemoryGraphValid memories goals heads cooled →
+    ∀ memories goals heads,
+      MemoryGraphValid memories goals heads →
       ∀ m : Memory, m ∈ memories → memory_kind m = .Abstraction →
-        GroundsInFact memories cooled m :=
+        GroundsInFact memories m :=
   abstraction_grounds_in_facts
 
 theorem principle_epistemic_perspective_is_no_view_from_nowhere :
-    ∀ memories goals heads cooled,
-      MemoryGraphValid memories goals heads cooled →
+    ∀ memories goals heads,
+      MemoryGraphValid memories goals heads →
       ∀ m : Memory, m ∈ memories → memory_kind m = .Perspective →
         memory_origins m ≠ [] ∨ memory_refs m ≠ [] :=
   perspective_has_provenance
 
 theorem principle_6a_derivation_provenance_strictly_upward :
-    ∀ memories cooled out id,
-      OriginKindValid memories cooled out →
+    ∀ memories out id,
+      OriginKindValid memories out →
       memory_kind out = .Abstraction →
       id ∈ memory_origins out →
-      pinKindFactOrAbstraction memories cooled id :=
+      pinKindFactOrAbstraction memories id :=
   operator_origin_row_not_upward
 
 def principle_6b_personality_read_scope_removed : String :=
