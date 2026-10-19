@@ -470,7 +470,13 @@ async fn resolve_natural_series_handle(
         .iter()
         .map(|(column, atom)| (column.as_str(), atom.clone()))
         .collect::<Vec<_>>();
-    super::query::owned_head_handle(
+    // The series of a natural key outlives forgetting its head (#488 review
+    // r3): the lookup runs in the lifecycle scope, so a changed write after
+    // forget appends to the forgotten series, as a changed derive does,
+    // instead of minting a second series that a restore would leave live
+    // beside the first. The forgotten version stays history.
+    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+    let handle = super::query::owned_head_handle(
         tx.as_mut(),
         *owner,
         schema_id,
@@ -478,7 +484,8 @@ async fn resolve_natural_series_handle(
         &key.memory_key_column,
         &columns,
     )
-    .await
+    .await;
+    lifecycle.finish(tx.as_mut(), handle).await
 }
 
 /// Stable, domain-separated lock key only; never a stored memory or series ID.

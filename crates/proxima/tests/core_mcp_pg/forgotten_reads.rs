@@ -882,3 +882,97 @@ async fn replaying_a_forgotten_older_version_answers_forgotten_and_does_not_revi
     .await;
     result.expect("replay of a forgotten older version");
 }
+
+/// #488 review r3: a same-key remember with a changed body after forget
+/// continues the forgotten note's series, as a changed derive does. The
+/// forgotten version stays history, and restoring it never leaves two live
+/// series for one note key: one handle, one live head, one search hit.
+#[tokio::test]
+async fn a_changed_remember_after_forget_continues_the_series_and_restore_keeps_one_head() {
+    let split_db = clone_split_core_db("proxima_remember_forgotten_series")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(split_db.runtime_url().to_owned())
+            .store_number(0)
+            .platform_database_url(split_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let note = |body: &str| {
+            serde_json::json!({"title": "notex", "body": body, "tags": [],
+                "idempotency_key": "notex-key"})
+        };
+        let series = || async {
+            let admin = sqlx::PgPool::connect(&db_url(split_db.name())).await?;
+            let handles: i64 = sqlx::query_scalar(
+                "SELECT count(DISTINCT handle) FROM proxima_core.memory WHERE schema_id = $1",
+            )
+            .bind(<proxima_core::AgentNoteV1 as proxima_core::FactPayload>::SCHEMA_ID)
+            .fetch_one(&admin)
+            .await?;
+            let live_heads: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT h.t FROM proxima_core.memory_head h
+                   JOIN proxima_core.memory m ON m.t = h.t
+                  WHERE m.schema_id = $1 AND m.forgotten_at IS NULL",
+            )
+            .bind(<proxima_core::AgentNoteV1 as proxima_core::FactPayload>::SCHEMA_ID)
+            .fetch_all(&admin)
+            .await?;
+            admin.close().await;
+            Ok::<(i64, Vec<Uuid>), Box<dyn std::error::Error>>((handles, live_heads))
+        };
+        let first = call("core_remember", note("notex notefirst")).await?;
+        let first = first["handle"].as_str().ok_or("handle")?.to_owned();
+        call("core_forget", serde_json::json!({"memory": first})).await?;
+        let second = call("core_remember", note("notex notesecond")).await?;
+        assert_eq!(second["idempotent_replay"], false, "{second}");
+        let second = second["handle"].as_str().ok_or("handle")?.to_owned();
+        assert_eq!(
+            series().await?.0,
+            1,
+            "a changed remember after forget minted a new series"
+        );
+
+        call(
+            "core_forget",
+            serde_json::json!({"memory": first, "action": "restore"}),
+        )
+        .await?;
+        let (handles, live_heads) = series().await?;
+        assert_eq!(handles, 1, "one note key, one series");
+        assert_eq!(
+            live_heads,
+            vec![Uuid::parse_str(&second)?],
+            "restore must not move the head back or add a second live head"
+        );
+
+        let third = call("core_remember", note("notex notethird")).await?;
+        let third = third["handle"].as_str().ok_or("handle")?.to_owned();
+        let (handles, live_heads) = series().await?;
+        assert_eq!(handles, 1, "the next write appends to the one series");
+        assert_eq!(live_heads, vec![Uuid::parse_str(&third)?]);
+        let found = call(
+            "core_search_memories",
+            serde_json::json!({"query": "notex", "mode": "lexical"}),
+        )
+        .await?;
+        assert_eq!(handles_of(&found), vec![third.clone()], "{found}");
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("changed remember after forget, then restore");
+}
+
+fn handles_of(found: &serde_json::Value) -> Vec<String> {
+    handles(found, "memories", "memory")
+}

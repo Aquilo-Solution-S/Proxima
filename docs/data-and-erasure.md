@@ -25,7 +25,11 @@ Forget is not hard deletion. The memory row, its sidecar rows and its sketch
 stay in Postgres marked `forgotten_at`; reads hide them, and their search
 projection and embeddings are deleted. A forgotten memory still grounds what was
 derived from it, so forgetting the last source of an Abstraction or Perspective is
-allowed and the derived memory stays readable.
+allowed and the derived memory stays readable. A forgotten memory keeps its
+series: a later write under the same key, a changed `core_remember` or
+`core_derive`, adds a newer version to that series. Replaying the exact write
+of a forgotten version answers with that version and `forgotten: true` and
+writes nothing.
 
 Restore (`core_forget` with `action: "restore"`) clears the mark: the search
 projection is rebuilt in the language the memory was written in, embedding jobs

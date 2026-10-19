@@ -752,6 +752,9 @@ MEMORY_CENSUS_PLATFORM_CALLEES = (
     "crates/storage-pg/src/verbs/fact_embeddings/",
     # Content GC runs only inside transfer, forget and erase transactions.
     "crates/storage-pg/src/verbs/content.rs",
+    # The head lookup the natural-key series resolution runs inside the
+    # lifecycle scope of memory_timeseries.rs (#488 review r3).
+    "crates/storage-pg/src/verbs/query/series_handle.rs",
 )
 # A live-only read filters forgotten rows itself (#488 S6): the read's line or
 # the statement lines right after it say so. Reads inside generated owner-RLS
@@ -759,7 +762,7 @@ MEMORY_CENSUS_PLATFORM_CALLEES = (
 LIVE_ONLY_FILTER = re.compile(r"\bforgotten_at IS NULL\b")
 LIVE_ONLY_WINDOW = 8
 LIVE_ONLY_RLS_REASON = "under owner RLS"
-EXPECTED_MEMORY_READS = {"live-only": 25, "includes-forgotten": 73}
+EXPECTED_MEMORY_READS = {"live-only": 25, "includes-forgotten": 74}
 
 
 def in_memory_census(text: str, suffix: str, rel: str = "") -> bool:
@@ -903,6 +906,7 @@ EXPECTED_LIFECYCLE_ENTER_SITES = {
     ("crates/storage-pg/src/verbs/forget.rs", "erase_memory"): 1,
     ("crates/storage-pg/src/verbs/forget.rs", "erase_memory_series"): 1,
     ("crates/storage-pg/src/verbs/memory_timeseries.rs", "load_ingest_replay"): 1,
+    ("crates/storage-pg/src/verbs/memory_timeseries.rs", "resolve_natural_series_handle"): 1,
     ("crates/storage-pg/src/verbs/query/lineage.rs", "forgotten_nodes_on_connection"): 1,
 }
 LIFECYCLE_GUC_ROOTS = ("crates", "apps", "tools", "flavors")
