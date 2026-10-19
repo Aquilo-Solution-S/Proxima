@@ -29,6 +29,7 @@ mod port;
 mod read;
 mod reconcile;
 mod rows;
+mod sweep;
 mod transitions;
 mod upload;
 mod verified_read;
@@ -42,6 +43,7 @@ pub use dto::{
     CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs,
     CitedBlobUploadPrepareTs, PresignedHeaderTs,
 };
+pub use sweep::UploadExpirySweepOutcome;
 
 use crate::config::{
     DEFAULT_MAX_BLOB_BYTES, S3RuntimeConfig, validate_endpoint_url, validate_presign_ttl,
@@ -143,6 +145,25 @@ impl CitedBlobStore {
                 "cited-blob store authority binding raced another boot".into(),
             )),
         }
+    }
+
+    /// Refuse a host-wide operation unless `authority` booted this store.
+    pub(super) fn require_system_authority(
+        &self,
+        authority: &SystemAuthority,
+        operation: &str,
+    ) -> Result<(), proxima_core::StorageError> {
+        let binding = self.system_authority.get().ok_or_else(|| {
+            proxima_core::StorageError::ConstraintViolation(format!(
+                "{operation} requires a boot-bound store"
+            ))
+        })?;
+        if !authority.authorizes(binding) {
+            return Err(proxima_core::StorageError::ConstraintViolation(
+                "SystemAuthority belongs to a different cited-blob store boot".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// The memoized S3 client, built on first use from the runtime config.

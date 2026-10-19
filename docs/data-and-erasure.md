@@ -74,7 +74,10 @@ fences serialize competing claim/delete decisions. An upload owes both of its
 keys, the transfer key `pending/<id>` and the canonical `objects/<id>`, whatever
 its row records: erase and abort enqueue both, so bytes left by an interrupted
 upload or a failed transfer-key delete are reached too. A key that never
-existed clears as absent.
+existed clears as absent. An upload whose TTL passes before it is staged
+expires, when it is next touched or when the expired-upload sweep
+(`CitedBlobStore::sweep_expired_uploads`) reaches it, and owes both keys the
+same way.
 
 Each erased target leaves a payload-free, owner-free identity/kind witness.
 Retained source pins stay byte-for-byte; rendering reports a redacted target.

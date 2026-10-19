@@ -61,7 +61,7 @@ async fn bucket(versioned: bool) -> S3RuntimeConfig {
 }
 
 /// Versions plus delete markers stored under exactly `key`.
-async fn versions_left(config: &S3RuntimeConfig, key: &str) -> usize {
+pub(super) async fn versions_left(config: &S3RuntimeConfig, key: &str) -> usize {
     let listed = config
         .client()
         .list_object_versions()
@@ -83,18 +83,18 @@ async fn versions_left(config: &S3RuntimeConfig, key: &str) -> usize {
     versions + markers
 }
 
-struct Fixture {
-    pg: PgStorage,
-    db_name: String,
-    pool: sqlx::PgPool,
-    config: S3RuntimeConfig,
-    store: CitedBlobStore,
-    user: UserId,
-    owner: OwnerId,
-    ctx: AuthzContext,
+pub(super) struct Fixture {
+    pub(super) pg: PgStorage,
+    pub(super) db_name: String,
+    pub(super) pool: sqlx::PgPool,
+    pub(super) config: S3RuntimeConfig,
+    pub(super) store: CitedBlobStore,
+    pub(super) user: UserId,
+    pub(super) owner: OwnerId,
+    pub(super) ctx: AuthzContext,
 }
 
-async fn fixture(versioned: bool) -> Fixture {
+pub(super) async fn fixture(versioned: bool) -> Fixture {
     let (pg, db_name) = fresh_storage().await;
     let pool = pg.pool_for_tests().clone();
     let config = bucket(versioned).await;
@@ -148,7 +148,7 @@ impl Fixture {
     }
 
     /// Make every debt due and drain it through the real store.
-    async fn drain(&self) -> ColdPurgeRetryOutcome {
+    pub(super) async fn drain(&self) -> ColdPurgeRetryOutcome {
         sqlx::query("UPDATE proxima_core.cold_purge_pending SET next_attempt_at = now()")
             .execute(&self.pool)
             .await
@@ -161,7 +161,7 @@ impl Fixture {
             .expect("drain")
     }
 
-    async fn owed_keys(&self) -> Vec<String> {
+    pub(super) async fn owed_keys(&self) -> Vec<String> {
         sqlx::query_scalar(
             "SELECT object_key FROM proxima_core.cold_purge_pending ORDER BY object_key",
         )
@@ -248,7 +248,7 @@ impl Fixture {
         assert_eq!(plan.object_keys().len(), 2, "{:?}", plan.object_keys());
     }
 
-    async fn finish(self) {
+    pub(super) async fn finish(self) {
         drop(self.pool);
         drop_db(&self.db_name).await.expect("drop db");
     }

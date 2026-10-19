@@ -48,6 +48,9 @@ mod store_identity;
 #[path = "blob_roundtrip_pg/implied_keys.rs"]
 mod implied_keys;
 
+#[path = "blob_roundtrip_pg/expiry_sweep.rs"]
+mod expiry_sweep;
+
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.

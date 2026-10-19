@@ -13,5 +13,5 @@ pub use error::BlobError;
 pub use store::{
     CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadAbortOutcomeTs,
     CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs,
-    CitedBlobUploadPrepareTs, PresignedHeaderTs, S3ColdStore,
+    CitedBlobUploadPrepareTs, PresignedHeaderTs, S3ColdStore, UploadExpirySweepOutcome,
 };

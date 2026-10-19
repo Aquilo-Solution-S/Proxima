@@ -92,9 +92,9 @@ facade_names! {
     }
 
     // Needed by `CitedBlobStore::{prepare_upload, stage_upload, abort_upload, read_url,
-    // cold_store}`.
+    // cold_store, sweep_expired_uploads}`.
     s3_lane {
-        host_only: [CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobUploadAbortOutcomeTs, CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs, CitedBlobUploadPrepareTs, PresignedHeaderTs, S3ColdStore],
+        host_only: [CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobUploadAbortOutcomeTs, CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs, CitedBlobUploadPrepareTs, PresignedHeaderTs, S3ColdStore, UploadExpirySweepOutcome],
         both_tiers: [],
     }
 

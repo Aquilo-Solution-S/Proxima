@@ -1154,7 +1154,7 @@ impl CitedBlobStore {
 
     /// Destroy what a committed terminal transition owed. Best effort: a
     /// failure leaves the durable debt for the drain, backed off.
-    async fn purge_owed_after_commit(&self, owed: Vec<ColdPurgeEntry>) {
+    pub(super) async fn purge_owed_after_commit(&self, owed: Vec<ColdPurgeEntry>) {
         if owed.is_empty() {
             return;
         }

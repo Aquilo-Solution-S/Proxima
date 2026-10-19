@@ -99,16 +99,7 @@ impl CitedBlobStore {
         &self,
         authority: &SystemAuthority,
     ) -> Result<CitedBlobReconcileOutcome, StorageError> {
-        let binding = self.system_authority.get().ok_or_else(|| {
-            StorageError::ConstraintViolation(
-                "global cited-blob reconciliation requires a boot-bound store".into(),
-            )
-        })?;
-        if !authority.authorizes(binding) {
-            return Err(StorageError::ConstraintViolation(
-                "SystemAuthority belongs to a different cited-blob store boot".into(),
-            ));
-        }
+        self.require_system_authority(authority, "global cited-blob reconciliation")?;
         // THE OBJECT SIDE FIRST, AND ENTIRELY. Holding the key set is what
         // lets the row side stream, and it is what removes any dependency
         // on the two sides being ordered the same way — a merge join would

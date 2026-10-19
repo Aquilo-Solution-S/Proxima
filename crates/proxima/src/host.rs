@@ -352,13 +352,14 @@ pub fn served_surface_excluding(
     ))
 }
 
-/// The S3 lane's upload, abort and read-url DTOs and its cold store, which
-/// [`CitedBlobStore`]'s `prepare_upload`, `stage_upload`, `abort_upload`,
-/// `read_url` and `cold_store` take or return.
+/// The S3 lane's upload, abort and read-url DTOs, its cold store and the
+/// expiry sweep's outcome, which [`CitedBlobStore`]'s `prepare_upload`,
+/// `stage_upload`, `abort_upload`, `read_url`, `cold_store` and
+/// `sweep_expired_uploads` take or return.
 pub use proxima_blob_s3::{
     CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobUploadAbortOutcomeTs,
     CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs,
-    CitedBlobUploadPrepareTs, PresignedHeaderTs, S3ColdStore,
+    CitedBlobUploadPrepareTs, PresignedHeaderTs, S3ColdStore, UploadExpirySweepOutcome,
 };
 /// Host-served MCP tools ([`RuntimeBuilder::host_tools`]), the per-call
 /// marker behaviors see, and the handler helpers a host transport reuses
