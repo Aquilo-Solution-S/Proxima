@@ -36,12 +36,12 @@ pub fn int_to_u64(value: i64, column: &str) -> Result<u64, StorageError> {
 
 /// Build a memory sidecar insert statement.
 ///
-/// `owner_pinned` stamps the row with the owner that WROTE it, read out of
+/// `stamp_owner` stamps the row with the owner that WROTE it, read out of
 /// `proxima_core.memory` in the same statement — so the value is the acting
-/// owner at write time and no caller can supply it. The row then stops
-/// following the Memory: an owner transfer rewrites `memory.owner_id` and
-/// leaves this row's `owner_id` alone, which is the whole point for an
-/// audit sidecar that describes who acted rather than what was said.
+/// owner at write time and no caller can supply it. Both [`super::SidecarOwnerMode::Pinned`]
+/// and [`super::SidecarOwnerMode::Follows`] pass `true` and share this SELECT
+/// arm: Pinned rows then stay with that owner across transfer, while Follows
+/// rows are later rehomed by the existing `TransferLeg::Rehomed` path.
 ///
 /// # Errors
 ///
@@ -51,7 +51,7 @@ pub fn memory_insert_sql(
     table: &str,
     key_column: &str,
     columns: &[(&str, Option<&str>)],
-    owner_pinned: bool,
+    stamp_owner: bool,
 ) -> Result<String, StorageError> {
     let table = PgIdent::table(table)?.as_str();
     let key_column = PgIdent::column(key_column)?.as_str();
@@ -62,13 +62,13 @@ pub fn memory_insert_sql(
     let mut sql = String::new();
     write!(&mut sql, "INSERT INTO {table} ({key_column}")
         .expect("writing SQL into String cannot fail");
-    if owner_pinned {
+    if stamp_owner {
         sql.push_str(", owner_id");
     }
     for (column, _) in &columns {
         write!(&mut sql, ", {column}").expect("writing SQL into String cannot fail");
     }
-    if owner_pinned {
+    if stamp_owner {
         sql.push_str(") SELECT $1, m.owner_id");
     } else {
         sql.push_str(") VALUES ($1");
@@ -83,7 +83,7 @@ pub fn memory_insert_sql(
             write!(&mut sql, "::{pg_type}").expect("writing SQL into String cannot fail");
         }
     }
-    if owner_pinned {
+    if stamp_owner {
         sql.push_str(" FROM proxima_core.memory m WHERE m.t = $1");
     } else {
         sql.push(')');

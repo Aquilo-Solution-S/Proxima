@@ -178,7 +178,7 @@ impl PgMemoryPayload for proxima_core::InterpretationV1 {
     // The column this table stores its memory `t` under, spelled by
     // every statement below. Freeze holds it equal to the contract
     // `Surface`'s `KeyShape::MemoryT { column }` for proxima_core.interpretation_v1.
-    const OWNER_PINNED: bool = false;
+    const OWNER: crate::sidecars::SidecarOwnerMode = crate::sidecars::SidecarOwnerMode::None;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
     fn load_batch<'t>(
@@ -278,7 +278,7 @@ impl PgMemorySidecar for proxima_core::GoalChangeV1 {
 impl PgMemoryPayload for proxima_core::GoalChangeV1 {
     // Freeze holds the key column equal to the contract `Surface`'s
     // `KeyShape::MemoryT { column }` for proxima_core.goal_change_v1.
-    const OWNER_PINNED: bool = false;
+    const OWNER: crate::sidecars::SidecarOwnerMode = crate::sidecars::SidecarOwnerMode::None;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
     fn load_batch<'t>(

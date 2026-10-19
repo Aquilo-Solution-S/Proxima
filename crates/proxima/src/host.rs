@@ -621,7 +621,7 @@ pub use {
         projection::Artifact, sidecars::PgGoalSidecar, sidecars::PgMemoryPayload,
         sidecars::PgMemoryPayloadBatchFuture, sidecars::PgMemoryPayloadFuture,
         sidecars::PgMemorySidecar, sidecars::PgSidecarFuture, sidecars::PgSidecarReadCtx,
-        sidecars::SidecarInsertPermit,
+        sidecars::SidecarInsertPermit, sidecars::SidecarOwnerMode,
     },
 };
 /// What [`PgStorage`]'s public methods take and return beyond the migration

@@ -47,14 +47,14 @@ impl PgSidecarKey {
 pub struct PgSidecarEntry {
     pub key: PgSidecarKey,
     pub sidecar_table: String,
-    /// See [`super::PgMemoryPayload::OWNER_PINNED`]. Carried on the entry so
-    /// erase and export can find owner-pinned tables without knowing which
-    /// payload types they belong to.
-    pub owner_pinned: bool,
+    /// See [`super::PgMemoryPayload::OWNER`]. Carried on the entry so erase
+    /// and export can find owner-pinned tables without knowing which payload
+    /// types they belong to, and so freeze can cross-check Follows.
+    pub owner: super::SidecarOwnerMode,
     /// See [`super::PgMemoryPayload::MEMORY_KEY_COLUMN`]. `None` for a Goal
     /// registration, which hangs off no memory.
     ///
-    /// Carried for the same reason `owner_pinned` is: the series-head
+    /// Carried for the same reason `owner` is: the series-head
     /// lookup joins a sidecar back to `proxima_core.memory` and knows only
     /// the table name, so without this the join spells the memory column
     /// `t` and a sidecar keyed on anything else can never be found through

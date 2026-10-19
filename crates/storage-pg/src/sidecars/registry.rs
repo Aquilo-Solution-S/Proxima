@@ -36,7 +36,7 @@ impl PgSidecarRegistry {
                 PgSidecarEntry {
                     key,
                     sidecar_table: table.to_string(),
-                    owner_pinned: <P as PgMemoryPayload>::OWNER_PINNED,
+                    owner: <P as PgMemoryPayload>::OWNER,
                     memory_key_column: Some(<P as PgMemoryPayload>::MEMORY_KEY_COLUMN),
                     memory_insert: Some(insert_memory_sidecar::<P>),
                     memory_load: Some(load_memory_payload::<P>),
@@ -101,7 +101,7 @@ impl PgSidecarRegistry {
                 PgSidecarEntry {
                     key,
                     sidecar_table: table.to_string(),
-                    owner_pinned: false,
+                    owner: crate::sidecars::SidecarOwnerMode::None,
                     memory_key_column: None,
                     memory_insert: None,
                     memory_load: None,
@@ -136,7 +136,7 @@ impl PgSidecarRegistry {
             PgSidecarEntry {
                 key,
                 sidecar_table: sidecar_table.into(),
-                owner_pinned: <P as PgMemoryPayload>::OWNER_PINNED,
+                owner: <P as PgMemoryPayload>::OWNER,
                 memory_key_column: Some(<P as PgMemoryPayload>::MEMORY_KEY_COLUMN),
                 memory_insert: Some(insert_memory_sidecar::<P>),
                 memory_load: Some(load_memory_payload::<P>),
@@ -159,16 +159,16 @@ impl PgSidecarRegistry {
     ///
     /// Takes the whole frozen registry, not just its `SchemaInfo` slice,
     /// because the flavor contracts are part of what a PG registration has
-    /// to agree with: `pg_sidecar!(owner_pinned: true)` and
-    /// `TransferRule::RetainAtSource` are two statements of the same fact,
-    /// and this is what compares them.
+    /// to agree with: `pg_sidecar!` owner mode (`Pinned` / `Follows` / `None`)
+    /// and the contract's transfer / `owner_column` / Keep declarations are
+    /// statements of the same fact, and this is what compares them.
     ///
     /// # Errors
     ///
     /// Returns `ConstraintViolation` if a sidecar-bearing schema has no
     /// PG registration, a registration is orphaned, a table name drifts,
     /// an insert-capable kind has no typed inserter, a registration's
-    /// `owner_pinned` flag contradicts its schema's declared transfer rule,
+    /// `OWNER` mode contradicts its schema's declared transfer / Keep rule,
     /// or its `pg_sidecar!(key: …)` column contradicts the `Surface` that
     /// declares the same table.
     pub fn freeze_against(
@@ -341,6 +341,9 @@ impl PgSidecarRegistry {
         &self,
         registry: &proxima_core::FlavorRegistryFrozen,
     ) -> Result<(), StorageError> {
+        use crate::sidecars::SidecarOwnerMode;
+        use proxima_core::flavor::TransferRule;
+
         let retained = registry.retain_at_source_sidecar_tables();
         for entry in self.entries.values() {
             if !matches!(
@@ -352,21 +355,35 @@ impl PgSidecarRegistry {
             let Some((flavor_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
                 continue;
             };
-            if registry.flavor_contract(flavor_id).is_none() {
+            let Some(contract) = registry.flavor_contract(flavor_id) else {
                 continue;
-            }
-            let declared = retained.iter().any(|table| table == &entry.sidecar_table);
-            if declared != entry.owner_pinned {
+            };
+            let expected = if retained.iter().any(|table| table == &entry.sidecar_table) {
+                SidecarOwnerMode::Pinned
+            } else if contract
+                .surface_for(&entry.sidecar_table)
+                .is_some_and(|surface| {
+                    matches!(surface.transfer, TransferRule::Follow)
+                        && surface.owner_column.is_some()
+                })
+            {
+                SidecarOwnerMode::Follows
+            } else {
+                SidecarOwnerMode::None
+            };
+            if expected != entry.owner {
                 return Err(StorageError::ConstraintViolation(format!(
-                    "PG sidecar {} registers owner_pinned={} but {} v{} declares {}",
+                    "PG sidecar {} registers OWNER={:?} but {} v{} declares {}",
                     entry.sidecar_table,
-                    entry.owner_pinned,
+                    entry.owner,
                     entry.key.schema_id.as_str(),
                     entry.key.schema_version.into_inner(),
-                    if declared {
-                        "TransferRule::RetainAtSource"
-                    } else {
-                        "a transfer rule that follows the memory"
+                    match expected {
+                        SidecarOwnerMode::Pinned => "TransferRule::RetainAtSource",
+                        SidecarOwnerMode::Follows => {
+                            "TransferRule::Follow with Surface.owner_column set"
+                        }
+                        SidecarOwnerMode::None => "a transfer rule that follows the memory",
                     },
                 )));
             }
@@ -374,26 +391,6 @@ impl PgSidecarRegistry {
         Ok(())
     }
 
-    /// `pg_sidecar!(key: …)` and the contract `Surface`'s
-    /// `KeyShape::MemoryT { column }` are the same fact, and this is what
-    /// compares them.
-    ///
-    /// WHY IT MATTERS THAT THEY DISAGREE SILENTLY. The two are read by
-    /// different generators: the typed `INSERT` and the batch read spell the
-    /// macro's column, while the projection `INSERT`, the substring arm and
-    /// the snippet lookup spell the `Surface`'s. A disagreement therefore
-    /// writes the sidecar row on one column and looks for it on another —
-    /// a table whose rows exist and whose projection is empty, with nothing
-    /// failing anywhere. Neither generator can notice: each is internally
-    /// consistent with the declaration it reads.
-    ///
-    /// A table with NO surface is skipped rather than refused. The
-    /// projection and embedding lanes already refuse it at core freeze when
-    /// they need one (`ProjectedSidecarNotMemoryKeyed`,
-    /// `EmbeddedSidecarNotMemoryKeyed`); a sidecar that is neither projected
-    /// nor embedded has made no second claim for this check to compare
-    /// against, and inventing one here would be this function asserting a
-    /// declaration nobody wrote.
     fn check_memory_key_against_contracts(
         &self,
         registry: &proxima_core::FlavorRegistryFrozen,
@@ -427,9 +424,10 @@ impl PgSidecarRegistry {
         Ok(())
     }
 
-    /// `Keep` and `owner_pinned` must agree: both dump and delete exempt
-    /// owner-pinned rows. A mismatch either loses kept data or duplicates it
-    /// on restore. `ForgetLeg::derive` supplies the shared classifier.
+    /// `Keep` and [`crate::sidecars::SidecarOwnerMode::Pinned`] must agree: both dump
+    /// and delete exempt owner-pinned rows. Follows + Keep is refused.
+    /// A mismatch either loses kept data or duplicates it on restore.
+    /// `ForgetLeg::derive` supplies the shared classifier.
     fn check_keep_is_owner_pinned(
         &self,
         registry: &proxima_core::FlavorRegistryFrozen,
@@ -452,14 +450,11 @@ impl PgSidecarRegistry {
                 surfaces.forget_leg(&entry.sidecar_table),
                 proxima_core::flavor::ForgetLeg::Kept { .. }
             );
-            if kept != entry.owner_pinned {
+            if kept != entry.owner.is_pinned() {
                 return Err(StorageError::ConstraintViolation(format!(
-                    "PG sidecar {} registers owner_pinned={} but {} v{} declares {}; \
-                     the forget exempts a memory sidecar from dump and delete on the \
-                     owner_pinned flag alone, so these two must agree or the \
-                     declaration is prose",
+                    "PG sidecar {} registers OWNER={:?} but {} v{} declares {}; the forget exempts a memory sidecar from dump and delete on SidecarOwnerMode::Pinned alone, so Keep requires Pinned (Follows + Keep is refused) or the declaration is prose",
                     entry.sidecar_table,
-                    entry.owner_pinned,
+                    entry.owner,
                     entry.key.schema_id.as_str(),
                     entry.key.schema_version.into_inner(),
                     if kept {
@@ -496,7 +491,7 @@ mod memory_key_agreement_tests {
         let entry = PgSidecarEntry {
             key: key.clone(),
             sidecar_table: AGENT_NOTE.to_owned(),
-            owner_pinned: false,
+            owner: crate::sidecars::SidecarOwnerMode::None,
             memory_key_column: Some(key_column),
             memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
             memory_load: None,
@@ -558,5 +553,250 @@ mod memory_key_agreement_tests {
                 "the refusal names {named}, so the reader can find both declarations: {message}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod owner_mode_agreement_tests {
+    use super::{PgSidecarEntry, PgSidecarKey, PgSidecarRegistry};
+    use crate::sidecars::SidecarOwnerMode;
+    use proxima_core::flavor::{
+        CounterRule, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape,
+        ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
+        TransferRule,
+    };
+    use proxima_core::verbs::schema::PayloadKind;
+    use proxima_core::{FactPayload, SchemaId, SchemaVersion, StorageError};
+    use std::collections::HashMap;
+
+    const FLAVOR: &str = "test-owner-mode";
+    const TABLE: &str = "test_owner_mode.stamp_v1";
+    const SCHEMA_ID: &str = "test-owner-mode/stamp-v1";
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct StampFixture {
+        mark: String,
+    }
+
+    impl FactPayload for StampFixture {
+        const SCHEMA_ID: &'static str = SCHEMA_ID;
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn receipt_key(&self) -> Vec<u8> {
+            self.mark.as_bytes().to_vec()
+        }
+
+        fn render(&self) -> String {
+            self.mark.clone()
+        }
+
+        fn sidecar_table() -> Option<&'static str> {
+            Some(TABLE)
+        }
+
+        fn json_schema() -> Option<serde_json::Value> {
+            Some(serde_json::json!({
+                "type": "object",
+                "properties": { "mark": { "type": "string" } },
+                "required": ["mark"],
+            }))
+        }
+    }
+
+    const fn surface(
+        transfer: TransferRule,
+        forget: ForgetRule,
+        owner_column: Option<&'static str>,
+    ) -> Surface {
+        Surface {
+            table: TABLE,
+            key: KeyShape::MemoryT { column: "t" },
+            owner_column,
+            transfer,
+            erase: EraseRule::ByKey,
+            export: ExportRule::Rows,
+            forget,
+            lexical_language_column: None,
+            counter: CounterRule::Counted("sidecar_rows"),
+            completeness: None,
+        }
+    }
+
+    fn pg_registry_with(owner: SidecarOwnerMode) -> PgSidecarRegistry {
+        let key = PgSidecarKey::new(
+            PayloadKind::Fact,
+            SchemaId::new(SCHEMA_ID.to_owned()),
+            SchemaVersion::new(1),
+        );
+        let entry = PgSidecarEntry {
+            key: key.clone(),
+            sidecar_table: TABLE.to_owned(),
+            owner,
+            memory_key_column: Some("t"),
+            memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
+            memory_load: None,
+            memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
+            goal_insert: None,
+            goal_copy: None,
+            projection_insert: None,
+            projection_table: None,
+            projection_language: None,
+        };
+        PgSidecarRegistry {
+            entries: HashMap::from([(key, entry)]),
+        }
+    }
+
+    fn freeze_contract(contract: &'static FlavorContract) -> proxima_core::FlavorRegistryFrozen {
+        let mut registry = proxima_core::FlavorRegistry::new();
+        registry.add_fact_schema_or_panic_for_tests::<StampFixture>();
+        registry.add_contract_or_panic_for_tests(contract);
+        registry.freeze_or_panic_for_tests()
+    }
+
+    #[test]
+    fn freeze_refuses_follows_declared_retain_at_source() {
+        static CONTRACT: FlavorContract = FlavorContract {
+            flavor_id: FLAVOR,
+            ordinal: 91,
+            schemas: &[SchemaContract {
+                id: SchemaRef::new(FLAVOR, "stamp", 1),
+                kind: PayloadKind::Fact,
+                sidecar_table: Some(TABLE),
+                search: SearchProjectionDecl::None {
+                    why: "owner-mode freeze fixture",
+                },
+                embedding: EmbeddingRecipe::Never {
+                    why: "owner-mode freeze fixture",
+                },
+                transfer: TransferRule::RetainAtSource {
+                    why: "fixture: retain so Follows must disagree",
+                },
+                provenance: Provenance::None,
+                surfaces: &[surface(
+                    TransferRule::RetainAtSource {
+                        why: "fixture: retain so Follows must disagree",
+                    },
+                    ForgetRule::DumpThenDelete,
+                    Some("owner_id"),
+                )],
+                natural_key_columns: &[],
+            }],
+            state_surfaces: &[],
+            scopes: &[],
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            projection: ProjectionDecl::None {
+                why: "owner-mode freeze fixture",
+            },
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+        };
+        let frozen = freeze_contract(&CONTRACT);
+        let err = pg_registry_with(SidecarOwnerMode::Follows)
+            .check_owner_pinned_against_contracts(&frozen)
+            .expect_err("Follows vs RetainAtSource");
+        let StorageError::ConstraintViolation(message) = err else {
+            panic!("expected ConstraintViolation, got {err:?}");
+        };
+        for named in ["OWNER=Follows", "RetainAtSource", TABLE] {
+            assert!(message.contains(named), "refusal names {named}: {message}");
+        }
+    }
+
+    #[test]
+    fn freeze_refuses_follows_declared_keep() {
+        static CONTRACT: FlavorContract = FlavorContract {
+            flavor_id: FLAVOR,
+            ordinal: 92,
+            schemas: &[SchemaContract {
+                id: SchemaRef::new(FLAVOR, "stamp", 1),
+                kind: PayloadKind::Fact,
+                sidecar_table: Some(TABLE),
+                search: SearchProjectionDecl::None {
+                    why: "owner-mode freeze fixture",
+                },
+                embedding: EmbeddingRecipe::Never {
+                    why: "owner-mode freeze fixture",
+                },
+                transfer: TransferRule::Follow,
+                provenance: Provenance::None,
+                surfaces: &[surface(
+                    TransferRule::Follow,
+                    ForgetRule::Keep {
+                        why: "fixture: Keep so Follows must disagree",
+                    },
+                    Some("owner_id"),
+                )],
+                natural_key_columns: &[],
+            }],
+            state_surfaces: &[],
+            scopes: &[],
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            projection: ProjectionDecl::None {
+                why: "owner-mode freeze fixture",
+            },
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+        };
+        let frozen = freeze_contract(&CONTRACT);
+        pg_registry_with(SidecarOwnerMode::Follows)
+            .check_owner_pinned_against_contracts(&frozen)
+            .expect("Follows matches Follow+owner_column");
+        let err = pg_registry_with(SidecarOwnerMode::Follows)
+            .check_keep_is_owner_pinned(&frozen)
+            .expect_err("Follows + Keep");
+        let StorageError::ConstraintViolation(message) = err else {
+            panic!("expected ConstraintViolation, got {err:?}");
+        };
+        for named in ["OWNER=Follows", "ForgetRule::Keep", "Pinned"] {
+            assert!(message.contains(named), "refusal names {named}: {message}");
+        }
+    }
+
+    #[test]
+    fn freeze_admits_follows_with_follow_and_owner_column() {
+        static CONTRACT: FlavorContract = FlavorContract {
+            flavor_id: FLAVOR,
+            ordinal: 93,
+            schemas: &[SchemaContract {
+                id: SchemaRef::new(FLAVOR, "stamp", 1),
+                kind: PayloadKind::Fact,
+                sidecar_table: Some(TABLE),
+                search: SearchProjectionDecl::None {
+                    why: "owner-mode freeze fixture",
+                },
+                embedding: EmbeddingRecipe::Never {
+                    why: "owner-mode freeze fixture",
+                },
+                transfer: TransferRule::Follow,
+                provenance: Provenance::None,
+                surfaces: &[surface(
+                    TransferRule::Follow,
+                    ForgetRule::DumpThenDelete,
+                    Some("owner_id"),
+                )],
+                natural_key_columns: &[],
+            }],
+            state_surfaces: &[],
+            scopes: &[],
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            projection: ProjectionDecl::None {
+                why: "owner-mode freeze fixture",
+            },
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+        };
+        let frozen = freeze_contract(&CONTRACT);
+        let reg = pg_registry_with(SidecarOwnerMode::Follows);
+        reg.check_owner_pinned_against_contracts(&frozen)
+            .expect("Follows matches");
+        reg.check_keep_is_owner_pinned(&frozen)
+            .expect("DumpThenDelete admits Follows");
     }
 }

@@ -430,6 +430,39 @@ macro_rules! pg_sidecar_payload {
     }};
 }
 
+/// Resolve `pg_sidecar!` owner tokens to [`SidecarOwnerMode`].
+///
+/// Internal to `pg_sidecar!`. Accepts `owner_pinned: true|false`, `owner:
+/// follows|pinned`, neither (→ None), and refuses both in one invocation.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __sidecar_owner_mode {
+    () => {
+        $crate::sidecars::SidecarOwnerMode::None
+    };
+    (owner_pinned: true $(,)?) => {
+        $crate::sidecars::SidecarOwnerMode::Pinned
+    };
+    (owner_pinned: false $(,)?) => {
+        $crate::sidecars::SidecarOwnerMode::None
+    };
+    (owner: follows $(,)?) => {
+        $crate::sidecars::SidecarOwnerMode::Follows
+    };
+    (owner: pinned $(,)?) => {
+        $crate::sidecars::SidecarOwnerMode::Pinned
+    };
+    (owner_pinned: $p:literal, owner: $m:ident $(,)?) => {
+        ::std::compile_error!("pg_sidecar!: set owner_pinned: or owner:, not both")
+    };
+    (owner: $m:ident, owner_pinned: $p:literal $(,)?) => {
+        ::std::compile_error!("pg_sidecar!: set owner_pinned: or owner:, not both")
+    };
+    (owner: $m:ident $(,)?) => {
+        ::std::compile_error!("pg_sidecar!: unknown owner mode; expected `follows` or `pinned`")
+    };
+}
+
 #[macro_export]
 macro_rules! pg_sidecar {
     (
@@ -439,6 +472,7 @@ macro_rules! pg_sidecar {
         table: $table:literal,
         key: $key_column:ident,
         $(owner_pinned: $owner_pinned:literal,)?
+        $(owner: $owner_mode:ident,)?
         fields: {
             $(
                 $field:ident => $column:ident : $column_kind:tt
@@ -453,16 +487,20 @@ macro_rules! pg_sidecar {
                 _permit: $crate::sidecars::SidecarInsertPermit,
             ) -> $crate::sidecars::PgSidecarFuture<'t> {
                 ::std::boxed::Box::pin(async move {
-                    // Same tokens as the OWNER_PINNED const below: one
-                    // macro invocation emits both, so they cannot drift.
-                    let owner_pinned = false $(|| $owner_pinned)?;
+                    // Same tokens as the OWNER const below: one macro
+                    // invocation emits both, so they cannot drift.
+                    const OWNER: $crate::sidecars::SidecarOwnerMode = $crate::__sidecar_owner_mode!(
+                        $(owner_pinned: $owner_pinned,)?
+                        $(owner: $owner_mode,)?
+                    );
+                    let stamp_owner = OWNER.stamps_owner_at_insert();
                     let sql = $crate::sidecars::memory_insert_sql(
                         $table,
                         ::std::stringify!($key_column),
                         &[$(
                             (::std::stringify!($column), $crate::pg_sidecar_cast! $column_kind),
                         )+],
-                        owner_pinned,
+                        stamp_owner,
                     )?;
                     // SQL-POLICY: PgIdent — `sql` is built by memory_insert_sql
                     // from macro-literal table/column names validated as PgIdent;
@@ -475,14 +513,14 @@ macro_rules! pg_sidecar {
                         .execute(tx.as_mut())
                         .await
                         .map_err($crate::map_err)?;
-                    // An owner-pinned insert reads the owner out of the
-                    // Memory row, so a missing Memory writes nothing instead
-                    // of tripping the foreign key. Refuse rather than lose
-                    // the audit row.
-                    if owner_pinned && result.rows_affected() != 1 {
+                    // A stamp_owner insert reads the owner out of the Memory
+                    // row, so a missing Memory writes nothing instead of
+                    // tripping the foreign key. Refuse rather than lose the
+                    // row (Pinned audit or Follows RLS stamp).
+                    if stamp_owner && result.rows_affected() != 1 {
                         return ::std::result::Result::Err(
                             $crate::core::StorageError::ConstraintViolation(::std::format!(
-                                "owner-pinned sidecar {} has no Memory row to take its owner from",
+                                "owner-stamping sidecar {} has no Memory row to take its owner from",
                                 $table,
                             )),
                         );
@@ -525,7 +563,10 @@ macro_rules! pg_sidecar {
         }
 
         impl $crate::sidecars::PgMemoryPayload for $($payload_ty)::+ {
-            const OWNER_PINNED: bool = false $(|| $owner_pinned)?;
+            const OWNER: $crate::sidecars::SidecarOwnerMode = $crate::__sidecar_owner_mode!(
+                $(owner_pinned: $owner_pinned,)?
+                $(owner: $owner_mode,)?
+            );
 
             // The same token the two statements above splice: one macro
             // invocation emits the declaration and both readings of it, so
@@ -543,7 +584,7 @@ macro_rules! pg_sidecar {
                         return ::std::result::Result::Ok(::std::vec::Vec::new());
                     }
                     let columns = &[$($crate::pg_sidecar_select_col!($column_kind, $column)),+];
-                    let rows = if <Self as $crate::sidecars::PgMemoryPayload>::OWNER_PINNED {
+                    let rows = if <Self as $crate::sidecars::PgMemoryPayload>::OWNER.is_pinned() {
                         let sql = $crate::sidecars::memory_select_batch_owner_pinned_sql(
                             $table,
                             ::std::stringify!($key_column),
@@ -551,6 +592,9 @@ macro_rules! pg_sidecar {
                         )?;
                         ctx.fetch_all_by_memory_ids_owner_pinned::<$row_ty>(&sql, memory_ids).await?
                     } else {
+                        // Follows and None hydrate like an ordinary sidecar:
+                        // the row is reached through the memory, not the
+                        // pinned owner-join.
                         let sql = $crate::sidecars::memory_select_batch_sql(
                             $table,
                             ::std::stringify!($key_column),

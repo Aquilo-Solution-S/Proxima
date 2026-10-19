@@ -28,19 +28,18 @@ pub trait PgMemorySidecar: Send + Sync + 'static {
 /// NEITHER is a programming error and yields a clear `Internal` error rather
 /// than recursing (the two defaults must not call each other).
 pub trait PgMemoryPayload: Send + Sync + 'static {
-    /// Does this sidecar carry its OWN `owner_id`, stamped at write time?
+    /// How this sidecar relates to its memory's owner.
     ///
-    /// `false` for a sidecar that is an extra column on a Memory and
-    /// reaches its owner through that Memory, so it follows the Memory
-    /// wherever it goes. `true` for a sidecar that describes the ACT rather
-    /// than the Memory — an audit row naming the actor — which must stay
-    /// with the owner that wrote it when the Memory is transferred away.
-    /// Erase, export, and payload hydrate all key on it.
+    /// See [`super::SidecarOwnerMode`]. `None` reaches the owner through the
+    /// memory. `Pinned` stamps `owner_id` and keeps it across transfer
+    /// (audit / `RetainAtSource`). `Follows` stamps `owner_id` for RLS but
+    /// transfer rehomes the row with the memory.
     ///
-    /// `pg_sidecar!` emits it. It has NO DEFAULT, for the same reason
+    /// `pg_sidecar!` emits it (`owner_pinned: true` → Pinned, `owner: follows`
+    /// → Follows, omitted → None). It has NO DEFAULT, for the same reason
     /// `MEMORY_KEY_COLUMN` has none: every declaration on this trait is
     /// stated, and a hand-written impl inherits nothing it did not say.
-    const OWNER_PINNED: bool;
+    const OWNER: super::SidecarOwnerMode;
 
     /// The column this sidecar stores its memory `t` under.
     ///

@@ -209,7 +209,7 @@ pub use proxima_storage_pg::access::owner_columns::{
 pub use proxima_storage_pg::pg_sidecar;
 pub use proxima_storage_pg::sidecars::{
     PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
-    PgSidecarReadCtx, SidecarInsertPermit,
+    PgSidecarReadCtx, SidecarInsertPermit, SidecarOwnerMode,
 };
 pub use proxima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, register_core_pg_sidecars,

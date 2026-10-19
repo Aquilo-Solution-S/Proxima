@@ -45,3 +45,51 @@ fn pg_sidecar_macro_is_reachable_from_facade() {
     };
     assert_eq!(payload.render(), "facade macro ok");
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct FacadeFollowsFact {
+    mark: String,
+}
+
+impl FactPayload for FacadeFollowsFact {
+    const SCHEMA_ID: &'static str = "test/facade-follows-fact-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("mark", &self.mark);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        self.mark.clone()
+    }
+
+    fn sidecar_table() -> Option<&'static str> {
+        Some("public.facade_follows_fact_v1")
+    }
+}
+
+proxima::flavor::pg_sidecar! {
+    payload: FacadeFollowsFact,
+    row: FacadeFollowsFactRow,
+    kinds: [Fact],
+    table: "public.facade_follows_fact_v1",
+    key: t,
+    owner: follows,
+    fields: {
+        mark => mark: (text),
+    },
+}
+
+#[test]
+fn pg_sidecar_owner_follows_token_is_accepted() {
+    use proxima::flavor::SidecarOwnerMode;
+    assert_pg_sidecar_traits::<FacadeFollowsFact>();
+    assert_eq!(
+        <FacadeFollowsFact as PgMemoryPayload>::OWNER,
+        SidecarOwnerMode::Follows
+    );
+    assert!(<FacadeFollowsFact as PgMemoryPayload>::OWNER.stamps_owner_at_insert());
+    assert!(!<FacadeFollowsFact as PgMemoryPayload>::OWNER.is_pinned());
+}

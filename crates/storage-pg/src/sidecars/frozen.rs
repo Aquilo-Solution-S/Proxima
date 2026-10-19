@@ -154,7 +154,7 @@ impl PgSidecarRegistryFrozen {
             PgSidecarEntry {
                 key,
                 sidecar_table: table.to_owned(),
-                owner_pinned: false,
+                owner: crate::sidecars::SidecarOwnerMode::None,
                 memory_key_column: Some(memory_key_column),
                 memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
                 memory_load: None,
@@ -186,7 +186,8 @@ impl PgSidecarRegistryFrozen {
     }
 
     /// Memory sidecar tables that carry their own `owner_id` (see
-    /// [`super::PgMemoryPayload::OWNER_PINNED`]), in name order.
+    /// [`super::PgMemoryPayload::OWNER`] is [`crate::sidecars::SidecarOwnerMode::Pinned`]),
+    /// in name order.
     ///
     /// Owner erase and export select these by the sidecar's OWN owner
     /// rather than through the Memory, because a transfer leaves them
@@ -198,7 +199,7 @@ impl PgSidecarRegistryFrozen {
             .entries
             .values()
             .filter(|entry| {
-                entry.owner_pinned
+                entry.owner.is_pinned()
                     && (entry.memory_insert.is_some() || entry.memory_load_batch.is_some())
             })
             .map(|entry| entry.sidecar_table.clone())
@@ -212,7 +213,7 @@ impl PgSidecarRegistryFrozen {
     pub(crate) fn is_owner_pinned_memory_sidecar_table(&self, table: &str) -> bool {
         self.entries.values().any(|entry| {
             entry.sidecar_table == table
-                && entry.owner_pinned
+                && entry.owner.is_pinned()
                 && (entry.memory_insert.is_some() || entry.memory_load_batch.is_some())
         })
     }
@@ -863,7 +864,7 @@ mod language_bind_tests {
         PgSidecarEntry {
             key: key(),
             sidecar_table: "proxima_core.agent_note_v1".to_owned(),
-            owner_pinned: false,
+            owner: crate::sidecars::SidecarOwnerMode::None,
             memory_key_column: Some("t"),
             memory_insert: None,
             memory_load: None,

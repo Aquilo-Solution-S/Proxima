@@ -236,3 +236,28 @@ fn every_registered_memory_sidecar_keys_on_the_column_its_surface_declares() {
         "core declares memory-keyed sidecar surfaces, so the walk has to reach some"
     );
 }
+
+#[test]
+fn memory_insert_sql_stamps_owner_for_follows() {
+    let follows = memory_insert_sql(
+        "public.follows_stamp_v1",
+        "t",
+        &[("mark", None)],
+        true, // Follows.stamps_owner_at_insert()
+    )
+    .unwrap();
+    let pinned =
+        memory_insert_sql("public.follows_stamp_v1", "t", &[("mark", None)], true).unwrap();
+    let none = memory_insert_sql("public.follows_stamp_v1", "t", &[("mark", None)], false).unwrap();
+    assert_eq!(follows, pinned);
+    assert!(
+        follows.contains("owner_id")
+            && follows.contains("SELECT $1, m.owner_id")
+            && follows.contains("FROM proxima_core.memory m WHERE m.t = $1"),
+        "Follows shares the Pinned stamp arm: {follows}"
+    );
+    assert!(
+        none.contains("VALUES ($1") && !none.contains("owner_id"),
+        "None emits VALUES without owner_id: {none}"
+    );
+}

@@ -94,6 +94,13 @@ proxima::flavor::pg_sidecar! {
 }
 ```
 
+Omit the owner token when the sidecar has no `owner_id` and reaches its owner
+through the memory. Use `owner_pinned: true` when the row stamps `owner_id` at
+insert and stays with that owner on transfer (`RetainAtSource`). Use
+`owner: follows` when the row stamps `owner_id` at insert (for RLS) but must
+move with the memory on transfer (`TransferRule::Follow` with
+`Surface.owner_column` set); freeze refuses Follows with RetainAtSource or Keep.
+
 Use `PgMemorySidecar` directly for computed or multi-row sidecars. Authorized
 helpers and private permits bind reads/writes to admitted rows; do not query
 `proxima_core` from flavor SQL. A generic JSON column is not a typed sidecar.
