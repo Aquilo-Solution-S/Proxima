@@ -233,3 +233,71 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
     let _ = drop_db(&db_name).await;
     result.expect("stored-kind origin proof failed");
 }
+
+/// The reference proof is live-only like the origin proof (#488 follow-up):
+/// a reference that names no readable live row (a nonexistent id, or
+/// another owner's memory under owner scope) is refused, while an exact
+/// replay of an existing version still answers.
+#[tokio::test]
+async fn a_reference_to_no_readable_live_row_is_refused() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Perspective);
+        let stranger = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let stranger_permit = OwnerWritePermit::new_for_tests(stranger, AccessKind::Perspective);
+        // The serving (runtime-role) pool, so owner RLS applies; the fixture
+        // pool is the administrator and would see the foreign row.
+        let pool = &pg.pool;
+        let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
+
+        let fact = pg.ingest_fact_atomic(&permit, &draft("fact"), None).await?;
+        let foreign = pg
+            .ingest_fact_atomic(&stranger_permit, &draft("fact"), None)
+            .await?;
+        let origins = [EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+        let validate = |references: Vec<EdgeEndpoint>, memory_id: Uuid| async move {
+            let mut tx = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
+            let draft = derived_draft(
+                owner,
+                memory_id,
+                MemoryOperatorKind::FtoA,
+                EntityKind::Abstraction,
+            );
+            super::validate_derived_reference_kinds_in_tx(&mut tx, &draft, &origins, &references)
+                .await
+        };
+        for (what, id) in [
+            ("foreign", foreign.memory_id),
+            ("nonexistent", proxima_core::MemoryId::new(Uuid::now_v7())),
+        ] {
+            let err = validate(
+                vec![EdgeEndpoint::memory(EntityKind::Fact, id)],
+                Uuid::now_v7(),
+            )
+            .await
+            .expect_err(what);
+            match err {
+                StorageError::ConstraintViolation(msg) => {
+                    assert!(msg.contains("must exist and be live"), "{what}: {msg}");
+                }
+                other => panic!("{what}: expected ConstraintViolation, got {other:?}"),
+            }
+        }
+        validate(
+            vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)],
+            Uuid::now_v7(),
+        )
+        .await
+        .expect("a live own reference passes");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("live-only reference proof");
+}

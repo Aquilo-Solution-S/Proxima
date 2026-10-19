@@ -762,7 +762,7 @@ MEMORY_CENSUS_PLATFORM_CALLEES = (
 LIVE_ONLY_FILTER = re.compile(r"\bforgotten_at IS NULL\b")
 LIVE_ONLY_WINDOW = 8
 LIVE_ONLY_RLS_REASON = "under owner RLS"
-EXPECTED_MEMORY_READS = {"live-only": 25, "includes-forgotten": 76}
+EXPECTED_MEMORY_READS = {"live-only": 25, "includes-forgotten": 75}
 
 
 def in_memory_census(text: str, suffix: str, rel: str = "") -> bool:
@@ -901,7 +901,6 @@ EXPECTED_LIFECYCLE_ENTER_SITES = {
     ("crates/storage-pg/src/verbs/derive_append.rs", "assert_derived_index_rows"): 1,
     ("crates/storage-pg/src/verbs/derive_append.rs", "record_external_edges"): 1,
     ("crates/storage-pg/src/verbs/derive_append.rs", "load_replay_input_proof_rows_in_tx"): 1,
-    ("crates/storage-pg/src/verbs/derive_append.rs", "load_forgotten_reference_ids_in_tx"): 1,
     ("crates/storage-pg/src/verbs/fact_ingest.rs", "citation_object_for_t"): 1,
     ("crates/storage-pg/src/verbs/forget.rs", "forget_marked"): 1,
     ("crates/storage-pg/src/verbs/forget.rs", "restore_marked"): 1,

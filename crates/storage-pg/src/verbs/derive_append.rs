@@ -660,7 +660,7 @@ pub(crate) async fn validate_derived_origins_in_tx(
     }
     let stored_kind: BTreeMap<uuid::Uuid, EntityKind> =
         rows.into_iter().map(|(id, kind, ..)| (id, kind)).collect();
-    assert_declared_kinds_match_stored(origins, &stored_kind, true)?;
+    assert_declared_kinds_match_stored(origins, &stored_kind)?;
     // Phase contract is on the stored row. Declared kind == phase is the
     // engine manifest; flavor-SDK has no manifest, so this is its gate.
     for origin in origins {
@@ -679,14 +679,15 @@ pub(crate) async fn validate_derived_origins_in_tx(
     Ok(())
 }
 
-/// Stored kind for payload references. Missing targets are skipped:
-/// batch writes name sibling rows that land later in the same
-/// transaction. After those inserts, the batch path calls this again.
+/// Payload reference proof. Like the origin proof it is live-only: every
+/// memory reference must name a live row this transaction can read, and its
+/// declared kind must match the stored kind. A nonexistent, forgotten or
+/// foreign (hidden by owner RLS) reference is refused.
 ///
-/// A reference to a forgotten memory is refused unless the write is a
-/// replay of an existing version (#488 review r4): a new write never pins a
-/// forgotten memory, whichever path resolved the id; the replay writes
-/// nothing, so it answers, as for origins.
+/// The one exception is a replay of an existing version (#488 review r4):
+/// the replay writes nothing, so it answers even when a reference was
+/// forgotten since, as for origins. Its references are then proved over
+/// every row in the lifecycle scope, and the kind check still applies.
 pub(crate) async fn validate_derived_reference_kinds_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
@@ -696,46 +697,28 @@ pub(crate) async fn validate_derived_reference_kinds_in_tx(
     let ids: Vec<uuid::Uuid> = references
         .iter()
         .filter_map(|endpoint| endpoint.memory_id().map(MemoryId::into_inner))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect();
     if ids.is_empty() {
         return Ok(());
     }
-    let stored = load_stored_memory_kinds_in_tx(tx, &ids).await?;
-    assert_declared_kinds_match_stored(references, &stored, false)?;
+    let mut stored = load_stored_memory_kinds_in_tx(tx, &ids).await?;
     if stored.len() != ids.len()
-        && !load_forgotten_reference_ids_in_tx(tx, &ids)
-            .await?
-            .is_empty()
-        && !replays_an_existing_version(tx, draft, origins, references).await?
+        && replays_an_existing_version(tx, draft, origins, references).await?
     {
-        return Err(StorageError::ConstraintViolation(
-            "operator invocation inputs must exist and be live".into(),
-        ));
+        stored = load_replay_input_proof_rows_in_tx(tx, &ids)
+            .await?
+            .into_iter()
+            .map(|(id, kind, ..)| (id, kind))
+            .collect();
     }
-    Ok(())
-}
-
-async fn load_forgotten_reference_ids_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    ids: &[uuid::Uuid],
-) -> Result<Vec<uuid::Uuid>, StorageError> {
-    let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
-    let forgotten: Result<Vec<uuid::Uuid>, StorageError> = sqlx::query_scalar(
-        "SELECT m.t
-           FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (finds the forgotten rows a new write must not pin) */
-          WHERE m.t = ANY($1::uuid[]) AND m.forgotten_at IS NOT NULL",
-    )
-    .bind(ids)
-    .fetch_all(tx.as_mut())
-    .await
-    .map_err(map_err);
-    lifecycle.finish(tx.as_mut(), forgotten).await
+    assert_declared_kinds_match_stored(references, &stored)
 }
 
 fn assert_declared_kinds_match_stored(
     pins: &[EdgeEndpoint],
     stored: &BTreeMap<uuid::Uuid, EntityKind>,
-    require_present: bool,
 ) -> Result<(), StorageError> {
     for pin in pins {
         let Some(memory_id) = pin.memory_id() else {
@@ -748,12 +731,11 @@ fn assert_declared_kinds_match_stored(
                     "declared pin kind must match the stored row".into(),
                 ));
             }
-            None if require_present => {
+            None => {
                 return Err(StorageError::ConstraintViolation(
                     "operator invocation inputs must exist and be live".into(),
                 ));
             }
-            None => {}
         }
     }
     Ok(())
