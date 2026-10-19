@@ -8,8 +8,8 @@
 //! instead. This module is the only writer of the GUC the policy reads; the
 //! type is crate-private, so no host or flavor can construct it.
 
-use proxima_core::{OwnerScope, StorageError};
-use sqlx::{PgConnection, PgPool, Postgres, Transaction};
+use proxima_core::StorageError;
+use sqlx::PgConnection;
 
 use crate::error::map_err;
 
@@ -26,17 +26,19 @@ pub(crate) struct PgLifecycleScope {
 }
 
 impl PgLifecycleScope {
-    /// Begin an owner transaction that also sees forgotten memories.
-    #[cfg_attr(not(test), expect(dead_code, reason = "restore adopts it (#488 S14)"))]
+    /// Begin an owner transaction that also sees forgotten memories. The
+    /// verbs enter the scope inside a transaction they already hold; only
+    /// the scope's own tests open one this way.
     ///
     /// # Errors
     ///
     /// Everything [`crate::begin_owner_transaction`] refuses, and database
     /// errors setting the scope.
+    #[cfg(test)]
     pub(crate) async fn begin(
-        pool: &PgPool,
-        scope: &OwnerScope,
-    ) -> Result<(Self, Transaction<'static, Postgres>), StorageError> {
+        pool: &sqlx::PgPool,
+        scope: &proxima_core::OwnerScope,
+    ) -> Result<(Self, sqlx::Transaction<'static, sqlx::Postgres>), StorageError> {
         let mut transaction = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
         let lifecycle = Self::enter(&mut transaction).await?;
         Ok((lifecycle, transaction))

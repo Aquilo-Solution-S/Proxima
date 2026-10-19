@@ -450,10 +450,12 @@ impl WriteSession for PgWriteSession {
         let t = memory_id.into_inner();
         // Ownership and kind precondition: a `t` the caller does not own, or
         // of a kind outside the permit, is NotFound rather than a forget on
-        // someone else's row.
+        // someone else's row. It runs in owner scope, before the forget
+        // enters the lifecycle scope, so it reads live rows only: forgetting
+        // a forgotten memory is NotFound here.
         sqlx::query_scalar::<_, uuid::Uuid>(
-            "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
-              WHERE t = $1 AND owner_id = $2 AND kind::text = ANY($3)",
+            "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: live-only (owner-scope precondition; a forgotten t is NotFound) */
+              WHERE t = $1 AND owner_id = $2 AND kind::text = ANY($3) AND forgotten_at IS NULL",
         )
         .bind(t)
         .bind(owner_id)
