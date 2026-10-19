@@ -101,6 +101,7 @@ Tools:
   core_remember
   core_episode_commit
   core_forget
+  core_restore
   core_record_utterance
   core_derive
   core_interpret

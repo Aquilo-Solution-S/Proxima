@@ -62,7 +62,7 @@ fn memory_keep_set() -> Vec<&'static str> {
     use proxima_core::mcp::core_tools::{
         CoreFactTool, CoreGoalTool, CoreUploadTool, DeriveTool, EpisodeCommitTool, ForgetTool,
         InterpretTool, MemorySpacesTool, RecallTool, RecordUtteranceTool, RememberTool,
-        SearchMemoriesTool, ThinkTool,
+        RestoreTool, SearchMemoriesTool, ThinkTool,
     };
 
     let mut ids = vec![
@@ -70,6 +70,7 @@ fn memory_keep_set() -> Vec<&'static str> {
         RememberTool::NAME,
         EpisodeCommitTool::NAME,
         ForgetTool::NAME,
+        RestoreTool::NAME,
         DeriveTool::NAME,
         InterpretTool::NAME,
         RecordUtteranceTool::NAME,
@@ -1309,6 +1310,7 @@ mod tests {
             protocol_action::CORE_FACT_CITATION_OF_FACT,
             protocol_action::CORE_FACT_FACTS_CITING_OBJECT,
             protocol_tool::CORE_FORGET,
+            protocol_tool::CORE_RESTORE,
             protocol_action::CORE_GOAL_SET,
             "test-flavor_register_notebook",
             "test-flavor_emit_request",
@@ -1347,6 +1349,7 @@ mod tests {
             (protocol_action::CORE_FACT_CITATION_OF_FACT, true),
             (protocol_action::CORE_FACT_FACTS_CITING_OBJECT, true),
             (protocol_tool::CORE_FORGET, true),
+            (protocol_tool::CORE_RESTORE, true),
             (protocol_tool::CORE_MEMBERSHIP, false),
             (protocol_tool::CORE_TRANSFER, false),
             (protocol_action::CORE_MEMBERSHIP_ADD_MEMBER, false),

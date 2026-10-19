@@ -193,11 +193,11 @@ async fn forgetting_the_last_source_is_allowed_and_the_derived_memory_stays_read
     result.expect("forget last source");
 }
 
-/// #488 S14: `core_forget` with `action: "restore"` brings a forgotten memory
-/// back. Restoring a live memory is a no-op success; the output keeps its
-/// shape.
+/// #488 S14: `core_restore` brings a forgotten memory back. Restoring a live
+/// memory is a no-op success; the output keeps forget's shape. `core_forget`
+/// takes no `action`: restore is its own tool with its own effect.
 #[tokio::test]
-async fn the_owner_restores_a_forgotten_memory_through_core_forget() {
+async fn the_owner_restores_a_forgotten_memory_through_core_restore() {
     let split_db = clone_split_core_db("proxima_restore_forgotten")
         .await
         .expect("PG required for tests");
@@ -241,12 +241,14 @@ async fn the_owner_restores_a_forgotten_memory_through_core_forget() {
             read(memory.clone()).await.is_err(),
             "forgotten reads absent"
         );
-
-        let restored = call(
+        call(
             "core_forget",
             serde_json::json!({"memory": memory, "action": "restore"}),
         )
-        .await?;
+        .await
+        .expect_err("core_forget has no action");
+
+        let restored = call("core_restore", serde_json::json!({"memory": memory})).await?;
         assert_eq!(
             restored,
             serde_json::json!({"ok": true, "memory": memory}),
@@ -255,15 +257,11 @@ async fn the_owner_restores_a_forgotten_memory_through_core_forget() {
         let back = read(memory.clone()).await?;
         assert_eq!(back["handle"], memory.as_str(), "{back}");
 
-        let again = call(
-            "core_forget",
-            serde_json::json!({"memory": memory, "action": "restore"}),
-        )
-        .await?;
+        let again = call("core_restore", serde_json::json!({"memory": memory})).await?;
         assert_eq!(again["ok"], true, "restoring a live memory is a no-op");
         assert!(read(memory.clone()).await.is_ok());
         Ok(())
     }
     .await;
-    result.expect("restore through core_forget");
+    result.expect("restore through core_restore");
 }

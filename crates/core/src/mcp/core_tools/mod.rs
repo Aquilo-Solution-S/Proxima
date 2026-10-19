@@ -30,7 +30,9 @@ pub use episode::EpisodeCommitTool;
 pub use fact::CoreFactTool;
 pub use goal::CoreGoalTool;
 pub use membership::CoreMembershipTool;
-pub use memory::{DeriveTool, ForgetTool, InterpretTool, RecordUtteranceTool, RememberTool};
+pub use memory::{
+    DeriveTool, ForgetTool, InterpretTool, RecordUtteranceTool, RememberTool, RestoreTool,
+};
 pub use memory_spaces::MemorySpacesTool;
 pub use recall::RecallTool;
 pub use search_memories::SearchMemoriesTool;
@@ -64,6 +66,7 @@ pub(crate) fn register_all(
     registry.try_add_mcp_tool::<RememberTool>("core")?;
     registry.try_add_mcp_tool::<EpisodeCommitTool>("core")?;
     registry.try_add_mcp_tool::<ForgetTool>("core")?;
+    registry.try_add_mcp_tool::<RestoreTool>("core")?;
     registry.try_add_mcp_tool::<RecordUtteranceTool>("core")?;
     registry.try_add_mcp_tool::<DeriveTool>("core")?;
     registry.try_add_mcp_tool::<InterpretTool>("core")?;

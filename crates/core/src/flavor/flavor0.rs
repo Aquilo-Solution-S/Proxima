@@ -1124,6 +1124,10 @@ const TOOLS: &[ToolContract] = &[
         actions: &[],
     },
     ToolContract {
+        wire_name: tool::CORE_RESTORE,
+        actions: &[],
+    },
+    ToolContract {
         wire_name: tool::CORE_RECORD_UTTERANCE,
         actions: &[],
     },

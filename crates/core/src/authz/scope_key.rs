@@ -358,6 +358,7 @@ mod tests {
             tool::CORE_TRANSFER,
             tool::CORE_UPLOAD,
             tool::CORE_FORGET,
+            tool::CORE_RESTORE,
         ];
         let actions = [
             action::CORE_FACT_CITATION_OF_FACT,

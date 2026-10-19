@@ -6,22 +6,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ForgetArgs {
-    #[schemars(description = "Memory to forget or restore, in your current space: memory UUIDs.")]
+    #[schemars(description = "Memory UUID in your current space.")]
     pub memory: String,
-    #[schemars(
-        description = "forget (default) hides the memory; restore brings a forgotten memory back. Restoring a live memory changes nothing."
-    )]
-    #[serde(default)]
-    pub action: ForgetAction,
-}
-
-/// What `core_forget` does to the memory.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ForgetAction {
-    #[default]
-    Forget,
-    Restore,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -35,7 +21,7 @@ pub struct ForgetTool;
 
 impl McpTool for ForgetTool {
     const NAME: &'static str = protocol_tool::CORE_FORGET;
-    const DESCRIPTION: &'static str = "Forget one memory: it is kept but hidden from search, recall, walks and other stores until restored (action restore); erase removes it.";
+    const DESCRIPTION: &'static str = "Hide a memory from search, recall, walks and other stores until core_restore; erase removes it.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Destructive(Replay::NonIdempotent));
     type Args = ForgetArgs;
     type Output = ForgetOutput;
@@ -53,10 +39,7 @@ impl McpTool for ForgetTool {
                 .clone()
                 .narrowed_to_owner(owner)
                 .ok_or_else(|| McpToolError::NotAuthorized("forget".into()))?;
-            match args.action {
-                ForgetAction::Forget => engine.forget_memory(&authz, owner, memory_id).await?,
-                ForgetAction::Restore => engine.restore_memory(&authz, owner, memory_id).await?,
-            }
+            engine.forget_memory(&authz, owner, memory_id).await?;
             Ok(ForgetOutput {
                 ok: true,
                 memory: args.memory,

@@ -17,6 +17,7 @@ pub mod tool {
     pub const CORE_TRANSFER: &str = "core_transfer";
     pub const CORE_UPLOAD: &str = "core_upload";
     pub const CORE_FORGET: &str = "core_forget";
+    pub const CORE_RESTORE: &str = "core_restore";
 }
 
 pub mod action {

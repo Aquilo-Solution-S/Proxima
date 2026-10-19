@@ -3,6 +3,7 @@ pub mod forget;
 pub mod interpret;
 pub mod record_utterance;
 pub mod remember;
+pub mod restore;
 pub mod search;
 pub(crate) mod util;
 
@@ -11,3 +12,4 @@ pub use forget::ForgetTool;
 pub use interpret::InterpretTool;
 pub use record_utterance::RecordUtteranceTool;
 pub use remember::RememberTool;
+pub use restore::RestoreTool;

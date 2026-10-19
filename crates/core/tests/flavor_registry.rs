@@ -21,8 +21,8 @@ fn served_catalog_includes_forget_and_drops_open_batch() {
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
     assert!(
-        names.contains(&"core_forget"),
-        "the catalog must serve forget: {names:?}"
+        names.contains(&"core_forget") && names.contains(&"core_restore"),
+        "the catalog must serve forget and restore: {names:?}"
     );
     assert!(
         !names.iter().any(|name| name.contains("open_batch")),

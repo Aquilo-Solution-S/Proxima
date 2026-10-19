@@ -31,7 +31,7 @@ series: a later write under the same key, a changed `core_remember` or
 of a forgotten version answers with that version and `forgotten: true` and
 writes nothing.
 
-Restore (`core_forget` with `action: "restore"`) clears the mark: the search
+Restore (`core_restore`) clears the mark: the search
 projection is rebuilt in the language the memory was written in, embedding jobs
 are queued for the spaces the owner's route names now, and the memory is the
 head of its series again unless a newer live version is. Restoring a live

@@ -1117,11 +1117,7 @@ async fn a_changed_remember_after_forget_conflicts_and_new_key_supersedes() {
                     .contains("idempotency_conflict"),
             "{err}"
         );
-        call(
-            "core_forget",
-            serde_json::json!({"memory": first_h, "action": "restore"}),
-        )
-        .await?;
+        call("core_restore", serde_json::json!({"memory": first_h})).await?;
         let second = call(
             "core_remember",
             serde_json::json!({"title": "notex", "body": "notex notesecond", "tags": [],
@@ -1148,11 +1144,7 @@ async fn a_changed_remember_after_forget_conflicts_and_new_key_supersedes() {
         )
         .await?;
         let third_h = third["handle"].as_str().ok_or("handle")?.to_owned();
-        call(
-            "core_forget",
-            serde_json::json!({"memory": second_h, "action": "restore"}),
-        )
-        .await?;
+        call("core_restore", serde_json::json!({"memory": second_h})).await?;
         let (handles, live_heads) = series().await?;
         assert_eq!(
             handles, 1,
