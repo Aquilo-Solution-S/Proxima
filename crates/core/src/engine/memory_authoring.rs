@@ -1219,12 +1219,23 @@ mod tests {
     #[test]
     fn kind_resolution_reuses_the_authorized_home_owner() {
         let source = include_str!("memory_authoring.rs");
+        // Scan production code only: the anchors below also occur in this
+        // test's own literals, and an anchor that names nothing would let
+        // the region run silently up to here.
+        let source = source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .expect("test module marker")
+            .0;
+        let end_anchor = "/// Forget one owned memory `t`: mark its row";
+        assert_eq!(
+            source.matches(end_anchor).count(),
+            1,
+            "the resolver's end anchor must name exactly one production item"
+        );
         let start = source
             .find("async fn resolve_memory_targets")
             .expect("kind resolver");
-        let end = source[start..]
-            .find("/// Cool one owned memory")
-            .expect("end of resolver");
+        let end = source[start..].find(end_anchor).expect("end of resolver");
         let body = &source[start..start + end];
         let reload = format!("{}{}", ".home_", "owner(");
         assert!(
