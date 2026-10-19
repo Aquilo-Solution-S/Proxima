@@ -786,12 +786,22 @@ fn collect_operator_inputs(origins: &[EdgeEndpoint]) -> Result<Vec<uuid::Uuid>, 
     Ok(input_ids)
 }
 
+/// Whether this write replays one already stored, decided like the append
+/// decides it: a request key asks the ledger, which knows every version it
+/// named (also a `supersedes` write, and one the head has moved past); a
+/// keyless write compares its pins with the head or a forgotten version.
 async fn replays_an_existing_version(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
 ) -> Result<bool, StorageError> {
+    if let Some(request) = draft.request.as_ref() {
+        return Ok(matches!(
+            super::request_keys::judge_request(tx, &draft.owner, request).await?,
+            proxima_core::verbs::idempotency::KeyVerdict::Replay(_)
+        ));
+    }
     let kind = derived_kind(draft)?;
     Ok(
         try_derived_replay(tx, draft.memory_id, draft, kind, origins, references)

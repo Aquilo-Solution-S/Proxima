@@ -5,12 +5,11 @@
 use super::{DerivedDraft, DerivedOutcome};
 use crate::PgStorage;
 use crate::test_fixtures::create_core_db;
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::OwnerWritePermit;
+use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::{
-    AccessKind, EdgeEndpoint, EntityKind, MemoryOperatorKind, OwnerId, SchemaId, SchemaVersion,
-    StorageError, UserId,
+    AccessKind, ContentFingerprint, EdgeEndpoint, EntityKind, IdempotencyKey, KeyScope,
+    MemoryOperatorKind, OwnerId, RequestKey, SchemaId, SchemaVersion, StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db};
 use uuid::Uuid;
@@ -110,7 +109,7 @@ async fn fresh_pg() -> (String, PgStorage) {
 }
 
 #[tokio::test]
-async fn same_origins_and_refs_replay() {
+async fn same_first_originsnd_refs_replay() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -262,29 +261,42 @@ async fn same_origins_different_refs_is_conflict() {
     result.expect("ref mismatch must Conflict");
 }
 
+/// A new origin set appends a new version under the same handle. Each
+/// version's request key then replays that version even after its input was
+/// forgotten and the head has moved past it: the ledger, not the head's
+/// pins, says it is a replay (#488 review r3).
 #[tokio::test]
-async fn different_origins_append_new_t() {
+async fn different_first_originsppend_new_t_and_each_key_replays_its_version() {
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);
+        let fact_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
-        let origin_a = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
-        let origin_b = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let origin_a = pg
+            .ingest_fact_atomic(&fact_permit, &fact_draft(), None)
+            .await?;
+        let origin_b = pg
+            .ingest_fact_atomic(&fact_permit, &fact_draft(), None)
+            .await?;
         let handle = Uuid::now_v7();
-        let draft = derived_draft(owner, handle);
-        let first = append_with_edges(
-            pool,
-            &permit,
-            &draft,
-            &[EdgeEndpoint::memory(EntityKind::Fact, origin_a.memory_id)],
-            &[],
-        )
-        .await?;
+        let keyed = |key: &str| -> Result<DerivedDraft<'static>, String> {
+            let mut draft = derived_draft(owner, handle);
+            draft.request = Some(RequestKey::new(
+                KeyScope::Abstraction,
+                IdempotencyKey::new(key)?,
+                ContentFingerprint::builder(KeyScope::Abstraction)
+                    .text("key", key)
+                    .build(),
+            ));
+            Ok(draft)
+        };
+        let first_origins = [EdgeEndpoint::memory(EntityKind::Fact, origin_a.memory_id)];
+        let first = append_with_edges(pool, &permit, &keyed("k1")?, &first_origins, &[]).await?;
         let second = append_with_edges(
             pool,
             &permit,
-            &draft,
+            &keyed("k2")?,
             &[EdgeEndpoint::memory(EntityKind::Fact, origin_b.memory_id)],
             &[],
         )
@@ -298,6 +310,11 @@ async fn different_origins_append_new_t() {
                 .fetch_one(pool)
                 .await?;
         assert_eq!(head, second.memory_id.into_inner());
+
+        MemoryAuthoringPort::forget_memory(&pg, &fact_permit, origin_a.memory_id).await?;
+        let replay = append_with_edges(pool, &permit, &keyed("k1")?, &first_origins, &[]).await?;
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.memory_id, first.memory_id);
         Ok(())
     }
     .await;
