@@ -1,11 +1,18 @@
 //! #488 review r1: a forgotten memory reads as absent on every read path.
 
+use std::sync::Arc;
+
 use proxima::Proxima;
+use proxima_core::llm::BoundEmbeddingClient;
+use proxima_core::test_fixtures::TestEmbeddingRouter;
 use proxima_core::{OwnerId, Role, UserId};
+use proxima_pg_testkit::db_url;
 use uuid::Uuid;
 
 use super::split_core_db::clone_split_core_db;
-use super::{AgentMemoryApp, call_test_model_tool, space_authz};
+use super::{
+    AgentMemoryApp, call_test_model_tool, read_test_model_resource, space_authz, test_embedding,
+};
 
 fn handles(rows: &serde_json::Value, list: &str, field: &str) -> Vec<String> {
     rows[list]
@@ -80,4 +87,325 @@ async fn recall_through_a_forgotten_subject_returns_nothing_for_it() {
     }
     .await;
     result.expect("recall forgotten subject");
+}
+
+/// Store 0's view of store 1: every read is forwarded to store 1's served
+/// tools as the same user, exactly as a host's store endpoint would answer.
+struct ForwardTo {
+    tools: proxima::CoreMcpTools,
+    owner: OwnerId,
+    authz: proxima::AuthzContext,
+}
+
+impl proxima::host::OtherStores for ForwardTo {
+    fn stores<'a>(
+        &'a self,
+        _caller: proxima::host::StoreCaller<'a>,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<Vec<proxima::host::StoreInfo>, proxima::host::OtherStoresError>,
+    > {
+        Box::pin(async move {
+            Ok(vec![proxima::host::StoreInfo {
+                number: 1,
+                name: "second".into(),
+                description: "the store a forget happened in".into(),
+                schema_ids: Vec::new(),
+            }])
+        })
+    }
+
+    fn search<'a>(
+        &'a self,
+        _caller: proxima::host::StoreCaller<'a>,
+        _store: u16,
+        args: &'a proxima::host::RemoteSearch,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<proxima::host::RemoteSearchResult, proxima::host::OtherStoresError>,
+    > {
+        Box::pin(async move {
+            let found = call_test_model_tool(
+                &self.tools,
+                self.authz.clone(),
+                self.owner,
+                "core_search_memories",
+                serde_json::json!({"query": args.query, "mode": "lexical"}),
+            )
+            .await
+            .map_err(|err| proxima::host::OtherStoresError::Unavailable(err.to_string()))?;
+            let hits = found["memories"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|hit| {
+                    let handle = hit["memory"]
+                        .as_str()
+                        .or_else(|| hit["memory_id"].as_str())?
+                        .parse()
+                        .ok()?;
+                    Some(proxima::host::RemoteHit {
+                        handle,
+                        writer: proxima_core::WriterAttribution {
+                            by: self.owner.into_inner(),
+                            via: None,
+                        },
+                        kind: proxima_core::verbs::query::EntityKind::Fact,
+                        schema_id: "core/fact".into(),
+                        snippet: hit.to_string(),
+                        created_at: time::OffsetDateTime::UNIX_EPOCH,
+                        tags: Vec::new(),
+                    })
+                })
+                .collect();
+            Ok(proxima::host::RemoteSearchResult {
+                hits,
+                degraded_to_lexical: false,
+            })
+        })
+    }
+
+    fn read<'a>(
+        &'a self,
+        _caller: proxima::host::StoreCaller<'a>,
+        id: Uuid,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<proxima::host::RemoteRead, proxima::host::OtherStoresError>,
+    > {
+        Box::pin(async move {
+            let read = read_test_model_resource(
+                &self.tools,
+                self.authz.clone(),
+                self.owner,
+                &format!("proxima://memory/{id}"),
+            )
+            .await;
+            Ok(match read {
+                Ok(memory) => proxima::host::RemoteRead::Found(proxima::host::RemoteMemory {
+                    handle: id,
+                    writer: proxima_core::WriterAttribution {
+                        by: self.owner.into_inner(),
+                        via: None,
+                    },
+                    kind: proxima_core::verbs::query::EntityKind::Fact,
+                    schema_id: "core/fact".into(),
+                    title: memory["title"].as_str().map(str::to_owned),
+                    body: memory.to_string(),
+                    created_at: time::OffsetDateTime::UNIX_EPOCH,
+                    tags: Vec::new(),
+                }),
+                Err(_) => proxima::host::RemoteRead::NotFound,
+            })
+        })
+    }
+}
+
+/// Acceptance item 2 of #488, end to end and without an object store:
+/// after `core_forget`, lexical and semantic search, recall by question and
+/// by subject, a walk, a by-id read and a batch read return nothing for the
+/// memory, and another store reading it through its port sees it as
+/// unavailable. Each leg is asserted before the forget too, so an empty
+/// answer is about the forget and not the fixture.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one story: control, forget, every read path, both stores
+async fn a_forgotten_memory_reads_as_absent_everywhere_and_unavailable_from_another_store() {
+    let second_db = clone_split_core_db("proxima_forgotten_reads_b")
+        .await
+        .expect("PG required for tests");
+    let first_db = clone_split_core_db("proxima_forgotten_reads_a")
+        .await
+        .expect("PG required for tests");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        // Store 1 holds the memory that is forgotten. Its Facts are admitted
+        // with no embedding client, so the vector below is the only one.
+        let router = Arc::new(TestEmbeddingRouter::default());
+        let second = Proxima::<AgentMemoryApp>::app()
+            .database_url(second_db.runtime_url().to_owned())
+            .store_number(1)
+            .platform_database_url(second_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .embedding_router(router.clone())
+            .build()
+            .await?;
+        let tools = second.host().core_mcp_tools();
+        let call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&tools, authz.clone(), owner, tool, args)
+        };
+        let read = |uri: String| {
+            let tools = &tools;
+            let authz = authz.clone();
+            async move { read_test_model_resource(tools, authz, owner, &uri).await }
+        };
+        let remember = |title: &'static str, body: &'static str| {
+            call(
+                "core_remember",
+                serde_json::json!({"title": title, "body": body, "tags": [], "language": "english"}),
+            )
+        };
+        let gone = remember("forgetneedle gone", "Unrelated vocabulary").await?["handle"]
+            .as_str()
+            .ok_or("handle")?
+            .to_owned();
+        let kept = remember("forgetneedle kept", "kept body").await?["handle"]
+            .as_str()
+            .ok_or("handle")?
+            .to_owned();
+        let gone_t: Uuid = gone.parse()?;
+        let admin = sqlx::PgPool::connect(&db_url(second_db.name())).await?;
+        let mut vector = vec![0.0_f32; 1024];
+        vector[0] = 0.8;
+        vector[1] = 0.6;
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings
+                (entity_id, model_id, dim, embedding_version, vec, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2::real[]::vector, $3)",
+        )
+        .bind(gone_t)
+        .bind(&vector)
+        .bind(owner.into_inner())
+        .execute(&admin)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embedding_heads
+                (entity_id, model_id, dim, embedding_version, owner_id)
+             VALUES ($1, 'test-embed', 1024, 1, $2)",
+        )
+        .bind(gone_t)
+        .bind(owner.into_inner())
+        .execute(&admin)
+        .await?;
+        admin.close().await;
+        router.set_default(BoundEmbeddingClient::bind(test_embedding())?);
+
+        let lexical = serde_json::json!({"query": "forgetneedle", "mode": "lexical"});
+        let semantic = serde_json::json!({
+            "query": "How does the checkpoint recovery commit work?",
+            "mode": "hybrid", "kind": "Fact", "semantic_weight": 1.0,
+        });
+        let by_question = serde_json::json!({"question": "forgetneedle", "limit": 16});
+        let by_subject = serde_json::json!({"subjects": [gone.clone(), kept.clone()], "limit": 16});
+        let think = serde_json::json!({"seeds": [gone.clone()], "direction": "ancestors"});
+        let walk = format!("proxima://memory/{gone}/lineage?direction=ancestors&depth=3");
+        let by_id = format!("proxima://memory/{gone}");
+        let batch = format!("proxima://memories?ids={gone},{kept}");
+
+        // Store 0 reads store 1 through its port, and derives from the
+        // memory while it is readable.
+        let first = Proxima::<AgentMemoryApp>::app()
+            .database_url(first_db.runtime_url().to_owned())
+            .store_number(0)
+            .platform_database_url(first_db.platform_url().to_owned())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .other_stores(Arc::new(ForwardTo {
+                tools: tools.clone(),
+                owner,
+                authz: authz.clone(),
+            }))
+            .build()
+            .await?;
+        let first_tools = first.host().core_mcp_tools();
+        let first_call = |tool: &'static str, args: serde_json::Value| {
+            call_test_model_tool(&first_tools, authz.clone(), owner, tool, args)
+        };
+        let first_read = |uri: String| {
+            let tools = &first_tools;
+            let authz = authz.clone();
+            async move { read_test_model_resource(tools, authz, owner, &uri).await }
+        };
+        let local = first_call(
+            "core_remember",
+            serde_json::json!({"title": "local basis", "body": "local basis", "tags": []}),
+        )
+        .await?["handle"]
+            .as_str()
+            .ok_or("handle")?
+            .to_owned();
+        let derived = first_call(
+            "core_derive",
+            serde_json::json!({
+                "kind": "Abstraction", "title": "over both", "body": "over both",
+                "source_handles": [local, gone.clone()], "model_id": "test-model"
+            }),
+        )
+        .await?["handle"]
+            .as_str()
+            .ok_or("handle")?
+            .to_owned();
+        let remote_walk = format!("proxima://memory/{derived}/lineage?direction=ancestors&depth=3");
+        let remote_batch = format!("proxima://memories?ids={gone}");
+        let remote_search = serde_json::json!({"query": "forgetneedle", "mode": "lexical", "stores": [1]});
+        let remote_node = |lineage: &serde_json::Value| {
+            lineage["nodes"]
+                .as_array()
+                .and_then(|nodes| nodes.iter().find(|node| node["memory"] == gone.as_str()))
+                .cloned()
+        };
+
+        // Control: every path reaches the memory before the forget.
+        let has = |value: &serde_json::Value| value.to_string().contains(&gone);
+        let found = call("core_search_memories", lexical.clone()).await?;
+        assert!(has(&found), "lexical control: {found}");
+        let found = call("core_search_memories", semantic.clone()).await?;
+        assert!(has(&found), "semantic control: {found}");
+        assert_eq!(found["degraded_to_lexical"], false, "{found}");
+        let found = call("core_recall", by_question.clone()).await?;
+        assert!(has(&found), "recall question control: {found}");
+        let found = call("core_recall", by_subject.clone()).await?;
+        assert!(has(&found), "recall subject control: {found}");
+        assert!(read(walk.clone()).await.is_ok(), "walk control");
+        let found = call("core_think", think.clone()).await?;
+        assert!(has(&found), "think control: {found}");
+        assert_eq!(read(by_id.clone()).await?["memory"], gone.as_str());
+        let found = read(batch.clone()).await?;
+        assert_eq!(handles(&found, "memories", "memory").len(), 2, "{found}");
+        let lineage = first_read(remote_walk.clone()).await?;
+        let node = remote_node(&lineage).ok_or("remote node")?;
+        assert!(node.get("status").is_none(), "{lineage}");
+        let found = first_read(remote_batch.clone()).await?;
+        assert!(handles(&found, "memories", "memory").contains(&gone), "{found}");
+        let found = first_call("core_search_memories", remote_search.clone()).await?;
+        assert!(has(&found), "remote search control: {found}");
+
+        call("core_forget", serde_json::json!({"memory": gone})).await?;
+
+        // Store 1 itself: nothing for it, and the live neighbour stays.
+        let found = call("core_search_memories", lexical).await?;
+        assert!(!has(&found), "lexical: {found}");
+        assert!(found.to_string().contains(&kept), "{found}");
+        let found = call("core_search_memories", semantic).await?;
+        assert!(!has(&found), "semantic: {found}");
+        let found = call("core_recall", by_question).await?;
+        assert!(!has(&found), "recall question: {found}");
+        let found = call("core_recall", by_subject).await?;
+        assert!(!has(&found), "recall subject: {found}");
+        assert!(found.to_string().contains(&kept), "{found}");
+        assert!(read(walk).await.is_err(), "a walk from it finds no start");
+        let think = call("core_think", think).await;
+        assert!(think.as_ref().map_or(true, |page| !has(page)), "{think:?}");
+        assert!(read(by_id).await.is_err(), "by id");
+        let found = read(batch).await?;
+        let listed = handles(&found, "memories", "memory");
+        assert_eq!(listed, vec![kept.clone()], "{found}");
+
+        // Store 0 through the port: unavailable, not readable, no hit.
+        let lineage = first_read(remote_walk).await?;
+        let node = remote_node(&lineage).ok_or("remote node stays named")?;
+        assert_eq!(node["status"], "unavailable", "{lineage}");
+        assert_eq!(node["unavailable_reason"], "not readable", "{lineage}");
+        let found = first_read(remote_batch).await?;
+        assert!(handles(&found, "memories", "memory").is_empty(), "{found}");
+        let found = first_call("core_search_memories", remote_search).await?;
+        assert!(!has(&found), "remote search: {found}");
+
+        first.shutdown().await;
+        second.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("forgotten reads");
 }
