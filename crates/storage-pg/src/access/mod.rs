@@ -192,6 +192,32 @@ pub async fn group_role(
     Ok(roles.role_for(&owner))
 }
 
+/// The relations `subject` holds directly, resolved on the caller's connection:
+/// one [`DirectGroupMembership`] per membership row, in group and relation
+/// order.
+///
+/// Unlike [`group_role`], nothing is inherited from a parent group and the
+/// relations of one group are not folded into their join. Unlike
+/// [`PgAuthorityPerson::direct_groups`](crate::PgAuthorityPerson::direct_groups),
+/// no authority session is opened, so no fence is taken and nothing waits for
+/// another connection's membership edit. It does not begin, commit or roll
+/// back, and sets no scope: it reads what the connection's scope lets it read,
+/// and a row written earlier in the same open transaction is visible. Pass a
+/// `Transaction` as `&mut *tx`. The answer is a fact, not an authorization
+/// witness; a write is authorized by the role ([`group_role`]).
+///
+/// # Errors
+///
+/// Returns [`AccessError::Resolution`] when the query fails.
+pub async fn direct_group_relations(
+    conn: &mut PgConnection,
+    subject: UserId,
+) -> Result<Vec<DirectGroupMembership>, AccessError> {
+    authority::direct_groups_of(conn, subject)
+        .await
+        .map_err(|err| resolution_error(&err))
+}
+
 fn resolution_error(err: &StorageError) -> AccessError {
     AccessError::Resolution(err.to_string())
 }

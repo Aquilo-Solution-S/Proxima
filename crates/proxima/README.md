@@ -20,6 +20,7 @@ Membership writes use `proxima::host` inside a host's platform-scoped
 kind under the tree locks. A group has one parent at most. Database triggers
 materialize upward `Role::meet` caps and `Role::join` across paths into
 `group_role_projection`; `roles_for_subject` and `group_role` read that
-projection in one query. Fixed-snapshot `REPEATABLE READ` and `SERIALIZABLE`
+projection in one query; `direct_group_relations` reads the rows written
+for a person, neither inherited nor folded. Fixed-snapshot `REPEATABLE READ` and `SERIALIZABLE`
 writes return `StorageError::MembershipIsolation`. The host forms run no
 authorization/hooks ([host integration](../../docs/host-integration.md)).

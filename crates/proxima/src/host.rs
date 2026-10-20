@@ -317,7 +317,9 @@ pub use proxima_storage_pg::{
 /// Role probes on a host's own transaction (see
 /// [`proxima_storage_pg::roles_for_subject`]): the answers
 /// [`PgOwnerAccessResolver`] gives, with no transaction of their own.
-pub use proxima_storage_pg::{group_role, roles_for_subject};
+/// [`direct_group_relations`] is the relations written on the person's own
+/// membership rows, neither inherited nor folded into one role.
+pub use proxima_storage_pg::{direct_group_relations, group_role, roles_for_subject};
 /// The `rmcp` crate Proxima's MCP handler is built on, at the version and
 /// feature set the workspace pins (`server`, `transport-streamable-http-server`).
 /// A host that implements [`rmcp::ServerHandler`] around [`DynamicHandler`]

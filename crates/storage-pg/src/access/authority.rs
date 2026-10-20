@@ -463,15 +463,7 @@ impl PgAuthorityPerson<'_> {
     ///
     /// Returns database failures.
     pub async fn direct_groups(&mut self) -> Result<Vec<DirectGroupMembership>, StorageError> {
-        let rows: Vec<(Uuid, Relation)> = sqlx::query_as(
-            "SELECT group_id, relation FROM proxima_core.group_memberships
-              WHERE member_user_id = $1 ORDER BY group_id, relation",
-        )
-        .bind(self.person.into_inner())
-        .fetch_all(&mut *self.conn)
-        .await
-        .map_err(map_err)?;
-        Ok(group_memberships(rows))
+        direct_groups_of(self.conn, self.person).await
     }
 
     /// Effective roles through the existing projection decoder and kernel
@@ -489,6 +481,24 @@ impl PgAuthorityPerson<'_> {
         )
         .map_err(|error| refused(&error.to_string()))
     }
+}
+
+/// The rows `person` holds in `group_memberships`, one entry per row, in
+/// group and relation order. Shared by [`PgAuthorityPerson::direct_groups`]
+/// and the fence-free [`super::direct_group_relations`].
+pub(super) async fn direct_groups_of(
+    conn: &mut PgConnection,
+    person: UserId,
+) -> Result<Vec<DirectGroupMembership>, StorageError> {
+    let rows: Vec<(Uuid, Relation)> = sqlx::query_as(
+        "SELECT group_id, relation FROM proxima_core.group_memberships
+          WHERE member_user_id = $1 ORDER BY group_id, relation",
+    )
+    .bind(person.into_inner())
+    .fetch_all(conn)
+    .await
+    .map_err(map_err)?;
+    Ok(group_memberships(rows))
 }
 
 fn group_memberships(rows: Vec<(Uuid, Relation)>) -> Vec<DirectGroupMembership> {

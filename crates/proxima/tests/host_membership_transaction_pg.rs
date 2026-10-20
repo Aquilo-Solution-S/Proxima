@@ -323,6 +323,84 @@ async fn connection_relation_writes_share_the_host_transaction() {
     verify.rollback().await.expect("verify rollback");
 }
 
+/// The direct relations are the membership rows themselves: one entry per
+/// row, nothing inherited from a parent group, nothing folded into a role.
+/// The read runs on the caller's transaction, so it sees that transaction's
+/// uncommitted rows, hides another connection's, and waits for no one.
+#[tokio::test]
+async fn direct_group_relations_read_the_callers_rows_without_a_fence() -> TestResult {
+    let db = clone_db().await;
+    let scope = platform_scope(&db).await;
+    let [parent, child] = std::array::from_fn(|_| GroupId::new(Uuid::now_v7()));
+    let person = UserId::new(Uuid::now_v7());
+    let bystander = UserId::new(Uuid::now_v7());
+    let mut tx = scope.begin().await?;
+    for user in [person, bystander] {
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(user.into_inner())
+            .execute(&mut *tx)
+            .await?;
+    }
+    proxima::register_group(&mut tx, parent).await?;
+    proxima::register_group(&mut tx, child).await?;
+    proxima::add_group_member(&mut tx, parent, child.into(), Relation::Viewer).await?;
+    proxima::add_group_member(&mut tx, child, person.into(), Relation::Viewer).await?;
+    proxima::add_group_member(&mut tx, child, person.into(), Relation::Editor).await?;
+
+    let direct = |rows: Vec<proxima::DirectGroupMembership>| -> std::collections::BTreeSet<_> {
+        rows.into_iter()
+            .map(|row| (row.group.into_inner(), format!("{:?}", row.relation)))
+            .collect()
+    };
+    let expected = std::collections::BTreeSet::from([
+        (child.into_inner(), format!("{:?}", Relation::Viewer)),
+        (child.into_inner(), format!("{:?}", Relation::Editor)),
+    ]);
+    // Uncommitted, on the caller's transaction: both rows of the one group,
+    // and not the parent the person reaches only through the child.
+    assert_eq!(
+        direct(proxima::direct_group_relations(&mut tx, person).await?),
+        expected
+    );
+    assert_eq!(
+        proxima::group_role(&mut tx, person, child).await?,
+        Some(Role::editor()),
+        "the role folds the two relations into their join"
+    );
+    assert!(
+        proxima::group_role(&mut tx, person, parent)
+            .await?
+            .is_some(),
+        "the parent is reached by inheritance"
+    );
+
+    // Another connection sees none of it, and does not wait for the open
+    // transaction's membership edits.
+    let mut other = scope.begin().await?;
+    let seen = tokio::time::timeout(
+        Duration::from_secs(5),
+        proxima::direct_group_relations(&mut other, person),
+    )
+    .await
+    .expect("the read takes no lock the open membership edits hold")?;
+    assert!(seen.is_empty(), "uncommitted rows are the owner's alone");
+    assert!(
+        proxima::direct_group_relations(&mut other, bystander)
+            .await?
+            .is_empty()
+    );
+    other.rollback().await?;
+
+    tx.commit().await?;
+    let mut after = scope.begin().await?;
+    assert_eq!(
+        direct(proxima::direct_group_relations(&mut after, person).await?),
+        expected
+    );
+    after.rollback().await?;
+    Ok(())
+}
+
 async fn wait_for_authority_lock(pool: &PgPool, pid: i32) -> TestResult {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {

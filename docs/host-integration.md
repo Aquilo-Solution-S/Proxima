@@ -224,6 +224,14 @@ while PostgreSQL keeps its fences until commit or rollback.
 `add_group_member` returns `MembershipAddOutcome::Changed` or `AlreadyPresent`
 under its write fence, so a host can update a revision only for a change.
 
+A host that only needs a person's direct relations, without the session's
+fences, calls `direct_group_relations(&mut *tx, person).await` on its own
+transaction. It returns one `DirectGroupMembership` per membership row, in
+group and relation order: nothing inherited, and several relations in one
+group stay separate entries instead of folding into a role (`group_role` gives
+that). It takes no lock, so it never waits for another connection's membership
+edit, and it sees the caller's own uncommitted rows.
+
 Inside an authenticated Proxima write callback, use
 `PgHostStateSession::authority_memberships` for the current subject's effective
 memberships instead. That session derives its subject from the sealed write
