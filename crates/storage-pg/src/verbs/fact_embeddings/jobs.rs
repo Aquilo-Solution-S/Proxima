@@ -614,6 +614,9 @@ pub async fn count_embedding_job_status<'e>(
 
 /// One row per embedding job of `entities` for `owner`.
 ///
+/// The job's memory must be visible to this transaction's owner row
+/// security. A job whose memory the caller cannot read is absent, including
+/// a forgotten admission and a kind the caller's read set does not cover.
 /// Claim age is whole seconds of `now() - claimed_at` on the database
 /// clock, and only for a `processing` job. An empty `entities` reads
 /// nothing.
@@ -645,8 +648,11 @@ pub(crate) async fn embedding_job_diagnostics<'e>(
                      THEN floor(extract(epoch FROM (now() - j.claimed_at)))::bigint
                 END AS claim_age_seconds
            FROM proxima_core.embedding_jobs j
+           JOIN proxima_core.memory m /* FORGET-POLICY: live-only (under owner RLS, a job follows a readable memory) */
+             ON m.t = j.entity_id AND m.owner_id = j.owner_id
           WHERE j.owner_id = $1
             AND j.entity_id = ANY($2::uuid[])
+            AND m.forgotten_at IS NULL
           ORDER BY j.entity_id, j.model_id, j.dim",
     )
     .bind(owner.into_inner())

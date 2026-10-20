@@ -282,10 +282,11 @@ impl Engine {
 
     /// One row per embedding job of `entities` for `owner`.
     ///
-    /// Each row is one job. A processing job's state carries how long its
-    /// claim has been held, from the database clock. Pending and failed
-    /// jobs carry no claim age. This is not [`Self::embedding_coverage`],
-    /// which returns counters for an operator.
+    /// Each row is one job whose memory this caller can read. A processing
+    /// job's state carries how long its claim has been held, from the
+    /// database clock. Pending and failed jobs carry no claim age. This is
+    /// not [`Self::embedding_coverage`], which returns counters for an
+    /// operator.
     ///
     /// An empty `entities` reads nothing. More than
     /// [`crate::MAX_EMBEDDING_DIAGNOSTIC_UNITS`] memories is refused.

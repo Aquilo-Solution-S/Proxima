@@ -92,12 +92,16 @@ async fn embedding_job_diagnostics_report_each_job_and_its_claim_age() {
         let pg = PgStorage::connect_for_tests(url).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let other = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+        let admitted = pg
+            .ingest_fact_atomic(&permit, &sourced("src/jobs", "unit-1"), None)
+            .await?;
+        let unit = admitted.memory_id.into_inner();
+        let ghost = Uuid::now_v7();
+        let elsewhere = Uuid::now_v7();
         let admin = pg.pool_for_tests();
         let mut setup = admin.begin().await?;
-        proxima_storage_pg::access::owner_columns::ensure_owner_row(setup.as_mut(), &owner).await?;
         proxima_storage_pg::access::owner_columns::ensure_owner_row(setup.as_mut(), &other).await?;
-        let unit = Uuid::now_v7();
-        let elsewhere = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO proxima_core.embedding_jobs
                 (entity_id, model_id, owner_id, status, claimed_at, claim_token, dim, last_error)
@@ -106,11 +110,13 @@ async fn embedding_job_diagnostics_report_each_job_and_its_claim_age() {
                 ($1, 'wait', $2, 'pending', NULL, NULL, 768, NULL),
                 ($1, 'dead', $2, 'failed', NULL, NULL, 1024, 'provider refused'),
                 ($1, 'stuck', $2, 'failed_permanent', NULL, NULL, 1536, NULL),
-                ($4, 'diag', $5, 'processing', timestamptz '2020-01-01 00:00:00+00', $6, 384, NULL)",
+                ($4, 'ghost', $2, 'pending', NULL, NULL, 384, NULL),
+                ($5, 'diag', $6, 'processing', timestamptz '2020-01-01 00:00:00+00', $7, 384, NULL)",
         )
         .bind(unit)
         .bind(owner.into_inner())
         .bind(Uuid::now_v7())
+        .bind(ghost)
         .bind(elsewhere)
         .bind(other.into_inner())
         .bind(Uuid::now_v7())
@@ -120,9 +126,13 @@ async fn embedding_job_diagnostics_report_each_job_and_its_claim_age() {
 
         let scope = owner_scope_for_tests(&[owner]);
         let rows = pg
-            .embedding_job_diagnostics(Some(&scope), &owner, &[MemoryId::new(unit)])
+            .embedding_job_diagnostics(
+                Some(&scope),
+                &owner,
+                &[MemoryId::new(unit), MemoryId::new(ghost)],
+            )
             .await?;
-        assert_eq!(rows.len(), 4, "{rows:?}");
+        assert_eq!(rows.len(), 4, "a job with no visible memory is absent: {rows:?}");
         assert!(rows.iter().all(|row| row.entity_id == MemoryId::new(unit)));
         let processing = rows
             .iter()
