@@ -158,6 +158,8 @@ struct SeriesEraseState {
     owner: proxima_core::OwnerId,
     pool: sqlx::PgPool,
     platform: crate::PgPlatformScope,
+    /// Where the erased vectors live; `commit` pays their debt first.
+    vectors: crate::vector_index::StoreVectors,
     ran: bool,
     cold_purge: verbs::forget::ColdPurgePlan,
 }
@@ -246,6 +248,7 @@ impl WriteSessionFactory for PgStorage {
                 owner: *permit.owner(),
                 pool: self.pool.clone(),
                 platform: self.platform_scope.clone(),
+                vectors: self.vectors.clone(),
                 ran: false,
                 cold_purge: verbs::forget::ColdPurgePlan::default(),
             }),
@@ -629,7 +632,16 @@ impl WriteSession for PgWriteSession {
     }
 
     async fn commit(self: Box<Self>) -> Result<(), StorageError> {
-        let session = *self;
+        let mut session = *self;
+        // The erase is done only once the index deleted the vectors (#519).
+        if let Some(state) = &session.series_erase {
+            crate::vector_index::settle_owner_debt(
+                session.tx.as_mut(),
+                &state.vectors,
+                state.owner,
+            )
+            .await?;
+        }
         crate::write_wake::commit(session.tx).await?;
         // After commit and never before: a rollback after an object delete
         // would restore the upload row over destroyed bytes. A failed

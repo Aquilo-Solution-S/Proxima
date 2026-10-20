@@ -35,6 +35,10 @@ WITH heads AS MATERIALIZED (
        FROM proxima_core.embeddings e
       WHERE e.owner_id = $1
      UNION
+     SELECT DISTINCT h.model_id, h.dim
+       FROM proxima_core.embedding_heads h
+      WHERE h.owner_id = $1
+     UNION
      SELECT DISTINCT j.model_id, j.dim
        FROM proxima_core.embedding_jobs j
       WHERE j.owner_id = $1

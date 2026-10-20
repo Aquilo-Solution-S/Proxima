@@ -122,6 +122,10 @@ pub(crate) async fn boot<A: FlavorBundle>(
     } else {
         pg
     };
+    let pg = match parts.vector_index.clone() {
+        Some(index) => pg.with_vector_index(index),
+        None => pg,
+    };
     ensure_pg_sidecars(&pg, &registry, &pg_sidecars).await?;
     let pg = pg
         .with_sidecars(pg_sidecars.as_ref().clone())

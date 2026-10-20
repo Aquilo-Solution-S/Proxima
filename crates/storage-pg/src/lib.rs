@@ -527,11 +527,8 @@ pub struct PgStorage {
     non_embeddable_schemas: Vec<String>,
     tuning: PgTuning,
     embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
-    vector_index: Arc<
-        dyn proxima_core::storage_ports::VectorIndex<
-                Context = sqlx::Transaction<'static, sqlx::Postgres>,
-            >,
-    >,
+    /// Where the chunk vectors live: [`Self::with_vector_index`].
+    vectors: vector_index::StoreVectors,
     cold: Arc<dyn proxima_core::ColdObjectStore>,
     /// Optional host-state participant invoked on the write-session
     /// transaction. `None` keeps existing
@@ -1077,7 +1074,7 @@ impl PgStorage {
             non_embeddable_schemas: Vec::new(),
             tuning,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
-            vector_index: Arc::new(vector_index::PgVectorIndex),
+            vectors: vector_index::StoreVectors::Local,
             cold: Arc::new(verbs::forget::MemoryColdStore),
             host_state: None,
         })
@@ -1145,6 +1142,19 @@ impl PgStorage {
             .host_state
             .as_ref()
             .and_then(|registered| registered.lifecycle.clone()))
+    }
+
+    /// Keep this store's chunk vectors in `index` instead of its own
+    /// database (#519). The store keeps each entity's head and calls the
+    /// index as [`proxima_core::storage_ports::VectorIndex`] describes;
+    /// without this the store's own pgvector index serves.
+    #[must_use]
+    pub fn with_vector_index(
+        mut self,
+        index: Arc<dyn proxima_core::storage_ports::VectorIndex>,
+    ) -> Self {
+        self.vectors = vector_index::StoreVectors::Remote(index);
+        self
     }
 
     /// Replace the object store erase purges blob objects from (S3 in the
@@ -1339,7 +1349,8 @@ impl PgStorage {
     }
 
     /// Delete embedding infrastructure rows whose source entity no longer
-    /// exists (crash residue). Operator surface for the maintenance CLI,
+    /// exists (crash residue); with a host vector index, also compare the
+    /// index with the heads and repair what differs. Operator surface for the maintenance CLI,
     /// like [`Self::reconcile_embeddings`]; in-engine callers go through
     /// `Engine::sweep_orphan_embedding_rows`, which gates on operator
     /// authority — here, holding the database credentials is that authority.
@@ -1350,7 +1361,20 @@ impl PgStorage {
     pub async fn sweep_orphan_embedding_rows(
         &self,
     ) -> Result<proxima_core::EmbeddingOrphanSweepOutcome, StorageError> {
-        verbs::fact_embeddings::sweep_orphan_embedding_rows(&self.pool, &self.platform_scope).await
+        let mut outcome =
+            verbs::fact_embeddings::sweep_orphan_embedding_rows(&self.pool, &self.platform_scope)
+                .await?;
+        match &self.vectors {
+            vector_index::StoreVectors::Local => {}
+            vector_index::StoreVectors::Remote(index) => {
+                let swept =
+                    vector_index::sweep_index(&self.pool, &self.platform_scope, index.as_ref())
+                        .await?;
+                outcome.embeddings_deleted += swept.entries_deleted;
+                outcome.heads_deleted += swept.heads_deleted;
+            }
+        }
+        Ok(outcome)
     }
 
     /// Owner-agnostic embedding ANN health signals (backlog, orphan counts,

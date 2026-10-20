@@ -177,6 +177,16 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// [`RuntimeBuilder::vector_index`].
+    #[must_use]
+    pub fn vector_index(
+        mut self,
+        index: Arc<dyn proxima_core::storage_ports::VectorIndex>,
+    ) -> Self {
+        self.overlay = self.overlay.vector_index(index);
+        self
+    }
+
     #[must_use]
     pub fn resource_metadata(
         mut self,

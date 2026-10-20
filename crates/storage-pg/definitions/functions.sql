@@ -291,6 +291,39 @@ BEGIN
 END;
 $function$;
 
+-- Embedding functions
+
+-- #519: a head deleted or moved to another owner leaves index debt in the
+-- same transaction (migration 0050 describes the queue). One row per key:
+-- the newest change replaces an older one. A statement trigger writes a whole
+-- erase's deletes in one insert; an owner move, which only a transfer makes,
+-- is one row's.
+CREATE OR REPLACE FUNCTION proxima_core.embedding_heads_deleted_index_debt() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    INSERT INTO proxima_core.vector_index_debt (entity_id, model_id, dim, owner_id, op)
+    SELECT entity_id, model_id, dim, owner_id, 'delete' FROM deleted_heads
+    ON CONFLICT (entity_id, model_id, dim) DO UPDATE
+        SET owner_id = EXCLUDED.owner_id, op = EXCLUDED.op, enqueued_at = now(),
+            xact = pg_current_xact_id();
+    RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION proxima_core.embedding_head_moved_index_debt() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    INSERT INTO proxima_core.vector_index_debt (entity_id, model_id, dim, owner_id, op)
+    VALUES (NEW.entity_id, NEW.model_id, NEW.dim, NEW.owner_id, 'owner')
+    ON CONFLICT (entity_id, model_id, dim) DO UPDATE
+        SET owner_id = EXCLUDED.owner_id, op = EXCLUDED.op, enqueued_at = now(),
+            xact = pg_current_xact_id();
+    RETURN NULL;
+END;
+$$;
+
 -- Erasure functions
 
 CREATE OR REPLACE FUNCTION proxima_core.erased_pin_target_append_only()
@@ -1791,6 +1824,7 @@ BEGIN
                     WHEN 'embeddings' THEN 'entity_id'
                     WHEN 'embedding_heads' THEN 'entity_id'
                     WHEN 'embedding_jobs' THEN 'entity_id'
+                    WHEN 'vector_index_debt' THEN 'entity_id'
                 END
             END;
             IF memory_key IS NOT NULL THEN

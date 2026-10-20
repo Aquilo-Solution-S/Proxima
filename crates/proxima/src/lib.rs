@@ -154,6 +154,7 @@ mod runtime_config;
 mod runtime_grants;
 #[cfg(feature = "testkit")]
 pub mod testkit;
+pub mod vector_index_http;
 mod workers;
 
 pub use host::*;

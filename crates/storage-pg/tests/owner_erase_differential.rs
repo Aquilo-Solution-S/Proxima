@@ -676,6 +676,10 @@ pub const DROPPED_TABLES: &[&str] = &[
     // owner (an always-empty fence and the maintenance leases).
     "export_erase_fence",
     "maintenance_lease",
+    // Added after the baseline by 0050: a host vector index's pending
+    // changes. An erase settles its own before commit;
+    // `semantic_vector_index` pins it.
+    "vector_index_debt",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0007 added staged BLAKE3 identity after this frozen baseline;

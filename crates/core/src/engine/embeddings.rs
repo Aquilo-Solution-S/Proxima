@@ -294,6 +294,20 @@ impl Engine {
         &self,
         limit: usize,
     ) -> Result<EmbeddingDrainOutcome, StorageError> {
+        // Each pass pays the index debt head changes left since the last. A
+        // host index that refuses or is down keeps its debt for the next
+        // pass and holds no job back.
+        let debt = i64::try_from(limit)
+            .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
+        if let Err(error) = self
+            .storage
+            .ingest
+            .embedding_job
+            .drain_vector_index_debt(debt)
+            .await
+        {
+            tracing::warn!(error = %error, "vector index debt not paid this pass");
+        }
         if self.embedding_router.is_none() {
             return Ok(EmbeddingDrainOutcome::default());
         }

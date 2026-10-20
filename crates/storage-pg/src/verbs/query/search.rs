@@ -47,7 +47,6 @@ use crate::pgvector::set_hnsw_search_sql;
 use crate::projection::{projection_key_ident, sidecar_text_sql};
 use crate::tuning::PgTuning;
 use proxima_core::flavor::{BandComparability, LanguagePolicy, SubstringArm};
-use proxima_core::storage_ports::VectorIndex;
 use proxima_core::verbs::query::{
     EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage, MemorySearchRequest, MemorySearchResult,
     SearchCursor, SearchMode, SearchOrder, SupersessionStatus, TagMatch, like_pattern,
@@ -121,7 +120,7 @@ pub(crate) async fn search_memories_on_connection(
     req: &MemorySearchRequest,
     projections: &[MemorySearchProjection],
     tuning: &PgTuning,
-    vector_index: &dyn VectorIndex<Context = Transaction<'static, Postgres>>,
+    vectors: &crate::vector_index::StoreVectors,
 ) -> Result<MemorySearchPage, StorageError> {
     if matches!(req.kind, Some(EntityKind::Goal)) || req.limit == 0 {
         return Ok(MemorySearchPage {
@@ -152,7 +151,7 @@ pub(crate) async fn search_memories_on_connection(
                 &flavors,
                 tuning,
                 candidate_overfetch(req, limit, SEMANTIC_SCAN_CAP),
-                vector_index,
+                vectors,
             )
             .await?,
         ),
@@ -171,7 +170,7 @@ pub(crate) async fn search_memories_on_connection(
                         &flavors,
                         tuning,
                         candidate_overfetch(req, limit, SEMANTIC_SCAN_CAP),
-                        vector_index,
+                        vectors,
                     )
                     .await?,
                 );
@@ -1229,7 +1228,7 @@ async fn scan_embeddings_on_connection(
     flavors: &[FlavorScan<'_>],
     tuning: &PgTuning,
     overfetch: u32,
-    vector_index: &dyn VectorIndex<Context = Transaction<'static, Postgres>>,
+    vectors: &crate::vector_index::StoreVectors,
 ) -> Result<Vec<Hit>, StorageError> {
     let Some(semantic) = req.semantic.as_ref() else {
         return Err(StorageError::ConstraintViolation(
@@ -1257,9 +1256,15 @@ async fn scan_embeddings_on_connection(
     let mut window = overfetch;
     let mut admitted = BTreeMap::new();
     loop {
-        let candidates = vector_index
-            .nearest(connection, &req.read_owners, semantic, window)
-            .await?;
+        let candidates = match vectors {
+            crate::vector_index::StoreVectors::Local => {
+                crate::vector_index::local_nearest(connection, &req.read_owners, semantic, window)
+                    .await?
+            }
+            crate::vector_index::StoreVectors::Remote(index) => {
+                index.nearest(&req.read_owners, semantic, window).await?
+            }
+        };
         let fetched = candidates.len();
         let candidate_ids: Vec<_> = candidates
             .iter()
@@ -1529,10 +1534,6 @@ mod tests {
         assert!(
             prod.contains("search_candidates::call_sql(&flavor.head().projection_table, true)"),
             "the substring scan must call the fixed candidate function"
-        );
-        assert!(
-            prod.contains(".nearest(connection, &req.read_owners, semantic, window)"),
-            "the semantic scan must obtain candidates through the vector port"
         );
         let admit = format!("{}{}", "search_admit_sql(matches!(", "");
         assert!(prod.contains(&admit), "admit must run search_admit_sql");

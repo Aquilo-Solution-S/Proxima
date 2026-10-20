@@ -1,10 +1,10 @@
-//! Transactional pgvector implementation of the store's vector index.
+//! Where a store keeps its chunk vectors: its own pgvector index, or a host
+//! index behind [`VectorIndex`].
+
+use std::sync::Arc;
 
 use proxima_core::storage_ports::{VectorCandidate, VectorIndex};
-use proxima_core::{
-    EmbeddableEntityRef, EmbeddingDim, EmbeddingWriteOutcome, MemoryId, OwnerId, SpaceVector,
-    StorageError,
-};
+use proxima_core::{EmbeddingDim, MemoryId, OwnerId, SpaceVector, StorageError};
 use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
@@ -14,81 +14,62 @@ use crate::projection::Artifact;
 /// Maximum chunk window used by adaptive ANN scans.
 pub(crate) const SEMANTIC_SCAN_CAP: u32 = 1_000;
 
-/// A vector index using the caller's `PostgreSQL` transaction.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct PgVectorIndex;
+/// Where this store keeps its chunk vectors (#519): a closed choice every
+/// vector path matches case by case.
+#[derive(Clone)]
+pub(crate) enum StoreVectors {
+    /// pgvector in the store's own database, written and deleted in the
+    /// transaction that changes their rows.
+    Local,
+    /// A host index; the store keeps the heads and pays index debt (see
+    /// [`proxima_core::storage_ports::VectorIndex`]).
+    Remote(Arc<dyn VectorIndex>),
+}
 
-#[async_trait::async_trait]
-impl VectorIndex for PgVectorIndex {
-    type Context = Transaction<'static, Postgres>;
-
-    async fn add(
-        &self,
-        context: &mut Self::Context,
-        owner: &OwnerId,
-        entity: EmbeddableEntityRef,
-        vectors: &[SpaceVector],
-    ) -> Result<EmbeddingWriteOutcome, StorageError> {
-        crate::verbs::fact_embeddings::insert_embedding(context, owner, entity, vectors).await
+impl std::fmt::Debug for StoreVectors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local => f.write_str("Local"),
+            Self::Remote(_) => f.write_str("Remote"),
+        }
     }
+}
 
-    async fn delete(
-        &self,
-        context: &mut Self::Context,
-        owner: &OwnerId,
-        entity: EmbeddableEntityRef,
-    ) -> Result<(), StorageError> {
-        sqlx::query(
-            "WITH deleted_heads AS (
-                 DELETE FROM proxima_core.embedding_heads
-                  WHERE entity_id = $1 AND owner_id = $2
-             )
-             DELETE FROM proxima_core.embeddings
-              WHERE entity_id = $1 AND owner_id = $2",
-        )
-        .bind(entity.entity_id())
-        .bind(owner.into_inner())
-        .execute(context.as_mut())
+/// Up to `window` memories nearest `query` from the local pgvector index, on
+/// the caller's transaction.
+pub(crate) async fn local_nearest(
+    context: &mut Transaction<'static, Postgres>,
+    owners: &[OwnerId],
+    query: &SpaceVector,
+    window: u32,
+) -> Result<Vec<VectorCandidate>, StorageError> {
+    if owners.is_empty() || window == 0 {
+        return Ok(Vec::new());
+    }
+    let lane = Lane::of(query.space().dim());
+    let owner_ids: Vec<_> = owners.iter().copied().map(OwnerId::into_inner).collect();
+    // SQL-POLICY: fixed-fragment — the width comes from the closed Lane.
+    let sql = format!(
+        "SELECT memory_id, similarity_score
+           FROM proxima_core.vector_candidates_d{}($1, $2, $3, $4)",
+        lane.width
+    );
+    // SQL-POLICY: fixed-fragment — only the closed width is interpolated above.
+    let rows: Vec<(uuid::Uuid, f32)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(owner_ids)
+        .bind(query.space().model_id())
+        .bind(vector(query.values()))
+        .bind(i64::from(window))
+        .fetch_all(context.as_mut())
         .await
         .map_err(map_err)?;
-        Ok(())
-    }
-
-    async fn nearest(
-        &self,
-        context: &mut Self::Context,
-        owners: &[OwnerId],
-        query: &SpaceVector,
-        window: u32,
-    ) -> Result<Vec<VectorCandidate>, StorageError> {
-        if owners.is_empty() || window == 0 {
-            return Ok(Vec::new());
-        }
-        let lane = Lane::of(query.space().dim());
-        let owner_ids: Vec<_> = owners.iter().copied().map(OwnerId::into_inner).collect();
-        // SQL-POLICY: fixed-fragment — the width comes from the closed Lane.
-        let sql = format!(
-            "SELECT memory_id, similarity_score
-               FROM proxima_core.vector_candidates_d{}($1, $2, $3, $4)",
-            lane.width
-        );
-        // SQL-POLICY: fixed-fragment — only the closed width is interpolated above.
-        let rows: Vec<(uuid::Uuid, f32)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-            .bind(owner_ids)
-            .bind(query.space().model_id())
-            .bind(vector(query.values()))
-            .bind(i64::from(window))
-            .fetch_all(context.as_mut())
-            .await
-            .map_err(map_err)?;
-        Ok(rows
-            .into_iter()
-            .map(|(memory_id, similarity_score)| VectorCandidate {
-                memory_id: MemoryId::new(memory_id),
-                similarity_score,
-            })
-            .collect())
-    }
+    Ok(rows
+        .into_iter()
+        .map(|(memory_id, similarity_score)| VectorCandidate {
+            memory_id: MemoryId::new(memory_id),
+            similarity_score,
+        })
+        .collect())
 }
 
 /// Candidate functions for every supported width, with their inverses.
@@ -262,3 +243,6 @@ fn candidate_scan_sql(lane: Lane, limit: &str) -> String {
 pub fn candidate_scan_sql_for_tests(dim: EmbeddingDim) -> String {
     candidate_scan_sql(Lane::of(dim), "$4")
 }
+
+mod debt;
+pub(crate) use debt::{drain_debt, settle_owner_debt, sweep_index};

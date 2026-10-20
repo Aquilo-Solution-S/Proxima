@@ -31,9 +31,12 @@ http = { workspace = true }
 # `DynamicHandler` builds against the version and feature set Proxima pins.
 # Already linked through `proxima-mcp-server`; declaring it adds no code.
 rmcp = { workspace = true }
-# The built-in HTTP outbox sink (docs/18 §Built-in HTTP sink).
+# The built-in HTTP outbox sink (docs/18 §Built-in HTTP sink) and the vector
+# index client.
 reqwest = { workspace = true }
 sqlx = { workspace = true }
+# The vector index wire (`vector_index_http`).
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["net", "signal", "time"] }
 tokio-util = { workspace = true }

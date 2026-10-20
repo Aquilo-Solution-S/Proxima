@@ -262,10 +262,48 @@ configured timeout. The extra-store transaction is separate from a Proxima
 `UnitOfWork`; use host-state participation when the change must be atomic with
 a Fact write. A flavor never queries `proxima_core` directly.
 
-The store's vector index implements the `VectorIndex` port.
-The PostgreSQL adapter writes complete chunk versions in the store transaction
-and ranks each memory by its best chunk. Index hits are candidates: the store
-reads their memory rows under owner RLS before using their IDs or scores.
+## Vector index
+
+By default a store keeps its chunk vectors in its own database, written in the
+transaction that changes their rows. A host can keep them in an index outside
+it instead, one index serving several stores: implement the `VectorIndex` port
+(`put`, `delete`, `set_owner`, `nearest`, `entries`) and register it with
+`RuntimeBuilder::vector_index`. `InMemoryVectorIndex` is the reference
+implementation. The store's database still needs the vector extension.
+
+```rust
+let index = VectorIndexClient::new("https://index.internal", store_number, &plaintext_hosts)?
+    .with_bearer_token(token);
+let builder = RuntimeBuilder::default().vector_index(std::sync::Arc::new(index));
+```
+
+`proxima::vector_index_http` is the network form: `VectorIndexClient` is a
+`VectorIndex` over HTTP, and `vector_index_router` serves any `VectorIndex` to
+the stores it names, under the host's own authentication. Its rustdoc lists the
+wire. The client speaks plaintext only to loopback or a named plaintext host.
+
+The store keeps each entity's head, its current version per space, and calls
+the index in this order:
+
+- the embedding drain writes the head and `put`s the vectors before its claim
+  commits, so a job completes only once the index has them;
+- every later head change (forget, erase, transfer, a space purge, the orphan
+  sweep) leaves durable debt in its own transaction, paid at the start of the
+  next drain pass;
+- an erase pays its owner's debt before it commits, including what an earlier
+  forget left for the drain: an index failure fails the erase and its
+  transaction rolls back, while what the index already deleted stays deleted
+  until the sweep finds it and reconciliation embeds it again;
+- the orphan sweep compares the index's `entries` with the heads, deletes
+  entries no head names, moves entries to their head's owner, and deletes heads
+  the index lost so reconciliation embeds them again.
+
+Every method is idempotent and may be repeated after a failure. A `put` the
+client gave up on can still reach the index after a later `delete`; the sweep
+deletes such an entry, since no head names it. Index hits are
+candidates either way: the store reads their memory rows under owner RLS before
+it uses their IDs or scores, so a wrong or stale entry costs results, never a
+row.
 
 Derivation reads all foreign origins within one call-wide deadline and refuses
 before writing if they cannot all be read. Lineage deduplicates foreign origins

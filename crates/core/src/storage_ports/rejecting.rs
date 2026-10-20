@@ -364,6 +364,12 @@ impl EmbeddingJobPort for RejectingStorage {
         ))
     }
 
+    async fn drain_vector_index_debt(&self, _limit: i64) -> Result<u64, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
     async fn renew_embedding_jobs(
         &self,
         _claims: &[EmbeddingJobClaim],

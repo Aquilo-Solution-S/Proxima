@@ -139,10 +139,12 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)] // each scope names its store's pools, object store and vectors
 pub(crate) async fn erase_group_owner_with_lifecycle(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
+    vectors: &crate::vector_index::StoreVectors,
     auth: &EraseAuthorization,
     group_id: GroupId,
     surfaces: &OwnerSurfaces,
@@ -168,7 +170,7 @@ pub(crate) async fn erase_group_owner_with_lifecycle(
                 lifecycle.as_ref(),
             )
             .await?;
-            let outcome = complete(auth, &mut tx, &cold_purge).await?;
+            let outcome = complete(auth, &mut tx, &cold_purge, vectors, owner).await?;
             tx.commit().await.map_err(map_err)?;
             Ok(EraseAttempt::Completed(cold_purge, outcome))
         }
@@ -176,10 +178,12 @@ pub(crate) async fn erase_group_owner_with_lifecycle(
     .await
 }
 
+#[allow(clippy::too_many_arguments)] // each scope names its store's pools, object store and vectors
 pub(crate) async fn erase_personal_owner_with_lifecycle(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
+    vectors: &crate::vector_index::StoreVectors,
     auth: &EraseAuthorization,
     user_id: UserId,
     surfaces: &OwnerSurfaces,
@@ -205,7 +209,7 @@ pub(crate) async fn erase_personal_owner_with_lifecycle(
                 lifecycle.as_ref(),
             )
             .await?;
-            let outcome = complete(auth, &mut tx, &cold_purge).await?;
+            let outcome = complete(auth, &mut tx, &cold_purge, vectors, owner).await?;
             tx.commit().await.map_err(map_err)?;
             Ok(EraseAttempt::Completed(cold_purge, outcome))
         }
@@ -213,10 +217,12 @@ pub(crate) async fn erase_personal_owner_with_lifecycle(
     .await
 }
 
+#[allow(clippy::too_many_arguments)] // each scope names its store's pools, object store and vectors
 pub(crate) async fn erase_group_source_scope_with_lifecycle(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
+    vectors: &crate::vector_index::StoreVectors,
     auth: &EraseAuthorization,
     source_id: &SourceId,
     surfaces: &OwnerSurfaces,
@@ -246,7 +252,7 @@ pub(crate) async fn erase_group_source_scope_with_lifecycle(
                 lifecycle.as_ref(),
             )
             .await?;
-            let outcome = complete(auth, &mut tx, &cold_purge).await?;
+            let outcome = complete(auth, &mut tx, &cold_purge, vectors, owner).await?;
             tx.commit().await.map_err(map_err)?;
             Ok(EraseAttempt::Completed(cold_purge, outcome))
         }
@@ -254,10 +260,12 @@ pub(crate) async fn erase_group_source_scope_with_lifecycle(
     .await
 }
 
+#[allow(clippy::too_many_arguments)] // each scope names its store's pools, object store and vectors
 pub(crate) async fn erase_personal_source_scope_with_lifecycle(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
+    vectors: &crate::vector_index::StoreVectors,
     auth: &EraseAuthorization,
     source_id: &SourceId,
     surfaces: &OwnerSurfaces,
@@ -287,7 +295,7 @@ pub(crate) async fn erase_personal_source_scope_with_lifecycle(
                 lifecycle.as_ref(),
             )
             .await?;
-            let outcome = complete(auth, &mut tx, &cold_purge).await?;
+            let outcome = complete(auth, &mut tx, &cold_purge, vectors, owner).await?;
             tx.commit().await.map_err(map_err)?;
             Ok(EraseAttempt::Completed(cold_purge, outcome))
         }
@@ -301,7 +309,11 @@ async fn complete(
     auth: &EraseAuthorization,
     tx: &mut Tx<'_>,
     cold_purge: &ColdPurgePlan,
+    vectors: &crate::vector_index::StoreVectors,
+    owner: OwnerId,
 ) -> Result<OwnerEraseOutcome, StorageError> {
+    // The erase is done only once the index deleted the vectors (#519).
+    crate::vector_index::settle_owner_debt(tx.as_mut(), vectors, owner).await?;
     let (host_state_deleted, host_state_scrubbed) = final_host_state_counts(tx).await?;
     Ok(OwnerEraseOutcome::Completed {
         operation_id: auth.audit().operation_id(),

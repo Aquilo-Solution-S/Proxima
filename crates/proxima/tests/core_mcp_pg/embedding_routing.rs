@@ -379,20 +379,33 @@ impl TwoOwnerFixture {
         db_name: &str,
         policy: proxima_core::EmbeddingRuntimePolicy,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::boot_with(db_name, policy, None).await
+    }
+
+    /// `index` keeps the store's vectors in a host index instead of its
+    /// database.
+    async fn boot_with(
+        db_name: &str,
+        policy: proxima_core::EmbeddingRuntimePolicy,
+        index: Option<Arc<dyn VectorIndex>>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (runtime_url, platform_url) = split_role_urls(db_name).await?;
         let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
         let shared = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let router = Arc::new(proxima_core::test_fixtures::TestEmbeddingRouter::default());
         let (built, held) = HeldWorker::boot(db_name, personal, router.clone(), |router| {
-            Proxima::<AgentMemoryApp>::app()
+            let app = Proxima::<AgentMemoryApp>::app()
                 .database_url(runtime_url)
                 .store_number(0)
                 .platform_database_url(platform_url)
                 .owner(personal)
                 .embedding_router(router)
                 .embedding_runtime_policy(policy)
-                .served_surface(proxima_core::ServedSurface::All)
-                .build()
+                .served_surface(proxima_core::ServedSurface::All);
+            match index {
+                Some(index) => app.vector_index(index).build(),
+                None => app.build(),
+            }
         })
         .await?;
         let tools = built.host().core_mcp_tools();
@@ -1882,4 +1895,101 @@ async fn retryable_jobs_complete_after_the_same_clients_window_passes() {
     .await;
     fixture.shutdown().await;
     result.expect("same-original retry expiry completion");
+}
+
+/// A store whose vectors live in a host index reached over the network form:
+/// the drain puts each memory's vectors there and keeps none locally, a
+/// semantic search narrows through the index, a transfer moves the entry's
+/// owner and a forget deletes it, each paid on the next drain pass.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn a_store_keeps_its_vectors_in_a_host_index_over_the_wire() {
+    use proxima::vector_index_http::{VectorIndexClient, vector_index_router};
+    use proxima_core::llm::EmbeddingDim;
+    let split_db = clone_split_core_db("proxima_core_remote_index")
+        .await
+        .expect("PG required for tests");
+    let db_name = split_db.name().to_owned();
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let index = Arc::new(InMemoryVectorIndex::default());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let router = vector_index_router(std::collections::BTreeMap::from([(
+            0,
+            index.clone() as Arc<dyn VectorIndex>,
+        )]));
+        let server = tokio::spawn(async move { axum::serve(listener, router).await });
+        let client = VectorIndexClient::new(&base, 0, &proxima_core::PlaintextHosts::none())?;
+        let fixture = TwoOwnerFixture::boot_with(
+            &db_name,
+            proxima_core::EmbeddingRuntimePolicy::default(),
+            Some(Arc::new(client)),
+        )
+        .await?;
+        let engine = &fixture.built.host().engine();
+        let embedding = RecordingRouteEmbedding::new("route-remote", EmbeddingDim::D768);
+        for owner in [fixture.personal, fixture.shared] {
+            fixture.router.set_owner(owner, Some(embedding.bound()));
+        }
+        let kept = fixture.remember("current", "needle that stays").await?;
+        let moved = fixture
+            .remember("current", "needle that changes hands")
+            .await?;
+        let drained = engine.drain_embedding_jobs(10).await?;
+        assert_eq!((drained.processed, drained.failed), (2, 0));
+        for handle in [&kept, &moved] {
+            assert_eq!(
+                fixture.embedding_rows(handle).await?,
+                (vec![], vec![]),
+                "{handle}: no local vector and no job left"
+            );
+        }
+        let owners = |entries: Vec<VectorEntry>| -> Vec<(String, OwnerId)> {
+            let mut owners: Vec<_> = entries
+                .into_iter()
+                .map(|entry| (entry.key.entity_id.to_string(), entry.owner))
+                .collect();
+            owners.sort();
+            owners
+        };
+        let mut expected = vec![
+            (kept.clone(), fixture.personal),
+            (moved.clone(), fixture.personal),
+        ];
+        expected.sort();
+        assert_eq!(owners(index.entries(None, 10).await?), expected);
+        let found = returned_handles(&fixture.search("semantic", 10, None).await?);
+        assert_eq!(found.len(), 2, "{found:?}");
+
+        let entity = proxima_core::EntityId::Memory(MemoryId::new(moved.parse::<Uuid>()?));
+        engine
+            .transfer_to_owner(&fixture.authz, entity, fixture.shared)
+            .await?;
+        engine
+            .forget_memory(
+                &fixture.authz,
+                fixture.personal,
+                MemoryId::new(kept.parse::<Uuid>()?),
+            )
+            .await?;
+        engine.drain_embedding_jobs(10).await?;
+        assert_eq!(
+            owners(index.entries(None, 10).await?),
+            vec![(moved.clone(), fixture.shared)],
+            "the forgotten entry goes and the transferred one follows its owner"
+        );
+        assert_eq!(
+            returned_handles(&fixture.search("semantic", 10, None).await?),
+            vec![moved],
+        );
+        let owed: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.vector_index_debt")
+            .fetch_one(&fixture.admin_pool)
+            .await?;
+        assert_eq!(owed, 0);
+        fixture.shutdown().await;
+        server.abort();
+        Ok(())
+    }
+    .await;
+    result.expect("remote index test failed");
 }

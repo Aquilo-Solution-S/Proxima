@@ -82,12 +82,7 @@ pub(crate) async fn insert_embedding(
     let model_id = space.model_id();
 
     let entity_id = entity.entity_id();
-    let lock_key = format!("proxima-embedding:{entity_id}:{model_id}:{dim}");
-    let _ = sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind(lock_key)
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(map_err)?;
+    lock_embedding_key(tx.as_mut(), entity_id, model_id, dim).await?;
 
     if !embedding_entity_is_eligible(tx, owner, entity).await? {
         return Ok(EmbeddingWriteOutcome {
@@ -146,6 +141,100 @@ pub(crate) async fn insert_embedding(
     .await
     .map_err(map_err)?;
 
+    Ok(EmbeddingWriteOutcome { embedding_version })
+}
+
+fn embedding_lock_key(entity_id: uuid::Uuid, model_id: &str, dim: i16) -> String {
+    format!("proxima-embedding:{entity_id}:{model_id}:{dim}")
+}
+
+/// Hold one entity's head in one space until the transaction ends: every
+/// writer of a head takes it first.
+async fn lock_embedding_key(
+    tx: &mut sqlx::PgConnection,
+    entity_id: uuid::Uuid,
+    model_id: &str,
+    dim: i16,
+) -> Result<(), StorageError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(embedding_lock_key(entity_id, model_id, dim))
+        .execute(tx)
+        .await
+        .map(drop)
+        .map_err(map_err)
+}
+
+/// [`lock_embedding_key`] without waiting: `false` while a writer holds it.
+pub(crate) async fn try_lock_embedding_key(
+    tx: &mut sqlx::PgConnection,
+    entity_id: uuid::Uuid,
+    model_id: &str,
+    dim: i16,
+) -> Result<bool, StorageError> {
+    sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(embedding_lock_key(entity_id, model_id, dim))
+        .fetch_one(tx)
+        .await
+        .map_err(map_err)
+}
+
+/// Advance an entity's head and hand its chunks to the host `index`, before
+/// the caller's transaction commits (#519): a job completes only once the
+/// index has the vectors. The key's pending index debt goes first, waiting
+/// for a drain that holds it, so a delete owed for an earlier version never
+/// lands after this version.
+///
+/// Returns version `0` for an ineligible entity, as [`insert_embedding`].
+///
+/// # Errors
+///
+/// Maps SQL failures through the shared mapper, and returns the index's
+/// error; either leaves the transaction to roll back.
+pub(crate) async fn insert_embedding_head(
+    tx: &mut Transaction<'_, Postgres>,
+    index: &dyn proxima_core::storage_ports::VectorIndex,
+    owner: &OwnerId,
+    entity: EmbeddableEntityRef,
+    vectors: &[SpaceVector],
+) -> Result<EmbeddingWriteOutcome, StorageError> {
+    let space = validate_embedding_vectors(vectors)?;
+    let dim = crate::pgvector::Lane::of(space.dim()).width;
+    let model_id = space.model_id();
+    let entity_id = entity.entity_id();
+    lock_embedding_key(tx.as_mut(), entity_id, model_id, dim).await?;
+    if !embedding_entity_is_eligible(tx, owner, entity).await? {
+        return Ok(EmbeddingWriteOutcome {
+            embedding_version: 0,
+        });
+    }
+    let embedding_version: i32 = sqlx::query_scalar(
+        "INSERT INTO proxima_core.embedding_heads
+            (entity_id, model_id, dim, embedding_version, owner_id)
+         VALUES ($1, $2, $3, 1, $4)
+         ON CONFLICT (entity_id, model_id, dim)
+         DO UPDATE SET embedding_version = proxima_core.embedding_heads.embedding_version + 1
+         RETURNING embedding_version",
+    )
+    .bind(entity_id)
+    .bind(model_id)
+    .bind(dim)
+    .bind(owner.into_inner())
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    sqlx::query(
+        "DELETE FROM proxima_core.vector_index_debt
+          WHERE entity_id = $1 AND model_id = $2 AND dim = $3",
+    )
+    .bind(entity_id)
+    .bind(model_id)
+    .bind(dim)
+    .execute(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    index
+        .put(entity, *owner, embedding_version, vectors)
+        .await?;
     Ok(EmbeddingWriteOutcome { embedding_version })
 }
 

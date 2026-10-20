@@ -75,6 +75,7 @@ pub struct RuntimeBuilder {
     authenticator: Option<Arc<dyn Authenticator>>,
     platform_authenticator: Option<PlatformAuthenticatorFactory>,
     host_tools: Option<Arc<dyn McpHostTools>>,
+    vector_index: Option<Arc<dyn proxima_core::storage_ports::VectorIndex>>,
     resource_metadata: Option<ResourceServerMetadata>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     embedding_router: Option<Arc<dyn EmbeddingRouter>>,
@@ -145,6 +146,7 @@ impl std::fmt::Debug for RuntimeBuilder {
                 &self.platform_authenticator.is_some(),
             )
             .field("host_tools", &self.host_tools)
+            .field("has_vector_index", &self.vector_index.is_some())
             .field("has_resource_metadata", &self.resource_metadata.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_embedding_router", &self.embedding_router.is_some())
@@ -211,6 +213,7 @@ impl RuntimeBuilder {
             authenticator,
             platform_authenticator,
             host_tools: self.host_tools.or(base.host_tools),
+            vector_index: self.vector_index.or(base.vector_index),
             resource_metadata: self.resource_metadata.or(base.resource_metadata),
             embed_client: self.embed_client.or(base.embed_client),
             embedding_router: self.embedding_router.or(base.embedding_router),
@@ -682,6 +685,20 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Keep the store's chunk vectors in `index` instead of its own database
+    /// (#519). The store keeps each memory's head and pays index debt as
+    /// [`proxima_core::storage_ports::VectorIndex`] describes; the network
+    /// form is [`crate::vector_index_http`]. Without it the store's pgvector
+    /// index serves.
+    #[must_use]
+    pub fn vector_index(
+        mut self,
+        index: Arc<dyn proxima_core::storage_ports::VectorIndex>,
+    ) -> Self {
+        self.vector_index = Some(index);
+        self
+    }
+
     /// Advertise OAuth protected-resource metadata (enables the public
     /// discovery route + `WWW-Authenticate` on 401).
     #[must_use]
@@ -1075,6 +1092,7 @@ impl RuntimeBuilder {
             authenticator: self.authenticator,
             platform_authenticator: self.platform_authenticator,
             host_tools: self.host_tools,
+            vector_index: self.vector_index,
             embed_client: self.embed_client,
             embedding_router: self.embedding_router,
             host_state_participant: self.host_state_participant,
@@ -1440,6 +1458,8 @@ pub struct RuntimeParts {
     pub platform_authenticator: Option<PlatformAuthenticatorFactory>,
     /// Host tools served on `/mcp` ([`RuntimeBuilder::host_tools`]).
     pub host_tools: Option<Arc<dyn McpHostTools>>,
+    /// The store's host vector index ([`RuntimeBuilder::vector_index`]).
+    pub vector_index: Option<Arc<dyn proxima_core::storage_ports::VectorIndex>>,
     pub embed_client: Option<Arc<dyn EmbeddingClient>>,
     pub embedding_router: Option<Arc<dyn EmbeddingRouter>>,
     pub host_state_participant: Option<Arc<dyn PgHostStateParticipant>>,
@@ -1472,6 +1492,7 @@ impl std::fmt::Debug for RuntimeParts {
                 &self.platform_authenticator.is_some(),
             )
             .field("host_tools", &self.host_tools)
+            .field("has_vector_index", &self.vector_index.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
             .field("has_embedding_router", &self.embedding_router.is_some())
             .field(

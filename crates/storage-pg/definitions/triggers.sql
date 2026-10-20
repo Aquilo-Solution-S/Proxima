@@ -50,6 +50,17 @@ CREATE OR REPLACE TRIGGER delegated_authority_writer_immutable
     FOR EACH ROW EXECUTE FUNCTION proxima_core.enforce_row_append_only();
 
 
+-- embedding_heads
+CREATE OR REPLACE TRIGGER embedding_heads_deleted_index_debt
+    AFTER DELETE ON proxima_core.embedding_heads
+    REFERENCING OLD TABLE AS deleted_heads
+    FOR EACH STATEMENT EXECUTE FUNCTION proxima_core.embedding_heads_deleted_index_debt();
+CREATE OR REPLACE TRIGGER embedding_heads_moved_index_debt
+    AFTER UPDATE OF owner_id ON proxima_core.embedding_heads
+    FOR EACH ROW WHEN (OLD.owner_id IS DISTINCT FROM NEW.owner_id)
+    EXECUTE FUNCTION proxima_core.embedding_head_moved_index_debt();
+
+
 -- erased_pin_target
 CREATE OR REPLACE TRIGGER erased_pin_target_append_only BEFORE DELETE OR UPDATE ON proxima_core.erased_pin_target FOR EACH ROW EXECUTE FUNCTION proxima_core.erased_pin_target_append_only();
 CREATE OR REPLACE TRIGGER erased_pin_target_insert_guard BEFORE INSERT ON proxima_core.erased_pin_target FOR EACH ROW EXECUTE FUNCTION proxima_core.assert_erased_pin_target_insert();

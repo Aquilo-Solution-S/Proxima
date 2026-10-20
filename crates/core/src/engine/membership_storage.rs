@@ -382,6 +382,12 @@ impl EmbeddingJobPort for MembershipStorage {
         ))
     }
 
+    async fn drain_vector_index_debt(&self, _limit: i64) -> Result<u64, StorageError> {
+        Err(StorageError::Internal(
+            "MembershipStorage rejects writes".into(),
+        ))
+    }
+
     async fn renew_embedding_jobs(
         &self,
         _claims: &[EmbeddingJobClaim],

@@ -148,6 +148,12 @@ pub trait EmbeddingJobPort: Send + Sync {
 
     async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError>;
 
+    /// Pay up to `limit` rows of the debt head changes left for the store's
+    /// vector index ([`crate::storage_ports::VectorIndex`]).
+    /// A store that keeps its vectors itself clears the rows. Returns how
+    /// many were paid.
+    async fn drain_vector_index_debt(&self, limit: i64) -> Result<u64, StorageError>;
+
     /// Refresh `claimed_at` for still-live, token-matching claims.
     ///
     /// Returns the number renewed. Missing rows are allowed: another step in
@@ -353,7 +359,7 @@ pub struct EmbeddingSpaceCounts {
     /// Of those, the memories with a vector in this space.
     pub embedded: u64,
     /// Every vector row the Owner has in this space, superseded versions
-    /// included.
+    /// included. Zero for a store whose vectors live in a host index.
     pub vectors: u64,
     pub pending: u64,
     pub processing: u64,

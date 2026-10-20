@@ -364,6 +364,10 @@ mod storage_port_tests_support {
             Ok(())
         }
 
+        async fn drain_vector_index_debt(&self, _limit: i64) -> Result<u64, StorageError> {
+            Ok(0)
+        }
+
         async fn renew_embedding_jobs(
             &self,
             claims: &[crate::storage::EmbeddingJobClaim],

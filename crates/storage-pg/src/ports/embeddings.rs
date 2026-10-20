@@ -114,10 +114,21 @@ impl EmbeddingWritePort for PgStorage {
         let mut tx = self.platform_transaction().await?;
         verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, space, proof)
             .await?;
-        let outcome = self
-            .vector_index
-            .add(&mut tx, owner, entity, vectors)
-            .await?;
+        let outcome = match &self.vectors {
+            crate::vector_index::StoreVectors::Local => {
+                verbs::fact_embeddings::insert_embedding(&mut tx, owner, entity, vectors).await?
+            }
+            crate::vector_index::StoreVectors::Remote(index) => {
+                verbs::fact_embeddings::insert_embedding_head(
+                    &mut tx,
+                    index.as_ref(),
+                    owner,
+                    entity,
+                    vectors,
+                )
+                .await?
+            }
+        };
         tx.commit().await.map_err(crate::error::map_err)?;
         Ok(outcome)
     }
@@ -147,6 +158,13 @@ impl EmbeddingJobPort for PgStorage {
         let mut tx = self.platform_transaction().await?;
         verbs::fact_embeddings::complete_embedding_job(tx.as_mut(), claim).await?;
         tx.commit().await.map_err(crate::error::map_err)
+    }
+
+    async fn drain_vector_index_debt(&self, limit: i64) -> Result<u64, StorageError> {
+        let mut tx = self.platform_transaction().await?;
+        let paid = crate::vector_index::drain_debt(tx.as_mut(), &self.vectors, limit).await?;
+        tx.commit().await.map_err(crate::error::map_err)?;
+        Ok(paid)
     }
 
     async fn renew_embedding_jobs(
@@ -273,7 +291,7 @@ impl EmbeddingMaintenancePort for PgStorage {
         &self,
         _proof: OperatorMaintenanceProof,
     ) -> Result<EmbeddingOrphanSweepOutcome, StorageError> {
-        verbs::fact_embeddings::sweep_orphan_embedding_rows(&self.pool, &self.platform_scope).await
+        PgStorage::sweep_orphan_embedding_rows(self).await
     }
 
     async fn reconcile_embeddings(

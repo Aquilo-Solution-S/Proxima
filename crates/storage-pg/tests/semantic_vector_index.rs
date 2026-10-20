@@ -2,120 +2,67 @@
 
 use std::sync::{Arc, Mutex};
 
-use proxima_core::storage_ports::{MemoryReadPort, VectorCandidate, VectorIndex};
+use proxima_core::storage_ports::{
+    InMemoryVectorIndex, MemoryReadPort, VectorCandidate, VectorEntry, VectorIndex, VectorKey,
+};
 use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
 use proxima_core::{
-    EmbeddableEntityRef, EmbeddingDim, EmbeddingSpace, EmbeddingWriteOutcome, MemoryId, OwnerId,
-    SpaceVector, StorageError, UserId,
+    EmbeddableEntityRef, EmbeddingDim, EmbeddingSpace, MemoryId, OwnerId, SpaceVector,
+    StorageError, UserId,
 };
 use proxima_storage_pg::test_fixtures::fresh_pg;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-struct IndexedMemory {
-    owner: OwnerId,
-    id: Uuid,
-    chunks: Vec<SpaceVector>,
-}
-
+/// The reference index, recording each window the store asks for.
 #[derive(Default)]
-struct InMemoryIndex {
-    memories: Mutex<Vec<IndexedMemory>>,
+struct RecordingIndex {
+    inner: InMemoryVectorIndex,
     windows: Mutex<Vec<u32>>,
 }
 
 #[async_trait::async_trait]
-impl VectorIndex for InMemoryIndex {
-    type Context = Transaction<'static, Postgres>;
-
-    async fn add(
+impl VectorIndex for RecordingIndex {
+    async fn put(
         &self,
-        _context: &mut Self::Context,
-        owner: &OwnerId,
         entity: EmbeddableEntityRef,
+        owner: OwnerId,
+        version: i32,
         vectors: &[SpaceVector],
-    ) -> Result<EmbeddingWriteOutcome, StorageError> {
-        let mut memories = self.memories.lock().unwrap();
-        memories.retain(|memory| {
-            memory.owner != *owner
-                || memory.id != entity.entity_id()
-                || memory.chunks[0].space() != vectors[0].space()
-        });
-        memories.push(IndexedMemory {
-            owner: *owner,
-            id: entity.entity_id(),
-            chunks: vectors.to_vec(),
-        });
-        Ok(EmbeddingWriteOutcome {
-            embedding_version: 1,
-        })
+    ) -> Result<(), StorageError> {
+        self.inner.put(entity, owner, version, vectors).await
     }
 
-    async fn delete(
-        &self,
-        _context: &mut Self::Context,
-        owner: &OwnerId,
-        entity: EmbeddableEntityRef,
-    ) -> Result<(), StorageError> {
-        self.memories
-            .lock()
-            .unwrap()
-            .retain(|memory| memory.owner != *owner || memory.id != entity.entity_id());
-        Ok(())
+    async fn delete(&self, keys: &[VectorKey]) -> Result<(), StorageError> {
+        self.inner.delete(keys).await
+    }
+
+    async fn set_owner(&self, keys: &[VectorKey], owner: OwnerId) -> Result<(), StorageError> {
+        self.inner.set_owner(keys, owner).await
     }
 
     async fn nearest(
         &self,
-        _context: &mut Self::Context,
         owners: &[OwnerId],
         query: &SpaceVector,
         window: u32,
     ) -> Result<Vec<VectorCandidate>, StorageError> {
         self.windows.lock().unwrap().push(window);
-        let mut candidates = Vec::new();
-        for memory in self.memories.lock().unwrap().iter() {
-            if !owners.contains(&memory.owner) {
-                continue;
-            }
-            let score = memory
-                .chunks
-                .iter()
-                .filter(|chunk| chunk.space() == query.space())
-                .map(|chunk| cosine(chunk.values(), query.values()).clamp(0.0, 1.0))
-                .max_by(f32::total_cmp);
-            if let Some(similarity_score) = score {
-                candidates.push(VectorCandidate {
-                    memory_id: MemoryId::new(memory.id),
-                    similarity_score,
-                });
-            }
-        }
-        candidates.sort_by(|left, right| {
-            right
-                .similarity_score
-                .total_cmp(&left.similarity_score)
-                .then_with(|| {
-                    right
-                        .memory_id
-                        .into_inner()
-                        .cmp(&left.memory_id.into_inner())
-                })
-        });
-        candidates.truncate(usize::try_from(window).unwrap());
-        Ok(candidates)
+        self.inner.nearest(owners, query, window).await
     }
-}
 
-fn cosine(left: &[f32], right: &[f32]) -> f32 {
-    let dot: f32 = left.iter().zip(right).map(|(x, y)| x * y).sum();
-    let left_norm: f32 = left.iter().map(|value| value * value).sum();
-    let right_norm: f32 = right.iter().map(|value| value * value).sum();
-    dot / (left_norm * right_norm).sqrt()
+    async fn entries(
+        &self,
+        after: Option<&VectorKey>,
+        limit: u32,
+    ) -> Result<Vec<VectorEntry>, StorageError> {
+        self.inner.entries(after, limit).await
+    }
 }
 
 fn vector(score: f32) -> SpaceVector {
@@ -182,8 +129,7 @@ async fn semantic_port_expands_past_stale_foreign_and_filtered_candidates() -> T
     let wrong_tag = seed(pg.pool_for_tests(), owner, "core/agent-note-v1", "other").await?;
     let wrong_schema = seed(pg.pool_for_tests(), owner, "semantic/other-v1", "wanted").await?;
     let foreign = seed(pg.pool_for_tests(), other, "core/agent-note-v1", "wanted").await?;
-    let index = Arc::new(InMemoryIndex::default());
-    let mut tx = pg.pool_for_tests().begin().await?;
+    let index = Arc::new(RecordingIndex::default());
     let entity = |id| EmbeddableEntityRef::Memory {
         kind: EntityKind::Fact,
         memory_id: MemoryId::new(id),
@@ -194,20 +140,12 @@ async fn semantic_port_expands_past_stale_foreign_and_filtered_candidates() -> T
         .map(|_| Uuid::now_v7())
         .chain([foreign, wrong_tag, wrong_schema])
     {
-        index
-            .add(&mut tx, &owner, entity(id), &[vector(1.0)])
-            .await?;
+        index.put(entity(id), owner, 1, &[vector(1.0)]).await?;
     }
     index
-        .add(
-            &mut tx,
-            &owner,
-            entity(visible),
-            &[vector(0.1), vector(0.8)],
-        )
+        .put(entity(visible), owner, 1, &[vector(0.1), vector(0.8)])
         .await?;
-    tx.commit().await?;
-    let pg = pg.with_vector_index_for_tests(index.clone());
+    let pg = pg.with_vector_index(index.clone());
     let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
     let scope = owner_scope_for_tests(&[owner]);
     let page = pg
@@ -219,5 +157,144 @@ async fn semantic_port_expands_past_stale_foreign_and_filtered_candidates() -> T
     assert!(page.results[0].snippet.contains("Hydrated from memory"));
     assert!(!page.has_more);
     assert_eq!(*index.windows.lock().unwrap(), vec![20, 40]);
+    Ok(())
+}
+
+async fn head(
+    pool: &PgPool,
+    entity: Uuid,
+    owner: OwnerId,
+    version: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO proxima_core.embedding_heads (entity_id, model_id, dim, embedding_version, owner_id)
+         VALUES ($1, 'memory-index', 384, $2, $3)",
+    )
+    .bind(entity)
+    .bind(version)
+    .bind(owner.into_inner())
+    .execute(pool)
+    .await
+    .map(drop)
+}
+
+fn key(entity: Uuid) -> VectorKey {
+    VectorKey {
+        entity_id: entity,
+        space: EmbeddingSpace::new("memory-index", EmbeddingDim::D384),
+    }
+}
+
+fn fact(id: Uuid) -> EmbeddableEntityRef {
+    EmbeddableEntityRef::Memory {
+        kind: EntityKind::Fact,
+        memory_id: MemoryId::new(id),
+    }
+}
+
+async fn debt_rows(pool: &PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT count(*) FROM proxima_core.vector_index_debt")
+        .fetch_one(pool)
+        .await
+}
+
+/// A head deleted or moved leaves durable debt, and the next drain pass pays
+/// it to the index: the deleted key's chunks go, the moved key's owner
+/// follows.
+#[tokio::test]
+async fn the_drain_pays_head_deletes_and_owner_moves_to_the_index() -> TestResult {
+    use proxima_core::storage_ports::EmbeddingJobPort;
+    let (pg, _database) = fresh_pg("vector_index_debt_drain").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let other = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let gone = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
+    let moved = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
+    seed(&pool, other, "core/agent-note-v1", "wanted").await?;
+    let index = Arc::new(InMemoryVectorIndex::default());
+    for entity in [gone, moved] {
+        head(&pool, entity, owner, 1).await?;
+        index.put(fact(entity), owner, 1, &[vector(1.0)]).await?;
+    }
+    let pg = pg.with_vector_index(index.clone());
+    sqlx::query("DELETE FROM proxima_core.embedding_heads WHERE entity_id = $1")
+        .bind(gone)
+        .execute(&pool)
+        .await?;
+    sqlx::query("UPDATE proxima_core.embedding_heads SET owner_id = $2 WHERE entity_id = $1")
+        .bind(moved)
+        .bind(other.into_inner())
+        .execute(&pool)
+        .await?;
+    assert_eq!(debt_rows(&pool).await?, 2, "both changes owe the index");
+    assert_eq!(
+        index.entries(None, 10).await?.len(),
+        2,
+        "nothing is paid before the drain"
+    );
+
+    assert_eq!(pg.drain_vector_index_debt(100).await?, 2);
+    let entries = index.entries(None, 10).await?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].key, key(moved));
+    assert_eq!(entries[0].owner, other);
+    assert_eq!(debt_rows(&pool).await?, 0);
+    assert_eq!(pg.drain_vector_index_debt(100).await?, 0);
+    Ok(())
+}
+
+/// The sweep compares the whole index with the heads across pages: an entry
+/// with no head goes, an entry under another owner moves, and a head the
+/// index lost is deleted so reconciliation embeds it again.
+#[tokio::test]
+async fn the_sweep_repairs_the_index_against_the_heads() -> TestResult {
+    let (pg, _database) = fresh_pg("vector_index_sweep").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let other = OwnerId::from(UserId::new(Uuid::now_v7()));
+    seed(&pool, other, "core/agent-note-v1", "wanted").await?;
+    let kept = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
+    let misowned = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
+    let lost = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
+    let stale_version = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
+    let index = Arc::new(InMemoryVectorIndex::default());
+    for entity in [kept, misowned, lost, stale_version] {
+        head(&pool, entity, owner, 2).await?;
+    }
+    index.put(fact(kept), owner, 2, &[vector(1.0)]).await?;
+    index.put(fact(misowned), other, 2, &[vector(1.0)]).await?;
+    index
+        .put(fact(stale_version), owner, 1, &[vector(1.0)])
+        .await?;
+    // More strays than one sweep page holds.
+    for _ in 0..700 {
+        index
+            .put(fact(Uuid::now_v7()), owner, 1, &[vector(1.0)])
+            .await?;
+    }
+    let pg = pg.with_vector_index(index.clone());
+
+    let outcome = pg.sweep_orphan_embedding_rows().await?;
+    assert_eq!(outcome.embeddings_deleted, 700);
+    assert_eq!(
+        outcome.heads_deleted, 2,
+        "the lost head and the stale version"
+    );
+    let entries = index.entries(None, 10).await?;
+    let held: Vec<(VectorKey, OwnerId)> = entries.into_iter().map(|e| (e.key, e.owner)).collect();
+    let mut expected = vec![
+        (key(kept), owner),
+        (key(misowned), owner),
+        (key(stale_version), owner),
+    ];
+    expected.sort_by(|a, b| a.0.order().cmp(&b.0.order()));
+    assert_eq!(held, expected);
+    let heads: Vec<Uuid> =
+        sqlx::query_scalar("SELECT entity_id FROM proxima_core.embedding_heads ORDER BY entity_id")
+            .fetch_all(&pool)
+            .await?;
+    let mut expected = vec![kept, misowned];
+    expected.sort();
+    assert_eq!(heads, expected);
     Ok(())
 }

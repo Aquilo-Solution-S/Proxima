@@ -1050,6 +1050,7 @@ const TABLES: &[(&str, Rows)] = &[
     ("store_identity", Rows::NoKind),
     ("task_goal_v1", Rows::Goal),
     ("utterance_v1", Rows::FactSidecar),
+    ("vector_index_debt", Rows::Memory("entity_id")),
     ("write_act_v1", Rows::FactSidecar),
 ];
 
@@ -1211,6 +1212,24 @@ async fn assert_fact_scope_sql(
     );
     topology.rollback().await?;
 
+    // Index debt, held for the census: a drain pass skips a row it cannot
+    // lock, and the Fact scope's probes never see one to wait on.
+    let mut debt = admin.begin().await?;
+    for (_, t) in seeded.ids()? {
+        sqlx::query(
+            "INSERT INTO proxima_core.vector_index_debt (entity_id, model_id, dim, owner_id, op)
+             VALUES ($1, 'stale-embed', 1024, $2, 'delete')",
+        )
+        .bind(t)
+        .bind(group.into_inner())
+        .execute(&mut *debt)
+        .await?;
+    }
+    debt.commit().await?;
+    let mut debt = admin.begin().await?;
+    sqlx::query("SELECT 1 FROM proxima_core.vector_index_debt FOR UPDATE")
+        .execute(&mut *debt)
+        .await?;
     let mut uncovered = Vec::new();
     let mut unprobed = Vec::new();
     for (table, rows) in TABLES {
@@ -1327,6 +1346,7 @@ async fn assert_fact_scope_sql(
         }
         tx.rollback().await?;
     }
+    debt.rollback().await?;
     runtime.close().await;
     assert!(
         uncovered.is_empty(),

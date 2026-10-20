@@ -239,6 +239,13 @@ recall checks. Their authorization is distinct from ordinary owner retrieval.
 Vacuum and index rebuild scheduling depend on measured tuples, bytes, latency,
 and recall; they are database operations.
 
+A store with a [host vector index](host-integration.md#vector-index) keeps no
+local vectors: the recall canary and HNSW tuning apply to the host's index, not
+the store. An unreachable index fails each drain pass and every search with a
+semantic leg; lexical search keeps working. Pending debt in `proxima_core.vector_index_debt` is
+paid on the next drain pass after the index is reachable again, and a
+maintenance pass repairs whatever the index lost.
+
 ## Backup and restore
 
 Back up PostgreSQL and every configured object store. PostgreSQL contains the

@@ -37,7 +37,10 @@ use text::load_embedding_texts;
 pub(crate) use text::{
     load_embedding_text_on_connection, load_embedding_texts_on_connection, load_fact_text_in_tx,
 };
-pub(crate) use write::{insert_embedding, lock_embedding_job_claim, validate_embedding_vectors};
+pub(crate) use write::{
+    insert_embedding, insert_embedding_head, lock_embedding_job_claim, try_lock_embedding_key,
+    validate_embedding_vectors,
+};
 
 fn ensure_nonnegative_limit(limit: i64) -> Result<i64, StorageError> {
     if limit < 0 {

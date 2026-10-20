@@ -438,7 +438,7 @@ impl MemoryReadPort for PgStorage {
                 &req,
                 projections,
                 &self.tuning,
-                self.vector_index.as_ref(),
+                &self.vectors,
             )
             .await
         }

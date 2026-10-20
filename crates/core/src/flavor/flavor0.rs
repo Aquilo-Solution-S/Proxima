@@ -980,6 +980,32 @@ const KERNEL_SURFACES: &[Surface] = &[
         completeness: None,
     },
     Surface {
+        table: "proxima_core.vector_index_debt",
+        // One debt per vector key: an entity's chunks in one space.
+        key: KeyShape::Custom(&["entity_id", "model_id", "dim"]),
+        owner_column: Some("owner_id"),
+        transfer: TransferRule::StaysOnKey,
+        // As the object purge queue: the debt outlives the transaction that
+        // recorded it, and an erase settles its own before it commits.
+        erase: EraseRule::Never {
+            why: "the index debt is the head changes' own outbox; its drain deletes the row \
+                  once the host index applied it, and an erase that deleted it would leave \
+                  vectors in the index it promised to remove",
+        },
+        export: ExportRule::Excluded {
+            why: "index bookkeeping",
+        },
+        forget: ForgetRule::Keep {
+            why: "the debt a forget leaves outlives the transaction that recorded it",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "a work queue, not owned rows: a head change enqueues it and maintenance \
+                  drains it after the change commits",
+        },
+        completeness: None,
+    },
+    Surface {
         table: "proxima_core.owners",
         key: KeyShape::OwnerId,
         owner_column: Some("owner_id"),

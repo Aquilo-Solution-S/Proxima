@@ -672,7 +672,9 @@ pub async fn dump_database(
         // forgotten, that a transfer moves. 0034's
         // publication counter moves with the series head;
         // `publication_outbox_pg_tests` pins it. 0042's owner_follows is
-        // host-written schema metadata about no owner.
+        // host-written schema metadata about no owner. 0050's index debt is
+        // a host vector index's pending owner moves, which
+        // `semantic_vector_index` pins.
         if matches!(
             table.as_str(),
             "publication_consumer"
@@ -682,6 +684,7 @@ pub async fn dump_database(
                 | "owner_follows"
                 | "export_erase_fence"
                 | "maintenance_lease"
+                | "vector_index_debt"
         ) {
             continue;
         }

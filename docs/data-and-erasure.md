@@ -23,7 +23,8 @@ owner, never a global content hash.
 
 Forget is not hard deletion. The memory row, its sidecar rows and its sketch
 stay in Postgres marked `forgotten_at`; reads hide them, and their search
-projection and embeddings are deleted. A forgotten memory still grounds what was
+projection and embeddings are deleted (a [host vector index](host-integration.md#vector-index)
+deletes its entry on the next drain pass). A forgotten memory still grounds what was
 derived from it, so forgetting the last source of an Abstraction or Perspective is
 allowed and the derived memory stays readable. A forgotten memory keeps its
 series: a later write under the same key, a changed `core_remember` or

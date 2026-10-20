@@ -317,3 +317,7 @@ SELECT proxima_core.owner_rls_apply_class(
 
 SELECT proxima_core.owner_rls_apply_class(
     'policies.sql', 'class ownerless', 'proxima_core', 'maintenance_lease', 'ownerless', NULL);
+
+-- vector_index_debt: read and written at its entity's kind, as its head is;
+-- the platform scope drains it.
+SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxima_core', 'vector_index_debt', 'owner_id', 'owner_id');
