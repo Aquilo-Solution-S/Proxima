@@ -153,6 +153,17 @@ next page. Superseded and forgotten admissions are absent; a schema-defined
 tombstone is still a head. The example flavor's `note_heads` calls this helper
 for its `(notebook_id, key)` series.
 
+`proxima::flavor::ingest_receipt` reads one Fact receipt by owner, source id
+and ingest key on a transaction the caller already holds, so a shared lock
+in that transaction covers the read. It share-locks the admission until the
+caller finishes the transaction. It returns the admission id, series handle
+and schema, or absence, and it does not admit a row. Owner row security
+applies, so a forgotten admission stays hidden. `Engine::embedding_job_diagnostics`
+returns one row per embedding job of the memories the caller names, at most
+`MAX_EMBEDDING_DIAGNOSTIC_UNITS`. A processing job's state carries its claim
+age from the database clock; pending and failed jobs do not. Coverage
+counters stay on `Engine::embedding_coverage`.
+
 Use `proxima::flavor_bundle!` to register the payloads, contract, sidecars, and
 `NamedMigrator` together. Its rustdoc shows all parameters. Use a manual
 `FlavorBundle` implementation only when composition needs it. Registry freeze

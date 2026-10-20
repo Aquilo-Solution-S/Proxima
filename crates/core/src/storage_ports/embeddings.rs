@@ -2,7 +2,7 @@ pub use super::proof::EmbeddingWriteProof;
 
 use crate::storage::{EmbeddingJobClaim, StorageError};
 use crate::storage_ports::{OperatorMaintenanceProof, OwnerWritePermit};
-use crate::{EmbeddableEntityRef, EmbeddingSpace, EntityKind, OwnerId, OwnerScope};
+use crate::{EmbeddableEntityRef, EmbeddingSpace, EntityKind, MemoryId, OwnerId, OwnerScope};
 
 #[async_trait::async_trait]
 pub trait EmbeddingTextPort: Send + Sync {
@@ -224,6 +224,24 @@ pub trait EmbeddingJobPort: Send + Sync {
         scope: Option<&OwnerScope>,
         owner: &OwnerId,
     ) -> Result<EmbeddingJobStatusCounts, StorageError>;
+
+    /// One row per embedding job of `entities` for `owner`.
+    ///
+    /// Not [`EmbeddingJobStatusCounts`]: each row is one job, and a
+    /// processing job carries its claim age. `entities` is the memories
+    /// the caller names; an empty list reads nothing. More than
+    /// [`MAX_EMBEDDING_DIAGNOSTIC_UNITS`] is refused.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError::ConstraintViolation`] when `entities` is over the
+    /// bound. Storage errors from the read.
+    async fn embedding_job_diagnostics(
+        &self,
+        scope: Option<&OwnerScope>,
+        owner: &OwnerId,
+        entities: &[MemoryId],
+    ) -> Result<Vec<EmbeddingJobDiagnostic>, StorageError>;
 }
 
 /// Owner-scoped pending and failed embedding job counts. See
@@ -232,6 +250,55 @@ pub trait EmbeddingJobPort: Send + Sync {
 pub struct EmbeddingJobStatusCounts {
     pub pending: u64,
     pub failed: u64,
+}
+
+/// Most memories one [`EmbeddingJobPort::embedding_job_diagnostics`] call names.
+pub const MAX_EMBEDDING_DIAGNOSTIC_UNITS: usize = 256;
+
+/// Refuse a diagnostics call that names more memories than
+/// [`MAX_EMBEDDING_DIAGNOSTIC_UNITS`].
+///
+/// # Errors
+///
+/// [`StorageError::ConstraintViolation`] when `count` is over the bound.
+pub fn check_diagnostic_unit_count(count: usize) -> Result<(), StorageError> {
+    if count > MAX_EMBEDDING_DIAGNOSTIC_UNITS {
+        return Err(StorageError::ConstraintViolation(format!(
+            "at most {MAX_EMBEDDING_DIAGNOSTIC_UNITS} memories"
+        )));
+    }
+    Ok(())
+}
+
+/// One embedding job of one memory.
+///
+/// Claim age exists only while the job is [`EmbeddingJobState::Processing`]:
+/// the table allows `claimed_at` in that state alone. Coverage counters are
+/// [`EmbeddingSpaceCoverage`], a different read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingJobDiagnostic {
+    pub job_id: uuid::Uuid,
+    pub entity_id: MemoryId,
+    pub model_id: String,
+    pub dim: u16,
+    pub state: EmbeddingJobState,
+}
+
+/// Where one embedding job sits, and the claim age when it is claimed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmbeddingJobState {
+    Pending,
+    /// `claim_age` is `now() - claimed_at` from the database clock at the
+    /// read, saturated at zero.
+    Processing {
+        claim_age: time::Duration,
+    },
+    Failed {
+        last_error: Option<String>,
+    },
+    FailedPermanent {
+        last_error: Option<String>,
+    },
 }
 
 /// Which memories a global embedding reconciliation scans.

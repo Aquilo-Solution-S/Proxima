@@ -16,6 +16,7 @@ pub mod forget;
 pub(crate) mod goal_reads;
 pub mod goal_timeseries;
 pub(crate) mod goal_write;
+pub(crate) mod ingest_receipt;
 pub(crate) mod maintenance;
 pub(crate) mod memory_timeseries;
 pub(crate) mod owner_erase;

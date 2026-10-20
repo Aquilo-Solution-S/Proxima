@@ -232,6 +232,22 @@ impl EmbeddingJobPort for PgStorage {
         let result = verbs::fact_embeddings::count_embedding_job_status(tx.as_mut(), owner).await;
         crate::owner_scope::finish_transaction(tx, result).await
     }
+
+    async fn embedding_job_diagnostics(
+        &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner: &OwnerId,
+        entities: &[proxima_core::MemoryId],
+    ) -> Result<Vec<proxima_core::EmbeddingJobDiagnostic>, StorageError> {
+        let mut tx = crate::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
+        let result =
+            verbs::fact_embeddings::embedding_job_diagnostics(tx.as_mut(), owner, entities).await;
+        crate::owner_scope::finish_transaction(tx, result).await
+    }
 }
 
 #[async_trait::async_trait]

@@ -280,6 +280,45 @@ impl Engine {
         get_graph_authorized(&self.storage.read_verb, authz.owner_scope(), permit.owner()).await
     }
 
+    /// One row per embedding job of `entities` for `owner`.
+    ///
+    /// Each row is one job. A processing job's state carries how long its
+    /// claim has been held, from the database clock. Pending and failed
+    /// jobs carry no claim age. This is not [`Self::embedding_coverage`],
+    /// which returns counters for an operator.
+    ///
+    /// An empty `entities` reads nothing. More than
+    /// [`crate::MAX_EMBEDDING_DIAGNOSTIC_UNITS`] memories is refused.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` when `entities` is over the bound, `Forbidden`
+    /// when `authz` cannot read `owner`, and `Internal` on storage faults.
+    pub async fn embedding_job_diagnostics(
+        &self,
+        authz: &AuthzContext,
+        owner: &OwnerId,
+        entities: &[MemoryId],
+    ) -> Result<Vec<crate::EmbeddingJobDiagnostic>, ProtocolError> {
+        if let Err(crate::StorageError::ConstraintViolation(message)) =
+            crate::check_diagnostic_unit_count(entities.len())
+        {
+            return Err(ProtocolError::invalid_argument("entities", message));
+        }
+        let owner = self
+            .authorize_owner_read(authz, owner, AccessKind::Fact)
+            .await?;
+        if entities.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.storage
+            .read_verb
+            .embedding_job
+            .embedding_job_diagnostics(authz.owner_scope(), &owner, entities)
+            .await
+            .map_err(|err| storage_error("embedding_job_diagnostics", &err))
+    }
+
     /// Confirmed-id inverse citation read for one Fact memory.
     ///
     /// # Errors
@@ -815,6 +854,35 @@ mod tests {
             .expect_err("missing inspect is not-found, not an entry Forbidden");
         assert_eq!(err.code, ErrorCode::NotFound);
         assert!(err.message.contains("memory not found"));
+    }
+
+    #[tokio::test]
+    async fn embedding_job_diagnostics_refuses_too_many_units_before_storage() {
+        let owner = owner();
+        let entities = (0..=crate::MAX_EMBEDDING_DIAGNOSTIC_UNITS)
+            .map(|_| MemoryId::new(uuid::Uuid::now_v7()))
+            .collect::<Vec<_>>();
+        let err = engine()
+            .embedding_job_diagnostics(&granted_authz(&owner), &owner, &entities)
+            .await
+            .expect_err("over the bound");
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert!(err.message.contains("256"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn embedding_job_diagnostics_of_no_units_is_empty_after_authorization() {
+        let owner = owner();
+        let rows = engine()
+            .embedding_job_diagnostics(&granted_authz(&owner), &owner, &[])
+            .await
+            .expect("no units");
+        assert!(rows.is_empty());
+        let err = engine()
+            .embedding_job_diagnostics(&AuthzContext::denied_for_owner(&owner), &owner, &[])
+            .await
+            .expect_err("denied");
+        assert_forbidden(&err);
     }
 
     #[tokio::test]

@@ -419,6 +419,16 @@ mod storage_port_tests_support {
         ) -> Result<crate::storage_ports::EmbeddingJobStatusCounts, StorageError> {
             Ok(crate::storage_ports::EmbeddingJobStatusCounts::default())
         }
+
+        async fn embedding_job_diagnostics(
+            &self,
+            _scope: Option<&crate::OwnerScope>,
+            _owner: &crate::OwnerId,
+            entities: &[crate::MemoryId],
+        ) -> Result<Vec<crate::EmbeddingJobDiagnostic>, StorageError> {
+            crate::check_diagnostic_unit_count(entities.len())?;
+            Ok(Vec::new())
+        }
     }
 
     #[async_trait::async_trait]

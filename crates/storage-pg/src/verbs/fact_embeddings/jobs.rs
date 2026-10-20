@@ -1,5 +1,8 @@
 use proxima_core::storage_ports::{EmbeddingJobStatusCounts, OwnerWritePermit};
-use proxima_core::{EmbeddingJobClaim, EmbeddingSpace, MemoryId, OwnerId, StorageError};
+use proxima_core::{
+    EmbeddingJobClaim, EmbeddingJobDiagnostic, EmbeddingJobState, EmbeddingSpace, MemoryId,
+    OwnerId, StorageError, check_diagnostic_unit_count,
+};
 use sqlx::{PgConnection, PgExecutor, PgPool};
 
 use crate::error::map_err;
@@ -607,6 +610,153 @@ pub async fn count_embedding_job_status<'e>(
         pending: nonnegative_count(row.0, "pending embedding job")?,
         failed: nonnegative_count(row.1, "failed embedding job")?,
     })
+}
+
+/// One row per embedding job of `entities` for `owner`.
+///
+/// Claim age is whole seconds of `now() - claimed_at` on the database
+/// clock, and only for a `processing` job. An empty `entities` reads
+/// nothing.
+///
+/// # Errors
+///
+/// [`StorageError::ConstraintViolation`] when `entities` names more than
+/// [`proxima_core::MAX_EMBEDDING_DIAGNOSTIC_UNITS`] memories. Storage
+/// errors from the read, or a job row whose status or width is not one
+/// this binary knows.
+pub(crate) async fn embedding_job_diagnostics<'e>(
+    pool: impl PgExecutor<'e>,
+    owner: &OwnerId,
+    entities: &[MemoryId],
+) -> Result<Vec<EmbeddingJobDiagnostic>, StorageError> {
+    check_diagnostic_unit_count(entities.len())?;
+    if entities.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entity_ids: Vec<uuid::Uuid> = entities.iter().copied().map(MemoryId::into_inner).collect();
+    let rows: Vec<EmbeddingJobDiagnosticRow> = sqlx::query_as(
+        "SELECT j.job_id,
+                j.entity_id,
+                j.model_id,
+                j.dim,
+                j.status::text AS status,
+                j.last_error,
+                CASE WHEN j.status = 'processing'
+                     THEN floor(extract(epoch FROM (now() - j.claimed_at)))::bigint
+                END AS claim_age_seconds
+           FROM proxima_core.embedding_jobs j
+          WHERE j.owner_id = $1
+            AND j.entity_id = ANY($2::uuid[])
+          ORDER BY j.entity_id, j.model_id, j.dim",
+    )
+    .bind(owner.into_inner())
+    .bind(&entity_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+    rows.into_iter()
+        .map(EmbeddingJobDiagnosticRow::into_diagnostic)
+        .collect()
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct EmbeddingJobDiagnosticRow {
+    job_id: uuid::Uuid,
+    entity_id: uuid::Uuid,
+    model_id: String,
+    dim: i16,
+    status: String,
+    last_error: Option<String>,
+    claim_age_seconds: Option<i64>,
+}
+
+impl EmbeddingJobDiagnosticRow {
+    fn into_diagnostic(self) -> Result<EmbeddingJobDiagnostic, StorageError> {
+        let dim = u16::try_from(self.dim).map_err(|_| {
+            StorageError::Internal(format!(
+                "embedding job {} has a width that is not a lane",
+                self.job_id
+            ))
+        })?;
+        Ok(EmbeddingJobDiagnostic {
+            job_id: self.job_id,
+            entity_id: MemoryId::new(self.entity_id),
+            model_id: self.model_id,
+            dim,
+            state: embedding_job_state(&self.status, self.claim_age_seconds, self.last_error)?,
+        })
+    }
+}
+
+pub(crate) fn embedding_job_state(
+    status: &str,
+    claim_age_seconds: Option<i64>,
+    last_error: Option<String>,
+) -> Result<EmbeddingJobState, StorageError> {
+    match status {
+        "pending" => Ok(EmbeddingJobState::Pending),
+        "processing" => {
+            let seconds = claim_age_seconds.ok_or_else(|| {
+                StorageError::Internal("processing embedding job has no claim age".into())
+            })?;
+            Ok(EmbeddingJobState::Processing {
+                claim_age: time::Duration::seconds(seconds.max(0)),
+            })
+        }
+        "failed" => Ok(EmbeddingJobState::Failed { last_error }),
+        "failed_permanent" => Ok(EmbeddingJobState::FailedPermanent { last_error }),
+        other => Err(StorageError::Internal(format!(
+            "unknown embedding job status {other}"
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_state_tests {
+    use super::embedding_job_state;
+    use proxima_core::EmbeddingJobState;
+    use proxima_core::StorageError;
+
+    #[test]
+    fn an_unknown_status_is_refused() {
+        let err = embedding_job_state("bogus", None, None).expect_err("unknown status");
+        assert!(matches!(err, StorageError::Internal(message) if message.contains("bogus")));
+    }
+
+    #[test]
+    fn a_processing_job_without_a_claim_age_is_refused() {
+        let err = embedding_job_state("processing", None, None).expect_err("no age");
+        assert!(matches!(err, StorageError::Internal(message) if message.contains("claim age")));
+    }
+
+    #[test]
+    fn a_negative_claim_age_saturates_at_zero() {
+        let state = embedding_job_state("processing", Some(-3), None).expect("age");
+        assert_eq!(
+            state,
+            EmbeddingJobState::Processing {
+                claim_age: time::Duration::ZERO
+            }
+        );
+    }
+
+    #[test]
+    fn pending_and_failed_carry_no_claim_age() {
+        assert_eq!(
+            embedding_job_state("pending", Some(9), None).expect("pending"),
+            EmbeddingJobState::Pending
+        );
+        assert_eq!(
+            embedding_job_state("failed", None, Some("provider refused".into())).expect("failed"),
+            EmbeddingJobState::Failed {
+                last_error: Some("provider refused".into())
+            }
+        );
+        assert_eq!(
+            embedding_job_state("failed_permanent", None, None).expect("permanent"),
+            EmbeddingJobState::FailedPermanent { last_error: None }
+        );
+    }
 }
 
 /// Enqueue `entity_id`'s durable embedding jobs, one per space, in the

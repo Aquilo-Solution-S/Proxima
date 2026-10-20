@@ -154,6 +154,13 @@ facade_names! {
         both_tiers: [FactIngestOutcome, QueryRequest, QueryResponse, UnitOfWork],
     }
 
+    // A receipt lookup on the caller's transaction, and one row per embedding
+    // job of the named memories. Coverage counters are a different read.
+    caller_transaction_reads {
+        host_only: [],
+        both_tiers: [EmbeddingJobDiagnostic, EmbeddingJobState, IngestReceipt, MAX_EMBEDDING_DIAGNOSTIC_UNITS, ingest_receipt],
+    }
+
     // Needed by `StoragePortsBuilder`'s setters, `Engine::with_storage_ports`, the `*Port` traits
     // behind the handles.
     storage_ports {

@@ -110,7 +110,7 @@ pub use tool::*;
 
 pub use verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
-    FactIngestOutcome, FactReceiptDraft, FactWriteCommand, OCCURRED_AT_FUTURE_BOUND,
+    FactIngestOutcome, FactReceiptDraft, FactWriteCommand, IngestReceipt, OCCURRED_AT_FUTURE_BOUND,
 };
 pub use verbs::goal_write::{
     GoalAssignmentTarget, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite, IdempotencyKey,
@@ -380,15 +380,16 @@ macro_rules! proxima_flavor {
 pub use storage_ports::{
     CitationPort, DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand,
     DelegationId, DelegationIssued, DelegationRevocation, EMBEDDING_RECONCILE_DEFAULT_LIMIT,
-    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobPort, EmbeddingJobStatusCounts,
-    EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,
-    EmbeddingPurgeOutcome, EmbeddingRecallCanary, EmbeddingReconcileOptions,
-    EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts,
-    EmbeddingSpaceCoverage, EmbeddingSpaceRole, EmbeddingTextPort, EmbeddingWriteOutcome,
-    EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort,
+    EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingJobDiagnostic, EmbeddingJobPort,
+    EmbeddingJobState, EmbeddingJobStatusCounts, EmbeddingMaintenancePort, EmbeddingOrphanCounts,
+    EmbeddingOrphanSweepOutcome, EmbeddingPurgeOutcome, EmbeddingRecallCanary,
+    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
+    EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole, EmbeddingTextPort,
+    EmbeddingWriteOutcome, EmbeddingWritePort, FactIngestPort, GoalReadPort, GoalWritePort,
     HostStateParticipantDescriptor, HostStateParticipantId, HostStateWriteOrigin,
-    HostStateWritePermit, InboundPinQuery, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
-    OperatorMaintenanceProof, OwnerAccessReadPort, OwnerDropProofPort, OwnerEraseAuthorityPort,
-    OwnerInversePort, OwnerMembershipAdminPort, OwnerTransferPort, SourceCursorPort,
-    StateSurfaceName, StoragePorts,
+    HostStateWritePermit, InboundPinQuery, MAX_EMBEDDING_DIAGNOSTIC_UNITS, MemoryAuthoringPort,
+    MemoryInspectPort, MemoryReadPort, OperatorMaintenanceProof, OwnerAccessReadPort,
+    OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort, OwnerMembershipAdminPort,
+    OwnerTransferPort, SourceCursorPort, StateSurfaceName, StoragePorts,
+    check_diagnostic_unit_count,
 };

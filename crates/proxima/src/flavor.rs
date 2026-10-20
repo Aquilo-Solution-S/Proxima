@@ -85,7 +85,7 @@ pub use proxima_core::storage_ports::{SIDECAR_SESSION_READ_MAX_ROWS, SidecarSess
 /// `CitationSpec` (opaque hash) or take `proxima-core`.
 pub use proxima_core::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, CitationSpec, FactIngestOutcome,
-    FactWriteCommand, InlineCitedObjectDraft,
+    FactWriteCommand, IngestReceipt, InlineCitedObjectDraft,
 };
 pub use proxima_core::verbs::goal_write::{
     ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,
@@ -167,6 +167,9 @@ pub use proxima_core::{
     Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, PayloadReference,
     ReferenceBinding,
 };
+/// One embedding job of one memory, including claim age while it is processing.
+/// [`Engine::embedding_coverage`](proxima_core::Engine::embedding_coverage) is the counter read.
+pub use proxima_core::{EmbeddingJobDiagnostic, EmbeddingJobState, MAX_EMBEDDING_DIAGNOSTIC_UNITS};
 /// Shared argument rules for search and paged reads, so a flavor does not
 /// have to invent its own — and so the in-tree tools cannot drift apart.
 ///
@@ -209,6 +212,8 @@ pub use proxima_core::{ScopeDecl, ScopeKind, ScopeRef};
 pub use proxima_storage_pg::access::owner_columns::{
     lock_scope_fence_exclusive_tx, lock_scope_fence_shared_tx,
 };
+/// Read one Fact receipt on the caller's transaction. See [`ingest_receipt`].
+pub use proxima_storage_pg::ingest_receipt;
 pub use proxima_storage_pg::pg_sidecar;
 /// Generate a projection migration and its inverses from the flavor contract.
 /// The generator returns [`ProjectionArtifacts`], whose fields are [`Artifact`]s.

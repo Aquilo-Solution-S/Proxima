@@ -107,6 +107,7 @@ pub use sidecars::{
     register_core_pg_sidecars,
 };
 pub use tuning::{HnswIterativeScan, PgTuning};
+pub use verbs::ingest_receipt::ingest_receipt;
 
 /// Ledger namespace boundary between sequential core and dated flavor versions.
 pub const CORE_MIGRATION_VERSION_CEILING: i64 = 9999;

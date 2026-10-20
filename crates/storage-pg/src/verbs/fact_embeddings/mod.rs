@@ -21,8 +21,8 @@ pub(crate) use jobs::enqueue_embedding_jobs_in_tx;
 use jobs::release_embedding_jobs;
 pub(crate) use jobs::{
     claim_pending_embedding_jobs, complete_embedding_job, count_embedding_job_status,
-    enqueue_missing_embedding_jobs, fail_embedding_job, fail_embedding_job_permanently,
-    list_facts_missing_embedding, reclaim_stale_embedding_jobs,
+    embedding_job_diagnostics, enqueue_missing_embedding_jobs, fail_embedding_job,
+    fail_embedding_job_permanently, list_facts_missing_embedding, reclaim_stale_embedding_jobs,
     release_embedding_jobs_on_connection, renew_embedding_jobs,
 };
 pub(crate) use ops::{embedding_ann_observability, sweep_orphan_embedding_rows};

@@ -52,11 +52,13 @@ pub use delegated_authority::{
 };
 pub use embeddings::{
     EMBEDDING_RECONCILE_DEFAULT_LIMIT, EmbeddingAnnObservability, EmbeddingJobBacklog,
-    EmbeddingJobPort, EmbeddingJobStatusCounts, EmbeddingMaintenancePort, EmbeddingOrphanCounts,
-    EmbeddingOrphanSweepOutcome, EmbeddingPurgeOutcome, EmbeddingRecallCanary,
-    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
-    EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole, EmbeddingTextPort,
-    EmbeddingWriteOutcome, EmbeddingWritePort, EmbeddingWriteProof,
+    EmbeddingJobDiagnostic, EmbeddingJobPort, EmbeddingJobState, EmbeddingJobStatusCounts,
+    EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,
+    EmbeddingPurgeOutcome, EmbeddingRecallCanary, EmbeddingReconcileOptions,
+    EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts,
+    EmbeddingSpaceCoverage, EmbeddingSpaceRole, EmbeddingTextPort, EmbeddingWriteOutcome,
+    EmbeddingWritePort, EmbeddingWriteProof, MAX_EMBEDDING_DIAGNOSTIC_UNITS,
+    check_diagnostic_unit_count,
 };
 pub use fact::FactIngestPort;
 pub use goals::{GoalReadPort, GoalWritePort};

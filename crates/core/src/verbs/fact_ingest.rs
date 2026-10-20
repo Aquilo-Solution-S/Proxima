@@ -868,6 +868,21 @@ impl FactWriteCommand {
     }
 }
 
+/// A Fact receipt read by ingest identity.
+///
+/// This is the row `(owner, source_id, ingest_key)` already names. It is
+/// not a [`FactIngestOutcome`]: nothing is admitted, and a key with no
+/// visible admission is absence rather than a replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestReceipt {
+    /// Admission `t`.
+    pub memory_id: MemoryId,
+    /// Series handle.
+    pub handle: Uuid,
+    /// Schema of that admission.
+    pub schema_id: SchemaId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FactIngestOutcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]

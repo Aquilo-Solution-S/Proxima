@@ -145,7 +145,8 @@ pub use proxima_core::storage_ports::{
     StateSurfaceName, VerifiedCitedBlob,
 };
 pub use proxima_core::verbs::fact_ingest::{
-    CitationSpec, FactIngestOutcome, FactReceiptDraft, FactWriteCommand, OCCURRED_AT_FUTURE_BOUND,
+    CitationSpec, FactIngestOutcome, FactReceiptDraft, FactWriteCommand, IngestReceipt,
+    OCCURRED_AT_FUTURE_BOUND,
 };
 pub use proxima_core::verbs::goal_write::{
     ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,
@@ -488,13 +489,14 @@ pub use proxima_core::{
 /// `try_compose` and `with_mcp_listener`. Without them a host can call each verb and cannot
 /// write its argument or result in a signature.
 pub use proxima_core::{
-    EmbeddingDrainOutcome, EmbeddingPurgeOutcome, EmbeddingReconcileOptions,
-    EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts,
-    EmbeddingSpaceCoverage, EmbeddingSpaceRole, EngineMcpListener, FactCitationReadRequest,
-    FactsCitingObjectReadRequest, GetGraphReadRequest, GetGraphReadResponse, GroupMemberPage,
-    InboundPinQuery, MemoryCounts, MemoryGraphPayloadRow, MemorySketch, PinNode,
-    RunningMcpListener, StoragePorts, UploadCompleted, UploadCompletionExpectation,
-    query::FactCitationPage, storage_ports::StoragePortsBuilder,
+    EmbeddingDrainOutcome, EmbeddingJobDiagnostic, EmbeddingJobState, EmbeddingPurgeOutcome,
+    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
+    EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole, EngineMcpListener,
+    FactCitationReadRequest, FactsCitingObjectReadRequest, GetGraphReadRequest,
+    GetGraphReadResponse, GroupMemberPage, InboundPinQuery, MAX_EMBEDDING_DIAGNOSTIC_UNITS,
+    MemoryCounts, MemoryGraphPayloadRow, MemorySketch, PinNode, RunningMcpListener, StoragePorts,
+    UploadCompleted, UploadCompletionExpectation, query::FactCitationPage,
+    storage_ports::StoragePortsBuilder,
 };
 /// What [`AuthzContext`] reports about its caller: the identity and invoking
 /// tool [`AuthzContext::identity_for_revalidation`] and
@@ -596,6 +598,12 @@ pub use proxima_storage_pg::definitions::{
     current_matches as core_definitions_match,
     current_matches_with_policy as core_definitions_match_with_policy,
 };
+/// Read one Fact receipt on a transaction the caller already holds.
+///
+/// Host name for [`crate::flavor::ingest_receipt`]. The Flavor SDK exports
+/// the same function: a flavor that holds a shared lock in its transaction
+/// calls it there, under that transaction's owner scope.
+pub use proxima_storage_pg::ingest_receipt;
 /// Generate a projection migration and its inverses from the flavor contract.
 /// Also available through the Flavor SDK for migration authors.
 pub use proxima_storage_pg::projection::{Artifact, ProjectionArtifacts, projection_artifacts};
