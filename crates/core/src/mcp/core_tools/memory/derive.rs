@@ -447,7 +447,7 @@ pub(crate) fn derivation_sidecar(
     }
 }
 
-async fn resolve_supersedes(
+pub(crate) async fn resolve_supersedes(
     ctx: &McpToolCtx,
     kind: DerivedKind,
     idempotency_key: Option<&str>,

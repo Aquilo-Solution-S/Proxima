@@ -30,7 +30,7 @@ const OUTPUT_SCHEMA_URL: &str = "https://proxima.test/core-fact-output.json";
 /// when proxima-mcp stopped linking a flavor (#473); 41,175 when restore left
 /// `core_forget` for its own `core_restore`, after trimming both tools' prose;
 /// 41,267 when an unanswered store became `{store, why}` (#523).
-const TOOLS_LIST_BUDGET: usize = 41_300;
+const TOOLS_LIST_BUDGET: usize = 41_400;
 
 #[test]
 fn an_explicit_object_root_constrains_every_union_branch() {

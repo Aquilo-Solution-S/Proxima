@@ -84,9 +84,14 @@ pub struct EpisodeDeriveItem {
     pub model_id: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
+        description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`. Use `supersedes` for a new version."
     )]
     pub idempotency_key: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional memory handle of a live Abstraction to revise. Requires a new `idempotency_key`."
+    )]
+    pub supersedes: Option<String>,
     #[serde(default)]
     #[schemars(
         description = "Lexical language: a PostgreSQL text-search config (e.g. 'german'), an ISO 639 / BCP-47 code (e.g. 'de'), or 'auto'. Omit for the database default."
@@ -419,7 +424,20 @@ impl EpisodeWrite<'_> {
         .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
         let kind = DerivedKind::Abstraction;
         let origins = sources.iter().map(|(id, _class)| *id).collect::<Vec<_>>();
-        let request = derive::derive_request_key(kind, &authored, &origins, &[], None)?;
+        let supersedes = derive::resolve_supersedes(
+            ctx,
+            kind,
+            authored.idempotency_key.as_deref(),
+            item.supersedes.as_deref(),
+        )
+        .await?;
+        let request = derive::derive_request_key(
+            kind,
+            &authored,
+            &origins,
+            &[],
+            supersedes.map(MemoryId::into_inner),
+        )?;
         let derive::DerivationPlan {
             memory_id,
             sidecar,
@@ -430,11 +448,15 @@ impl EpisodeWrite<'_> {
             core_derive_operator_id(kind),
             core_derive_input_contract_id(kind),
         );
+        let target = supersedes.map_or(
+            crate::MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
+            crate::MemoryTarget::Revision,
+        );
         let outcome = self
             .uow
             .derive_memory(
                 DerivedMemory::abstraction(
-                    crate::MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
+                    target,
                     owner,
                     authored.body.clone(),
                     sidecar,

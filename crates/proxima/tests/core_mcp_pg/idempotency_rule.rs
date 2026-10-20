@@ -299,6 +299,47 @@ async fn idempotency_rule_table() -> TestResult {
         .expect_err("changed episode derive");
     assert!(is_idempotency_conflict(&err), "{err}");
 
+    // episode derive: new key + supersedes → new version; an older,
+    // non-current version may be named again
+    let ep_revise = |key: Option<&str>, body: &str| {
+        let mut derive = serde_json::json!({
+            "title": "ep abs",
+            "body": body,
+            "source_handles": [ep_src],
+            "model_id": "test-model",
+            "supersedes": ep_dh,
+        });
+        if let Some(key) = key {
+            derive["idempotency_key"] = serde_json::json!(key);
+        }
+        serde_json::json!({ "derive": derive })
+    };
+    let ep_d2 = call(
+        "core_episode_commit",
+        ep_revise(Some("ep-abs-k2"), "ep abs v2"),
+    )
+    .await?;
+    let ep_dh2 = ep_d2["derived"].as_str().ok_or("ep v2")?.to_owned();
+    assert_ne!(ep_dh2, ep_dh);
+    let ep_d3 = call(
+        "core_episode_commit",
+        ep_revise(Some("ep-abs-k3"), "ep abs v3"),
+    )
+    .await?;
+    assert_ne!(ep_d3["derived"].as_str().ok_or("ep v3")?, ep_dh2);
+    // supersedes without a key, and a repeated key, are refused
+    let err = call("core_episode_commit", ep_revise(None, "ep abs v4"))
+        .await
+        .expect_err("episode supersedes without key");
+    assert!(err.to_string().contains("new idempotency_key"), "{err}");
+    let err = call(
+        "core_episode_commit",
+        ep_revise(Some("ep-abs-k1"), "ep abs v4"),
+    )
+    .await
+    .expect_err("episode supersedes with repeated key");
+    assert!(is_idempotency_conflict(&err), "{err}");
+
     // --- Acceptance 4: remember ↔ episode note share key space ---
     let cross_key = "cross-surface-k";
     let rem = call(
