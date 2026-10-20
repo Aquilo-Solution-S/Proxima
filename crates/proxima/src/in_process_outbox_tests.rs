@@ -12,7 +12,10 @@ use std::time::Duration;
 use futures::FutureExt;
 use proxima_core::publication::intake::{DurableIntake, Intake, IntakeError, ReceivedEvent};
 use proxima_core::publication::{PublicationConfig, PublicationSource};
-use proxima_core::storage_ports::publication::ConsumerName;
+use proxima_core::storage_ports::publication::{
+    AckOutcome, ClaimToken, ClaimedPublication, ConsumerName, PublicationOutboxPort, PublisherId,
+    ReleaseOutcome,
+};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -93,6 +96,60 @@ impl AfterAccept for CrashAfterFirstAccept {
         } else {
             ControlFlow::Continue(())
         }
+    }
+}
+
+/// The real outbox, noting the size of every batch mark it is given.
+struct CountingMarks {
+    inner: Arc<dyn PublicationOutboxPort>,
+    batches: Mutex<Vec<usize>>,
+}
+
+#[async_trait::async_trait]
+impl PublicationOutboxPort for CountingMarks {
+    async fn claim(
+        &self,
+        consumer: &ConsumerName,
+        publisher: &PublisherId,
+        limit: std::num::NonZeroU32,
+        lease: Duration,
+    ) -> Result<Vec<ClaimedPublication>, proxima_core::StorageError> {
+        self.inner.claim(consumer, publisher, limit, lease).await
+    }
+
+    async fn mark_published_batch(
+        &self,
+        consumer: &ConsumerName,
+        claims: &[(Uuid, ClaimToken)],
+    ) -> Result<Vec<AckOutcome>, proxima_core::StorageError> {
+        self.batches
+            .lock()
+            .expect("batches lock")
+            .push(claims.len());
+        self.inner.mark_published_batch(consumer, claims).await
+    }
+
+    async fn renew_claim(
+        &self,
+        consumer: &ConsumerName,
+        id: Uuid,
+        claim: ClaimToken,
+        lease: Duration,
+    ) -> Result<bool, proxima_core::StorageError> {
+        self.inner.renew_claim(consumer, id, claim, lease).await
+    }
+
+    async fn release(
+        &self,
+        consumer: &ConsumerName,
+        id: Uuid,
+        claim: ClaimToken,
+    ) -> Result<ReleaseOutcome, proxima_core::StorageError> {
+        self.inner.release(consumer, id, claim).await
+    }
+
+    async fn pending_count(&self) -> Result<u64, proxima_core::StorageError> {
+        self.inner.pending_count().await
     }
 }
 
@@ -926,6 +983,48 @@ async fn goal_writes_wake_the_drains() {
         tokio::time::timeout(Duration::from_millis(100), writes.changed())
             .await
             .expect("a goal write committed and signalled");
+    })
+    .catch_unwind()
+    .await;
+    world.finish(outcome).await;
+}
+
+#[tokio::test]
+async fn a_batch_of_records_is_marked_in_one_transaction() {
+    let intake = Arc::new(TestIntake::default());
+    let Some(world) = World::new(None).await else {
+        return;
+    };
+    let outcome = AssertUnwindSafe(async {
+        let mut records = Vec::new();
+        for note in ["one", "two", "three"] {
+            records.push(capture(&world.built, world.owner, note).await);
+        }
+        let outbox = Arc::new(CountingMarks {
+            inner: world.built.outbox_for_tests(),
+            batches: Mutex::new(Vec::new()),
+        });
+        let drain = Drain::new(
+            outbox.clone(),
+            ConsumerName::default(),
+            intake.clone(),
+            Settings::new(),
+            Arc::new(Proceed),
+        );
+        let cancel = CancellationToken::new();
+        let (_gate, task) = spawn(vec![drain], cancel.clone(), |_| async {});
+        for t in records {
+            wait_for_outbox(&world.pool, t, "published").await;
+        }
+        cancel.cancel();
+        task.await.expect("drain joins");
+
+        assert_eq!(intake.kept(), 3);
+        assert_eq!(
+            *outbox.batches.lock().expect("batches lock"),
+            [3],
+            "one claim, one mark"
+        );
     })
     .catch_unwind()
     .await;

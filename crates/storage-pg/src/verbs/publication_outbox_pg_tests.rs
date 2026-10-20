@@ -14,7 +14,7 @@ use proxima_core::publication::{
     SealedPublication, SubjectPosition,
 };
 use proxima_core::storage_ports::publication::{
-    AckOutcome, ClaimedPublication, ConsumerName, PublicationConsumerPort,
+    AckOutcome, ClaimToken, ClaimedPublication, ConsumerName, PublicationConsumerPort,
     PublicationOriginEligibility, PublicationOriginEligibilityPort, PublicationOutboxPort,
     PublicationRetentionPort, PublisherId, ReleaseOutcome, RetireOutcome,
 };
@@ -855,7 +855,7 @@ async fn a_claim_measures_the_backlog_when_the_estimate_is_old() {
         .await
         .expect("estimate reads")
     };
-    assert_eq!(estimate().await.1, false, "nothing has measured it yet");
+    assert!(!estimate().await.1, "nothing has measured it yet");
     claim().await.expect("claim");
     assert_eq!(estimate().await, (3, true));
     // Inside the refresh window a claim does not count again.
@@ -2274,6 +2274,66 @@ fn ids(claimed: &[ClaimedPublication]) -> Vec<Uuid> {
     let mut ids: Vec<Uuid> = claimed.iter().map(|record| record.id).collect();
     ids.sort_unstable();
     ids
+}
+
+/// One batch mark decides every claim as a mark of that claim alone would:
+/// a stale claim does not hold back the others, and a lane already published
+/// is reported as such.
+#[tokio::test]
+async fn a_batch_mark_decides_each_claim_on_its_own() {
+    let (pg, db) = fresh_pg("pub_batch_mark").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    let default = ConsumerName::default();
+    for note in ["first", "second", "third"] {
+        ingest_listenable(&pg, &owner, &probe(note), None)
+            .await
+            .expect("capture");
+    }
+    let claimed = claim_for(&pg, &default).await;
+    assert_eq!(claimed.len(), 3);
+    let forged = ClaimToken::new(Uuid::now_v7());
+
+    let outcomes = pg
+        .mark_published_batch(
+            &default,
+            &[
+                (claimed[0].id, claimed[0].claim),
+                (claimed[1].id, forged),
+                (claimed[2].id, claimed[2].claim),
+            ],
+        )
+        .await
+        .expect("batch mark");
+    assert_eq!(
+        outcomes,
+        [
+            AckOutcome::Published,
+            AckOutcome::StaleClaim,
+            AckOutcome::Published
+        ]
+    );
+    let settled = states(&pool).await;
+    for record in [&claimed[0], &claimed[2]] {
+        assert!(settled.contains(&(record.id, "published".to_owned())));
+    }
+    assert!(settled.contains(&(claimed[1].id, "pending".to_owned())));
+
+    assert_eq!(
+        pg.mark_published_batch(&default, &[(claimed[0].id, claimed[0].claim)])
+            .await
+            .expect("batch mark"),
+        [AckOutcome::AlreadyPublished]
+    );
+    assert!(
+        pg.mark_published_batch(&default, &[])
+            .await
+            .expect("an empty batch")
+            .is_empty()
+    );
+    drop(pg);
+    let _ = drop_db(&db).await;
 }
 
 /// Two consumers each receive every record, on lanes of their own: a

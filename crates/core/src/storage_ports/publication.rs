@@ -346,7 +346,27 @@ pub trait PublicationOutboxPort: Send + Sync {
         consumer: &ConsumerName,
         id: Uuid,
         claim: ClaimToken,
-    ) -> Result<AckOutcome, StorageError>;
+    ) -> Result<AckOutcome, StorageError> {
+        let outcomes = self.mark_published_batch(consumer, &[(id, claim)]).await?;
+        outcomes.into_iter().next().ok_or_else(|| {
+            StorageError::Internal("a batch mark of one claim returned no outcome".to_owned())
+        })
+    }
+
+    /// [`mark_published`](Self::mark_published) for several claims in one
+    /// transaction: one outcome per claim, in the order given, each decided
+    /// exactly as a mark of that claim alone would be. A claim that is stale
+    /// does not hold back the others.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the acknowledgement statements; none of
+    /// the claims is marked then.
+    async fn mark_published_batch(
+        &self,
+        consumer: &ConsumerName,
+        claims: &[(Uuid, ClaimToken)],
+    ) -> Result<Vec<AckOutcome>, StorageError>;
 
     /// Re-check `consumer`'s claim on a record immediately before delivery,
     /// and extend its lease by `lease` when it still holds.

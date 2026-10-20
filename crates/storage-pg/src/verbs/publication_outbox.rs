@@ -440,27 +440,32 @@ impl PublicationOutboxPort for PgStorage {
         crate::owner_scope::finish_transaction(tx, result).await
     }
 
-    async fn mark_published(
+    async fn mark_published_batch(
         &self,
         consumer: &ConsumerName,
-        id: Uuid,
-        claim: ClaimToken,
-    ) -> Result<AckOutcome, StorageError> {
+        claims: &[(Uuid, ClaimToken)],
+    ) -> Result<Vec<AckOutcome>, StorageError> {
+        if claims.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<Uuid> = claims.iter().map(|(id, _)| *id).collect();
+        let tokens: Vec<Uuid> = claims.iter().map(|(_, claim)| claim.into_inner()).collect();
         let mut tx = self.platform_transaction().await?;
         // Re-check deliverability in the marking transaction, under the lane
-        // lock: the claim and an unexpired lease are still ours, and the
-        // record is still what CLAIM_SQL would hand out (origin present, not
-        // erased). A record erased or taken over after the pre-accept renew is
-        // not recorded as delivered. The consumer may already hold it; that
+        // locks (taken in record order, so two batches cannot deadlock): the
+        // claim and an unexpired lease are still ours, and the record is
+        // still what CLAIM_SQL would hand out (origin present, not erased). A
+        // record erased or taken over after the pre-accept renew is not
+        // recorded as delivered. The consumer may already hold it; that
         // window is at-least-once delivery and no mark can close it.
-        let deliverable: Option<Uuid> = sqlx::query_scalar(
+        let deliverable: Vec<Uuid> = sqlx::query_scalar(
             "SELECT lane.t
                FROM proxima_core.publication_delivery lane
+               JOIN unnest($1::uuid[], $3::uuid[]) AS asked(t, claim_token)
+                 ON asked.t = lane.t AND asked.claim_token = lane.claim_token
                JOIN proxima_core.publication_outbox record ON record.t = lane.t
-              WHERE lane.t = $1
-                AND lane.consumer = $2
+              WHERE lane.consumer = $2
                 AND lane.state = 'claimed'
-                AND lane.claim_token = $3
                 AND lane.lease_expires_at > now()
                 AND EXISTS (
                     SELECT 1 FROM proxima_core.publication_origin origin
@@ -473,49 +478,63 @@ impl PublicationOutboxPort for PgStorage {
                     SELECT 1 FROM proxima_core.erased_pin_target erased
                      WHERE erased.t = record.t
                 )
-              FOR UPDATE OF lane",
+              ORDER BY lane.t
+                FOR UPDATE OF lane",
         )
-        .bind(id)
+        .bind(&ids)
         .bind(consumer.as_str())
-        .bind(claim.into_inner())
-        .fetch_optional(tx.as_mut())
+        .bind(&tokens)
+        .fetch_all(tx.as_mut())
         .await
         .map_err(map_err)?;
-        if deliverable.is_none() {
-            let outcome = match current_lane_state(tx.as_mut(), id, consumer).await? {
-                Some(state) if state == "published" => AckOutcome::AlreadyPublished,
-                _ => AckOutcome::StaleClaim,
-            };
-            return crate::owner_scope::finish_transaction(tx, Ok(outcome)).await;
-        }
-        let result = sqlx::query(
-            "UPDATE proxima_core.publication_delivery
+        let published: Vec<Uuid> = sqlx::query_scalar(
+            "UPDATE proxima_core.publication_delivery lane
                 SET state = 'published',
                     published_at = now(),
                     claim_token = NULL,
                     claimed_by = NULL,
                     lease_expires_at = NULL
-              WHERE t = $1
-                AND consumer = $2
-                AND state = 'claimed'
-                AND claim_token = $3",
+               FROM unnest($1::uuid[], $3::uuid[]) AS asked(t, claim_token)
+              WHERE lane.t = asked.t
+                AND lane.claim_token = asked.claim_token
+                AND lane.t = ANY($4)
+                AND lane.consumer = $2
+                AND lane.state = 'claimed'
+          RETURNING lane.t",
         )
-        .bind(id)
+        .bind(&ids)
         .bind(consumer.as_str())
-        .bind(claim.into_inner())
-        .execute(tx.as_mut())
+        .bind(&tokens)
+        .bind(&deliverable)
+        .fetch_all(tx.as_mut())
         .await
         .map_err(map_err)?;
-        let outcome = if result.rows_affected() > 0 {
-            settle_records(&mut tx, &[id]).await?;
-            AckOutcome::Published
-        } else {
-            match current_lane_state(tx.as_mut(), id, consumer).await? {
-                Some(state) if state == "published" => AckOutcome::AlreadyPublished,
-                _ => AckOutcome::StaleClaim,
-            }
-        };
-        crate::owner_scope::finish_transaction(tx, Ok(outcome)).await
+        if !published.is_empty() {
+            settle_records(&mut tx, &published).await?;
+        }
+        // A claim that did not mark is stale unless its lane is published.
+        let already: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT t FROM proxima_core.publication_delivery
+              WHERE t = ANY($1) AND consumer = $2 AND state = 'published'",
+        )
+        .bind(&ids)
+        .bind(consumer.as_str())
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+        let outcomes = ids
+            .iter()
+            .map(|id| {
+                if published.contains(id) {
+                    AckOutcome::Published
+                } else if already.contains(id) {
+                    AckOutcome::AlreadyPublished
+                } else {
+                    AckOutcome::StaleClaim
+                }
+            })
+            .collect();
+        crate::owner_scope::finish_transaction(tx, Ok(outcomes)).await
     }
 
     async fn renew_claim(

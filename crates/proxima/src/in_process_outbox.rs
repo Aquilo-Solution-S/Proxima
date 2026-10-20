@@ -3,8 +3,9 @@
 //! §Delivery, §Consumers).
 //!
 //! One loop per consumer claims a batch of that consumer's lanes, calls
-//! [`DurableIntake::accept`] once per record, and then marks the lane
-//! delivered or hands its claim back. Drains share nothing but the record: a
+//! [`DurableIntake::accept`] once per record, marks the lanes it took
+//! delivered in one transaction per batch, and hands the claim of a record it
+//! did not take back. Drains share nothing but the record: a
 //! consumer that fails or lags holds only its own lanes, and a record is
 //! published once every consumer's lane is.
 //!
@@ -12,8 +13,9 @@
 //!   decision the intake made durable, so the record is marked published. An
 //!   [`IntakeError`](proxima_core::publication::intake::IntakeError), an
 //!   `accept` that outlives its timeout, or captured bytes that do not parse
-//!   release the claim. The only way a lane leaves `pending`/`claimed` is
-//!   `PublicationOutboxPort::mark_published`, fenced on the claim token.
+//!   release the claim. Marks wait for the end of the batch, or half the lease,
+//!   whichever comes first. The only way a lane leaves `pending`/`claimed` is
+//!   `PublicationOutboxPort::mark_published_batch`, fenced on the claim tokens.
 //! - **Per-record isolation.** A record that fails is released and the pass
 //!   carries on with the rest of the batch. A pass reports a failure only when
 //!   nothing at all got through.
@@ -130,14 +132,38 @@ enum Failure {
 
 /// What became of one record that did not fail.
 enum Flow {
-    /// Marked published, by this claim or an earlier one.
-    Delivered,
+    /// The intake made an outcome durable; the mark is still owed.
+    Accepted,
     /// The claim had moved on: another drain owns the record now.
     Stale,
     /// The hook asked to behave as though the process died here.
     Abort,
     /// Shutdown or a quiesce: hand back everything this pass still holds.
     HandBack,
+}
+
+/// Records the intake took in this pass whose mark is still owed, and when
+/// the oldest was taken.
+#[derive(Default)]
+struct Accepted<'a> {
+    records: Vec<&'a ClaimedPublication>,
+    since: Option<tokio::time::Instant>,
+}
+
+impl<'a> Accepted<'a> {
+    fn push(&mut self, record: &'a ClaimedPublication) {
+        self.since.get_or_insert_with(tokio::time::Instant::now);
+        self.records.push(record);
+    }
+
+    fn age(&self) -> Duration {
+        self.since.map_or(Duration::ZERO, |since| since.elapsed())
+    }
+
+    fn take(&mut self) -> Vec<&'a ClaimedPublication> {
+        self.since = None;
+        std::mem::take(&mut self.records)
+    }
 }
 
 /// The claim → accept → mark loop over one consumer's lanes and its intake.
@@ -257,38 +283,94 @@ impl Drain {
         let count = claimed.len();
         let mut delivered = 0usize;
         let mut first_failure: Option<Failure> = None;
-        let mut records = claimed.into_iter();
+        let mut accepted = Accepted::default();
+        let mut records = claimed.iter();
         while let Some(record) = records.next() {
             let flow = if gate.is_closing() {
                 Ok(Flow::HandBack)
             } else {
-                self.deliver(&record, cancel).await
+                self.deliver(record, cancel).await
             };
             match flow {
-                Ok(Flow::Delivered) => delivered += 1,
+                Ok(Flow::Accepted) => {
+                    accepted.push(record);
+                    // The lease the renew gave this claim runs out whatever
+                    // the rest of the batch costs, so marks do not wait past
+                    // half of it.
+                    if accepted.age() >= self.settings.lease / 2 {
+                        self.mark(&mut accepted, &mut delivered, &mut first_failure)
+                            .await;
+                    }
+                }
                 Ok(Flow::Stale) => {}
+                // As though the process died here: what is accepted and not
+                // yet marked stays leased, as `after_accept` promises.
                 Ok(Flow::Abort) => return Ok(count),
                 Ok(Flow::HandBack) => {
-                    // Not a failure: hand back everything this pass still
-                    // holds so the next process does not wait out a lease for
-                    // work nobody is doing.
-                    self.release(&record).await;
+                    // Not a failure: what the intake already took is marked,
+                    // and everything else this pass holds goes back so the
+                    // next process does not wait out a lease for work nobody
+                    // is doing.
+                    self.mark(&mut accepted, &mut delivered, &mut first_failure)
+                        .await;
+                    self.release(record).await;
                     for rest in records {
-                        self.release(&rest).await;
+                        self.release(rest).await;
                     }
                     return Ok(count);
                 }
                 Err(failure) => {
-                    self.release(&record).await;
+                    self.release(record).await;
                     first_failure.get_or_insert(failure);
                 }
             }
         }
+        self.mark(&mut accepted, &mut delivered, &mut first_failure)
+            .await;
         match first_failure {
             // Nothing got through at all: report it, so `run` backs off
             // rather than spinning on a dead intake.
             Some(failure) if delivered == 0 => Err(failure),
             _ => Ok(count),
+        }
+    }
+
+    /// Mark every accepted record published in one transaction and leave
+    /// `accepted` empty. A failed mark leaves the claims to expire.
+    async fn mark(
+        &self,
+        accepted: &mut Accepted<'_>,
+        delivered: &mut usize,
+        first_failure: &mut Option<Failure>,
+    ) {
+        let records = accepted.take();
+        if records.is_empty() {
+            return;
+        }
+        let claims: Vec<_> = records
+            .iter()
+            .map(|record| (record.id, record.claim))
+            .collect();
+        match self
+            .outbox
+            .mark_published_batch(&self.consumer, &claims)
+            .await
+        {
+            Ok(outcomes) => {
+                for (record, outcome) in records.iter().zip(outcomes) {
+                    match outcome {
+                        AckOutcome::Published | AckOutcome::AlreadyPublished => *delivered += 1,
+                        AckOutcome::StaleClaim => tracing::info!(
+                            consumer = %self.consumer,
+                            event_id = %record.event_id,
+                            "the mark was fenced out by a newer claim"
+                        ),
+                    }
+                }
+            }
+            Err(_) => {
+                first_failure.get_or_insert(Failure::Storage);
+            }
         }
     }
 
@@ -351,22 +433,7 @@ impl Drain {
         if self.hook.after_accept(&record.event_id).await.is_break() {
             return Ok(Flow::Abort);
         }
-        match self
-            .outbox
-            .mark_published(&self.consumer, record.id, record.claim)
-            .await
-            .map_err(|_| Failure::Storage)?
-        {
-            AckOutcome::Published | AckOutcome::AlreadyPublished => Ok(Flow::Delivered),
-            AckOutcome::StaleClaim => {
-                tracing::info!(
-                    consumer = %self.consumer,
-                    event_id = %record.event_id,
-                    "the mark was fenced out by a newer claim"
-                );
-                Ok(Flow::Stale)
-            }
-        }
+        Ok(Flow::Accepted)
     }
 
     /// Hand one claim back, best effort. A failed release is not an error:
@@ -469,12 +536,11 @@ mod tests {
             Ok(Vec::new())
         }
 
-        async fn mark_published(
+        async fn mark_published_batch(
             &self,
             _consumer: &ConsumerName,
-            _id: Uuid,
-            _claim: ClaimToken,
-        ) -> Result<AckOutcome, proxima_core::StorageError> {
+            _claims: &[(Uuid, ClaimToken)],
+        ) -> Result<Vec<AckOutcome>, proxima_core::StorageError> {
             unreachable!("nothing is claimed")
         }
 
