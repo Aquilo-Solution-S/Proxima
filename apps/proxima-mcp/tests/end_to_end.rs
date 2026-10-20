@@ -28,8 +28,9 @@ const OUTPUT_SCHEMA_URL: &str = "https://proxima.test/core-fact-output.json";
 /// char, so growth is a decision: trim prose or schema before raising it.
 /// Measured in bytes when set (#375): 71,509 before, 42,601 after; 39,048
 /// when proxima-mcp stopped linking a flavor (#473); 41,175 when restore left
-/// `core_forget` for its own `core_restore`, after trimming both tools' prose.
-const TOOLS_LIST_BUDGET: usize = 41_200;
+/// `core_forget` for its own `core_restore`, after trimming both tools' prose;
+/// 41,267 when an unanswered store became `{store, why}` (#523).
+const TOOLS_LIST_BUDGET: usize = 41_300;
 
 #[test]
 fn an_explicit_object_root_constrains_every_union_branch() {

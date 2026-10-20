@@ -608,7 +608,8 @@ async fn search_fans_out_tags_stores_and_reports_the_slow_one_unanswered() {
                 .iter()
                 .any(|hit| hit["memory"] == remote_id(1, "w1").to_string())
         );
-        assert_eq!(found["unanswered"], serde_json::json!([3]), "{found}");
+        let slow = serde_json::json!([{"store": 3, "why": "deadline has elapsed"}]);
+        assert_eq!(found["unanswered"], slow, "{found}");
         assert_eq!(found["ranking"], "rank");
 
         // An explicit selection searches only what it names.
@@ -711,7 +712,11 @@ async fn assert_remote_search_intent(
     )
     .await?;
     assert_eq!(refused["memories"], serde_json::json!([]));
-    assert_eq!(refused["unanswered"], serde_json::json!([1]));
+    let why = "store cannot honor search: tag filter unsupported";
+    assert_eq!(
+        refused["unanswered"],
+        serde_json::json!([{"store": 1, "why": why}])
+    );
     assert_eq!(fake.searches().len(), before + 1, "no weaker retry");
     Ok(())
 }

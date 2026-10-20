@@ -216,16 +216,24 @@ pub struct SearchMemoriesOutput {
     pub neighbor_edges: Vec<NeighborEdge>,
     pub next_cursor: Option<String>,
     pub has_more: bool,
-    /// Present only when other stores were searched (or should have been):
-    /// the ones that did not answer within the time bound (or failed).
-    /// Their hits are missing from this page; the rest is returned.
+    /// Present when other stores were searched: each that did not answer,
+    /// as `{store, why}`. Their hits are missing; the rest is returned.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub unanswered: Option<Vec<u16>>,
+    pub unanswered: Option<Vec<UnansweredStore>>,
     /// `true` when other stores are wired but their list did not answer
     /// (failed or timed out): the search ran on this store only, and other
     /// stores' hits are missing. Retry for a complete page. Absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inventory_unanswered: Option<bool>,
+}
+
+/// One other store that did not answer, and the port or deadline error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct UnansweredStore {
+    /// Store number.
+    pub store: u16,
+    /// The remote port's error, or the deadline error on timeout.
+    pub why: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -361,6 +369,10 @@ impl McpTool for SearchMemoriesTool {
                     &remote,
                 )
                 .await;
+                let unanswered = unanswered
+                    .into_iter()
+                    .map(|(store, why)| UnansweredStore { store, why })
+                    .collect();
                 merge_store_hits(
                     &mut output,
                     answered,
@@ -451,7 +463,7 @@ fn with_stores_property(
 fn merge_store_hits(
     output: &mut SearchMemoriesOutput,
     answered: Vec<(u16, crate::storage_ports::other_stores::RemoteSearchResult)>,
-    unanswered: Vec<u16>,
+    unanswered: Vec<UnansweredStore>,
     limit: u32,
     order: SearchOrder,
     local_number: u16,

@@ -84,7 +84,9 @@ An other-store search carries the caller's filters and requested mode through
 found no hits. The merged answer reports a fallback if any answer did.
 
 A store that cannot honor the request returns `UnsupportedSearch`; it is
-reported as unanswered, without a retry that drops filters. Recency orders the
+reported in `unanswered` as `{store, why}`, where `why` is that error,
+without a retry that drops filters. A store that does not answer in time
+carries the deadline error the same way. Recency orders the
 combined candidates newest first before the result limit. Other stores answer
 on the first page; the local page retains its own cursor.
 

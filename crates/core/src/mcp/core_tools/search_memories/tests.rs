@@ -352,8 +352,8 @@ mod other_stores {
 
     use super::super::{
         SearchMemoriesKind, SearchMemoriesMode, SearchMemoriesOutput, SearchMemoriesSupersession,
-        SearchMemoriesTool, SearchMemoryOutput, SearchRanking, caller_input_schema,
-        merge_store_hits,
+        SearchMemoriesTool, SearchMemoryOutput, SearchRanking, UnansweredStore,
+        caller_input_schema, merge_store_hits,
     };
     use crate::McpTool;
     use crate::storage_ports::other_stores::{
@@ -440,7 +440,10 @@ mod other_stores {
                     },
                 ),
             ],
-            vec![3],
+            vec![UnansweredStore {
+                store: 3,
+                why: "deadline has elapsed".into(),
+            }],
             4,
             SearchOrder::Relevance,
             0,
@@ -454,7 +457,13 @@ mod other_stores {
         assert_eq!(order, expected);
         assert!(output.memories.iter().all(|hit| hit.store.is_some()));
         assert_eq!(output.ranking, SearchRanking::Rank);
-        assert_eq!(output.unanswered, Some(vec![3]));
+        assert_eq!(
+            output.unanswered,
+            Some(vec![UnansweredStore {
+                store: 3,
+                why: "deadline has elapsed".into(),
+            }])
+        );
     }
 
     #[test]
@@ -701,7 +710,13 @@ mod other_stores {
         let result = SearchMemoriesTool::call(remote_ctx(&port), request)
             .await
             .unwrap();
-        assert_eq!(result.unanswered, Some(vec![1]));
+        assert_eq!(
+            result.unanswered,
+            Some(vec![UnansweredStore {
+                store: 1,
+                why: "store cannot honor search: all-tag matching".into(),
+            }])
+        );
         assert!(result.memories.is_empty());
         let requests = port.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);

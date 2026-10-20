@@ -198,7 +198,7 @@ pub(crate) async fn search_remotes(
     service: &OtherStoresService,
     stores: &[u16],
     args: &RemoteSearch,
-) -> (Vec<(u16, RemoteSearchResult)>, Vec<u16>) {
+) -> (Vec<(u16, RemoteSearchResult)>, Vec<(u16, String)>) {
     let caller = caller(ctx);
     let calls = stores.iter().map(|store| async move {
         let result = tokio::time::timeout(
@@ -219,7 +219,8 @@ pub(crate) async fn search_remotes(
                     .truncate(usize::try_from(args.limit).unwrap_or(usize::MAX));
                 answered.push((store, result));
             }
-            Ok(Err(_)) | Err(_) => unanswered.push(store),
+            Ok(Err(error)) => unanswered.push((store, error.to_string())),
+            Err(elapsed) => unanswered.push((store, elapsed.to_string())),
         }
     }
     (answered, unanswered)
