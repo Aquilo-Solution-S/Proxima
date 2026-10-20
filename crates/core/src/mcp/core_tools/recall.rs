@@ -1,5 +1,6 @@
 //! `core_recall` — cue-driven sketch packet. This is how Self is retrieved.
 
+use crate::PinTargetKind;
 use crate::mcp::ToolEffect;
 use std::collections::BTreeMap;
 
@@ -225,9 +226,9 @@ async fn collect_cue_touch(
             &ctx.authz,
             crate::InboundPinQuery {
                 targets: subjects,
-                goal_targets: false,
+                target_kind: PinTargetKind::Memory,
                 kind: None,
-                heads_only: true,
+                supersession: SupersessionStatus::HeadsOnly,
                 after: None,
                 limit: MAX_LIMIT,
             },

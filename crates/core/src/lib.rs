@@ -391,6 +391,6 @@ pub use storage_ports::{
     HostStateWritePermit, InboundPinQuery, MAX_EMBEDDING_DIAGNOSTIC_UNITS, MemoryAuthoringPort,
     MemoryInspectPort, MemoryReadPort, OperatorMaintenanceProof, OwnerAccessReadPort,
     OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort, OwnerMembershipAdminPort,
-    OwnerTransferPort, SourceCursorPort, StateSurfaceName, StoragePorts,
+    OwnerTransferPort, PinTargetKind, SourceCursorPort, StateSurfaceName, StoragePorts,
     check_diagnostic_unit_count,
 };

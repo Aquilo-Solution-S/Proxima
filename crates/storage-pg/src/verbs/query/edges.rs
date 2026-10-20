@@ -1,5 +1,5 @@
-use proxima_core::storage_ports::InboundPinQuery;
-use proxima_core::verbs::query::QueryRequest;
+use proxima_core::storage_ports::{InboundPinQuery, PinTargetKind};
+use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
 use proxima_core::{
     Edge, EdgeKind, GoalId, MemoryId, OwnerId, PinNode, StorageError, project_window_edges,
 };
@@ -92,7 +92,7 @@ pub(crate) async fn load_inbound_pin_nodes_on_connection(
     }
     let ids: Vec<uuid::Uuid> = query.targets.iter().map(|id| id.into_inner()).collect();
     let owner_ids = owner_ids(read_owners);
-    let sql = inbound_pin_sql(query.heads_only, query.kind, query.goal_targets);
+    let sql = inbound_pin_sql(query.supersession, query.kind, query.target_kind);
     // SQL-POLICY: fixed-fragment
     let rows: Vec<PinNodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&ids)
@@ -109,30 +109,36 @@ pub(crate) async fn load_inbound_pin_nodes_on_connection(
 #[doc(hidden)]
 #[must_use]
 pub fn inbound_pin_sql_for_tests(
-    heads_only: bool,
+    supersession: SupersessionStatus,
     kind: Option<EdgeKind>,
-    goal_targets: bool,
+    target_kind: PinTargetKind,
 ) -> &'static str {
-    inbound_pin_sql(heads_only, kind, goal_targets)
+    inbound_pin_sql(supersession, kind, target_kind)
 }
 
 /// Reference pins live in `refs` for Memory targets and in `goal_refs` for
 /// Goal targets, so the target kind decides which column the overlap scan
 /// reads — one GIN index rather than a mixed array.
-fn inbound_pin_sql(heads_only: bool, kind: Option<EdgeKind>, goal_targets: bool) -> &'static str {
-    if goal_targets {
-        inbound_pin_sql_goal_targets(heads_only, kind)
-    } else {
-        inbound_pin_sql_memory_targets(heads_only, kind)
+fn inbound_pin_sql(
+    supersession: SupersessionStatus,
+    kind: Option<EdgeKind>,
+    target_kind: PinTargetKind,
+) -> &'static str {
+    match target_kind {
+        PinTargetKind::Goal => inbound_pin_sql_goal_targets(supersession, kind),
+        PinTargetKind::Memory => inbound_pin_sql_memory_targets(supersession, kind),
     }
 }
 
 /// Inbound pins onto a Memory target: reference hops come from `refs`.
 ///
 /// SQL-POLICY: fixed-fragment
-fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
-    match (heads_only, kind) {
-        (true, Some(EdgeKind::Origin)) => {
+fn inbound_pin_sql_memory_targets(
+    supersession: SupersessionStatus,
+    kind: Option<EdgeKind>,
+) -> &'static str {
+    match (supersession, kind) {
+        (SupersessionStatus::HeadsOnly, Some(EdgeKind::Origin)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
@@ -142,7 +148,7 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
                   ORDER BY m.t DESC
                   LIMIT $4"
         }
-        (true, Some(EdgeKind::Reference)) => {
+        (SupersessionStatus::HeadsOnly, Some(EdgeKind::Reference)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
@@ -152,7 +158,7 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
                   ORDER BY m.t DESC
                   LIMIT $4"
         }
-        (true, None) => {
+        (SupersessionStatus::HeadsOnly, None) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
@@ -162,7 +168,7 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
                   ORDER BY m.t DESC
                   LIMIT $4"
         }
-        (false, Some(EdgeKind::Origin)) => {
+        (SupersessionStatus::IncludeSuperseded, Some(EdgeKind::Origin)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
@@ -171,7 +177,7 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
                   ORDER BY m.t DESC
                   LIMIT $4"
         }
-        (false, Some(EdgeKind::Reference)) => {
+        (SupersessionStatus::IncludeSuperseded, Some(EdgeKind::Reference)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
@@ -180,7 +186,7 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
                   ORDER BY m.t DESC
                   LIMIT $4"
         }
-        (false, None) => {
+        (SupersessionStatus::IncludeSuperseded, None) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
@@ -196,9 +202,12 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
 /// origin pins are Memory-only so they can never name a Goal.
 ///
 /// SQL-POLICY: fixed-fragment
-fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
-    match (heads_only, kind) {
-        (true, Some(EdgeKind::Origin)) => {
+fn inbound_pin_sql_goal_targets(
+    supersession: SupersessionStatus,
+    kind: Option<EdgeKind>,
+) -> &'static str {
+    match (supersession, kind) {
+        (SupersessionStatus::HeadsOnly, Some(EdgeKind::Origin)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
@@ -208,7 +217,7 @@ fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'s
                   ORDER BY m.t DESC
                   LIMIT $4"
         }
-        (true, Some(EdgeKind::Reference)) => {
+        (SupersessionStatus::HeadsOnly, Some(EdgeKind::Reference)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
@@ -218,7 +227,7 @@ fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'s
                   ORDER BY m.t DESC
                   LIMIT $4"
         }
-        (true, None) => {
+        (SupersessionStatus::HeadsOnly, None) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
@@ -228,7 +237,7 @@ fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'s
                   ORDER BY m.t DESC
                   LIMIT $4"
         }
-        (false, Some(EdgeKind::Origin)) => {
+        (SupersessionStatus::IncludeSuperseded, Some(EdgeKind::Origin)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
@@ -237,7 +246,7 @@ fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'s
                   ORDER BY m.t DESC
                   LIMIT $4"
         }
-        (false, Some(EdgeKind::Reference)) => {
+        (SupersessionStatus::IncludeSuperseded, Some(EdgeKind::Reference)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
@@ -246,7 +255,7 @@ fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'s
                   ORDER BY m.t DESC
                   LIMIT $4"
         }
-        (false, None) => {
+        (SupersessionStatus::IncludeSuperseded, None) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])

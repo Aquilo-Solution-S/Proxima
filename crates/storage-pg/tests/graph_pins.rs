@@ -4,9 +4,12 @@
 use proxima_core::MemoryKind;
 use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::{InboundPinQuery, MemoryReadPort, OwnerWritePermit};
+use proxima_core::storage_ports::{
+    InboundPinQuery, MemoryReadPort, OwnerWritePermit, PinTargetKind,
+};
 use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
+use proxima_core::verbs::query::SupersessionStatus;
 use proxima_core::verbs::query::{
     EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest, QueryRequest,
 };
@@ -148,9 +151,9 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
                 &[owner],
                 InboundPinQuery {
                     targets: &[leaf.memory_id],
-                    goal_targets: false,
+                    target_kind: PinTargetKind::Memory,
                     kind: None,
-                    heads_only: true,
+                    supersession: SupersessionStatus::HeadsOnly,
                     after: None,
                     limit: 50,
                 },
@@ -447,9 +450,9 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
-                    goal_targets: false,
+                    target_kind: PinTargetKind::Memory,
                     kind: Some(EdgeKind::Origin),
-                    heads_only: true,
+                    supersession: SupersessionStatus::HeadsOnly,
                     after: None,
                     limit: 200,
                 },
@@ -470,9 +473,9 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
-                    goal_targets: false,
+                    target_kind: PinTargetKind::Memory,
                     kind: Some(EdgeKind::Origin),
-                    heads_only: true,
+                    supersession: SupersessionStatus::HeadsOnly,
                     after: page.last().map(|n| n.id),
                     limit: 200,
                 },
@@ -533,9 +536,9 @@ async fn inbound_heads_only_drops_superseded_pin() {
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
-                    goal_targets: false,
+                    target_kind: PinTargetKind::Memory,
                     kind: Some(EdgeKind::Origin),
-                    heads_only: true,
+                    supersession: SupersessionStatus::HeadsOnly,
                     after: None,
                     limit: 50,
                 },
@@ -554,9 +557,9 @@ async fn inbound_heads_only_drops_superseded_pin() {
                 &[owner],
                 InboundPinQuery {
                     targets: &[hub.memory_id],
-                    goal_targets: false,
+                    target_kind: PinTargetKind::Memory,
                     kind: Some(EdgeKind::Origin),
-                    heads_only: false,
+                    supersession: SupersessionStatus::IncludeSuperseded,
                     after: None,
                     limit: 50,
                 },

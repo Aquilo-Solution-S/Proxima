@@ -5,6 +5,7 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use proxima_core::EmbeddingDim;
+use proxima_core::storage_ports::PinTargetKind;
 use proxima_core::verbs::query::SidecarAtom;
 use proxima_core::verbs::query::{
     EntityKind, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus,
@@ -667,7 +668,11 @@ async fn hot_path_plans_use_expected_indexes() {
             .await?;
         assert_origin_overlap_index(&plan, "descendant hop");
 
-        let inbound = inbound_pin_sql_for_tests(true, Some(EdgeKind::Origin), false);
+        let inbound = inbound_pin_sql_for_tests(
+            SupersessionStatus::HeadsOnly,
+            Some(EdgeKind::Origin),
+            PinTargetKind::Memory,
+        );
         let inbound_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {inbound}");
         // SQL-POLICY: fixed-fragment
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(inbound_explain))

@@ -80,7 +80,7 @@ pub use host_state_lifecycle::{
 };
 pub use memory::{
     CitationPort, InboundPinQuery, MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort,
-    OperatorWriteProof,
+    OperatorWriteProof, PinTargetKind,
 };
 pub use owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
 pub use proof::{

@@ -1,17 +1,24 @@
 pub use super::proof::{OperatorWriteProof, OwnerWritePermit};
 
+/// What the targets of an inbound pin page are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinTargetKind {
+    Memory,
+    Goal,
+}
+
 /// Newest-first inbound pin page. Kind selects which array; `None` is both.
 #[derive(Debug, Clone, Copy)]
 pub struct InboundPinQuery<'a> {
     pub targets: &'a [MemoryId],
     pub kind: Option<EdgeKind>,
-    pub heads_only: bool,
+    pub supersession: SupersessionStatus,
     pub after: Option<MemoryId>,
     pub limit: u32,
     /// Whether `targets` name Goals rather than Memories. Reference pins now
     /// live in two columns, so the backend searches exactly the one this
     /// target kind can appear in instead of scanning a mixed array.
-    pub goal_targets: bool,
+    pub target_kind: PinTargetKind,
 }
 
 use crate::edge::{EdgeKind, PinNode};
@@ -20,6 +27,7 @@ use crate::storage::{
     AuthorDerivedOutcome, AuthorDerivedRequest, MemoryGraphIdentity, MemoryGraphPayloadRow,
     MemoryKindRow, StorageError,
 };
+use crate::verbs::query::SupersessionStatus;
 use crate::{GoalId, MemoryId, OwnerId, OwnerScope};
 
 /// Node writes that also assert index rows.

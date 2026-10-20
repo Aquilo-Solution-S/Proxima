@@ -1,6 +1,8 @@
 //! `core_think` — paged pin walk. Not search.
 
+use crate::PinTargetKind;
 use crate::mcp::ToolEffect;
+use crate::query::SupersessionStatus;
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -410,9 +412,9 @@ async fn next_hop(
                     &ctx.authz,
                     InboundPinQuery {
                         targets: frontier,
-                        goal_targets: false,
+                        target_kind: PinTargetKind::Memory,
                         kind: Some(EdgeKind::Origin),
-                        heads_only: false,
+                        supersession: SupersessionStatus::IncludeSuperseded,
                         after: None,
                         limit: HOP_PAGE,
                     },
@@ -470,9 +472,9 @@ async fn episode_siblings(
             &ctx.authz,
             InboundPinQuery {
                 targets: &targets,
-                goal_targets: false,
+                target_kind: PinTargetKind::Memory,
                 kind: Some(crate::EdgeKind::Reference),
-                heads_only: false,
+                supersession: SupersessionStatus::IncludeSuperseded,
                 after,
                 limit: limit.saturating_add(u32::try_from(seeds.len()).unwrap_or(u32::MAX) + 1),
             },

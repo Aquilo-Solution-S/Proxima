@@ -6,9 +6,10 @@ use crate::edge::{
     EdgeEndpoint, EdgeTargetProjection, PinNode, pin_created_at, project_listed_edge,
 };
 use crate::error::ProtocolError;
-use crate::storage_ports::{InboundPinQuery, MemoryReadHandle};
+use crate::storage_ports::{InboundPinQuery, MemoryReadHandle, PinTargetKind};
 use crate::verbs::query::{
     EdgeExistsRequest, EdgeExistsResponse, EdgeReadCursor, EdgeReadRequest, EdgeReadResponse,
+    SupersessionStatus,
 };
 use crate::{Edge, EdgeKind, EntityKind, EntityRef, GoalId, MemoryId, OwnerId, OwnerScope};
 
@@ -377,9 +378,13 @@ async fn load_incoming_sources(
                     // The inbound target carries its own kind, and a Goal is
                     // only ever pinned from `goal_refs`. Naming the column
                     // keeps the scan on one GIN index instead of a mixed array.
-                    goal_targets: matches!(target_filter, EntityRef::Goal(_)),
+                    target_kind: if matches!(target_filter, EntityRef::Goal(_)) {
+                        PinTargetKind::Goal
+                    } else {
+                        PinTargetKind::Memory
+                    },
                     kind: req.filter.kind,
-                    heads_only: false,
+                    supersession: SupersessionStatus::IncludeSuperseded,
                     after,
                     limit: page_limit,
                 },
@@ -427,9 +432,9 @@ pub(in crate::engine) async fn neighbor_edges_from_nodes(
             read_owners,
             InboundPinQuery {
                 targets: memory_ids,
-                goal_targets: false,
+                target_kind: PinTargetKind::Memory,
                 kind: None,
-                heads_only: true,
+                supersession: SupersessionStatus::HeadsOnly,
                 after: None,
                 limit: inbound_limit,
             },
@@ -560,7 +565,7 @@ mod tests {
                     // come from `goal_refs`, onto a Memory target from `refs`.
                     // Origin pins are Memory-only in both.
                     let references = |node: &PinNode, t: &MemoryId| {
-                        if query.goal_targets {
+                        if query.target_kind == crate::PinTargetKind::Goal {
                             node.goal_refs
                                 .iter()
                                 .any(|goal| goal.into_inner() == t.into_inner())
