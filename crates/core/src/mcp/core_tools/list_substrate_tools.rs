@@ -56,19 +56,26 @@ pub async fn list_substrate_tools(
     ctx: McpToolCtx,
     _args: ListSubstrateToolsArgs,
 ) -> Result<ListSubstrateToolsOutput, McpToolError> {
+    Ok(ListSubstrateToolsOutput {
+        tools: scoped_substrate_tools(&ctx),
+    })
+}
+
+/// One caller-visible inventory for both catalog and graph reads.
+pub(super) fn scoped_substrate_tools(ctx: &McpToolCtx) -> Vec<SubstrateToolItem> {
     let mut tools = Vec::new();
     for desc in ctx.registry.list_mcp_tools() {
-        if !tool_visible(&ctx, desc) {
+        if !tool_visible(ctx, desc) {
             continue;
         }
         tools.push(SubstrateToolItem {
             tool_id: desc.name.to_string(),
             source: substrate_tool_source(desc),
             description: desc.description.to_string(),
-            actions: substrate_tool_actions(&ctx, desc),
+            actions: substrate_tool_actions(ctx, desc),
         });
     }
-    Ok(ListSubstrateToolsOutput { tools })
+    tools
 }
 
 /// The catalog's per-action rows for one tool.

@@ -13,9 +13,7 @@ use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::schema::PayloadKind;
 
 use super::list_schemas::SchemaItem;
-use super::list_substrate_tools::{
-    SubstrateToolItem, substrate_tool_actions, substrate_tool_source,
-};
+use super::list_substrate_tools::{SubstrateToolItem, scoped_substrate_tools};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GetGraphArgs {}
@@ -93,23 +91,4 @@ pub async fn get_graph(
         schemas,
         substrate_tools,
     })
-}
-
-/// Build the owner's substrate-tool inventory, filtered to the caller's
-/// caller and deployment capabilities, so `get_graph` cannot re-advertise
-/// commands either policy denies.
-fn scoped_substrate_tools(ctx: &McpToolCtx) -> Vec<SubstrateToolItem> {
-    ctx.registry
-        .list_mcp_tools()
-        .iter()
-        // Either dispatcher vocabulary is advertised through its `tool:action`
-        // leaves, as `list_substrate_tools` does.
-        .filter(|desc| desc.advertised_by(ctx.authz.capabilities()))
-        .map(|desc| SubstrateToolItem {
-            tool_id: desc.name.to_string(),
-            source: substrate_tool_source(desc),
-            description: desc.description.to_string(),
-            actions: substrate_tool_actions(ctx, desc),
-        })
-        .collect()
 }

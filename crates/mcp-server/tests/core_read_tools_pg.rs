@@ -18,6 +18,72 @@ fn owner_authz(owner: OwnerId) -> AuthzContext {
     )
 }
 
+#[derive(Debug)]
+struct HidesRemember;
+
+#[async_trait::async_trait]
+impl proxima_core::RequestBehavior for HidesRemember {
+    async fn handle(
+        &self,
+        call: proxima_core::mcp::ToolCall,
+        next: proxima_core::mcp::Next<'_>,
+    ) -> Result<proxima_core::ToolReply, proxima_core::mcp::McpToolError> {
+        next.run(call).await
+    }
+
+    fn visible(
+        &self,
+        _ctx: &proxima_core::mcp::McpToolCtx,
+        tool: &proxima_core::ToolDescriptorView<'_>,
+    ) -> bool {
+        tool.name() != proxima_core::protocol::tool::CORE_REMEMBER
+    }
+}
+
+#[tokio::test]
+async fn graph_and_tool_catalog_share_behavior_visibility() -> Result<(), Box<dyn std::error::Error>>
+{
+    use proxima_core::protocol::tool::CORE_REMEMBER;
+
+    let db_name = create_core_db().await?;
+    let pg = storage(&db_url(&db_name)).await?;
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+    insert_memory(&pg, &owner, "catalog owner", &[]).await?;
+    for hidden in [false, true] {
+        let mut registry = FlavorRegistry::new();
+        if hidden {
+            registry.add_request_behavior(HidesRemember);
+        }
+        let engine = Arc::new(
+            Engine::new(registry.freeze_or_panic_for_tests())
+                .with_storage_ports(Arc::new(pg.clone()).storage_ports()),
+        );
+        let server = McpToolHost::from_engine(engine, FlavorServices::default());
+        let auth = McpAuthContext {
+            owner,
+            authz: owner_authz(owner),
+        };
+        let tools = server
+            .read_resource("proxima://tools", author_ctx(), Some(auth.clone()))
+            .await?;
+        let graph = server
+            .read_resource("proxima://graph", author_ctx(), Some(auth))
+            .await?;
+        assert_eq!(graph["substrate_tools"], tools["tools"]);
+        assert_eq!(
+            graph["substrate_tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["tool_id"] == CORE_REMEMBER),
+            !hidden,
+        );
+    }
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn core_read_resources_return_bare_uuids_and_author() -> Result<(), Box<dyn std::error::Error>>
 {
