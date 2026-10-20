@@ -60,7 +60,14 @@ body = """
     {%- if commit.breaking -%}
         {%- for note in commit.footers -%}
             {% if note.token == "Upgrade" %}
-- {{ note.value }}
+{#- GitHub's GFM drops `<word>` as raw HTML: escape `<` outside code spans
+    (odd split pieces, plus the tail after an unmatched backtick). -#}
+{%- set spans = note.value | split(pat="`") -%}
+{%- set span_count = spans | length %}
+- {% for span in spans -%}
+    {%- if loop.index is odd or (loop.last and span_count is even) -%}{{ span | replace(from="<", to="&lt;") }}{%- else -%}{{ span }}{%- endif -%}
+    {%- if not loop.last -%}`{%- endif -%}
+{%- endfor %}
             {% endif -%}
         {%- endfor -%}
     {%- endif -%}

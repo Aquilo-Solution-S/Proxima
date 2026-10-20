@@ -59,7 +59,17 @@ def self_test() -> None:
     bad = [commit for release in duplicated for commit in release["commits"]
            if commit["message"] == "fixture duplicate"]
     assert len(validate([{"commits": bad}])) == 1
-    print("upgrade notes: parser, breaking-only rendering, continuation, missing and duplicate footer fixtures passed")
+    # GitHub renders release notes as GFM, which drops `<word>` placeholders as
+    # raw HTML. Outside code spans `<` is escaped; inside them it stays literal.
+    placeholder = cliff("--unreleased", "--with-commit",
+                        'feat(core)!: fixture placeholder\n\nUpgrade: write "<crate-name>/<short>",'
+                        " keep `Vec<u8>` and `-> user`; a <tag> and 2 > 1.")
+    assert '- write "&lt;crate-name>/&lt;short>", keep `Vec<u8>` and `-> user`; a &lt;tag> and 2 > 1.\n' \
+        in placeholder, placeholder
+    unmatched = cliff("--unreleased", "--with-commit",
+                      "feat(core)!: fixture unmatched\n\nUpgrade: run `a <b> and <c>.")
+    assert "- run `a &lt;b> and &lt;c>.\n" in unmatched, unmatched
+    print("upgrade notes: parser, breaking-only rendering, continuation, missing, duplicate and placeholder footer fixtures passed")
 
 
 def main() -> int:
