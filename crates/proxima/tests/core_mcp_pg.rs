@@ -48,6 +48,9 @@ mod unassigned_goals;
 #[path = "core_mcp_pg/recall_unassigned.rs"]
 mod recall_unassigned;
 
+#[path = "core_mcp_pg/recall_assigned.rs"]
+mod recall_assigned;
+
 #[path = "core_mcp_pg/memory_reads_alike.rs"]
 mod memory_reads_alike;
 

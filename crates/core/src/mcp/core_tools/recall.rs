@@ -363,6 +363,8 @@ async fn mark_perspective_heads(
     Ok(())
 }
 
+/// The Active Goals assigned to the packet's head Perspectives of `owner`, in
+/// one query and one sketch load whatever their number.
 async fn collect_assigned_goals(
     ctx: &McpToolCtx,
     engine: &crate::Engine,
@@ -371,28 +373,29 @@ async fn collect_assigned_goals(
     packet: &mut Packet,
 ) -> Result<(), McpToolError> {
     let perspectives = packet.head_perspective_ids(owner);
-    for p in perspectives {
-        let mut req = QueryRequest::readable();
-        req.entity_kind = Some(EntityKind::Goal);
-        req.goal_states.insert(GoalState::Active);
-        req.assignment = Some(p);
-        req.include_payloads = false;
-        req.limit = limit;
-        let page = engine.query(&ctx.authz, &req).await?;
-        let goal_ids: Vec<MemoryId> = page
-            .goals
-            .iter()
-            .map(|goal| MemoryId::new(goal.id.into_inner()))
-            .collect();
-        let sketches = engine.load_sketches(&ctx.authz, &goal_ids).await?;
-        for sketch in sketches {
-            packet.insert_goal(
-                ctx,
-                crate::GoalId::new(sketch.id.into_inner()),
-                &sketch.text,
-                RecallReason::AssignedGoal,
-            );
-        }
+    if perspectives.is_empty() {
+        return Ok(());
+    }
+    let mut req = QueryRequest::readable();
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_states.insert(GoalState::Active);
+    req.assignments = perspectives;
+    req.include_payloads = false;
+    req.limit = limit;
+    let page = engine.query(&ctx.authz, &req).await?;
+    let goal_ids: Vec<MemoryId> = page
+        .goals
+        .iter()
+        .map(|goal| MemoryId::new(goal.id.into_inner()))
+        .collect();
+    let sketches = engine.load_sketches(&ctx.authz, &goal_ids).await?;
+    for sketch in sketches {
+        packet.insert_goal(
+            ctx,
+            crate::GoalId::new(sketch.id.into_inner()),
+            &sketch.text,
+            RecallReason::AssignedGoal,
+        );
     }
     Ok(())
 }

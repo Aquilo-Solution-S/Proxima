@@ -12,7 +12,7 @@ fn query_request_defaults_to_heads_only_without_dead_tombstone_axis() {
             .contains_key("tombstones")
     );
     assert_eq!(req.page, QueryPage::default());
-    assert_eq!(req.assignment, None);
+    assert!(req.assignments.is_empty());
     assert_eq!(req.evidence_contains, None);
     assert!(req.goal_states.is_empty());
     assert!(req.goal_handles.is_empty());

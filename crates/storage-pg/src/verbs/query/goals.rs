@@ -29,8 +29,10 @@ pub(super) async fn query_goals_on_connection(
         q = match filter {
             GoalFilter::Schema(value) => q.bind(value),
             GoalFilter::States(value) => q.bind(value),
-            GoalFilter::Assignment(value) | GoalFilter::Evidence(value) => q.bind(value),
-            GoalFilter::Ids(value) | GoalFilter::Handles(value) => q.bind(value),
+            GoalFilter::Evidence(value) => q.bind(value),
+            GoalFilter::Assignments(value)
+            | GoalFilter::Ids(value)
+            | GoalFilter::Handles(value) => q.bind(value),
             GoalFilter::Cursor(handle, goal_id) => q.bind(handle).bind(goal_id),
         };
     }
@@ -109,7 +111,7 @@ fn goal_page_sql(req: &QueryRequest, filters: &[GoalFilter]) -> String {
 enum GoalFilter {
     Schema(String),
     States(Vec<GoalState>),
-    Assignment(uuid::Uuid),
+    Assignments(Vec<uuid::Uuid>),
     Evidence(uuid::Uuid),
     Ids(Vec<uuid::Uuid>),
     Handles(Vec<uuid::Uuid>),
@@ -122,7 +124,7 @@ impl GoalFilter {
             Self::Cursor(..) => 2,
             Self::Schema(_)
             | Self::States(_)
-            | Self::Assignment(_)
+            | Self::Assignments(_)
             | Self::Evidence(_)
             | Self::Ids(_)
             | Self::Handles(_) => 1,
@@ -135,7 +137,7 @@ impl GoalFilter {
             Self::States(_) => {
                 format!(" AND g.state = ANY(${placeholder}::proxima_core.goal_state[])")
             }
-            Self::Assignment(_) => format!(" AND g.assignment_t = ${placeholder}"),
+            Self::Assignments(_) => format!(" AND g.assignment_t = ANY(${placeholder}::uuid[])"),
             Self::Evidence(_) => format!(" AND ${placeholder} = ANY(g.evidence_t)"),
             Self::Ids(_) => format!(" AND g.t = ANY(${placeholder}::uuid[])"),
             Self::Handles(_) => format!(
@@ -160,8 +162,10 @@ fn goal_filters(req: &QueryRequest) -> Vec<GoalFilter> {
             req.goal_states.iter().copied().collect(),
         ));
     }
-    if let Some(assignment) = req.assignment {
-        filters.push(GoalFilter::Assignment(assignment.into_inner()));
+    if !req.assignments.is_empty() {
+        filters.push(GoalFilter::Assignments(
+            req.assignments.iter().map(|id| id.into_inner()).collect(),
+        ));
     }
     if let Some(evidence) = req.evidence_contains {
         filters.push(GoalFilter::Evidence(evidence.into_inner()));

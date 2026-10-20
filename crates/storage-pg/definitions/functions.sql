@@ -2426,8 +2426,9 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
+            AND m.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[])
             AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
-             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
@@ -2438,8 +2439,9 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
+            AND m.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[])
             AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
-             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
@@ -2450,8 +2452,9 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
+            AND m.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[])
             AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.claim, '''')])) LIKE $1 ESCAPE ''\'')
-             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
@@ -2462,8 +2465,9 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
+            AND m.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[])
             AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '''')])) LIKE $1 ESCAPE ''\'')
-             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
@@ -2476,8 +2480,9 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
+            AND m.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[])
             AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
-             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
@@ -2488,8 +2493,9 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
+            AND m.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[])
             AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
-             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
@@ -2500,8 +2506,9 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
+            AND m.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[])
             AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.claim, '''')])) LIKE $1 ESCAPE ''\'')
-             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
@@ -2512,8 +2519,9 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
+            AND m.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[])
             AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '''')])) LIKE $1 ESCAPE ''\'')
-             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL

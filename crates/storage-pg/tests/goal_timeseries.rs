@@ -282,7 +282,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let mut by_assignment = QueryRequest::readable();
         by_assignment.entity_kind = Some(EntityKind::Goal);
         by_assignment.goal_states = BTreeSet::from([GoalState::Active]);
-        by_assignment.assignment = Some(assignment.memory_id);
+        by_assignment.assignments = vec![assignment.memory_id];
         let assigned = pg
             .query_memories(
                 Some(&owner_scope_for_tests(&[owner])),
@@ -314,9 +314,58 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         assert_eq!(evidenced.goals.len(), 1);
         assert_eq!(evidenced.goals[0].id.into_inner(), created.t);
 
+        // Several Perspectives select the goals assigned to any of them.
+        let mut second = fact_draft();
+        second.kind = "perspective".into();
+        second.additional_references = vec![EdgeEndpoint::memory(
+            EntityKind::Abstraction,
+            abstraction.memory_id,
+        )];
+        let second = pg.ingest_fact_atomic(&permit, &second, None).await?;
+        let mut tx = pool.begin().await?;
+        let second_goal = write_goal(
+            &mut tx,
+            &owner,
+            proxima_storage_pg::test_fixtures::writer(),
+            &GoalWriteCommand {
+                handle: None,
+                schema_id: "core/task-v1".into(),
+                title: "assigned elsewhere".into(),
+                text: None,
+                state: GoalState::Active,
+                request_id: "req-assign-second".into(),
+                close_fact_t: None,
+                assignment_t: Some(second.memory_id.into_inner()),
+                dependency_t: vec![],
+                evidence_t: vec![],
+                mint_write_act: false,
+                write_act_t: None,
+                parent_handle: None,
+            },
+            1,
+        )
+        .await?;
+        tx.commit().await?;
+        let mut by_either = QueryRequest::readable();
+        by_either.entity_kind = Some(EntityKind::Goal);
+        by_either.assignments = vec![assignment.memory_id, second.memory_id];
+        let either = pg
+            .query_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &[owner],
+                &by_either,
+                &[],
+            )
+            .await?;
+        let mut found: Vec<Uuid> = either.goals.iter().map(|g| g.id.into_inner()).collect();
+        found.sort_unstable();
+        let mut expected = vec![created.t, second_goal.t];
+        expected.sort_unstable();
+        assert_eq!(found, expected);
+
         let mut miss = QueryRequest::readable();
         miss.entity_kind = Some(EntityKind::Goal);
-        miss.assignment = Some(MemoryId::new(Uuid::now_v7()));
+        miss.assignments = vec![MemoryId::new(Uuid::now_v7())];
         let empty = pg
             .query_memories(Some(&owner_scope_for_tests(&[owner])), &[owner], &miss, &[])
             .await?;

@@ -483,6 +483,50 @@ async fn scan_one_flavor_on_connection(
     Ok(hits)
 }
 
+/// One leg of the substring arm: a sidecar table and every schema stored in
+/// it. Two schemas sharing a sidecar (core's agent-derivation registers as
+/// Abstraction and Perspective) are one leg, so the sidecar is scanned once
+/// for one answer.
+struct SidecarLeg<'a> {
+    /// The first projection declared over the sidecar; the leg reads the
+    /// sidecar's text and key columns through it.
+    projection: &'a MemorySearchProjection,
+    /// The schemas stored in the sidecar, each once.
+    schema_ids: BTreeSet<&'a str>,
+}
+
+impl SidecarLeg<'_> {
+    /// The leg's own schema ids as SQL text literals. The leg joins
+    /// `memory`, and only a memory of one of these schemas can have a row in
+    /// its sidecar, so naming them lets the planner reach the owner's
+    /// memories of just those schemas through `memory_owner_schema_t_idx`
+    /// instead of reading every memory the request's `$8` names (#490).
+    fn schema_literals(&self) -> String {
+        self.schema_ids
+            .iter()
+            .map(|schema| format!("'{}'", schema.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn sidecar_legs<'a>(
+    schemas: impl IntoIterator<Item = &'a MemorySearchProjection>,
+) -> Vec<SidecarLeg<'a>> {
+    let mut by_table = BTreeMap::<&str, SidecarLeg<'a>>::new();
+    for projection in schemas {
+        by_table
+            .entry(projection.sidecar_table.as_str())
+            .or_insert_with(|| SidecarLeg {
+                projection,
+                schema_ids: BTreeSet::new(),
+            })
+            .schema_ids
+            .insert(projection.schema_id.as_str());
+    }
+    by_table.into_values().collect()
+}
+
 /// The substring arm: at most ONE statement, over exactly the schemas the
 /// ranked arm returned nothing for.
 ///
@@ -494,9 +538,10 @@ async fn scan_one_flavor_on_connection(
 /// One leg per distinct sidecar, `UNION ALL`ed under one `ORDER BY` and one
 /// `LIMIT`, because `lower(<search text>)` is a per-schema expression and
 /// no single table alias can stand for four sidecar tables. The legs share the
-/// bound schema-id array: a leg over `agent_note_v1` can only join memories
-/// that HAVE an `agent_note_v1` row, so the array narrows rather than
-/// selects, and one bind serves every leg.
+/// bound schema-id array, which narrows rather than selects: a leg also names
+/// the schemas stored in its own sidecar ([`SidecarLeg`]), so after a query
+/// that matches nothing, when the array holds every schema, a leg still reads
+/// only the memories its sidecar can have a row for.
 ///
 /// The text expression is the DECLARED search fields
 /// (`sidecar_text_sql`) — the same expression the stored vector and the
@@ -508,24 +553,15 @@ fn substring_sql(
     bands: RenderBands,
     req: &MemorySearchRequest,
 ) -> Result<String, StorageError> {
-    // One leg per sidecar TABLE. Two schemas sharing a sidecar (core's
-    // agent-derivation registers as Abstraction and Perspective) would
-    // otherwise scan it twice for one answer.
-    let mut by_table = BTreeMap::<&str, &MemorySearchProjection>::new();
-    for projection in schemas {
-        by_table
-            .entry(projection.sidecar_table.as_str())
-            .or_insert(projection);
-    }
-    let scanned: Vec<&MemorySearchProjection> = by_table.into_values().collect();
+    let scanned = sidecar_legs(schemas.iter().copied());
     let legs = scanned
         .iter()
-        .map(|projection| substring_leg_sql(projection, bands, req))
+        .map(|leg| substring_leg_sql(leg, bands, req))
         .collect::<Result<Vec<_>, StorageError>>()?;
     // Every leg projects its memory id as `t` whatever its sidecar calls
     // the column, so the union's own ordering stays one spelling.
-    if let ([only], [projection]) = (legs.as_slice(), scanned.as_slice()) {
-        let key = projection_key_ident(projection)?;
+    if let ([only], [leg]) = (legs.as_slice(), scanned.as_slice()) {
+        let key = projection_key_ident(leg.projection)?;
         let order_by = match candidate_order(req) {
             SearchOrder::Relevance => format!("lexical_score DESC, c.{} DESC", key.as_str()),
             SearchOrder::Recency => format!("c.{} DESC", key.as_str()),
@@ -560,10 +596,11 @@ fn substring_sql(
 /// statement would be paid for and never read.
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 fn substring_leg_sql(
-    projection: &MemorySearchProjection,
+    leg: &SidecarLeg<'_>,
     bands: RenderBands,
     req: &MemorySearchRequest,
 ) -> Result<String, StorageError> {
+    let projection = leg.projection;
     let tag_pred = match projection.tag_column.as_deref() {
         Some(column) if !req.tags.is_empty() => {
             let column = PgIdent::column(column)?;
@@ -576,7 +613,7 @@ fn substring_leg_sql(
         _ => String::new(),
     };
     substring_leg_sql_parts(
-        projection,
+        leg,
         bands,
         &tag_pred,
         &admit_side_restriction(req, SUBSTRING_MEMORY_ID),
@@ -584,11 +621,13 @@ fn substring_leg_sql(
 }
 
 fn substring_leg_sql_parts(
-    projection: &MemorySearchProjection,
+    leg: &SidecarLeg<'_>,
     bands: RenderBands,
     tag_pred: &str,
     admit_pred: &str,
 ) -> Result<String, StorageError> {
+    let projection = leg.projection;
+    let own_schemas = leg.schema_literals();
     let table = PgIdent::table(&projection.sidecar_table)?;
     let key = projection_key_ident(projection)?;
     let search_text = sidecar_text_sql(projection)?;
@@ -610,6 +649,7 @@ fn substring_leg_sql_parts(
            JOIN proxima_core.memory m ON m.t = c.{key} /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
+            AND m.schema_id = ANY(ARRAY[{own_schemas}]::text[])
             AND (lower({search_text}) LIKE $1 ESCAPE '\\')
             {tag_pred}{admit_pred}
             AND ($4::timestamptz IS NULL
@@ -785,7 +825,7 @@ pub(crate) fn projection_candidate_statements(
         SearchOrder::Relevance
     };
     if !substring {
-        let admit = candidate_authorization("p.memory_id");
+        let admit = candidate_authorization("p.memory_id", "");
         return ranked_projection_sql_parts(
             &flavor,
             true,
@@ -799,32 +839,37 @@ pub(crate) fn projection_candidate_statements(
         )
         .map(Some);
     }
-    let mut by_table = BTreeMap::new();
-    for projection in &flavor.schemas {
-        if projection.substring != SubstringArm::Off {
-            by_table
-                .entry(projection.sidecar_table.as_str())
-                .or_insert(*projection);
-        }
-    }
-    let legs = by_table
-        .into_values()
-        .map(|projection| {
-            let tags = projection.tag_column.as_deref().map_or_else(
-                || Ok::<_, StorageError>(" AND $3::text[] IS NULL".to_owned()),
-                |column| {
-                    let column = PgIdent::column(column)?;
-                    Ok(candidate_tags(&format!("c.{}", column.as_str())))
-                },
-            )?;
-            substring_leg_sql_parts(
-                projection,
-                flavor.bands,
-                &tags,
-                &candidate_authorization("m.t"),
-            )
-        })
-        .collect::<Result<Vec<_>, StorageError>>()?;
+    let legs = sidecar_legs(
+        flavor
+            .schemas
+            .iter()
+            .copied()
+            .filter(|projection| projection.substring != SubstringArm::Off),
+    )
+    .iter()
+    .map(|leg| {
+        let tags = leg.projection.tag_column.as_deref().map_or_else(
+            || Ok::<_, StorageError>(" AND $3::text[] IS NULL".to_owned()),
+            |column| {
+                let column = PgIdent::column(column)?;
+                Ok(candidate_tags(&format!("c.{}", column.as_str())))
+            },
+        )?;
+        // A head carries its memory's schema (`memory_align_head`), so the
+        // leg's own schemas bound the heads it checks as well: without
+        // them the head check reads every head the owner has.
+        let heads_of_leg = format!(
+            " AND authorized_head.schema_id = ANY(ARRAY[{}]::text[])",
+            leg.schema_literals()
+        );
+        substring_leg_sql_parts(
+            leg,
+            flavor.bands,
+            &tags,
+            &candidate_authorization("m.t", &heads_of_leg),
+        )
+    })
+    .collect::<Result<Vec<_>, StorageError>>()?;
     if legs.is_empty() {
         return Ok(None);
     }
@@ -845,7 +890,9 @@ fn candidate_tags(column: &str) -> String {
     )
 }
 
-fn candidate_authorization(memory_id: &str) -> String {
+/// The candidate statements' authorization of `memory_id`; `head_filter` is
+/// an extra predicate on `authorized_head`, or empty.
+fn candidate_authorization(memory_id: &str, head_filter: &str) -> String {
     format!(
         " AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ \
          WHERE authorized_memory.t = {memory_id} \
@@ -854,7 +901,7 @@ fn candidate_authorization(memory_id: &str) -> String {
          AND ($11::text IS NULL OR authorized_memory.kind::text = $11) \
          AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head \
          WHERE authorized_head.handle = authorized_memory.handle \
-         AND authorized_head.t = authorized_memory.t)))"
+         AND authorized_head.t = authorized_memory.t{head_filter})))"
     )
 }
 
@@ -1413,6 +1460,23 @@ pub fn substring_sql_for_tests(
         .and_then(|projection| projection.render_bands)
         .ok_or_else(|| StorageError::Internal("fixture declares no render bands".into()))?;
     substring_sql(schemas, bands, req)
+}
+
+/// The substring candidate statement the migrated `search_substring_candidates`
+/// function runs, for the plan pins. It binds the function's twelve
+/// parameters in order.
+///
+/// # Errors
+///
+/// Propagates the builder's; refuses projections that declare no substring leg.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+pub fn substring_candidate_sql_for_tests(
+    projections: &[MemorySearchProjection],
+    recency: bool,
+) -> Result<String, StorageError> {
+    projection_candidate_statements(projections, true, recency)?
+        .ok_or_else(|| StorageError::Internal("no substring leg in the projections".into()))
 }
 
 /// The store's RLS admission query for vector-port candidates.

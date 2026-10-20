@@ -50,6 +50,9 @@ mod owner_predicates;
 #[path = "rls_guard_pg/search_candidates.rs"]
 mod search_candidates;
 
+#[path = "rls_guard_pg/substring_work.rs"]
+mod substring_work;
+
 #[async_trait]
 impl Authenticator for SyntheticVerifier {
     async fn authenticate(
