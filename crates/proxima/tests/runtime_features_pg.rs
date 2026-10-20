@@ -298,7 +298,7 @@ async fn an_unconfigured_boot_starts_nothing_and_says_why_per_feature() {
     assert!(reason(Feature::FlavorWorkers).contains("no linked flavor"));
     assert!(reason(Feature::EmbeddingWorker).contains("embed_client"));
     assert!(reason(Feature::OutboxPublisher).contains("outbox_intake"));
-    assert!(reason(Feature::PublishedRecordPrune).contains("no retention"));
+    assert!(reason(Feature::PublishedRecordPrune).contains("outbox publisher is off"));
     assert!(reason(Feature::ObjectPurge).contains("no object store"));
 
     tokio::time::timeout(Duration::from_secs(10), built.shutdown())

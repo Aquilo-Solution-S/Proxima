@@ -829,6 +829,26 @@ impl PgStorage {
 /// dropped the state predicate would therefore still not reach a pending
 /// record. The bound is `ctid IN (... LIMIT n)` rather than a bare `LIMIT`,
 /// because `DELETE` takes no `LIMIT` of its own.
+/// The prune statement. `publication_outbox_published_idx` holds only the
+/// delivered rows by `published_at`, so a batch reads the rows it deletes.
+const PRUNE_PUBLISHED_SQL: &str = "DELETE FROM proxima_core.publication_outbox
+              WHERE ctid IN (
+                    SELECT p.ctid
+                      FROM proxima_core.publication_outbox p
+                     WHERE p.state = 'published'
+                       AND p.published_at < now() - make_interval(secs => $1)
+                     ORDER BY p.published_at ASC
+                     LIMIT $2
+              )";
+
+/// The prune statement, for the plan pin.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn prune_published_sql_for_tests() -> &'static str {
+    PRUNE_PUBLISHED_SQL
+}
+
 #[async_trait::async_trait]
 impl proxima_core::storage_ports::publication::PublicationRetentionPort for PgStorage {
     async fn prune_published(
@@ -837,23 +857,13 @@ impl proxima_core::storage_ports::publication::PublicationRetentionPort for PgSt
         limit: NonZeroU32,
     ) -> Result<u64, StorageError> {
         let mut tx = self.platform_transaction().await?;
-        let deleted = sqlx::query(
-            "DELETE FROM proxima_core.publication_outbox
-              WHERE ctid IN (
-                    SELECT p.ctid
-                      FROM proxima_core.publication_outbox p
-                     WHERE p.state = 'published'
-                       AND p.published_at < now() - make_interval(secs => $1)
-                     ORDER BY p.published_at ASC
-                     LIMIT $2
-              )",
-        )
-        .bind(older_than.as_secs_f64())
-        .bind(i64::from(limit.get()))
-        .execute(tx.as_mut())
-        .await
-        .map_err(map_err)?
-        .rows_affected();
+        let deleted = sqlx::query(PRUNE_PUBLISHED_SQL)
+            .bind(older_than.as_secs_f64())
+            .bind(i64::from(limit.get()))
+            .execute(tx.as_mut())
+            .await
+            .map_err(map_err)?
+            .rows_affected();
         crate::owner_scope::finish_transaction(tx, Ok(deleted)).await
     }
 }

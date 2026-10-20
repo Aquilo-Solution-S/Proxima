@@ -298,7 +298,8 @@ non-zero until a process configured for that store drains it.
 
 Watch the publication publisher and intake health. An unavailable intake retries
 captured records; a full pending bound refuses a new listenable write atomically.
-Published-record retention reclaims delivered copies only. It is independent of
+Published-record retention reclaims delivered copies only, after seven days unless
+`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` says otherwise (`0` keeps them forever). It is independent of
 the host's erasure and retention promises. Hosts must manage copies already
 accepted downstream. See [data and erasure](data-and-erasure.md).
 

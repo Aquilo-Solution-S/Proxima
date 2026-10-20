@@ -82,7 +82,7 @@ pub struct RuntimeBuilder {
     embedding_runtime_policy: Option<EmbeddingRuntimePolicy>,
     publication: Option<PublicationConfig>,
     /// Horizon after which a DELIVERED outbox record is reclaimed. `None`
-    /// keeps published records forever, which is both the default and what
+    /// leaves the default; zero keeps published records forever, as
     /// `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS=0` spells.
     published_retention: Option<Duration>,
     /// How often the runtime sweeps expired uploads and drains object purge
@@ -316,15 +316,15 @@ impl RuntimeBuilder {
     /// reclaims its storage. Env equivalent:
     /// `PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`.
     ///
-    /// `None` — the default — keeps delivered records forever. The horizon
-    /// can never reach a `pending` or `claimed` record whatever its age: an
+    /// The default is seven days; `Duration::ZERO` keeps delivered records
+    /// forever. The horizon can never reach a `pending` or `claimed` record whatever its age: an
     /// undelivered event is a promise this deployment has not kept, and no
     /// retention policy may quietly cancel it (docs/host-integration.md, kernel OB-9).
     ///
     /// Setting this suppresses the environment read, so a host that composes
-    /// programmatically is not overridden by a stray variable. A value under
-    /// the one-minute floor is refused at `build`, exactly as the
-    /// environment path refuses it at boot.
+    /// programmatically is not overridden by a stray variable. A non-zero
+    /// value under the one-minute floor is refused at `build`, exactly as
+    /// the environment path refuses it at boot.
     #[must_use]
     pub const fn published_retention(mut self, horizon: Duration) -> Self {
         self.published_retention = Some(horizon);
@@ -1034,11 +1034,12 @@ impl RuntimeBuilder {
     /// shorter than its own interval.
     fn check_published_retention(&self) -> Result<(), ProximaError> {
         if let Some(horizon) = self.published_retention
+            && !horizon.is_zero()
             && horizon < crate::config::MIN_PUBLISHED_RETENTION
         {
             return Err(ProximaError::Config(format!(
-                "published retention is {}s, under the {}s floor; leave it unset to \
-                 keep published records forever",
+                "published retention is {}s, under the {}s floor; zero keeps \
+                 published records forever",
                 horizon.as_secs(),
                 crate::config::MIN_PUBLISHED_RETENTION.as_secs(),
             )));
@@ -1135,7 +1136,11 @@ impl RuntimeBuilder {
             resource_metadata: self.resource_metadata,
             embedding_runtime_policy: self.embedding_runtime_policy.unwrap_or_default(),
             publication: self.publication.unwrap_or_default(),
-            published_retention: self.published_retention,
+            published_retention: Some(
+                self.published_retention
+                    .unwrap_or(crate::config::DEFAULT_PUBLISHED_RETENTION),
+            )
+            .filter(|horizon| !horizon.is_zero()),
             object_purge_interval: Some(
                 self.object_purge_interval
                     .unwrap_or(crate::config::DEFAULT_OBJECT_PURGE_INTERVAL),
@@ -1235,9 +1240,8 @@ pub struct RuntimeConfig {
     /// reclaims it (`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS`; docs/host-integration.md
     /// §Retention).
     ///
-    /// `None` keeps published records forever — the behaviour of every
-    /// release before the knob existed, and what `0` spells explicitly.
-    /// Host housekeeping, deliberately NOT part of [`Self::publication`]:
+    /// Seven days unless set; `None` keeps published records forever, which
+    /// `0` spells explicitly. Host housekeeping, deliberately NOT part of [`Self::publication`]:
     /// the engine never sees it, and the only port that can act on it is
     /// host-held.
     pub published_retention: Option<Duration>,
@@ -2781,9 +2785,21 @@ mod tests {
             .resolve()
             .expect("no horizon is the default");
         assert_eq!(
-            default_config.published_retention, None,
-            "unset keeps delivered records forever"
+            default_config.published_retention,
+            Some(crate::config::DEFAULT_PUBLISHED_RETENTION),
+            "unset reclaims delivered records after the default horizon"
         );
+
+        let (keep_forever, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .store_number(0)
+            .platform_database_url("postgres://localhost/platform")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .served_surface(ServedSurface::All)
+            .published_retention(Duration::ZERO)
+            .resolve()
+            .expect("zero keeps delivered records forever");
+        assert_eq!(keep_forever.published_retention, None);
     }
 
     #[test]

@@ -83,12 +83,14 @@ pub(crate) fn object_purge_interval_from_lookup(
 /// rather than honoured.
 pub(crate) const MIN_PUBLISHED_RETENTION: Duration = Duration::from_mins(1);
 
+/// How long a DELIVERED record is kept when nothing says otherwise.
+pub(crate) const DEFAULT_PUBLISHED_RETENTION: Duration = Duration::from_hours(24 * 7);
+
 /// Read how long a DELIVERED record is kept before the publisher task
-/// reclaims it (docs/host-integration.md §Retention).
-///
-/// `None` — the default, and what `0` spells explicitly — keeps published
-/// records forever, which is the behaviour every deployment had before this
-/// knob existed. Only `published` rows are ever in scope; see
+/// reclaims it (docs/host-integration.md §Retention). `Some(Duration::ZERO)`
+/// is the explicit opt-out that keeps published records forever; `None`
+/// leaves the default, [`DEFAULT_PUBLISHED_RETENTION`]. Only `published`
+/// rows are ever in scope; see
 /// [`proxima_core::storage_ports::publication::PublicationRetentionPort`].
 ///
 /// # Errors
@@ -108,7 +110,7 @@ pub(crate) fn published_retention_from_lookup(
         ))
     })?;
     if seconds == 0 {
-        return Ok(None);
+        return Ok(Some(Duration::ZERO));
     }
     let horizon = Duration::from_secs(seconds);
     if horizon < MIN_PUBLISHED_RETENTION {
@@ -207,16 +209,16 @@ mod tests {
         }
     }
 
-    /// The retention knob is off by default, spells "off" as `0`, and
-    /// refuses a horizon so short that delivery and deletion would be the
+    /// The retention knob leaves the default when unset, spells "off" as `0`,
+    /// and refuses a horizon so short that delivery and deletion would be the
     /// same event.
     #[test]
-    fn the_published_retention_horizon_is_off_by_default_and_floored() {
+    fn the_published_retention_horizon_is_floored_and_zero_is_off() {
         assert_eq!(published_retention_from_lookup(&env(&[])).unwrap(), None);
         assert_eq!(
             published_retention_from_lookup(&env(&[(ENV_OUTBOX_PUBLISHED_RETENTION_SECS, "0")]))
                 .unwrap(),
-            None,
+            Some(Duration::ZERO),
             "0 is the explicit spelling of keep-forever, not a zero-second horizon"
         );
         assert_eq!(

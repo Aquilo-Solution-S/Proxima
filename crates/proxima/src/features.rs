@@ -12,7 +12,9 @@ use std::time::Duration;
 use proxima_core::quiesce::Checkpoint;
 use proxima_core::storage_ports::publication::{PublicationOutboxPort, PublicationRetentionPort};
 use proxima_core::write_wake::WriteWake;
-use proxima_core::{Engine, FeatureControlError, FeatureStatus, FlavorServices, QuiesceGate};
+use proxima_core::{
+    Engine, FeatureControlError, FeatureStatus, FlavorServices, QuiesceGate, StorageError,
+};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -534,9 +536,9 @@ fn start_publisher(
     let consumers = &inputs.config.outbox_consumers;
     if consumers.is_empty() {
         let prune = match horizon {
-            Some(_) => "a retention is configured but the outbox publisher is off",
+            Some(_) => "the outbox publisher is off, so no delivered record exists to prune",
             None => {
-                "no retention configured (PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS / \
+                "retention is off (PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS=0 / \
                      published_retention)"
             }
         };
@@ -564,7 +566,7 @@ fn start_publisher(
         ),
         None => FeatureDecision::off(
             Feature::PublishedRecordPrune,
-            "no retention configured (PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS / \
+            "retention is off (PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS=0 / \
              published_retention)",
         ),
     };
@@ -612,22 +614,40 @@ impl std::fmt::Debug for PublicationRetention {
     }
 }
 
-/// Records one prune pass may remove.
+/// Records one prune statement may remove.
 ///
-/// Bounded because the statement runs beside the live write path: the
-/// table has no index on `published_at` (adding one is a migration this
-/// slice does not ship), so each pass is a sequential scan and must not
-/// also hold row locks over an unbounded delete. A backlog larger than this
-/// is reclaimed over several passes.
+/// Bounded because the statement runs beside the live write path and must not
+/// hold row locks over an unbounded delete. A backlog larger than this is
+/// reclaimed by [`prune_until_short`], one statement at a time.
 const RETENTION_PRUNE_BATCH: u32 = 1_000;
 
-/// How often the prune runs.
+/// How often a prune sequence runs.
 ///
-/// DELIBERATELY not once per drain pass. The drain polls every 500 ms, and a
-/// sequential scan at that rate would cost more than the storage it reclaims
-/// — while the horizon it enforces is at least a minute, so nothing becomes
-/// prunable faster than this either.
+/// DELIBERATELY not once per drain pass: the drain polls every 500 ms, while
+/// the horizon the prune enforces is at least a minute, so nothing becomes
+/// prunable faster than this.
 const RETENTION_PRUNE_INTERVAL: Duration = Duration::from_mins(1);
+
+/// One prune sequence: delete batches until one comes back short, so every
+/// record past the horizon is gone when it returns. Each batch is its own
+/// transaction, which keeps the row locks short; `cancel` ends the sequence
+/// between batches. Returns how many records it removed.
+async fn prune_until_short(
+    port: &dyn PublicationRetentionPort,
+    older_than: Duration,
+    limit: std::num::NonZeroU32,
+    cancel: &CancellationToken,
+) -> Result<u64, StorageError> {
+    let mut total = 0;
+    while !cancel.is_cancelled() {
+        let pruned = port.prune_published(older_than, limit).await?;
+        total += pruned;
+        if pruned < u64::from(limit.get()) {
+            break;
+        }
+    }
+    Ok(total)
+}
 
 /// Reclaim delivered records older than the configured horizon, until
 /// cancellation. A no-op future when no horizon is configured.
@@ -646,10 +666,13 @@ async fn prune_published_records(
             () = cancel.cancelled() => return,
             () = tokio::time::sleep(RETENTION_PRUNE_INTERVAL) => {}
         }
-        match retention
-            .port
-            .prune_published(retention.older_than, limit)
-            .await
+        match prune_until_short(
+            retention.port.as_ref(),
+            retention.older_than,
+            limit,
+            &cancel,
+        )
+        .await
         {
             Ok(0) => {}
             Ok(pruned) => tracing::debug!(
@@ -787,4 +810,63 @@ fn spawn_embedding_worker(
         }
     });
     (control, task)
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use std::num::NonZeroU32;
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// A port holding `eligible` records past the horizon.
+    struct Backlog(Mutex<u64>);
+
+    #[async_trait::async_trait]
+    impl PublicationRetentionPort for Backlog {
+        async fn prune_published(
+            &self,
+            _older_than: Duration,
+            limit: NonZeroU32,
+        ) -> Result<u64, StorageError> {
+            let mut eligible = self.0.lock().unwrap();
+            let deleted = (*eligible).min(u64::from(limit.get()));
+            *eligible -= deleted;
+            Ok(deleted)
+        }
+    }
+
+    #[tokio::test]
+    async fn one_prune_sequence_removes_every_eligible_record() {
+        let limit = NonZeroU32::new(1_000).unwrap();
+        for eligible in [0, 1, 999, 1_000, 1_001, 4_500] {
+            let port = Backlog(Mutex::new(eligible));
+            let removed = prune_until_short(
+                &port,
+                Duration::from_mins(1),
+                limit,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(removed, eligible);
+            assert_eq!(*port.0.lock().unwrap(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_sequence_stops_between_batches() {
+        let port = Backlog(Mutex::new(5_000));
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let removed = prune_until_short(
+            &port,
+            Duration::from_mins(1),
+            NonZeroU32::new(1_000).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(removed, 0);
+    }
 }

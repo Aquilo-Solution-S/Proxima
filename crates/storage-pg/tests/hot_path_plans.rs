@@ -18,6 +18,7 @@ use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::export_statement_sql_for_tests;
 use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::fact_embeddings::claim_embedding_jobs_sql_for_tests;
+use proxima_storage_pg::verbs::prune_published_sql_for_tests;
 use proxima_storage_pg::verbs::query::{
     ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests, inbound_pin_sql_for_tests,
     memory_page_sql_for_tests, owned_head_handle_sql_for_tests, ranked_projection_sql_for_tests,
@@ -868,4 +869,74 @@ async fn owner_export_reaches_its_owner_through_an_index() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("owner export EXPLAIN failed");
+}
+
+/// The retention prune reads the delivered records it deletes, through
+/// `publication_outbox_published_idx` (#491).
+///
+/// Without an index on `published_at` each batch scanned the whole outbox:
+/// one pass cost the table, not the batch. Planned with real statistics and
+/// `enable_seqscan` left on, over a backlog of pending records beside a pile
+/// of old delivered ones.
+#[tokio::test]
+async fn retention_prune_reads_the_published_index() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')",
+        )
+        .bind(owner.into_inner())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.publication_outbox
+                 (t, owner_id, schema_id, schema_version, event_type, event_id,
+                  envelope, envelope_digest, state, published_at)
+             SELECT uuidv7(), $1, 'core/agent-note-v1', 1, 'type', 'event-' || n,
+                    '\\x00'::bytea, decode(repeat('00', 32), 'hex'),
+                    CASE WHEN n % 4 = 0 THEN 'pending' ELSE 'published' END::proxima_core.publication_record_state,
+                    CASE WHEN n % 4 = 0 THEN NULL ELSE now() - make_interval(secs => 100000 - n) END
+               FROM generate_series(1, 40000) AS n",
+        )
+        .bind(owner.into_inner())
+        .execute(pool)
+        .await?;
+        // SQL-POLICY: fixed-fragment
+        sqlx::raw_sql(sqlx::AssertSqlSafe("ANALYZE proxima_core.publication_outbox"))
+            .execute(pool)
+            .await?;
+
+        let mut tx = pg.platform_scope_for_host().begin().await?;
+        let explain = format!(
+            "EXPLAIN (FORMAT JSON, COSTS OFF) {}",
+            prune_published_sql_for_tests()
+        );
+        // SQL-POLICY: fixed-fragment — the production prune statement.
+        let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain))
+            .bind(3600.0_f64)
+            .bind(1000_i64)
+            .fetch_one(&mut *tx)
+            .await?;
+        let rendered = plan.to_string();
+        assert!(
+            rendered.contains("publication_outbox_published_idx"),
+            "the prune must read the published index; plan:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("\"Node Type\":\"Seq Scan\""),
+            "the prune must not scan the outbox; plan:\n{rendered}"
+        );
+        tx.rollback().await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("retention prune EXPLAIN failed");
 }
