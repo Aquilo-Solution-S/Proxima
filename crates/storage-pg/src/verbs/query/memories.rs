@@ -14,7 +14,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::error::map_err;
-use crate::pg_enums::PgMemoryKind;
+use crate::pg_enums::{PgMemoryKind, memory_payload_kind};
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
@@ -289,7 +289,7 @@ async fn load_row_payloads_batch_on_connection(
             entity_kind,
             &SchemaId::new(row.schema_id.clone()),
         )?;
-        let kind = payload_kind_for(entity_kind).expect("memory kind has payload kind");
+        let kind = PayloadKind::from(row.kind);
         validate_row_stamp(
             sidecars,
             spec,
@@ -401,15 +401,6 @@ fn append_memory_filters(sql: &mut String, filters: &[MemoryFilter], heads_only:
     }
 }
 
-fn payload_kind_for(kind: EntityKind) -> Option<PayloadKind> {
-    match kind {
-        EntityKind::Fact => Some(PayloadKind::Fact),
-        EntityKind::Abstraction => Some(PayloadKind::Abstraction),
-        EntityKind::Perspective => Some(PayloadKind::Perspective),
-        EntityKind::Goal => None,
-    }
-}
-
 fn validate_row_stamp(
     sidecars: &PgSidecarRegistryFrozen,
     spec: &MemorySchemaSpec,
@@ -419,7 +410,7 @@ fn validate_row_stamp(
     let Some(table) = spec.sidecar_table.as_deref() else {
         return Ok(());
     };
-    let kind = payload_kind_for(spec.kind).expect("memory kind has payload kind");
+    let kind = memory_payload_kind(spec.kind)?;
     if sidecars.table_for_schema(kind, &spec.schema_id, spec.schema_version) != Some(table)
         || !stamped_tables.iter().any(|stamped| stamped == table)
     {

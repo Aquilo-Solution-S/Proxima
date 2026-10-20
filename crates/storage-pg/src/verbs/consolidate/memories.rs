@@ -2,12 +2,11 @@ use std::collections::HashMap;
 
 use proxima_core::read_models::{MemorySchemaSpec, MemorySnapshot, resolve_memory_schema};
 use proxima_core::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow};
-use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{EntityKind, MemoryId, OwnerId, SchemaId, SidecarPayload, StorageError};
 use sqlx::PgConnection;
 
 use crate::error::map_err;
-use crate::pg_enums::PgMemoryKind;
+use crate::pg_enums::{PgMemoryKind, memory_payload_kind};
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 /// # Errors
@@ -151,15 +150,6 @@ pub(crate) async fn load_memory_graph_payloads_on_connection(
         .collect()
 }
 
-fn payload_kind_for(kind: EntityKind) -> Option<PayloadKind> {
-    match kind {
-        EntityKind::Fact => Some(PayloadKind::Fact),
-        EntityKind::Abstraction => Some(PayloadKind::Abstraction),
-        EntityKind::Perspective => Some(PayloadKind::Perspective),
-        EntityKind::Goal => None,
-    }
-}
-
 /// One `memory` row as the by-id loaders select it.
 #[derive(sqlx::FromRow)]
 struct StoredMemoryRow {
@@ -286,7 +276,7 @@ fn validate_and_queue_payload(
     let Some(table) = spec.sidecar_table.as_deref() else {
         return Ok(());
     };
-    let payload_kind = payload_kind_for(spec.kind).expect("memory kind has payload kind");
+    let payload_kind = memory_payload_kind(spec.kind)?;
     let key = PgSidecarKey::new(payload_kind, spec.schema_id.clone(), spec.schema_version);
     if pg_sidecars.table_for_schema(payload_kind, &spec.schema_id, spec.schema_version)
         != Some(table)

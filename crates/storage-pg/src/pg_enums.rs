@@ -3,6 +3,7 @@
 //! Database labels are decoded at the row boundary. Unknown labels return a
 //! decode error; exhaustive `From` matches cover every admitted Rust variant.
 
+use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{EntityKind, StorageError};
 
 /// `proxima_core.memory_kind`. Three labels — `Goal` is not one of them; a
@@ -62,6 +63,24 @@ impl From<PgMemoryKind> for EntityKind {
             PgMemoryKind::Perspective => Self::Perspective,
         }
     }
+}
+
+impl From<PgMemoryKind> for PayloadKind {
+    fn from(value: PgMemoryKind) -> Self {
+        match value {
+            PgMemoryKind::Fact => Self::Fact,
+            PgMemoryKind::Abstraction => Self::Abstraction,
+            PgMemoryKind::Perspective => Self::Perspective,
+        }
+    }
+}
+
+/// The payload layer a schema spec's entity kind writes. A spec names an
+/// `EntityKind`, so a Goal is representable there and refused here.
+pub(crate) fn memory_payload_kind(kind: EntityKind) -> Result<PayloadKind, StorageError> {
+    PgMemoryKind::of(kind)
+        .map(PayloadKind::from)
+        .ok_or_else(|| StorageError::Internal("a Goal has no memory payload kind".into()))
 }
 
 /// `proxima_core.sketch_kind`: the memory kinds plus `goal`, the kinds a
@@ -174,6 +193,22 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn a_goal_has_no_memory_payload_kind() {
+        assert!(matches!(
+            memory_payload_kind(EntityKind::Fact),
+            Ok(PayloadKind::Fact)
+        ));
+        assert!(matches!(
+            memory_payload_kind(EntityKind::Perspective),
+            Ok(PayloadKind::Perspective)
+        ));
+        assert!(matches!(
+            memory_payload_kind(EntityKind::Goal),
+            Err(StorageError::Internal(_))
+        ));
     }
 
     #[test]
