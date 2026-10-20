@@ -40,10 +40,12 @@ use proxima_core::storage_ports::publication::{
     AckOutcome, ClaimedPublication, ConsumerName, PublicationOutboxPort, PublisherId,
     ReleaseOutcome,
 };
+use proxima_core::write_wake::WriteWake;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-/// The longest a failing drain waits between passes.
+/// The longest a failing drain waits between passes, and the shipped
+/// [`Settings::idle_poll_max`].
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// How one drain claims and delivers.
@@ -56,9 +58,14 @@ pub(crate) struct Settings {
     /// How long a claim holds a record before it becomes deliverable again.
     /// The storage port refuses a lease under one second.
     pub(crate) lease: Duration,
-    /// How long an idle drain waits before it claims again; also the floor of
-    /// the backoff after a failed pass.
+    /// How long a drain waits after its first empty claim; also the floor of
+    /// the backoff after a failed pass. Each further empty claim doubles the
+    /// wait, up to `idle_poll_max`; a committed write or a claim that finds
+    /// work resets it.
     pub(crate) poll_interval: Duration,
+    /// The longest an idle drain sleeps between claims when no write commits
+    /// in this process: how late it finds work enqueued by another process.
+    pub(crate) idle_poll_max: Duration,
     /// How long one `accept` may take before its claim is released.
     pub(crate) accept_timeout: Duration,
 }
@@ -73,6 +80,7 @@ impl Settings {
             batch: NonZeroU32::new(64).expect("64 is not zero"),
             lease: Duration::from_secs(30),
             poll_interval: Duration::from_millis(500),
+            idle_poll_max: MAX_BACKOFF,
             accept_timeout: Duration::from_secs(5),
         }
     }
@@ -158,41 +166,60 @@ impl Drain {
         }
     }
 
-    /// Drain until cancelled, backing off while the intake is unhappy.
+    /// Drain until cancelled: claim again at once while claims return work
+    /// or a write commits in this process, back off while claims come back
+    /// empty, and back off while the intake is unhappy.
     ///
     /// Never panics and never returns an error: a drain that stopped on an
     /// intake outage would turn a recoverable delivery pause into a silent
     /// permanent one, and capture keeps running either way.
     pub(crate) async fn run(&self, cancel: &CancellationToken, mut gate: GateWorker) {
-        let mut backoff = self.settings.poll_interval;
+        // Subscribed before the first claim, so a write that commits while a
+        // pass runs wakes the drain right after it.
+        let mut writes = WriteWake::subscribe();
+        let floor = self.settings.poll_interval;
+        let mut idle_wait = floor;
+        let mut failure_wait = floor;
         loop {
             // Before every claim: a quiesced drain parks here, holding
             // nothing, until it is resumed or cancelled.
             if gate.checkpoint(cancel.cancelled()).await == Checkpoint::Cancelled {
                 return;
             }
-            let idle = match self.pass(cancel, &gate).await {
-                Ok(claimed) => {
-                    backoff = self.settings.poll_interval;
-                    // A pass that claimed anything is a pass with more
-                    // waiting; only an empty claim earns the sleep.
-                    claimed == 0
+            match self.pass(cancel, &gate).await {
+                // A pass that claimed anything is a pass with more waiting.
+                Ok(claimed) if claimed > 0 => {
+                    idle_wait = floor;
+                    failure_wait = floor;
                 }
+                // An empty claim: sleep, longer each time nothing turns up,
+                // until a write commits here. Writes committed by another
+                // process are found by the poll, within `idle_poll_max`.
+                Ok(_) => {
+                    failure_wait = floor;
+                    let sleep = idle_wait;
+                    idle_wait = next_backoff(idle_wait, floor, self.settings.idle_poll_max);
+                    tokio::select! {
+                        () = cancel.cancelled() => return,
+                        () = gate.changed() => {}
+                        () = writes.changed() => idle_wait = floor,
+                        () = tokio::time::sleep(sleep) => {}
+                    }
+                }
+                // A failing intake is not hurried by new writes.
                 Err(failure) => {
                     tracing::warn!(
                         consumer = %self.consumer,
                         failure_category = ?failure,
                         "in-process outbox delivery failed; the records stay pending and are retried"
                     );
-                    backoff = next_backoff(backoff, self.settings.poll_interval);
-                    true
-                }
-            };
-            if idle {
-                tokio::select! {
-                    () = cancel.cancelled() => return,
-                    () = gate.changed() => {}
-                    () = tokio::time::sleep(backoff) => {}
+                    idle_wait = floor;
+                    failure_wait = next_backoff(failure_wait, floor, MAX_BACKOFF);
+                    tokio::select! {
+                        () = cancel.cancelled() => return,
+                        () = gate.changed() => {}
+                        () = tokio::time::sleep(failure_wait) => {}
+                    }
                 }
             }
         }
@@ -374,8 +401,8 @@ impl Drain {
 /// a floor above the ceiling must not kill the drain task and leave the
 /// outbox undrained for the life of the process. A floor above the ceiling
 /// wins.
-fn next_backoff(current: Duration, floor: Duration) -> Duration {
-    current.saturating_mul(2).min(MAX_BACKOFF).max(floor)
+fn next_backoff(current: Duration, floor: Duration, ceiling: Duration) -> Duration {
+    current.saturating_mul(2).min(ceiling).max(floor)
 }
 
 /// Spawn one task per drain beside `housekeeping` (the retained-record
@@ -417,18 +444,163 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proxima_core::publication::intake::{Intake, IntakeError};
+    use proxima_core::storage_ports::publication::ClaimToken;
+    use proxima_core::write_wake::write_committed;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use uuid::Uuid;
+
+    /// An outbox that never has anything to deliver; counts its claims.
+    #[derive(Debug, Default)]
+    struct EmptyOutbox {
+        claims: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl PublicationOutboxPort for EmptyOutbox {
+        async fn claim(
+            &self,
+            _consumer: &ConsumerName,
+            _publisher: &PublisherId,
+            _limit: NonZeroU32,
+            _lease: Duration,
+        ) -> Result<Vec<ClaimedPublication>, proxima_core::StorageError> {
+            self.claims.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+
+        async fn mark_published(
+            &self,
+            _consumer: &ConsumerName,
+            _id: Uuid,
+            _claim: ClaimToken,
+        ) -> Result<AckOutcome, proxima_core::StorageError> {
+            unreachable!("nothing is claimed")
+        }
+
+        async fn renew_claim(
+            &self,
+            _consumer: &ConsumerName,
+            _id: Uuid,
+            _claim: ClaimToken,
+            _lease: Duration,
+        ) -> Result<bool, proxima_core::StorageError> {
+            unreachable!("nothing is claimed")
+        }
+
+        async fn release(
+            &self,
+            _consumer: &ConsumerName,
+            _id: Uuid,
+            _claim: ClaimToken,
+        ) -> Result<ReleaseOutcome, proxima_core::StorageError> {
+            unreachable!("nothing is claimed")
+        }
+
+        async fn pending_count(&self) -> Result<u64, proxima_core::StorageError> {
+            Ok(0)
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoIntake;
+
+    #[async_trait::async_trait]
+    impl DurableIntake for NoIntake {
+        async fn accept(&self, _event: &ReceivedEvent) -> Result<Intake, IntakeError> {
+            unreachable!("nothing is claimed")
+        }
+    }
+
+    fn run_drain(
+        outbox: &Arc<EmptyOutbox>,
+        settings: Settings,
+    ) -> (CancellationToken, JoinHandle<()>) {
+        let drain = Drain::new(
+            outbox.clone(),
+            ConsumerName::default(),
+            Arc::new(NoIntake),
+            settings,
+            Arc::new(Proceed),
+        );
+        let cancel = CancellationToken::new();
+        let (_gates, task) = spawn(vec![drain], cancel.clone(), |_| async {});
+        (cancel, task)
+    }
+
+    /// An idle drain backs off to the ceiling: over ten minutes it claims
+    /// about thirty times, not once per poll interval (1200 times).
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_drain_backs_off_to_the_ceiling() {
+        let outbox = Arc::new(EmptyOutbox::default());
+        let settings = Settings::new();
+        let (poll, ceiling) = (settings.poll_interval, settings.idle_poll_max);
+        let (cancel, task) = run_drain(&outbox, settings);
+        tokio::time::sleep(Duration::from_mins(10)).await;
+        cancel.cancel();
+        task.await.expect("drain joins");
+
+        // 0.5 + 1 + 2 + 4 + 8 + 16 s of doubling, then one claim per 30 s.
+        let doubling = 6;
+        let ramp: Duration = (0..doubling).map(|step| poll * (1 << step)).sum();
+        let at_ceiling = Duration::from_mins(10)
+            .checked_sub(ramp)
+            .expect("the ramp is shorter than ten minutes")
+            .as_secs()
+            / ceiling.as_secs();
+        let bound = 1 + doubling + usize::try_from(at_ceiling).expect("small");
+        let claims = outbox.claims.load(Ordering::SeqCst);
+        assert!(
+            (bound - 2..=bound + 1).contains(&claims),
+            "{claims} claims in ten idle minutes, expected about {bound}"
+        );
+    }
+
+    /// A write committed in this process wakes an idle drain at once, however
+    /// long its fallback sleep.
+    #[tokio::test]
+    async fn a_committed_write_wakes_an_idle_drain() {
+        let outbox = Arc::new(EmptyOutbox::default());
+        let settings = Settings {
+            poll_interval: Duration::from_hours(1),
+            idle_poll_max: Duration::from_hours(1),
+            ..Settings::new()
+        };
+        let (cancel, task) = run_drain(&outbox, settings);
+        let claims = |wanted: usize| {
+            let outbox = outbox.clone();
+            tokio::time::timeout(Duration::from_secs(1), async move {
+                while outbox.claims.load(Ordering::SeqCst) < wanted {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+        };
+        claims(1).await.expect("the first claim runs at once");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(outbox.claims.load(Ordering::SeqCst), 1, "then it sleeps");
+
+        write_committed();
+        claims(2).await.expect("a committed write wakes the drain");
+        write_committed();
+        claims(3).await.expect("and wakes it again");
+        cancel.cancel();
+        task.await.expect("drain joins");
+    }
 
     #[test]
     fn the_backoff_doubles_to_the_ceiling_and_a_higher_floor_wins() {
         let poll = Duration::from_millis(500);
-        assert_eq!(next_backoff(poll, poll), Duration::from_secs(1));
         assert_eq!(
-            next_backoff(Duration::from_secs(20), poll),
+            next_backoff(poll, poll, MAX_BACKOFF),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            next_backoff(Duration::from_secs(20), poll, MAX_BACKOFF),
             Duration::from_secs(30)
         );
         let slow = Duration::from_mins(1);
         assert_eq!(
-            next_backoff(slow, slow),
+            next_backoff(slow, slow, MAX_BACKOFF),
             slow,
             "a floor over the ceiling wins"
         );

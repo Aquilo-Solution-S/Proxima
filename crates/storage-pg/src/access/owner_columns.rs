@@ -1706,7 +1706,7 @@ pub(crate) async fn transfer_to_owner(
             tx.rollback().await.map_err(map_err)?;
             return Ok(false);
         }
-        tx.commit().await.map_err(map_err)?;
+        crate::write_wake::commit(tx).await?;
         Ok(transferred)
     })
     .await

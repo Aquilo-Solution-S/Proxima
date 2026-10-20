@@ -3,7 +3,8 @@
 //! while serving continues, and resume drains what queued meanwhile.
 //!
 //! The worker interval is an hour in every case that does not count
-//! intervals, so only the gate's wake-ups can end an idle sleep.
+//! intervals, so only the gate's wake-ups and committed writes can end an
+//! idle sleep.
 
 #[path = "fixtures/setup_error.rs"]
 #[allow(dead_code, reason = "each suite uses part of the shared fixture")]
@@ -715,5 +716,31 @@ async fn shutdown_while_quiescing_stops_the_pending_quiesce_and_joins() {
         },
         "the call in flight still finished its batch"
     );
+    world.close().await;
+}
+
+/// With an hour between idle polls, a write still gets its embedding within
+/// a second: the committed write wakes the worker.
+#[tokio::test]
+async fn a_committed_write_wakes_a_worker_whose_interval_is_an_hour() {
+    let world = World::new("feature_control_wake").await;
+    let built = expect_described("build", world.app(Duration::from_hours(1)).build().await).await;
+    // Let the boot reconcile and the first, empty drain run, so the worker
+    // is asleep.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(world.queue().await.embedded, 0);
+
+    let written = tokio::time::Instant::now();
+    world
+        .write_note(built.host().engine(), "wakes the worker")
+        .await;
+    world.wait_until_drained(1).await;
+    assert!(
+        written.elapsed() < Duration::from_secs(1),
+        "embedded {:?} after the write, not after the hour",
+        written.elapsed()
+    );
+
+    built.shutdown().await;
     world.close().await;
 }

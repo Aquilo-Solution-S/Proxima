@@ -632,7 +632,7 @@ impl WriteSession for PgWriteSession {
 
     async fn commit(self: Box<Self>) -> Result<(), StorageError> {
         let session = *self;
-        session.tx.commit().await.map_err(crate::error::map_err)?;
+        crate::write_wake::commit(session.tx).await?;
         // After commit and never before: a rollback after an object delete
         // would restore the upload row over destroyed bytes. A failed
         // purge leaves its `cold_purge_pending` row for the retry lane.

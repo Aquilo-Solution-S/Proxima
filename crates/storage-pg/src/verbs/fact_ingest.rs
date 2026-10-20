@@ -196,7 +196,7 @@ pub(crate) async fn ingest_authorized_fact_atomic(
         .await?;
         let outcome =
             ingest_fact_command_in_tx(&mut tx, authorized, embedding_spaces, store_number).await?;
-        tx.commit().await.map_err(map_err)?;
+        crate::write_wake::commit(tx).await?;
         Ok(outcome)
     })
     .await

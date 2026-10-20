@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use proxima_core::quiesce::Checkpoint;
 use proxima_core::storage_ports::publication::{PublicationOutboxPort, PublicationRetentionPort};
+use proxima_core::write_wake::WriteWake;
 use proxima_core::{Engine, FeatureControlError, FeatureStatus, FlavorServices, QuiesceGate};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -668,6 +669,11 @@ async fn prune_published_records(
     }
 }
 
+/// The longest the embedding worker sleeps between idle drains when no
+/// write commits in this process, unless the configured worker interval is
+/// longer: how late it finds jobs enqueued by another process.
+const EMBED_IDLE_POLL_MAX: Duration = Duration::from_mins(1);
+
 /// Startup reconcile, then drain until cancellation. Started only when the
 /// engine has an embedding router. Returns the worker's pause control and
 /// its task.
@@ -711,12 +717,19 @@ fn spawn_embedding_worker(
                 tracing::warn!(error = %err, "startup embedding reconcile failed");
             }
         }
+        // Subscribed before the first drain, so a write that commits while
+        // one runs wakes the worker right after it.
+        let mut writes = WriteWake::subscribe();
+        let floor = policy.worker_interval();
+        let ceiling = EMBED_IDLE_POLL_MAX.max(floor);
+        let mut idle_wait = floor;
         loop {
             if cancel.is_cancelled() {
                 break;
             }
             let mut processed = 0usize;
             let mut failed = 0usize;
+            let mut errored = false;
             loop {
                 if gate.checkpoint(cancel.cancelled()).await == Checkpoint::Cancelled {
                     return;
@@ -737,6 +750,7 @@ fn spawn_embedding_worker(
                     }
                     Err(err) => {
                         tracing::warn!(error = %err, "embedding drain failed");
+                        errored = true;
                         break;
                     }
                 }
@@ -744,10 +758,31 @@ fn spawn_embedding_worker(
             if processed > 0 || failed > 0 {
                 tracing::info!(processed, failed, "drained embedding jobs");
             }
+            if errored {
+                // A failing drain retries on the plain interval, not on
+                // every write.
+                idle_wait = floor;
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    () = gate.changed() => {}
+                    () = tokio::time::sleep(floor) => {}
+                }
+                continue;
+            }
+            // Idle: sleep, longer each round that found nothing, until a
+            // write commits here. Jobs enqueued by another process are found
+            // by the poll, within the ceiling.
+            let sleep = if processed > 0 || failed > 0 {
+                floor
+            } else {
+                idle_wait
+            };
+            idle_wait = sleep.saturating_mul(2).min(ceiling).max(floor);
             tokio::select! {
                 () = cancel.cancelled() => break,
                 () = gate.changed() => {}
-                () = tokio::time::sleep(policy.worker_interval()) => {}
+                () = writes.changed() => idle_wait = floor,
+                () = tokio::time::sleep(sleep) => {}
             }
         }
     });

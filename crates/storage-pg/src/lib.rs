@@ -72,6 +72,7 @@ pub use store_wide::STORE_WIDE_TABLES;
 pub mod test_fixtures;
 mod tuning;
 pub mod verbs;
+mod write_wake;
 /// Stable, discoverable re-export of the exported `OwnerAccessPort` adapter
 /// (see [`access::PgOwnerAccessResolver`]) for embedding hosts.
 pub use access::PgOwnerAccessResolver;

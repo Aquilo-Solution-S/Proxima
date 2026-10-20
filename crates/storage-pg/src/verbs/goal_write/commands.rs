@@ -6,7 +6,7 @@ use super::{
     SystemOrigin, TransitionGoalAtomicRequest, achieve_replay_declaration, child_draft,
     create_replay_declaration, decompose_replay_declarations, draft_from_payload,
     draft_from_stored, insert_or_replay_goal, internal, lifecycle_outcome,
-    load_goal_evidence_exact, load_prior_goal, lock_prepared_goal_writes, map_err,
+    load_goal_evidence_exact, load_prior_goal, lock_prepared_goal_writes,
     modify_replay_declaration, persist_prepared_goal_insert, prepare_goal_insert,
     record_goal_replay_declaration, require_goal_replay, resolve_decompose_replay_set,
     resolve_goal_replay, transition_replay_declaration, validate_active_head,
@@ -98,7 +98,7 @@ pub(crate) async fn create_goal_atomic_in_pool(
     )
     .await?;
     let outcome = create_goal_in_tx(&mut tx, sidecars, req, permit, store_number).await?;
-    tx.commit().await.map_err(map_err)?;
+    crate::write_wake::commit(tx).await?;
     Ok(outcome)
 }
 
@@ -189,7 +189,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
     )
     .await?
     {
-        tx.commit().await.map_err(map_err)?;
+        crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
     let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
@@ -240,7 +240,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
             &declaration,
         )
         .await?;
-        tx.commit().await.map_err(map_err)?;
+        crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
     let outcome = lifecycle_outcome(
@@ -255,7 +255,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
     )
     .await?;
     record_goal_replay_declaration(tx.as_mut(), &declaration, &outcome).await?;
-    tx.commit().await.map_err(map_err)?;
+    crate::write_wake::commit(tx).await?;
     Ok(outcome)
 }
 
@@ -278,7 +278,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     )
     .await?
     {
-        tx.commit().await.map_err(map_err)?;
+        crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
     let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &req.evidence).await?;
@@ -319,7 +319,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
             &declaration,
         )
         .await?;
-        tx.commit().await.map_err(map_err)?;
+        crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
     let outcome = lifecycle_outcome(
@@ -334,7 +334,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     )
     .await?;
     record_goal_replay_declaration(tx.as_mut(), &declaration, &outcome).await?;
-    tx.commit().await.map_err(map_err)?;
+    crate::write_wake::commit(tx).await?;
     Ok(outcome)
 }
 
@@ -367,7 +367,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
     )
     .await?
     {
-        tx.commit().await.map_err(map_err)?;
+        crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
     let carried_or_explicit = match &req.evidence {
@@ -418,7 +418,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
             &declaration,
         )
         .await?;
-        tx.commit().await.map_err(map_err)?;
+        crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
     let dependencies = draft_dependency_ids(&draft);
@@ -434,7 +434,7 @@ pub(crate) async fn modify_goal_atomic_in_pool(
     )
     .await?;
     record_goal_replay_declaration(tx.as_mut(), &declaration, &outcome).await?;
-    tx.commit().await.map_err(map_err)?;
+    crate::write_wake::commit(tx).await?;
     Ok(outcome)
 }
 
@@ -450,7 +450,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
     let mut tx = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
     let declarations = decompose_replay_declarations(req)?;
     if let Some(replay) = resolve_decompose_replay_set(tx.as_mut(), req, &declarations).await? {
-        tx.commit().await.map_err(map_err)?;
+        crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
     validate_active_head(&mut tx, &req.owner, req.parent_goal_id).await?;
@@ -497,7 +497,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
         let replay = resolve_decompose_replay_set(tx.as_mut(), req, &declarations)
             .await?
             .ok_or_else(|| internal("prepared Goal replay disappeared before declaration proof"))?;
-        tx.commit().await.map_err(map_err)?;
+        crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
 
@@ -539,7 +539,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
         children.push(DecomposedGoalOutcome { outcome });
     }
 
-    tx.commit().await.map_err(map_err)?;
+    crate::write_wake::commit(tx).await?;
     Ok(DecomposeGoalOutcome {
         children,
         idempotent_replay: false,

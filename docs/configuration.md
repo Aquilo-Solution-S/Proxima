@@ -52,7 +52,7 @@ plus a migration pool of the same size during boot; size the server's
 | PROXIMA_EMBED_QUERY_INSTRUCTION | memory query template | instruction-tuned model | [MCP app](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
 | PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS | provider request timeout | embedding worker tuning | [embedding policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/llm.rs) |
 | PROXIMA_EMBED_BATCH_SIZE | provider batch size | embedding worker tuning | [embedding policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/llm.rs) |
-| PROXIMA_EMBED_WORKER_INTERVAL_SECONDS | worker poll interval | embedding worker tuning | [embedding policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/llm.rs) |
+| PROXIMA_EMBED_WORKER_INTERVAL_SECONDS | first idle wait of the embedding worker; doubles while drains find nothing, up to 60 s or this value if longer; a write committed in the process wakes it at once | embedding worker tuning | [embedding policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/llm.rs) |
 | PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS | stale claim timeout | embedding worker recovery | [embedding policy](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/llm.rs) |
 | PROXIMA_MISSING_MIGRATION_POLICY | missing-version policy (`reject` or `allow`) | releases intentionally share a database | `missing_migration_policy_from_lookup` |
 | PROXIMA_SKIP_MIGRATIONS | migration boot switch | split-role deployment | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |

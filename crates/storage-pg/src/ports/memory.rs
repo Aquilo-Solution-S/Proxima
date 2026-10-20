@@ -120,7 +120,7 @@ impl MemoryAuthoringPort for PgStorage {
                 )
                 .await?,
             );
-            tx.commit().await.map_err(crate::error::map_err)?;
+            crate::write_wake::commit(tx).await?;
             Ok(AuthorDerivedOutcome {
                 memory_id: outcome.memory_id,
                 idempotent_replay: outcome.idempotent_replay,
@@ -166,7 +166,7 @@ impl MemoryAuthoringPort for PgStorage {
         .fetch_all(&mut *tx)
         .await
         .map_err(internal)?;
-        tx.commit().await.map_err(crate::error::map_err)?;
+        crate::write_wake::commit(tx).await?;
         rows.into_iter()
             .map(|(memory_id, kind)| {
                 let kind = match kind.as_str() {

@@ -1312,6 +1312,7 @@ mod pg_tests {
                 OwnerWritePermit::transfer_for_tests(source, AccessKind::Fact, destination);
             let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
             let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
+            let mut wake = proxima_core::write_wake::WriteWake::subscribe();
 
             assert!(
                 pg.transfer_to_owner(
@@ -1324,6 +1325,11 @@ mod pg_tests {
                 .await?,
                 "the transfer moves the processing job with its Memory"
             );
+            // The transfer enqueues the destination's series-head job: it
+            // wakes the embedding drain like any other enqueuing write.
+            tokio::time::timeout(std::time::Duration::from_secs(1), wake.changed())
+                .await
+                .map_err(|_| "a committed transfer wakes the drains")?;
             let (job_owner, job_token): (Uuid, Option<Uuid>) = sqlx::query_as(
                 "SELECT owner_id, claim_token
                    FROM proxima_core.embedding_jobs

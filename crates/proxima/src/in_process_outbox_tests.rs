@@ -867,3 +867,67 @@ async fn expired_lease_delivered_by_one_process() {
     .await;
     world.finish(outcome).await;
 }
+
+/// A drain whose fallback poll is an hour still delivers a Fact within a
+/// second of its write: the committed write wakes it.
+#[tokio::test]
+async fn a_committed_fact_wakes_a_drain_whose_fallback_is_an_hour() {
+    let intake = Arc::new(TestIntake::default());
+    let Some(world) = World::new(None).await else {
+        return;
+    };
+    let outcome = AssertUnwindSafe(async {
+        let settings = Settings {
+            poll_interval: Duration::from_hours(1),
+            idle_poll_max: Duration::from_hours(1),
+            ..Settings::new()
+        };
+        let drain = Drain::new(
+            world.built.outbox_for_tests(),
+            ConsumerName::default(),
+            intake.clone(),
+            settings,
+            Arc::new(Proceed),
+        );
+        let cancel = CancellationToken::new();
+        let (_gate, task) = spawn(vec![drain], cancel.clone(), |_| async {});
+        // Let the first, empty claim run, so the drain is asleep.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let written = tokio::time::Instant::now();
+        let t = capture(&world.built, world.owner, "wakes the drain").await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while world.state(t).await != "published" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("delivered within a second of the write, not the hour");
+        assert!(written.elapsed() < Duration::from_secs(1));
+        assert_eq!(intake.kept(), 1);
+        cancel.cancel();
+        task.await.expect("drain joins");
+    })
+    .catch_unwind()
+    .await;
+    world.finish(outcome).await;
+}
+
+/// The goal write paths (a unit of work's commit, a goal transition) signal
+/// the wake as fact ingest does.
+#[tokio::test]
+async fn goal_writes_wake_the_drains() {
+    let Some(world) = World::new(None).await else {
+        return;
+    };
+    let outcome = AssertUnwindSafe(async {
+        let mut writes = proxima_core::write_wake::WriteWake::subscribe();
+        let _ = set_and_pause(&world, PendingWork::Discard).await;
+        tokio::time::timeout(Duration::from_millis(100), writes.changed())
+            .await
+            .expect("a goal write committed and signalled");
+    })
+    .catch_unwind()
+    .await;
+    world.finish(outcome).await;
+}

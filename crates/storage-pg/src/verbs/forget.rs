@@ -800,7 +800,7 @@ pub(crate) async fn forget_memory_oneshot_in_transaction(
         Some(&reach.kinds),
     )
     .await?;
-    tx.commit().await.map_err(map_err)
+    crate::write_wake::commit(tx).await
 }
 
 async fn forget_marked(
@@ -881,7 +881,7 @@ pub(crate) async fn restore_memory_oneshot_in_transaction(
     embeddings: crate::verbs::fact_embeddings::RouteSpaces<'_>,
 ) -> Result<(), StorageError> {
     restore_marked(&mut tx, sidecars, t, reach, embeddings).await?;
-    tx.commit().await.map_err(map_err)
+    crate::write_wake::commit(tx).await
 }
 
 pub(crate) async fn restore_marked(

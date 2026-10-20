@@ -51,6 +51,7 @@ pub mod test_fixtures;
 pub mod text_bounds;
 pub mod tool;
 pub mod verbs;
+pub mod write_wake;
 
 pub use access::*;
 pub use auth::*;

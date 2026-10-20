@@ -91,7 +91,7 @@ impl FactIngestPort for PgStorage {
                     },
                 )
                 .await?;
-                tx.commit().await.map_err(crate::error::map_err)?;
+                crate::write_wake::commit(tx).await?;
                 Ok(outcome)
             }
         })
@@ -186,7 +186,7 @@ impl FactIngestPort for PgStorage {
                     )
                     .await?;
                 }
-                tx.commit().await.map_err(crate::error::map_err)?;
+                crate::write_wake::commit(tx).await?;
                 Ok(outcome)
             }
         })
@@ -257,7 +257,7 @@ impl FactIngestPort for PgStorage {
                     },
                 )
                 .await?;
-                tx.commit().await.map_err(crate::error::map_err)?;
+                crate::write_wake::commit(tx).await?;
                 Ok(outcome)
             }
         })
