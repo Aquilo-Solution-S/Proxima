@@ -1392,9 +1392,16 @@ async fn final_counts(tx: &mut Tx<'_>) -> Result<OwnerEraseCounts, StorageError>
             .map_err(map_err)?;
     Ok(OwnerEraseCounts::new(
         rows.into_iter()
-            .map(|(name, count)| (name, u64::try_from(count).unwrap_or_default()))
-            .collect(),
+            .map(|(name, count)| Ok((name.clone(), tallied(&name, count)?)))
+            .collect::<Result<_, StorageError>>()?,
     ))
+}
+
+/// A tally as the receipt reports it. The counting statements only add, so a
+/// negative value is a defect, never a count.
+fn tallied(name: &str, count: i64) -> Result<u64, StorageError> {
+    u64::try_from(count)
+        .map_err(|_| StorageError::Internal(format!("negative erase count for {name}")))
 }
 
 async fn final_host_state_counts(
@@ -1411,16 +1418,8 @@ async fn final_host_state_counts(
     let mut deleted = BTreeMap::new();
     let mut scrubbed = BTreeMap::new();
     for (table, deleted_count, scrubbed_count) in rows {
-        deleted.insert(
-            table.clone(),
-            u64::try_from(deleted_count)
-                .map_err(|_| StorageError::Internal("negative host-state deleted count".into()))?,
-        );
-        scrubbed.insert(
-            table,
-            u64::try_from(scrubbed_count)
-                .map_err(|_| StorageError::Internal("negative host-state scrubbed count".into()))?,
-        );
+        deleted.insert(table.clone(), tallied(&table, deleted_count)?);
+        scrubbed.insert(table.clone(), tallied(&table, scrubbed_count)?);
     }
     Ok((deleted, scrubbed))
 }
@@ -1830,7 +1829,17 @@ async fn delete_source_cursors(
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyedSet, keyed_set};
+    use super::{KeyedSet, keyed_set, tallied};
+
+    #[test]
+    fn a_negative_tally_is_refused_not_reported_as_zero() {
+        assert!(matches!(tallied("memory", 3), Ok(3)));
+        let err = tallied("memory", -1).expect_err("negative tally");
+        assert!(
+            err.to_string().contains("negative erase count for memory"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn erase_sql_does_not_name_retired_suppression_table() {
