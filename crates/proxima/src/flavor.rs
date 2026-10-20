@@ -94,7 +94,8 @@ pub use proxima_core::verbs::own_erase::{
     SeriesEraseReceipt, SeriesEraseRefusal, SeriesEraseRefusalKind, SeriesSelection,
 };
 pub use proxima_core::verbs::query::{
-    GoalRow, QueryRequest, QueryResponse, SearchMode, SidecarAtom, SupersessionStatus,
+    GoalRow, MAX_SIDECAR_HEAD_PAGE_LIMIT, QueryRequest, QueryResponse, SearchMode, SidecarAtom,
+    SidecarHead, SidecarHeadsPage, SidecarHeadsRequest, SidecarHeadsScope, SupersessionStatus,
     hybrid_degraded_to_lexical,
 };
 pub use proxima_core::verbs::schema::PayloadKind;
@@ -218,12 +219,14 @@ pub use proxima_storage_pg::{
 
 mod authorized_read;
 mod detached;
+mod sidecar_heads;
 pub use authorized_read::{
     authorized_abstraction_payloads, authorized_fact_payloads, authorized_memory_ids,
     read_owner_ids,
 };
 /// Cancel-safe Fact ingest after an upstream side effect.
 pub use detached::ingest_fact_detached;
+pub use sidecar_heads::sidecar_heads_by_key;
 
 /// Types of the [`Tool::ARGV_ACTION_SPECS`] and [`Tool::AUDIENCE`] consts.
 pub use proxima_core::mcp::{McpArgvActionSpec, McpToolAudience};

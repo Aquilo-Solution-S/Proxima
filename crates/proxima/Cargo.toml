@@ -150,6 +150,10 @@ name = "stateful_heads_pg"
 required-features = ["testkit"]
 
 [[test]]
+name = "sidecar_heads_pg"
+required-features = ["testkit"]
+
+[[test]]
 name = "derived_supersession_pg"
 required-features = ["testkit"]
 

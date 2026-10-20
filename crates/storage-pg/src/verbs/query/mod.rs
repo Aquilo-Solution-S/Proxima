@@ -11,6 +11,7 @@ mod memories;
 mod rows;
 mod search;
 mod series_handle;
+mod sidecar_heads;
 
 pub(crate) use citations::citation_of_fact_on_connection;
 pub(crate) use citations::facts_citing_object_on_connection;
@@ -40,6 +41,7 @@ pub use search::{
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use series_handle::owned_head_handle_sql_for_tests;
 pub(crate) use series_handle::{owned_head_handle, owned_head_memory_id, push_atom};
+pub(crate) use sidecar_heads::sidecar_heads_by_key_on_connection;
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 #[doc(hidden)]

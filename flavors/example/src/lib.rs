@@ -8,6 +8,7 @@
 //! table, one read-only tool and one migration lane with its own ledger.
 
 pub mod contract;
+mod heads;
 pub mod payload;
 pub mod tool;
 
@@ -15,6 +16,7 @@ pub mod tool;
 pub mod testkit;
 
 pub use contract::{EXAMPLE_BASELINE_CONTRACT, EXAMPLE_CONTRACT, FLAVOR_ID, PG_SCHEMA};
+pub use heads::note_heads;
 pub use payload::{DigestV1, NoteV1, StampV1};
 pub use tool::{ExampleStore, ListNotebooksTool};
 

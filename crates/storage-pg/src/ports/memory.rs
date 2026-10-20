@@ -585,6 +585,22 @@ impl MemoryReadPort for PgStorage {
         crate::owner_scope::finish_transaction(tx, result).await
     }
 
+    async fn sidecar_heads_by_key(
+        &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
+        read_owners: &[OwnerId],
+        query: &proxima_core::verbs::query::ResolvedSidecarHeads<'_>,
+    ) -> Result<proxima_core::verbs::query::SidecarHeadsPage, StorageError> {
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
+        let result =
+            verbs::query::sidecar_heads_by_key_on_connection(&mut tx, read_owners, query).await;
+        crate::owner_scope::finish_transaction(tx, result).await
+    }
+
     async fn owned_series_handle(
         &self,
         owner_scope: Option<&proxima_core::OwnerScope>,

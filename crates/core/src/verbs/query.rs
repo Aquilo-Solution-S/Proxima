@@ -530,6 +530,143 @@ pub enum SidecarAtom {
     Bool(bool),
 }
 
+/// Owners whose current Fact heads a sidecar listing may return.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidecarHeadsScope {
+    Owner(OwnerId),
+    Readable,
+}
+
+/// Maximum heads returned by one sidecar listing page.
+pub const MAX_SIDECAR_HEAD_PAGE_LIMIT: u32 = 1_000;
+
+/// Current heads of a declared stateful Fact schema, newest admission first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidecarHeadsRequest {
+    pub schema_id: SchemaId,
+    pub scope: SidecarHeadsScope,
+    /// Equality values for the first N complete natural-key columns, in
+    /// declaration order. Empty selects every natural key in the schema.
+    pub key_prefix: Vec<SidecarAtom>,
+    /// Exclusive admission cursor returned by the previous page.
+    pub after: Option<MemoryId>,
+    /// Must be positive; capped at [`MAX_SIDECAR_HEAD_PAGE_LIMIT`].
+    pub limit: u32,
+}
+
+/// One readable current head, including a flavor-declared tombstone head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidecarHead {
+    pub memory_id: MemoryId,
+    pub admitted_at: time::OffsetDateTime,
+    /// Complete natural key in declaration order, with its declared names.
+    pub natural_key: Vec<(String, SidecarAtom)>,
+}
+
+/// A page of current heads ordered by descending admission ID.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SidecarHeadsPage {
+    pub heads: Vec<SidecarHead>,
+    pub next_cursor: Option<MemoryId>,
+}
+
+/// A sidecar head query resolved against the frozen flavor contracts.
+///
+/// Storage can inspect this descriptor but only core can construct it;
+/// callers supply schema IDs and values, never table or column identifiers.
+#[derive(Debug)]
+pub struct ResolvedSidecarHeads<'a> {
+    schema_id: &'a SchemaId,
+    table: &'static str,
+    memory_key_column: &'static str,
+    natural_key_columns: &'static [&'static str],
+    prefix: &'a [SidecarAtom],
+    after: Option<MemoryId>,
+    limit: u32,
+}
+
+impl<'a> ResolvedSidecarHeads<'a> {
+    pub(crate) fn resolve(
+        contracts: &[&'static crate::FlavorContract],
+        request: &'a SidecarHeadsRequest,
+    ) -> Result<Self, crate::error::ProtocolError> {
+        use crate::error::ProtocolError;
+
+        if request.limit == 0 {
+            return Err(ProtocolError::invalid_argument("limit", "must be > 0"));
+        }
+        let resolved = contracts.iter().find_map(|contract| {
+            contract.schemas.iter().find_map(move |schema| {
+                (schema.kind == crate::verbs::schema::PayloadKind::Fact
+                    && schema.schema_id() == request.schema_id)
+                    .then_some((*contract, schema))
+            })
+        });
+        let Some((contract, schema)) = resolved else {
+            return Err(ProtocolError::invalid_argument(
+                "schema_id",
+                "requires a declared Fact schema",
+            ));
+        };
+        if schema.natural_key_columns.is_empty() {
+            return Err(ProtocolError::invalid_argument(
+                "schema_id",
+                "requires a stateful Fact schema with a declared natural key",
+            ));
+        }
+        let table = schema.sidecar_table.ok_or_else(|| {
+            ProtocolError::invalid_argument("schema_id", "schema has no declared sidecar")
+        })?;
+        let memory_key_column = contract.sidecar_memory_key_column(table).ok_or_else(|| {
+            ProtocolError::invalid_argument("schema_id", "sidecar is not memory-keyed")
+        })?;
+        if request.key_prefix.len() > schema.natural_key_columns.len() {
+            return Err(ProtocolError::invalid_argument(
+                "key_prefix",
+                "prefix has more values than the declared natural key",
+            ));
+        }
+        Ok(Self {
+            schema_id: &request.schema_id,
+            table,
+            memory_key_column,
+            natural_key_columns: schema.natural_key_columns,
+            prefix: &request.key_prefix,
+            after: request.after,
+            limit: request.limit.min(MAX_SIDECAR_HEAD_PAGE_LIMIT),
+        })
+    }
+
+    #[must_use]
+    pub const fn schema_id(&self) -> &SchemaId {
+        self.schema_id
+    }
+    #[must_use]
+    pub const fn sidecar_table(&self) -> &'static str {
+        self.table
+    }
+    #[must_use]
+    pub const fn memory_key_column(&self) -> &'static str {
+        self.memory_key_column
+    }
+    #[must_use]
+    pub const fn key_columns(&self) -> &'static [&'static str] {
+        self.natural_key_columns
+    }
+    #[must_use]
+    pub const fn key_prefix(&self) -> &[SidecarAtom] {
+        self.prefix
+    }
+    #[must_use]
+    pub const fn after(&self) -> Option<MemoryId> {
+        self.after
+    }
+    #[must_use]
+    pub const fn limit(&self) -> u32 {
+        self.limit
+    }
+}
+
 impl SidecarAtom {
     /// Bind one JSON sidecar field as a series-handle atom.
     ///

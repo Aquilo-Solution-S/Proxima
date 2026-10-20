@@ -150,6 +150,23 @@ pub trait MemoryReadPort: Send + Sync {
         schemas: &[MemorySchemaSpec],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
 
+    /// Current stateful Fact heads, filtered by the resolved natural-key
+    /// prefix and readable owners before pagination. Flavor tombstones are
+    /// included; forgotten admissions and old revisions are absent.
+    ///
+    /// The descriptor is constructible only through the frozen contract
+    /// resolver in core. Backends must retain their ordinary owner RLS.
+    async fn sidecar_heads_by_key(
+        &self,
+        _owner_scope: Option<&OwnerScope>,
+        _read_owners: &[OwnerId],
+        _query: &crate::verbs::query::ResolvedSidecarHeads<'_>,
+    ) -> Result<crate::verbs::query::SidecarHeadsPage, StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement sidecar head listings".into(),
+        ))
+    }
+
     /// Count the current memories `read_owners` holds, by kind: one per
     /// series head (`memory_head`) for the three memory kinds and one per
     /// Goal (`goal_head`) in any state. A stateful series counts once

@@ -127,6 +127,16 @@ the projection's migration, alongside its owner/text and owner/tag GIN indexes.
 These generated functions return only candidates authorized by memory RLS;
 their declared schema sets and score bands come from the same contract.
 
+For a stateful Fact sidecar, use
+`proxima::flavor::sidecar_heads_by_key::<YourPayload>` to list current series
+heads without core SQL. Prefix values match the first natural-key columns in
+contract order; an empty prefix selects all keys. Choose `SidecarHeadsScope::Owner`
+or `Readable` for the caller's authorized owners. The page returns admission
+ids, admission times and typed key values, newest first, with a cursor for the
+next page. Superseded and forgotten admissions are absent; a schema-defined
+tombstone is still a head. The example flavor's `note_heads` calls this helper
+for its `(notebook_id, key)` series.
+
 Use `proxima::flavor_bundle!` to register the payloads, contract, sidecars, and
 `NamedMigrator` together. Its rustdoc shows all parameters. Use a manual
 `FlavorBundle` implementation only when composition needs it. Registry freeze
