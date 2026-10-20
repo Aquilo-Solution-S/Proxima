@@ -64,6 +64,27 @@ pub fn claim_embedding_jobs_sql_for_tests() -> &'static str {
     CLAIM_EMBEDDING_JOBS_SQL
 }
 
+/// Return `processing` jobs claimed before the window to `pending`. Rides
+/// `embedding_jobs_processing_idx`, which holds the jobs in flight alone.
+const RECLAIM_STALE_EMBEDDING_JOBS_SQL: &str = "UPDATE proxima_core.embedding_jobs
+            SET status = 'pending',
+                claimed_at = NULL,
+                claim_token = NULL
+          WHERE status = 'processing'
+            AND (
+                claimed_at IS NULL
+                OR claimed_at < now()
+                    - make_interval(secs => ($1::bigint)::double precision)
+            )";
+
+/// The reclaim statement, for EXPLAIN-based plan guards.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn reclaim_stale_embedding_jobs_sql_for_tests() -> &'static str {
+    RECLAIM_STALE_EMBEDDING_JOBS_SQL
+}
+
 #[derive(sqlx::FromRow)]
 struct EmbeddingJobClaimRow {
     job_id: uuid::Uuid,
@@ -488,22 +509,11 @@ pub async fn reclaim_stale_embedding_jobs<'e, E: PgExecutor<'e>>(
             "stale processing reclaim window must be positive".into(),
         ));
     }
-    let result = sqlx::query(
-        "UPDATE proxima_core.embedding_jobs
-            SET status = 'pending',
-                claimed_at = NULL,
-                claim_token = NULL
-          WHERE status = 'processing'
-            AND (
-                claimed_at IS NULL
-                OR claimed_at < now()
-                    - make_interval(secs => ($1::bigint)::double precision)
-            )",
-    )
-    .bind(older_than_seconds)
-    .execute(pool)
-    .await
-    .map_err(map_err)?;
+    let result = sqlx::query(RECLAIM_STALE_EMBEDDING_JOBS_SQL)
+        .bind(older_than_seconds)
+        .execute(pool)
+        .await
+        .map_err(map_err)?;
     Ok(result.rows_affected())
 }
 

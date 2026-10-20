@@ -157,9 +157,22 @@ struct Registry {
 #[derive(Debug, Default)]
 pub(crate) struct EmbeddingControl {
     registry: Mutex<Registry>,
+    /// When a drain last took the stale-claim reclaim.
+    last_reclaim: Mutex<Option<Instant>>,
 }
 
 impl EmbeddingControl {
+    /// Whether this drain runs the stale-claim reclaim: the first drain, then
+    /// one in every `every`, however many batches are claimed in between.
+    pub(super) fn reclaim_due(&self, now: Instant, every: Duration) -> bool {
+        let mut last = lock(&self.last_reclaim);
+        if last.is_some_and(|at| now.saturating_duration_since(at) < every) {
+            return false;
+        }
+        *last = Some(now);
+        true
+    }
+
     pub(super) fn observe(
         &self,
         owner: OwnerId,
@@ -423,6 +436,29 @@ mod tests {
     fn bound(client: &Arc<RecordingClient>) -> BoundEmbeddingClient {
         BoundEmbeddingClient::bind(Arc::clone(client) as Arc<dyn EmbeddingClient>)
             .expect("supported width")
+    }
+
+    #[test]
+    fn the_stale_claim_reclaim_runs_once_per_interval() {
+        let control = EmbeddingControl::default();
+        let every = Duration::from_mins(5);
+        let start = Instant::now();
+        assert!(
+            control.reclaim_due(start, every),
+            "the first drain reclaims"
+        );
+        for batch in 1..=100_u64 {
+            let now = start + Duration::from_secs(batch);
+            assert!(
+                !control.reclaim_due(now, every),
+                "batch {batch} of a backlog reclaims nothing"
+            );
+        }
+        assert!(
+            control.reclaim_due(start + every, every),
+            "the interval is up"
+        );
+        assert!(!control.reclaim_due(start + every, every), "and taken once");
     }
 
     #[tokio::test]

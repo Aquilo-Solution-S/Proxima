@@ -56,8 +56,8 @@ pub use embeddings::{
     EmbeddingMaintenancePort, EmbeddingOrphanCounts, EmbeddingOrphanSweepOutcome,
     EmbeddingPurgeOutcome, EmbeddingRecallCanary, EmbeddingReconcileOptions,
     EmbeddingReconcileOutcome, EmbeddingReconcileScope, EmbeddingSpaceCounts,
-    EmbeddingSpaceCoverage, EmbeddingSpaceRole, EmbeddingTextPort, EmbeddingWriteOutcome,
-    EmbeddingWritePort, EmbeddingWriteProof, MAX_EMBEDDING_DIAGNOSTIC_UNITS,
+    EmbeddingSpaceCoverage, EmbeddingSpaceRole, EmbeddingTextPort, EmbeddingWrite,
+    EmbeddingWriteOutcome, EmbeddingWritePort, EmbeddingWriteProof, MAX_EMBEDDING_DIAGNOSTIC_UNITS,
     check_diagnostic_unit_count,
 };
 pub use fact::FactIngestPort;

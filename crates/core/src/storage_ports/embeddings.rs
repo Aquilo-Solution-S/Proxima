@@ -65,20 +65,55 @@ pub trait EmbeddingTextPort: Send + Sync {
     ) -> Result<Vec<crate::MemoryId>, StorageError>;
 }
 
+/// One embedding version to write: the entity's vectors in text order and the
+/// proof that authorizes the write.
+#[derive(Debug, Clone, Copy)]
+pub struct EmbeddingWrite<'a> {
+    pub owner: &'a OwnerId,
+    pub entity: EmbeddableEntityRef,
+    pub vectors: &'a [crate::SpaceVector],
+    pub proof: EmbeddingWriteProof,
+}
+
 #[async_trait::async_trait]
 pub trait EmbeddingWritePort: Send + Sync {
-    /// Write one complete embedding version in text order. `vectors` must be
-    /// nonempty and share one space; storage commits every chunk and its head
-    /// atomically.
+    /// Write complete embedding versions, each in text order, in ONE
+    /// transaction: either every write lands or none does. Each `vectors` must
+    /// be nonempty and share one space; storage commits every chunk and head
+    /// atomically. The outcomes align with `writes`.
+    ///
+    /// A write authorized by a queue claim also completes that claim in the
+    /// same transaction, fenced on its token: a stale claim fails the whole
+    /// batch with `Conflict` before anything is written, and a vector and its
+    /// completed job never exist apart.
+    ///
     /// Public callers cannot forge `EmbeddingWriteProof`; route through
     /// engine embedding-write APIs instead.
+    async fn insert_embeddings(
+        &self,
+        writes: &[EmbeddingWrite<'_>],
+    ) -> Result<Vec<EmbeddingWriteOutcome>, StorageError>;
+
+    /// One write of [`Self::insert_embeddings`].
     async fn insert_embedding(
         &self,
         owner: &OwnerId,
         entity: EmbeddableEntityRef,
         vectors: &[crate::SpaceVector],
         proof: EmbeddingWriteProof,
-    ) -> Result<EmbeddingWriteOutcome, StorageError>;
+    ) -> Result<EmbeddingWriteOutcome, StorageError> {
+        let outcomes = self
+            .insert_embeddings(&[EmbeddingWrite {
+                owner,
+                entity,
+                vectors,
+                proof,
+            }])
+            .await?;
+        outcomes.into_iter().next().ok_or_else(|| {
+            StorageError::Internal("a batch write of one embedding returned no outcome".to_owned())
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

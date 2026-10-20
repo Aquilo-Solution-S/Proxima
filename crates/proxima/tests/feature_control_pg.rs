@@ -603,8 +603,8 @@ async fn a_quiesce_mid_batch_returns_only_after_the_drain_call_settles_every_cla
 
 /// A storage error after the claim must not leave claims behind for the
 /// quiesce to outlive. The second vector write of the call is made to fail
-/// (a trigger on `embeddings`): the first job is completed, and the other two
-/// are still `processing` when the error surfaces.
+/// (a trigger on `embeddings`): the call's one transaction rolls back, and all
+/// three jobs are still `processing` when the error surfaces.
 #[tokio::test]
 async fn a_storage_error_mid_batch_returns_the_unsettled_claims_before_the_quiesce_resolves() {
     let world = World::new("feature_control_storage_error").await;
@@ -647,11 +647,11 @@ async fn a_storage_error_mid_batch_returns_the_unsettled_claims_before_the_quies
     assert_eq!(
         world.queue().await,
         Queue {
-            pending: 2,
+            pending: 3,
             processing: 0,
-            embedded: 1
+            embedded: 0
         },
-        "the job the call finished stays finished; the two it did not are back to pending, not processing"
+        "the batch commits as one: none of it is written, and its jobs are back to pending, not processing"
     );
 
     // Nothing was lost or doubled: with the fault gone, resume finishes the rest.

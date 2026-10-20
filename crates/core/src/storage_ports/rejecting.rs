@@ -1,8 +1,8 @@
 use super::access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
 use super::cursors::SourceCursorPort;
 use super::embeddings::{
-    EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWriteOutcome,
-    EmbeddingWritePort, EmbeddingWriteProof,
+    EmbeddingJobPort, EmbeddingMaintenancePort, EmbeddingTextPort, EmbeddingWrite,
+    EmbeddingWriteOutcome, EmbeddingWritePort,
 };
 use super::fact::FactIngestPort;
 use super::goals::{GoalReadPort, GoalWritePort};
@@ -27,10 +27,7 @@ use crate::verbs::goal_write::{
     DecomposeGoalOutcome, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
     ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
-use crate::{
-    EmbeddableEntityRef, EntityId, EntityKind, GroupId, MembershipRow, OwnerId, Relation, SourceId,
-    UserId,
-};
+use crate::{EntityId, EntityKind, GroupId, MembershipRow, OwnerId, Relation, SourceId, UserId};
 
 #[derive(Debug)]
 pub(super) struct RejectingStorage;
@@ -332,16 +329,16 @@ impl EmbeddingTextPort for RejectingStorage {
 
 #[async_trait::async_trait]
 impl EmbeddingWritePort for RejectingStorage {
-    async fn insert_embedding(
+    async fn insert_embeddings(
         &self,
-        _owner: &OwnerId,
-        _entity: EmbeddableEntityRef,
-        _vectors: &[crate::SpaceVector],
-        _proof: EmbeddingWriteProof,
-    ) -> Result<EmbeddingWriteOutcome, StorageError> {
-        Ok(EmbeddingWriteOutcome {
-            embedding_version: 0,
-        })
+        writes: &[EmbeddingWrite<'_>],
+    ) -> Result<Vec<EmbeddingWriteOutcome>, StorageError> {
+        Ok(writes
+            .iter()
+            .map(|_| EmbeddingWriteOutcome {
+                embedding_version: 0,
+            })
+            .collect())
     }
 }
 

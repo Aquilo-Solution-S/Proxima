@@ -14,11 +14,11 @@ mod tests;
 mod text;
 mod write;
 
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use jobs::claim_embedding_jobs_sql_for_tests;
 pub(crate) use jobs::enqueue_embedding_jobs_in_tx;
 #[cfg(test)]
 use jobs::release_embedding_jobs;
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use jobs::{claim_embedding_jobs_sql_for_tests, reclaim_stale_embedding_jobs_sql_for_tests};
 pub(crate) use jobs::{
     claim_pending_embedding_jobs, complete_embedding_job, count_embedding_job_status,
     embedding_job_diagnostics, enqueue_missing_embedding_jobs, fail_embedding_job,
@@ -38,7 +38,7 @@ pub(crate) use text::{
     load_embedding_text_on_connection, load_embedding_texts_on_connection, load_fact_text_in_tx,
 };
 pub(crate) use write::{
-    insert_embedding, insert_embedding_head, lock_embedding_job_claim, try_lock_embedding_key,
+    complete_embedding_job_claim, insert_embedding, insert_embedding_head, try_lock_embedding_key,
     validate_embedding_vectors,
 };
 

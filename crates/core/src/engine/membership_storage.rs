@@ -350,16 +350,16 @@ impl EmbeddingTextPort for MembershipStorage {
 
 #[async_trait::async_trait]
 impl EmbeddingWritePort for MembershipStorage {
-    async fn insert_embedding(
+    async fn insert_embeddings(
         &self,
-        _owner: &OwnerId,
-        _entity: crate::EmbeddableEntityRef,
-        _vectors: &[crate::SpaceVector],
-        _proof: crate::storage_ports::EmbeddingWriteProof,
-    ) -> Result<crate::EmbeddingWriteOutcome, StorageError> {
-        Ok(crate::EmbeddingWriteOutcome {
-            embedding_version: 0,
-        })
+        writes: &[crate::storage_ports::EmbeddingWrite<'_>],
+    ) -> Result<Vec<crate::EmbeddingWriteOutcome>, StorageError> {
+        Ok(writes
+            .iter()
+            .map(|_| crate::EmbeddingWriteOutcome {
+                embedding_version: 0,
+            })
+            .collect())
     }
 }
 

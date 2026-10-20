@@ -3,8 +3,8 @@ use proxima_core::storage_ports::{
     EmbeddingWritePort, OperatorMaintenanceProof, OwnerWritePermit,
 };
 use proxima_core::{
-    EmbeddableEntityRef, EmbeddingAnnObservability, EmbeddingJobClaim, EmbeddingOrphanSweepOutcome,
-    EmbeddingSpace, EmbeddingWriteOutcome, MemoryId, OwnerId, StorageError,
+    EmbeddingAnnObservability, EmbeddingJobClaim, EmbeddingOrphanSweepOutcome, EmbeddingSpace,
+    EmbeddingWriteOutcome, MemoryId, OwnerId, StorageError,
 };
 
 use crate::{PgStorage, verbs};
@@ -103,34 +103,51 @@ impl EmbeddingTextPort for PgStorage {
 
 #[async_trait::async_trait]
 impl EmbeddingWritePort for PgStorage {
-    async fn insert_embedding(
+    async fn insert_embeddings(
         &self,
-        owner: &OwnerId,
-        entity: EmbeddableEntityRef,
-        vectors: &[proxima_core::SpaceVector],
-        proof: proxima_core::storage_ports::EmbeddingWriteProof,
-    ) -> Result<EmbeddingWriteOutcome, StorageError> {
-        let space = verbs::fact_embeddings::validate_embedding_vectors(vectors)?;
+        writes: &[proxima_core::storage_ports::EmbeddingWrite<'_>],
+    ) -> Result<Vec<EmbeddingWriteOutcome>, StorageError> {
+        let mut spaces = Vec::with_capacity(writes.len());
+        for write in writes {
+            spaces.push(verbs::fact_embeddings::validate_embedding_vectors(
+                write.vectors,
+            )?);
+        }
         let mut tx = self.platform_transaction().await?;
-        verbs::fact_embeddings::lock_embedding_job_claim(&mut tx, owner, entity, space, proof)
+        let mut outcomes = Vec::with_capacity(writes.len());
+        for (write, space) in writes.iter().zip(spaces) {
+            verbs::fact_embeddings::complete_embedding_job_claim(
+                &mut tx,
+                write.owner,
+                write.entity,
+                space,
+                write.proof,
+            )
             .await?;
-        let outcome = match &self.vectors {
-            crate::vector_index::StoreVectors::Local => {
-                verbs::fact_embeddings::insert_embedding(&mut tx, owner, entity, vectors).await?
-            }
-            crate::vector_index::StoreVectors::Remote(index) => {
-                verbs::fact_embeddings::insert_embedding_head(
-                    &mut tx,
-                    index.as_ref(),
-                    owner,
-                    entity,
-                    vectors,
-                )
-                .await?
-            }
-        };
+            outcomes.push(match &self.vectors {
+                crate::vector_index::StoreVectors::Local => {
+                    verbs::fact_embeddings::insert_embedding(
+                        &mut tx,
+                        write.owner,
+                        write.entity,
+                        write.vectors,
+                    )
+                    .await?
+                }
+                crate::vector_index::StoreVectors::Remote(index) => {
+                    verbs::fact_embeddings::insert_embedding_head(
+                        &mut tx,
+                        index.as_ref(),
+                        write.owner,
+                        write.entity,
+                        write.vectors,
+                    )
+                    .await?
+                }
+            });
+        }
         tx.commit().await.map_err(crate::error::map_err)?;
-        Ok(outcome)
+        Ok(outcomes)
     }
 }
 

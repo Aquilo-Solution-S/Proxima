@@ -17,7 +17,9 @@ use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::export_statement_sql_for_tests;
 use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::fact_embeddings::claim_embedding_jobs_sql_for_tests;
+use proxima_storage_pg::verbs::fact_embeddings::{
+    claim_embedding_jobs_sql_for_tests, reclaim_stale_embedding_jobs_sql_for_tests,
+};
 use proxima_storage_pg::verbs::query::{
     ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests, inbound_pin_sql_for_tests,
     memory_page_sql_for_tests, owned_head_handle_sql_for_tests, ranked_projection_sql_for_tests,
@@ -272,6 +274,19 @@ fn scan_of(plan: &serde_json::Value, relation: &str) -> Option<serde_json::Value
             node.values().find_map(|value| scan_of(value, relation))
         }
         _ => None,
+    }
+}
+
+/// Whether the plan scans `relation` sequentially anywhere.
+fn seq_scans(plan: &serde_json::Value, relation: &str) -> bool {
+    match plan {
+        serde_json::Value::Array(items) => items.iter().any(|item| seq_scans(item, relation)),
+        serde_json::Value::Object(node) => {
+            let text = |key: &str| node.get(key).and_then(serde_json::Value::as_str);
+            (text("Node Type") == Some("Seq Scan") && text("Relation Name") == Some(relation))
+                || node.values().any(|value| seq_scans(value, relation))
+        }
+        _ => false,
     }
 }
 
@@ -941,6 +956,72 @@ async fn retention_prune_reads_the_published_index() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("retention prune EXPLAIN failed");
+}
+
+/// The stale-claim reclaim reads the jobs in flight, not the queue (#491).
+///
+/// A queue of 60,000 jobs, a few hundred of them `processing`: the reclaim
+/// statement reaches those through `embedding_jobs_processing_idx` with
+/// `enable_seqscan` left on.
+#[tokio::test]
+async fn the_stale_claim_reclaim_reads_the_processing_index() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner.into_inner())
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embedding_jobs
+                 (entity_id, model_id, owner_id, status, claimed_at, claim_token, dim)
+             SELECT uuidv7(), 'model', $1,
+                    CASE WHEN n % 200 = 0 THEN 'processing' ELSE 'pending' END
+                        ::proxima_core.embedding_job_status,
+                    CASE WHEN n % 200 = 0 THEN now() - interval '1 hour' END,
+                    CASE WHEN n % 200 = 0 THEN uuidv7() END,
+                    384
+               FROM generate_series(1, 60000) AS n",
+        )
+        .bind(owner.into_inner())
+        .execute(pool)
+        .await?;
+        // SQL-POLICY: fixed-fragment
+        sqlx::raw_sql(sqlx::AssertSqlSafe("ANALYZE proxima_core.embedding_jobs"))
+            .execute(pool)
+            .await?;
+
+        let mut tx = pg.platform_scope_for_host().begin().await?;
+        let explain = format!(
+            "EXPLAIN (FORMAT JSON, COSTS OFF) {}",
+            reclaim_stale_embedding_jobs_sql_for_tests()
+        );
+        // SQL-POLICY: fixed-fragment — the production reclaim statement.
+        let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain))
+            .bind(900_i64)
+            .fetch_one(&mut *tx)
+            .await?;
+        let rendered = plan.to_string();
+        assert!(
+            rendered.contains("embedding_jobs_processing_idx"),
+            "the reclaim must read the processing index; plan:\n{rendered}"
+        );
+        assert!(
+            !seq_scans(&plan, "embedding_jobs"),
+            "the reclaim must not scan the queue; plan:\n{rendered}"
+        );
+        tx.rollback().await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("stale-claim reclaim EXPLAIN failed");
 }
 
 /// A write's capacity check reads one row however long the backlog is (#491).

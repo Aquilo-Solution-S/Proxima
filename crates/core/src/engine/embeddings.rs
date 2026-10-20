@@ -8,7 +8,7 @@ use crate::llm::{
     EmbeddingRoute, EmbeddingRouteError, EmbeddingSpace, LlmError,
 };
 use crate::storage::{EmbeddingJobClaim, StorageError};
-use crate::storage_ports::EmbeddingJobHandle;
+use crate::storage_ports::{EmbeddingJobHandle, EmbeddingWrite};
 use crate::{EmbeddableEntityRef, EntityKind, MemoryId, OwnerId};
 
 mod control;
@@ -521,11 +521,14 @@ impl Engine {
         let texts: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
         match client.embed_many(&texts).await {
             Ok(vectors) => {
-                for ((claim, _), vector) in batch.iter().zip(vectors) {
-                    self.store_claim_embeddings(client, claim, vec![vector])
-                        .await?;
-                    outcome.processed += 1;
-                }
+                let stored: Vec<_> = batch
+                    .iter()
+                    .zip(vectors)
+                    .map(|((claim, _), vector)| (claim, vec![vector]))
+                    .collect();
+                let count = stored.len();
+                self.store_claim_embeddings(client, stored).await?;
+                outcome.processed += count;
                 Ok(())
             }
             Err(LlmError::InputRefused(refusal)) => {
@@ -550,13 +553,21 @@ impl Engine {
             .await
     }
 
-    /// Once per drain, not per batch: one UPDATE that frees what a dead
-    /// drainer left `processing`. The heartbeat keeps a live drainer's
-    /// claims inside the window, so this cannot steal in-flight work.
+    /// Once per heartbeat interval, not per drain call: one UPDATE that frees
+    /// what a dead drainer left `processing`. The heartbeat keeps a live
+    /// drainer's claims inside the window, so this cannot steal in-flight
+    /// work, and a worker that drains a backlog batch by batch pays for it
+    /// once an interval.
     async fn reclaim_stale_embedding_claims(
         &self,
         policy: crate::EmbeddingRuntimePolicy,
     ) -> Result<(), StorageError> {
+        if !self.embedding_control.reclaim_due(
+            tokio::time::Instant::now(),
+            policy.claim_heartbeat_interval(),
+        ) {
+            return Ok(());
+        }
         let reclaimed = self
             .storage
             .ingest
@@ -573,31 +584,38 @@ impl Engine {
         Ok(())
     }
 
-    /// Publish all chunks atomically, then complete the fenced claim.
+    /// Publish every claim's chunks and complete the claims in one
+    /// transaction, each fenced on its token. A stale claim fails the batch
+    /// before anything is written.
     async fn store_claim_embeddings(
         &self,
         client: &BoundEmbeddingClient,
-        claim: &EmbeddingJobClaim,
-        vectors: Vec<Vec<f32>>,
+        stored: Vec<(&EmbeddingJobClaim, Vec<Vec<f32>>)>,
     ) -> Result<(), StorageError> {
-        let vectors = super::memory_authoring::space_vectors(client, vectors)?;
-        self.storage
-            .ingest
-            .embedding_write
-            .insert_embedding(
-                &claim.owner,
-                EmbeddableEntityRef::Memory {
+        let mut vectors = Vec::with_capacity(stored.len());
+        for (_, chunks) in &stored {
+            vectors.push(super::memory_authoring::space_vectors(
+                client,
+                chunks.clone(),
+            )?);
+        }
+        let writes: Vec<EmbeddingWrite<'_>> = stored
+            .iter()
+            .zip(&vectors)
+            .map(|((claim, _), vectors)| EmbeddingWrite {
+                owner: &claim.owner,
+                entity: EmbeddableEntityRef::Memory {
                     kind: claim.entity_kind,
                     memory_id: claim.entity_id,
                 },
-                &vectors,
-                crate::storage_ports::EmbeddingWriteProof::for_claim(claim),
-            )
-            .await?;
+                vectors,
+                proof: crate::storage_ports::EmbeddingWriteProof::for_claim(claim),
+            })
+            .collect();
         self.storage
             .ingest
-            .embedding_job
-            .complete_embedding_job(claim)
+            .embedding_write
+            .insert_embeddings(&writes)
             .await?;
         Ok(())
     }
@@ -626,7 +644,8 @@ impl Engine {
             };
             match coverage {
                 Ok(ChunkedEmbedding::Embedded(vectors)) => {
-                    self.store_claim_embeddings(client, &claim, vectors).await?;
+                    self.store_claim_embeddings(client, vec![(&claim, vectors)])
+                        .await?;
                     outcome.processed += 1;
                 }
                 Ok(ChunkedEmbedding::InputRefused(refusal)) => {

@@ -229,7 +229,7 @@ owner between models.
 | No client configured | Use lexical search or install the owner's embedding route |
 | Pending jobs falling | Allow normal catch-up |
 | Pending/failed jobs persist | Inspect provider reachability, route refusal, and job errors |
-| Stale processing claims persist | Inspect worker/storage health; expired claims are reclaimed |
+| Stale processing claims persist | Inspect worker/storage health; expired claims are reclaimed, looked for at most once every third of the stale-claim timeout |
 | Orphan embedding rows | Run authorized embedding maintenance |
 | Poor exact-versus-ANN recall | Inspect canary results and HNSW tuning/index health |
 

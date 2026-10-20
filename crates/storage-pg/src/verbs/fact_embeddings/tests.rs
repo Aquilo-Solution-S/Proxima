@@ -9,7 +9,8 @@ mod pg_tests {
         EmbeddingClient, EmbeddingInputRefusal, EmbeddingRuntimePolicy, LlmError,
     };
     use proxima_core::storage_ports::{
-        EmbeddingWritePort, EmbeddingWriteProof, OwnerTransferPort, OwnerWritePermit,
+        EmbeddingWrite, EmbeddingWritePort, EmbeddingWriteProof, OwnerTransferPort,
+        OwnerWritePermit,
     };
     use proxima_core::test_fixtures::authenticated_context;
     use proxima_core::test_fixtures::owner_fixture;
@@ -457,7 +458,16 @@ mod pg_tests {
             let claims = claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
             assert_eq!(claims.len(), 1);
             let claim = &claims[0];
-            insert_claimed_fact_embedding(&pg, claim, [0.1, 0.2, 0.3]).await?;
+            let mut first = pool.begin().await?;
+            insert_memory_embedding(
+                &mut first,
+                &owner,
+                EntityKind::Fact,
+                memory.memory_id,
+                &[stub_vector(padded_embedding([0.1, 0.2, 0.3]))],
+            )
+            .await?;
+            first.commit().await?;
             sqlx::query(
                 "ALTER TABLE proxima_core.embeddings
                  ADD CONSTRAINT fail_later_chunk
@@ -492,6 +502,11 @@ mod pg_tests {
                 Some(1),
                 "a failed version leaves neither partial chunks nor a new head"
             );
+            assert_eq!(
+                job_state(pool, memory.memory_id.into_inner()).await?.0,
+                "processing",
+                "the claim is completed with the version or not at all"
+            );
             sqlx::query("ALTER TABLE proxima_core.embeddings DROP CONSTRAINT fail_later_chunk")
                 .execute(pool)
                 .await?;
@@ -505,6 +520,12 @@ mod pg_tests {
                 .await?;
             assert_eq!(retried.embedding_version, 2);
             assert_eq!(count_fact_embeddings(pool, memory.memory_id).await?, 3);
+            assert!(
+                job_state(pool, memory.memory_id.into_inner())
+                    .await
+                    .is_err(),
+                "the version that landed completed its job"
+            );
             Ok(())
         }
         .await;
@@ -739,6 +760,91 @@ mod pg_tests {
                 count_fact_embeddings(pg.pool_for_tests(), memory.memory_id).await?,
                 0
             );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    fn claimed_writes<'a>(
+        claims: &'a [proxima_core::EmbeddingJobClaim],
+        vectors: &'a [SpaceVector],
+    ) -> Vec<EmbeddingWrite<'a>> {
+        claims
+            .iter()
+            .map(|claim| EmbeddingWrite {
+                owner: &claim.owner,
+                entity: EmbeddableEntityRef::Memory {
+                    kind: claim.entity_kind,
+                    memory_id: claim.entity_id,
+                },
+                vectors,
+                proof: EmbeddingWriteProof::for_claim_for_tests(claim),
+            })
+            .collect()
+    }
+
+    /// A batch of claimed writes is one transaction: every vector lands and
+    /// every claim completes, or a stale claim among them stops the batch
+    /// before anything is written.
+    #[tokio::test]
+    async fn a_batch_write_lands_with_its_claims_or_not_at_all()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            for note in ["batch one", "batch two", "batch three"] {
+                pg.ingest_fact_atomic(&permit, &fact_draft(note), Some("stub-fact-embed"))
+                    .await?;
+            }
+            let pool = pg.pool_for_tests();
+            let claims = claim_pending_embedding_jobs(pool, 3, &[], &[]).await?;
+            assert_eq!(claims.len(), 3);
+            let vectors = [stub_vector(padded_embedding([0.1, 0.2, 0.3]))];
+            // The last claim lost its job to another drainer.
+            let mut stale = claims.clone();
+            stale[2].claim_token = Uuid::now_v7();
+            let refused = pg
+                .insert_embeddings(&claimed_writes(&stale, &vectors))
+                .await;
+            assert!(
+                matches!(refused, Err(StorageError::Conflict(_))),
+                "a stale claim stops the batch: {refused:?}"
+            );
+            let vectors_written: i64 =
+                sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.embeddings")
+                    .fetch_one(pool)
+                    .await?;
+            assert_eq!(vectors_written, 0, "nothing of the batch was written");
+            let processing: i64 = sqlx::query_scalar(
+                "SELECT count(*)::bigint FROM proxima_core.embedding_jobs
+                  WHERE status = 'processing'",
+            )
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(processing, 3, "no claim of the batch was completed");
+
+            let outcomes = pg
+                .insert_embeddings(&claimed_writes(&claims, &vectors))
+                .await?;
+            assert_eq!(
+                outcomes
+                    .iter()
+                    .map(|outcome| outcome.embedding_version)
+                    .collect::<Vec<_>>(),
+                [1, 1, 1]
+            );
+            let (vectors_written, jobs_left): (i64, i64) = sqlx::query_as(
+                "SELECT (SELECT count(*) FROM proxima_core.embeddings),
+                        (SELECT count(*) FROM proxima_core.embedding_jobs)",
+            )
+            .fetch_one(pool)
+            .await?;
+            assert_eq!((vectors_written, jobs_left), (3, 0));
             Ok(())
         }
         .await;
@@ -1262,7 +1368,6 @@ mod pg_tests {
             );
 
             insert_claimed_fact_embedding(&pg, successor, [0.4, 0.5, 0.6]).await?;
-            complete_embedding_job(pool, successor).await?;
             assert_eq!(count_fact_embeddings(pool, outcome.memory_id).await?, 1);
             assert_eq!(
                 load_embedding_head_version(
@@ -1376,7 +1481,6 @@ mod pg_tests {
             assert_eq!(successor.len(), 1);
             assert_eq!(successor[0].owner, destination);
             insert_claimed_fact_embedding(&pg, &successor[0], [0.4, 0.5, 0.6]).await?;
-            complete_embedding_job(pool, &successor[0]).await?;
             assert_eq!(count_fact_embeddings(pool, written.memory_id).await?, 1);
             Ok(())
         }

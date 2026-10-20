@@ -6,12 +6,14 @@ use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
 
-/// Lock and validate the queue claim that authorized an embedding write.
+/// Complete the queue claim that authorized an embedding write, in the
+/// write's transaction. A write without a claim completes nothing.
 ///
-/// The lock is held through the embedding transaction. A stale worker either
-/// loses before writing, or commits before reclamation can mint a successor;
-/// in the latter case the successor necessarily writes the later head.
-pub(crate) async fn lock_embedding_job_claim(
+/// The delete holds the job's row lock through the embedding transaction. A
+/// stale worker either loses before writing, or commits before reclamation
+/// can mint a successor; in the latter case the successor necessarily writes
+/// the later head.
+pub(crate) async fn complete_embedding_job_claim(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
     entity: EmbeddableEntityRef,
@@ -21,22 +23,10 @@ pub(crate) async fn lock_embedding_job_claim(
     let Some((job_id, claim_token)) = proof.claim_fence() else {
         return Ok(());
     };
-    lock_embedding_job_claim_fields(tx, owner, entity, space, job_id, claim_token).await
-}
-
-async fn lock_embedding_job_claim_fields(
-    tx: &mut Transaction<'_, Postgres>,
-    owner: &OwnerId,
-    entity: EmbeddableEntityRef,
-    space: &EmbeddingSpace,
-    job_id: uuid::Uuid,
-    claim_token: uuid::Uuid,
-) -> Result<(), StorageError> {
-    let locked = super::jobs::bind_claim_fence(
+    let completed = super::jobs::bind_claim_fence(
         sqlx::query(concat!(
-            "SELECT job_id FROM proxima_core.embedding_jobs WHERE ",
-            super::jobs::claim_fence!(),
-            " FOR UPDATE"
+            "DELETE FROM proxima_core.embedding_jobs WHERE ",
+            super::jobs::claim_fence!()
         )),
         super::jobs::ClaimFence {
             job_id,
@@ -46,10 +36,10 @@ async fn lock_embedding_job_claim_fields(
             space,
         },
     )
-    .fetch_optional(tx.as_mut())
+    .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
-    if locked.is_none() {
+    if completed.rows_affected() == 0 {
         return Err(StorageError::Conflict(
             "embedding job claim is stale or does not match the write".into(),
         ));
