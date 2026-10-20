@@ -16,7 +16,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::CitedBlobStore;
-use super::digest::{LengthExpectation, hash_uploaded_object};
+use super::digest::{LengthExpectation, Retain, hash_uploaded_object};
 use super::dto::{
     CitedBlobUploadAbortOutcomeTs, CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs,
     CitedBlobUploadPrepareOutcomeTs, CitedBlobUploadPrepareTs, PresignedHeaderTs,
@@ -107,6 +107,7 @@ async fn read_hashed_object(
     key: &str,
     expected: LengthExpectation,
     max_blob_bytes: Option<u64>,
+    retain: Retain,
 ) -> Result<(super::digest::StreamedObject, Option<String>), ObjectReadError> {
     let object = client
         .get_object()
@@ -140,10 +141,25 @@ async fn read_hashed_object(
             }
         })?;
     let etag = object.e_tag().map(ToString::to_string);
-    let streamed = Box::pin(hash_uploaded_object(object.body, expected, max_blob_bytes))
-        .await
-        .map_err(ObjectReadError::Other)?;
+    let streamed = Box::pin(hash_uploaded_object(
+        object.body,
+        expected,
+        max_blob_bytes,
+        retain,
+    ))
+    .await
+    .map_err(ObjectReadError::Other)?;
     Ok((streamed, etag))
+}
+
+/// Only the transfer copy is published, so only its read keeps the bytes; an
+/// object already at its canonical key is verified by digest.
+fn retain_for(source_key: &str, pending_key: &str) -> Retain {
+    if source_key == pending_key {
+        Retain::Bytes
+    } else {
+        Retain::DigestsOnly
+    }
 }
 
 fn verify_canonical_candidate(
@@ -224,6 +240,8 @@ async fn publish_canonical(
                     // conflict, not a client length error.
                     LengthExpectation::CapOnly,
                     max_blob_bytes,
+                    // Compared by digest: the winner is never held in memory.
+                    Retain::DigestsOnly,
                 )
                 .await
                 .map_err(|error| match error {
@@ -277,6 +295,25 @@ struct StageLocatorInput {
 }
 
 impl CitedBlobStore {
+    /// Read the object a stage publishes from, held to the declared length.
+    /// Only the transfer copy is published, so only its read keeps the bytes.
+    async fn read_stage_source(
+        &self,
+        client: &aws_sdk_s3::Client,
+        upload_id: Uuid,
+        row: &super::rows::UploadRow,
+    ) -> Result<(super::digest::StreamedObject, Option<String>), ObjectReadError> {
+        read_hashed_object(
+            client,
+            &row.bucket,
+            &row.object_key,
+            LengthExpectation::Declared(row.expected_byte_len),
+            self.config.max_blob_bytes,
+            retain_for(&row.object_key, &pending_object_key(upload_id)),
+        )
+        .await
+    }
+
     async fn load_upload_scoped(
         &self,
         scope: Option<&proxima_core::OwnerScope>,
@@ -340,6 +377,10 @@ impl CitedBlobStore {
             .bucket(&self.config.bucket)
             .key(&object_key)
             .content_type(&req.mime)
+            .content_length(
+                i64::try_from(req.byte_len)
+                    .map_err(|_| BlobError::State("byte_len exceeds Postgres bigint".into()))?,
+            )
             .presigned(presign_config(self.config.upload_ttl_seconds)?)
             .await
             .map_err(|e| BlobError::S3(format!("prepare upload URL failed: {e}")))?;
@@ -431,6 +472,11 @@ impl CitedBlobStore {
         let owner = req.owner();
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = parse_opaque_identifier(&req.upload_id)?;
+        let _slot = self
+            .stage_slots
+            .acquire()
+            .await
+            .map_err(|_| BlobError::State("stage slots closed".into()))?;
         let row = self
             .load_upload_scoped(ctx.owner_scope(), &owner, upload_id)
             .await?;
@@ -444,60 +490,47 @@ impl CitedBlobStore {
         let client = self.client().await?;
         let pending_key = pending_object_key(upload_id);
         let mut source_object_key = row.object_key.clone();
-        let (mut streamed, source_etag) = match read_hashed_object(
-            client,
-            &row.bucket,
-            &row.object_key,
-            LengthExpectation::Declared(row.expected_byte_len),
-            self.config.max_blob_bytes,
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(ObjectReadError::Missing) if row.object_key == pending_key => {
-                let Some(source) = self
-                    .resolve_missing_pending(ctx.owner_scope(), &owner, upload_id, &pending_key)
-                    .await?
-                else {
-                    self.purge_pending_upload_best_effort(&row.bucket, upload_id)
-                        .await;
-                    return Err(BlobError::State("upload not found for Owner".into()));
-                };
-                match source {
-                    StageSource::Replay { bucket, blob_id } => {
-                        self.purge_pending_upload_best_effort(&bucket, upload_id)
+        let (mut streamed, source_etag) =
+            match self.read_stage_source(client, upload_id, &row).await {
+                Ok(result) => result,
+                Err(ObjectReadError::Missing) if row.object_key == pending_key => {
+                    let Some(source) = self
+                        .resolve_missing_pending(ctx.owner_scope(), &owner, upload_id, &pending_key)
+                        .await?
+                    else {
+                        self.purge_pending_upload_best_effort(&row.bucket, upload_id)
                             .await;
-                        return self
-                            .load_staged_scoped(ctx.owner_scope(), &owner, upload_id, blob_id)
-                            .await;
-                    }
-                    StageSource::Terminal { bucket, status } => {
-                        // The abort or expiry owed both keys; retry whatever
-                        // of that debt remains. A transfer key PUT again after
-                        // the debt drained is cleaned here too: nobody may
-                        // cite a terminal upload.
-                        self.purge_owed_after_commit(self.terminal_upload_debts(upload_id))
-                            .await;
-                        self.purge_pending_upload_best_effort(&bucket, upload_id)
-                            .await;
-                        return Err(BlobError::State(terminal_status_message(status).into()));
-                    }
-                    StageSource::Read(reloaded) => {
-                        source_object_key = reloaded.object_key.clone();
-                        read_hashed_object(
-                            client,
-                            &reloaded.bucket,
-                            &reloaded.object_key,
-                            LengthExpectation::Declared(reloaded.expected_byte_len),
-                            self.config.max_blob_bytes,
-                        )
-                        .await
-                        .map_err(ObjectReadError::into_blob_error)?
+                        return Err(BlobError::State("upload not found for Owner".into()));
+                    };
+                    match source {
+                        StageSource::Replay { bucket, blob_id } => {
+                            self.purge_pending_upload_best_effort(&bucket, upload_id)
+                                .await;
+                            return self
+                                .load_staged_scoped(ctx.owner_scope(), &owner, upload_id, blob_id)
+                                .await;
+                        }
+                        StageSource::Terminal { bucket, status } => {
+                            // The abort or expiry owed both keys; retry whatever
+                            // of that debt remains. A transfer key PUT again after
+                            // the debt drained is cleaned here too: nobody may
+                            // cite a terminal upload.
+                            self.purge_owed_after_commit(self.terminal_upload_debts(upload_id))
+                                .await;
+                            self.purge_pending_upload_best_effort(&bucket, upload_id)
+                                .await;
+                            return Err(BlobError::State(terminal_status_message(status).into()));
+                        }
+                        StageSource::Read(reloaded) => {
+                            source_object_key = reloaded.object_key.clone();
+                            self.read_stage_source(client, upload_id, &reloaded)
+                                .await
+                                .map_err(ObjectReadError::into_blob_error)?
+                        }
                     }
                 }
-            }
-            Err(error) => return Err(error.into_blob_error()),
-        };
+                Err(error) => return Err(error.into_blob_error()),
+            };
         // Derived from this upload row's own primary key, not from its
         // bytes or its owner: the key the read gate will re-derive and
         // compare against for the life of the row.

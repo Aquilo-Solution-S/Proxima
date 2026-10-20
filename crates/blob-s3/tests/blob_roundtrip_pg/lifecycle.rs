@@ -311,3 +311,76 @@ async fn find_held_blobs_answers_only_completed_uploads() {
     drop(pool);
     drop_db(&db_name).await.expect("drop db");
 }
+
+/// #483 item 3: the declared length is signed into the presigned PUT, so a
+/// body of any other length is refused by the store and never lands.
+#[tokio::test]
+async fn a_put_of_more_bytes_than_declared_does_not_land() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = lifecycle_store(&pg, &config);
+    let owner = owner_fixture();
+    let ctx = host_ctx(owner);
+    let declared: &[u8] = b"declared bytes";
+    let prepared = store
+        .prepare_upload(
+            &ctx,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: "declared.pdf".into(),
+                mime: "application/pdf".into(),
+                byte_len: declared.len() as u64,
+            },
+        )
+        .await
+        .expect("prepare");
+    let pending_key: String =
+        sqlx::query_scalar("SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1")
+            .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
+            .fetch_one(&pool)
+            .await
+            .expect("pending key");
+    let put = |body: Vec<u8>| {
+        let mut request = reqwest::Client::new().put(&prepared.upload_url);
+        for header in &prepared.headers {
+            // The client sets the length of the body it sends.
+            if !header.name.eq_ignore_ascii_case("content-length") {
+                request = request.header(header.name.as_str(), header.value.as_str());
+            }
+        }
+        request.body(body).send()
+    };
+    let landed = || async {
+        config
+            .client()
+            .head_object()
+            .bucket(&config.bucket)
+            .key(&pending_key)
+            .send()
+            .await
+            .is_ok()
+    };
+
+    let oversized = put([declared, b" and then some".as_slice()].concat())
+        .await
+        .expect("send");
+    assert!(
+        !oversized.status().is_success(),
+        "the store accepted {} bytes against a declared {}",
+        declared.len() + 14,
+        declared.len()
+    );
+    assert!(!landed().await, "the refused PUT left an object behind");
+
+    let exact = put(declared.to_vec()).await.expect("send");
+    assert!(exact.status().is_success(), "{}", exact.status());
+    assert!(landed().await);
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}

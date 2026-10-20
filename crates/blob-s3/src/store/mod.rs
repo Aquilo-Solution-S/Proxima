@@ -71,7 +71,14 @@ pub struct CitedBlobStore {
     platform_scope: PgPlatformScope,
     /// Computed once from the config: what upload rows and debt record.
     store_id: proxima_core::ObjectStoreId,
+    /// One slot per stage in flight, shared by every clone. A stage holds
+    /// its object in memory until it is published, so the slots bound the
+    /// memory staging can hold at [`MAX_CONCURRENT_STAGES`] objects.
+    stage_slots: std::sync::Arc<tokio::sync::Semaphore>,
 }
+
+/// How many uploads one store stages at once; later stages wait for a slot.
+pub(super) const MAX_CONCURRENT_STAGES: usize = 8;
 
 impl CitedBlobStore {
     /// Validate and normalize the S3 configuration at its consuming boundary.
@@ -115,6 +122,7 @@ impl CitedBlobStore {
             presigning_client: tokio::sync::OnceCell::new(),
             system_authority: std::sync::Arc::new(std::sync::OnceLock::new()),
             platform_scope,
+            stage_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_STAGES)),
         })
     }
 

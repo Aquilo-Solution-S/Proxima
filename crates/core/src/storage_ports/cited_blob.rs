@@ -29,6 +29,8 @@ use crate::storage::StorageError;
 
 /// Prepared presigned upload: `PUT` the raw bytes to `upload_url` with
 /// exactly `headers` before `expires_at`, then complete with `upload_id`.
+/// The request signs the declared `byte_len` as its `Content-Length`: a body
+/// of any other length is refused by the object store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CitedBlobUploadPrepared {
     pub upload_id: String,
@@ -99,7 +101,8 @@ pub struct CitedBlobReadUrl {
 }
 
 /// An artefact this owner already holds, as [`CitedBlobPort::find_held_blobs`]
-/// reports it.
+/// reports it. Held means a completed upload of the bytes; a staged upload
+/// holds nothing yet.
 ///
 /// NO STORAGE COORDINATES. `bucket`/`object_key` are deliberately absent, for
 /// the same reason every other outcome struct in this file omits them: the

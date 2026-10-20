@@ -6,7 +6,9 @@ use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use super::{BlobError, ByteStream, LengthExpectation, hash_uploaded_object, publish_canonical};
+use super::{
+    BlobError, ByteStream, LengthExpectation, Retain, hash_uploaded_object, publish_canonical,
+};
 use crate::store::port::blob_error_to_storage;
 
 const BODY: &[u8] = b"canonical upload bytes";
@@ -141,6 +143,7 @@ async fn publish_after_conflict(
         ByteStream::from_static(BODY),
         LengthExpectation::CapOnly,
         Some(1024),
+        Retain::DigestsOnly,
     )
     .await
     .expect("hash known fixture bytes");

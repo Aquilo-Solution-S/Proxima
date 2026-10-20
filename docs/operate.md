@@ -95,6 +95,12 @@ the configured credentials, region, bucket, path style and lifetimes with the
 object client. Staging, verified reads, reconciliation and object purge
 use `PROXIMA_S3_ENDPOINT_URL`.
 
+The upload `PUT` signs the declared `byte_len` as its `Content-Length`, so the
+store refuses a body of any other length before it lands; a proxy in front of
+it must pass the header through. Staging reads an object into memory up to
+the declared length, at most eight uploads at a time per process; a ninth
+waits for a slot.
+
 SigV4 signs the Host, including its port, the complete path, including any
 endpoint prefix, and the query. The public proxy must forward these unchanged
 to the store, or verify that original signed request itself before translating

@@ -24,14 +24,24 @@ pub(super) enum LengthExpectation {
     CapOnly,
 }
 
+/// Whether the read keeps the bytes it hashes. Publication needs them; a
+/// comparison against an object already in the store needs only the digests,
+/// so it never holds the object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Retain {
+    Bytes,
+    DigestsOnly,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct StreamedObject {
     pub(super) blake3: [u8; 32],
     pub(super) sha256: [u8; 32],
     pub(super) byte_len: u64,
-    /// The exact bounded response that produced both digests. Keeping this
-    /// buffer avoids a second GET racing a client overwrite between hashing
-    /// and canonical publication.
+    /// The exact bounded response that produced both digests when read with
+    /// [`Retain::Bytes`], empty otherwise. Keeping this buffer avoids a
+    /// second GET racing a client overwrite between hashing and canonical
+    /// publication.
     pub(super) bytes: Vec<u8>,
 }
 
@@ -56,6 +66,7 @@ pub(super) async fn hash_uploaded_object(
     body: aws_sdk_s3::primitives::ByteStream,
     expected: LengthExpectation,
     max_blob_bytes: Option<u64>,
+    retain: Retain,
 ) -> Result<StreamedObject, BlobError> {
     let mut reader = body.into_async_read();
     let mut blake3_hasher = blake3::Hasher::new();
@@ -65,7 +76,9 @@ pub(super) async fn hash_uploaded_object(
         LengthExpectation::Declared(len) => Some(u64::try_from(len).unwrap_or(0)),
         LengthExpectation::CapOnly => None,
     };
-    if let Some(declared) = declared {
+    if let Some(declared) = declared
+        && retain == Retain::Bytes
+    {
         let capacity = usize::try_from(declared).unwrap_or(usize::MAX);
         let capacity = max_blob_bytes.map_or(capacity, |max| {
             capacity.min(usize::try_from(max).unwrap_or(usize::MAX))
@@ -119,7 +132,9 @@ pub(super) async fn hash_uploaded_object(
                 "uploaded byte length {byte_len} does not match expected {expected_byte_len}"
             )));
         }
-        bytes.extend_from_slice(chunk);
+        if retain == Retain::Bytes {
+            bytes.extend_from_slice(chunk);
+        }
     }
     if let LengthExpectation::Declared(expected_byte_len) = expected
         && i64::try_from(byte_len).unwrap_or(i64::MAX) != expected_byte_len
@@ -148,6 +163,7 @@ mod tests {
             aws_sdk_s3::primitives::ByteStream::from_static(b"far too long"),
             LengthExpectation::Declared(3),
             Some(1024),
+            Retain::Bytes,
         )
         .await
         .expect_err("the first byte beyond the declaration must stop the read");
@@ -168,6 +184,7 @@ mod tests {
             aws_sdk_s3::primitives::ByteStream::from_static(input),
             LengthExpectation::CapOnly,
             Some(1024),
+            Retain::Bytes,
         )
         .await
         .expect("cap-only read succeeds");
@@ -182,6 +199,7 @@ mod tests {
             aws_sdk_s3::primitives::ByteStream::from_static(b"larger than the cap"),
             LengthExpectation::CapOnly,
             Some(4),
+            Retain::Bytes,
         )
         .await
         .expect_err("the cap still bounds an undeclared read");
@@ -197,6 +215,7 @@ mod tests {
             aws_sdk_s3::primitives::ByteStream::from_static(input),
             LengthExpectation::Declared(i64::MAX),
             None,
+            Retain::Bytes,
         )
         .await
         .expect_err("a declaration far beyond the body is still a mismatch");
@@ -207,5 +226,33 @@ mod tests {
                 .starts_with("uploaded byte length 4 does not match"),
             "expected a length mismatch, got {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn digests_only_hashes_the_whole_object_and_keeps_none_of_it() {
+        // The object already in the store is compared by digest, so reading
+        // it must not hold it.
+        let input: &'static [u8] = b"an object that is only compared";
+        let kept = hash_uploaded_object(
+            aws_sdk_s3::primitives::ByteStream::from_static(input),
+            LengthExpectation::CapOnly,
+            Some(1024),
+            Retain::Bytes,
+        )
+        .await
+        .expect("hash");
+        let compared = hash_uploaded_object(
+            aws_sdk_s3::primitives::ByteStream::from_static(input),
+            LengthExpectation::CapOnly,
+            Some(1024),
+            Retain::DigestsOnly,
+        )
+        .await
+        .expect("hash");
+
+        assert!(compared.bytes.is_empty());
+        assert_eq!(compared.blake3, kept.blake3);
+        assert_eq!(compared.sha256, kept.sha256);
+        assert_eq!(compared.byte_len, input.len() as u64);
     }
 }
