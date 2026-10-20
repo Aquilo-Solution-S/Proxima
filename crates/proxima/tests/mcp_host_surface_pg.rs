@@ -1,5 +1,9 @@
 //! External MCP session compatibility coverage for long-running tool calls.
 
+#[path = "fixtures/setup_error.rs"]
+#[allow(dead_code, reason = "each suite uses part of the shared fixture")]
+mod setup_error;
+use setup_error::described;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -210,7 +214,11 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
     // arrived, so it outlives the idle timeout by construction.
     const IDLE: Duration = Duration::from_secs(2);
     const BEATS: usize = 3;
-    let db = SplitRoleDb::create("proxima_session_idle", &[]).await?;
+    let db = described(
+        "PG required",
+        SplitRoleDb::create("proxima_session_idle", &[]).await,
+    )
+    .await?;
     let subject = UserId::new(Uuid::now_v7());
     let serve = |idle: Option<Duration>, gate: Arc<GateTools>| {
         Proxima::<HostApp>::app()
@@ -230,7 +238,7 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
     let client = reqwest::Client::new();
 
     let gate = GateTools::new();
-    let running = serve(Some(IDLE), Arc::clone(&gate)).await?;
+    let running = described("serve", serve(Some(IDLE), Arc::clone(&gate)).await).await?;
     let base = format!("http://{}", running.mcp_addr().ok_or("no MCP address")?);
     let meta = json!({"progressToken": "ingest-1"});
     let (_, response) = post_gate_call(&client, &base, subject, &meta).await?;
@@ -286,7 +294,7 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
 
     // With no idle timeout the same call completes once released.
     let gate = GateTools::new();
-    let running = serve(None, Arc::clone(&gate)).await?;
+    let running = described("serve", serve(None, Arc::clone(&gate)).await).await?;
     let base = format!("http://{}", running.mcp_addr().ok_or("no MCP address")?);
     let call = async {
         let (_, response) = post_gate_call(&client, &base, subject, &json!({})).await?;

@@ -6,6 +6,10 @@
 //! transactions wrote them. Each refusal
 //! compares the plan's error with the run's, as `Debug` text and as a variant.
 
+#[path = "fixtures/setup_error.rs"]
+#[allow(dead_code, reason = "each suite uses part of the shared fixture")]
+mod setup_error;
+use setup_error::expect_described;
 #[path = "fixtures/split_core_db.rs"]
 mod split_core_db;
 
@@ -124,22 +128,26 @@ struct Db {
 
 impl Db {
     async fn open(guard: Guard) -> Self {
-        let (runtime_url, platform_url) = split_role_urls(guard.name())
-            .await
-            .expect("split roles on the database");
+        let (runtime_url, platform_url) = expect_described(
+            "split roles on the database",
+            split_role_urls(guard.name()).await,
+        )
+        .await;
         Self {
-            admin: PgPool::connect(&db_url(guard.name()))
-                .await
-                .expect("admin pool"),
-            pg: proxima_storage_pg::PgMigrationStorage::connect_with_config(
-                &platform_url,
-                PgPoolConfig::default(),
-                PgTuning::default(),
+            admin: expect_described("admin pool", PgPool::connect(&db_url(guard.name())).await)
+                .await,
+            pg: expect_described(
+                "platform storage",
+                proxima_storage_pg::PgMigrationStorage::connect_with_config(
+                    &platform_url,
+                    PgPoolConfig::default(),
+                    PgTuning::default(),
+                )
+                .await,
             )
-            .await
-            .expect("platform storage"),
-            platform: PgPool::connect(&platform_url).await.expect("platform pool"),
-            runtime: PgPool::connect(&runtime_url).await.expect("runtime pool"),
+            .await,
+            platform: expect_described("platform pool", PgPool::connect(&platform_url).await).await,
+            runtime: expect_described("runtime pool", PgPool::connect(&runtime_url).await).await,
             platform_url,
             guard,
         }
@@ -148,26 +156,28 @@ impl Db {
     /// No migration has run; the ledgers role provisioning creates are empty.
     async fn empty() -> Self {
         let name = unique_db_name("proxima_plan");
-        create_db(&name).await.expect("PG required");
+        expect_described("PG required", create_db(&name).await).await;
         Self::open(Guard::Created(DbGuard::adopt(name))).await
     }
 
     /// Core is migrated; no flavor ledger exists.
     async fn core_current() -> Self {
-        let clone = clone_split_core_db("proxima_plan")
-            .await
-            .expect("PG required");
+        let clone =
+            expect_described("PG required", clone_split_core_db("proxima_plan").await).await;
         Self::open(Guard::Cloned(clone)).await
     }
 
     async fn run(&self, sources: Vec<NamedMigrator>) {
-        run_core_and_flavor_migrations(
-            &self.pg,
-            sources,
-            &proxima::PgSidecarRegistryFrozen::default(),
+        expect_described(
+            "the migration run",
+            run_core_and_flavor_migrations(
+                &self.pg,
+                sources,
+                &proxima::PgSidecarRegistryFrozen::default(),
+            )
+            .await,
         )
-        .await
-        .expect("the migration run");
+        .await;
     }
 
     async fn plan(
@@ -1200,7 +1210,7 @@ async fn a_plan_dropped_while_it_waits_for_the_lock_does_not_strand_the_lock() {
     // A pool of its own, so the plan cannot be handed the connection that was
     // cancelled: a pooled one would hold the lock (a session can take it
     // twice, a second session waits out the 5 s `lock_timeout`).
-    let other = PgPool::connect(&db.platform_url).await.expect("other pool");
+    let other = expect_described("other pool", PgPool::connect(&db.platform_url).await).await;
     let started = std::time::Instant::now();
     assert_eq!(
         coordinates(
@@ -1284,7 +1294,7 @@ async fn a_run_dropped_mid_source_does_not_return_its_connection_to_the_pool() {
     }
     let mut held = Vec::new();
     for _ in 0..pool.size().max(1) {
-        let mut conn = pool.acquire().await.expect("pool connection");
+        let mut conn = expect_described("pool connection", pool.acquire().await).await;
         let timeout: String = sqlx::query_scalar("SHOW statement_timeout")
             .fetch_one(&mut *conn)
             .await

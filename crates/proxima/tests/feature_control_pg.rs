@@ -5,6 +5,10 @@
 //! The worker interval is an hour in every case that does not count
 //! intervals, so only the gate's wake-ups can end an idle sleep.
 
+#[path = "fixtures/setup_error.rs"]
+#[allow(dead_code, reason = "each suite uses part of the shared fixture")]
+mod setup_error;
+use setup_error::expect_described;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -160,12 +164,16 @@ struct Queue {
 
 impl World {
     async fn new(prefix: &str) -> Self {
-        let db = SplitRoleDb::create(prefix, &[])
-            .await
-            .expect("PG required for tests");
-        let inspection = sqlx::PgPool::connect(&db_url(db.name()))
-            .await
-            .expect("inspection pool");
+        let db = expect_described(
+            "PG required for tests",
+            SplitRoleDb::create(prefix, &[]).await,
+        )
+        .await;
+        let inspection = expect_described(
+            "inspection pool",
+            sqlx::PgPool::connect(&db_url(db.name())).await,
+        )
+        .await;
         Self {
             db,
             inspection,
@@ -326,14 +334,17 @@ async fn configuration_fault_health_tracks_the_worker_and_clears_after_rebinding
         world.owner,
         Some(BoundEmbeddingClient::bind(refused.clone()).unwrap()),
     );
-    let running = world
-        .base_app(Duration::from_hours(1))
-        .embedding_router(router.clone())
-        .mcp_bind("127.0.0.1:0".parse().unwrap())
-        .health_endpoints(true)
-        .run()
-        .await
-        .expect("host runs with a configured client");
+    let running = expect_described(
+        "host runs with a configured client",
+        world
+            .base_app(Duration::from_hours(1))
+            .embedding_router(router.clone())
+            .mcp_bind("127.0.0.1:0".parse().unwrap())
+            .health_endpoints(true)
+            .run()
+            .await,
+    )
+    .await;
     let control = running.feature_control(Feature::EmbeddingWorker).unwrap();
     let base = format!("http://{}", running.mcp_addr().unwrap());
     let http = reqwest::Client::new();
@@ -415,13 +426,16 @@ async fn configuration_fault_health_tracks_the_worker_and_clears_after_rebinding
 #[tokio::test]
 async fn a_quiescent_worker_claims_nothing_while_serving_continues_and_resume_drains() {
     let world = World::new("feature_control_serving").await;
-    let running = world
-        .app(Duration::from_hours(1))
-        .mcp_bind("127.0.0.1:0".parse().expect("loopback bind"))
-        .health_endpoints(true)
-        .run()
-        .await
-        .expect("run");
+    let running = expect_described(
+        "run",
+        world
+            .app(Duration::from_hours(1))
+            .mcp_bind("127.0.0.1:0".parse().expect("loopback bind"))
+            .health_endpoints(true)
+            .run()
+            .await,
+    )
+    .await;
     let base = format!("http://{}", running.mcp_addr().expect("MCP bound"));
     let http = reqwest::Client::new();
     let control = running
@@ -495,7 +509,7 @@ async fn a_quiescent_worker_claims_nothing_while_serving_continues_and_resume_dr
 async fn a_job_enqueued_after_quiesce_stays_pending_across_several_worker_intervals() {
     const INTERVAL: Duration = Duration::from_secs(1);
     let world = World::new("feature_control_intervals").await;
-    let built = world.app(INTERVAL).build().await.expect("build");
+    let built = expect_described("build", world.app(INTERVAL).build().await).await;
     let control = built
         .feature_control(Feature::EmbeddingWorker)
         .expect("a configured embedding client starts the worker");
@@ -555,11 +569,7 @@ async fn drain_call_in_flight(world: &World, built: &proxima::BuiltProxima) -> F
 #[tokio::test]
 async fn a_quiesce_mid_batch_returns_only_after_the_drain_call_settles_every_claim() {
     let world = World::new("feature_control_midbatch").await;
-    let built = world
-        .app(Duration::from_hours(1))
-        .build()
-        .await
-        .expect("build");
+    let built = expect_described("build", world.app(Duration::from_hours(1)).build().await).await;
     let control = drain_call_in_flight(&world, &built).await;
 
     let mut quiesce = Box::pin(control.quiesce());
@@ -597,11 +607,7 @@ async fn a_quiesce_mid_batch_returns_only_after_the_drain_call_settles_every_cla
 #[tokio::test]
 async fn a_storage_error_mid_batch_returns_the_unsettled_claims_before_the_quiesce_resolves() {
     let world = World::new("feature_control_storage_error").await;
-    let built = world
-        .app(Duration::from_hours(1))
-        .build()
-        .await
-        .expect("build");
+    let built = expect_described("build", world.app(Duration::from_hours(1)).build().await).await;
     let control = built
         .feature_control(Feature::EmbeddingWorker)
         .expect("a configured embedding client starts the worker");
@@ -662,11 +668,7 @@ async fn a_storage_error_mid_batch_returns_the_unsettled_claims_before_the_quies
 #[tokio::test]
 async fn resume_while_quiescing_returns_resumed_and_the_worker_goes_on() {
     let world = World::new("feature_control_resumed").await;
-    let built = world
-        .app(Duration::from_hours(1))
-        .build()
-        .await
-        .expect("build");
+    let built = expect_described("build", world.app(Duration::from_hours(1)).build().await).await;
     let control = drain_call_in_flight(&world, &built).await;
 
     let mut quiesce = Box::pin(control.quiesce());
@@ -687,11 +689,7 @@ async fn resume_while_quiescing_returns_resumed_and_the_worker_goes_on() {
 #[tokio::test]
 async fn shutdown_while_quiescing_stops_the_pending_quiesce_and_joins() {
     let world = World::new("feature_control_shutdown").await;
-    let built = world
-        .app(Duration::from_hours(1))
-        .build()
-        .await
-        .expect("build");
+    let built = expect_described("build", world.app(Duration::from_hours(1)).build().await).await;
     let control = drain_call_in_flight(&world, &built).await;
 
     // One task polls the quiesce, then starts the shutdown (which cancels the

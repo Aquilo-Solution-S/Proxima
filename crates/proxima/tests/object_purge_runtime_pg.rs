@@ -3,6 +3,10 @@
 //! erase owes, sweeps an expired upload, and its readiness answer counts a
 //! debt that keeps failing. Skips without `PROXIMA_S3_*`.
 
+#[path = "fixtures/setup_error.rs"]
+#[allow(dead_code, reason = "each suite uses part of the shared fixture")]
+mod setup_error;
+use setup_error::described;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
@@ -82,7 +86,8 @@ fn refusing(config: &S3RuntimeConfig) -> S3RuntimeConfig {
 
 /// The builder a `serve` host gets: nothing about purging or sweeping.
 async fn app(database: &str, owner: OwnerId) -> TestResult<Proxima<CoreApp>> {
-    let (runtime_url, platform_url) = split_role_urls(database).await?;
+    let (runtime_url, platform_url) =
+        described("split roles", split_role_urls(database).await).await?;
     Ok(Proxima::<CoreApp>::app()
         .database_url(runtime_url)
         .store_number(0)
@@ -97,15 +102,19 @@ async fn serve(
     owner: OwnerId,
     s3: S3RuntimeConfig,
 ) -> TestResult<(RunningProxima, String)> {
-    let running = app(database, owner)
-        .await?
-        .s3(s3)
-        .object_purge_interval(TICK)
-        .authenticator(Arc::new(NoBearer))
-        .mcp_bind("127.0.0.1:0".parse()?)
-        .health_endpoints(true)
-        .run()
-        .await?;
+    let running = described(
+        "serve",
+        app(database, owner)
+            .await?
+            .s3(s3)
+            .object_purge_interval(TICK)
+            .authenticator(Arc::new(NoBearer))
+            .mcp_bind("127.0.0.1:0".parse()?)
+            .health_endpoints(true)
+            .run()
+            .await,
+    )
+    .await?;
     assert_eq!(
         running.boot_report().get(Feature::ObjectPurge).state,
         FeatureState::Started,
@@ -148,7 +157,11 @@ fn host_context(owner: OwnerId, path: AuthPath) -> AuthzContext {
 }
 
 async fn admin_pool(database: &str) -> TestResult<sqlx::PgPool> {
-    Ok(sqlx::PgPool::connect(&db_url(database)).await?)
+    Ok(described(
+        "admin connection",
+        sqlx::PgPool::connect(&db_url(database)).await,
+    )
+    .await?)
 }
 
 async fn register_group(pool: &sqlx::PgPool, group: GroupId) -> TestResult<()> {
@@ -207,7 +220,7 @@ where
     Fut: std::future::Future<Output = TestResult<()>>,
 {
     let database = unique_db_name(prefix);
-    create_db(&database).await?;
+    described("create database", create_db(&database).await).await?;
     let result = body(database.clone()).await;
     drop_db(&database).await?;
     result
@@ -249,12 +262,16 @@ async fn owe_an_erase(
 ) -> TestResult<String> {
     let owner = OwnerId::from(group);
     // An upload completes on a server whose drain is off ...
-    let first = app(database, owner)
-        .await?
-        .s3(config.clone())
-        .object_purge_interval(Duration::ZERO)
-        .build()
-        .await?;
+    let first = described(
+        "boot",
+        app(database, owner)
+            .await?
+            .s3(config.clone())
+            .object_purge_interval(Duration::ZERO)
+            .build()
+            .await,
+    )
+    .await?;
     register_group(admin, group).await?;
     let store = first.host().blobs().expect("configured store").clone();
     let authz = host_context(owner, AuthPath::HostBearer);
@@ -284,7 +301,7 @@ async fn owe_an_erase(
 
     // ... and is erased by a process with no object store, so the erase
     // can only owe the bytes.
-    let eraser = app(database, owner).await?.build().await?;
+    let eraser = described("boot", app(database, owner).await?.build().await).await?;
     eraser
         .host()
         .engine()
@@ -437,12 +454,16 @@ async fn a_zero_interval_turns_the_drain_off() -> TestResult<()> {
     with_database("proxima_object_purge_off", |database| async move {
         let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let admin = admin_pool(&database).await?;
-        let built = app(&database, owner)
-            .await?
-            .s3(config.clone())
-            .object_purge_interval(Duration::ZERO)
-            .build()
-            .await?;
+        let built = described(
+            "boot",
+            app(&database, owner)
+                .await?
+                .s3(config.clone())
+                .object_purge_interval(Duration::ZERO)
+                .build()
+                .await,
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
              VALUES ($1, NULL, $2)",
@@ -483,7 +504,10 @@ async fn a_server_refuses_to_start_over_another_stores_debt() -> TestResult<()> 
         let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let admin = admin_pool(&database).await?;
         // Migrate with no object store, then owe keys to another store.
-        app(&database, owner).await?.build().await?.shutdown().await;
+        described("boot", app(&database, owner).await?.build().await)
+            .await?
+            .shutdown()
+            .await;
         sqlx::query(
             "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
              VALUES ($1, NULL, 's3:id/elsewhere'), ($2, NULL, 's3:id/elsewhere')",

@@ -2,6 +2,9 @@
 //! platform/runtime roles.  This is deliberately a boot test: the lower-level
 //! policy census and role refusal matrix live in storage-pg's RLS tests.
 
+#[path = "fixtures/setup_error.rs"]
+#[allow(dead_code, reason = "each suite uses part of the shared fixture")]
+mod setup_error;
 use async_trait::async_trait;
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{AppInfo, FactWrite, FlavorApp, Proxima, QueryRequest, ServedSurface};
@@ -11,6 +14,7 @@ use proxima_core::{
 };
 use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgPoolConfig;
+use setup_error::expect_described;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{AssertSqlSafe, ConnectOptions, PgPool};
 use std::str::FromStr;
@@ -60,9 +64,7 @@ async fn assert_no_scope_parameter_grant(admin: &PgPool, platform: &str) {
 async fn cleanup(database: &str, admin: PgPool, runtime: &str, platform: &str) {
     admin.close().await;
     drop_db(database).await.expect("drop database");
-    let control = PgPool::connect(&admin_url())
-        .await
-        .expect("control connection");
+    let control = expect_described("control connection", PgPool::connect(&admin_url()).await).await;
     // SQL-POLICY: fixed-fragment — uniquely generated fixture roles, quoted identifiers.
     exec(&control, format!("DROP ROLE IF EXISTS {}", ident(runtime))).await;
     exec(&control, format!("DROP ROLE IF EXISTS {}", ident(platform))).await;
@@ -71,14 +73,17 @@ async fn cleanup(database: &str, admin: PgPool, runtime: &str, platform: &str) {
 
 async fn setup() -> (String, PgPool, String, String, OwnerId, String, String) {
     let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
-    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
-        &platform_url,
-        PgPoolConfig::default(),
-        proxima_storage_pg::PgTuning::default(),
+    let migration = expect_described(
+        "platform storage",
+        proxima_storage_pg::PgMigrationStorage::connect_with_config(
+            &platform_url,
+            PgPoolConfig::default(),
+            proxima_storage_pg::PgTuning::default(),
+        )
+        .await,
     )
-    .await
-    .expect("platform storage");
-    migration.run_migrations().await.expect("core schema");
+    .await;
+    expect_described("core schema", migration.run_migrations().await).await;
     migration.clone_pool_for_backend().close().await;
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
@@ -99,8 +104,8 @@ async fn setup() -> (String, PgPool, String, String, OwnerId, String, String) {
 
 async fn setup_fresh() -> (String, PgPool, String, String, String, String) {
     let database = unique_db_name("proxima_owner_rls_fresh");
-    create_db(&database).await.expect("create database");
-    let admin = PgPool::connect(&db_url(&database)).await.expect("admin");
+    expect_described("create database", create_db(&database).await).await;
+    let admin = expect_described("admin", PgPool::connect(&db_url(&database)).await).await;
     exec(
         &admin,
         "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS btree_gin; CREATE EXTENSION IF NOT EXISTS pg_trgm",
@@ -223,7 +228,7 @@ async fn split_role_boot_accepts_runtime_with_platform_scope() {
         false,
     )
     .await;
-    let booted = result.expect("split-role boot");
+    let booted = expect_described("split-role boot", result).await;
     let authz = proxima_core::authenticate(
         &SyntheticAuthenticator {
             subject: owner.as_user(),
@@ -257,9 +262,7 @@ async fn split_role_boot_accepts_runtime_with_platform_scope() {
             .iter()
             .any(|memory| memory.id == outcome.memory_id)
     );
-    let verify = PgPool::connect(&runtime_url)
-        .await
-        .expect("runtime verify pool");
+    let verify = expect_described("runtime verify pool", PgPool::connect(&runtime_url).await).await;
     let mut verify_tx = verify.begin().await.expect("runtime verify transaction");
     sqlx::query("SELECT set_config('app.proxima_scope', 'owner', true), set_config('app.owner', $1::text, true)")
         .bind(format!("{{{}}}", owner.into_inner()))
@@ -279,9 +282,11 @@ async fn split_role_boot_accepts_runtime_with_platform_scope() {
         .expect("rollback verify transaction");
     verify.close().await;
     booted.shutdown().await;
-    let second = boot(runtime_url, Some(platform_url), owner, false)
-        .await
-        .expect("second automatic migration is idempotent");
+    let second = expect_described(
+        "second automatic migration is idempotent",
+        boot(runtime_url, Some(platform_url), owner, false).await,
+    )
+    .await;
     second.shutdown().await;
 
     cleanup(&database, admin, &runtime, &platform).await;
@@ -295,14 +300,17 @@ async fn fresh_split_role_boot_migrates_core_and_example_automatically() {
         .await;
     let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
-    let first = boot(
-        runtime_url.clone(),
-        Some(platform_url.clone()),
-        owner,
-        false,
+    let first = expect_described(
+        "fresh core+example automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
     )
-    .await
-    .expect("fresh core+example automatic migration");
+    .await;
     first.shutdown().await;
     let (base_tables, flavor_tables): (i64, i64) = sqlx::query_as(
         "SELECT
@@ -325,9 +333,11 @@ async fn fresh_split_role_boot_migrates_core_and_example_automatically() {
         ),
     )
     .await;
-    let second = boot(runtime_url, Some(platform_url), owner, true)
-        .await
-        .expect("fresh second boot");
+    let second = expect_described(
+        "fresh second boot",
+        boot(runtime_url, Some(platform_url), owner, true).await,
+    )
+    .await;
     second.shutdown().await;
     cleanup(&database, admin, &runtime, &platform).await;
 }
@@ -338,16 +348,19 @@ async fn assert_insecure_single_owner_roundtrip(owner: OwnerId) {
         .lock()
         .await;
     let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
-    let built = Proxima::<ExampleApp>::app()
-        .database_url(runtime_url)
-        .store_number(0)
-        .platform_database_url(platform_url)
-        .owner(owner)
-        .allow_insecure_single_owner()
-        .served_surface(ServedSurface::All)
-        .build()
-        .await
-        .expect("insecure single-owner boot with enforcing split roles");
+    let built = expect_described(
+        "insecure single-owner boot with enforcing split roles",
+        Proxima::<ExampleApp>::app()
+            .database_url(runtime_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .served_surface(ServedSurface::All)
+            .build()
+            .await,
+    )
+    .await;
     let authz = built.single_owner_authz().expect("explicitly opted in");
     assert_eq!(authz.auth_path(), AuthPath::HostBearer);
     let scope = authz.owner_scope().expect("sealed host owner scope");
@@ -440,14 +453,17 @@ async fn split_role_boot_refuses_runtime_table_owner() {
         .lock()
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
-    boot(
-        runtime_url.clone(),
-        Some(platform_url.clone()),
-        owner,
-        false,
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
     )
-    .await
-    .expect("initial automatic migration");
+    .await;
     exec(&admin, format!("DO $$ DECLARE r record; BEGIN FOR r IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'proxima_core' AND c.relkind IN ('r','p') LOOP EXECUTE format('ALTER TABLE %I.%I OWNER TO {}', r.nspname, r.relname); END LOOP; END $$", ident(&runtime))).await;
     assert!(
         boot(runtime_url, Some(platform_url), owner, true)
@@ -465,14 +481,17 @@ async fn split_role_boot_refuses_runtime_bypassrls() {
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
     // SQL-POLICY: fixed-fragment — generated role identifier is quoted.
-    boot(
-        runtime_url.clone(),
-        Some(platform_url.clone()),
-        owner,
-        false,
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
     )
-    .await
-    .expect("initial automatic migration");
+    .await;
     // SQL-POLICY: fixed-fragment — the generated fixture role is identifier-quoted.
     exec(&admin, format!("ALTER ROLE {} BYPASSRLS", ident(&runtime))).await;
     assert!(
@@ -490,14 +509,17 @@ async fn split_role_boot_refuses_missing_force_rls() {
         .lock()
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
-    boot(
-        runtime_url.clone(),
-        Some(platform_url.clone()),
-        owner,
-        false,
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
     )
-    .await
-    .expect("initial automatic migration");
+    .await;
     exec(
         &admin,
         "ALTER TABLE proxima_core.memory NO FORCE ROW LEVEL SECURITY",
@@ -518,14 +540,17 @@ async fn split_role_boot_refuses_unprotected_new_table() {
         .lock()
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
-    boot(
-        runtime_url.clone(),
-        Some(platform_url.clone()),
-        owner,
-        false,
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
     )
-    .await
-    .expect("initial automatic migration");
+    .await;
     exec(&admin, "CREATE TABLE proxima_core.unprotected_sidecar (id uuid PRIMARY KEY, owner_id uuid NOT NULL)").await;
     assert!(
         boot(runtime_url, Some(platform_url), owner, true)
@@ -542,14 +567,17 @@ async fn split_role_boot_refuses_mismatched_baseline_checksum() {
         .lock()
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
-    boot(
-        runtime_url.clone(),
-        Some(platform_url.clone()),
-        owner,
-        false,
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
     )
-    .await
-    .expect("initial automatic migration");
+    .await;
     sqlx::query(
         "UPDATE public._sqlx_migrations SET checksum = decode('00', 'hex') WHERE version = 33",
     )
@@ -571,14 +599,17 @@ async fn split_role_boot_refuses_unrelated_newer_ledger_version() {
         .lock()
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
-    boot(
-        runtime_url.clone(),
-        Some(platform_url.clone()),
-        owner,
-        false,
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
     )
-    .await
-    .expect("initial automatic migration");
+    .await;
     sqlx::query("INSERT INTO public._sqlx_migrations (version, description, success, checksum, execution_time) VALUES (9000, 'unrelated', true, decode('00', 'hex'), 0)")
         .execute(&admin).await.expect("insert unrelated ledger row");
     assert!(

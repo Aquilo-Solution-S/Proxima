@@ -14,7 +14,7 @@ mod example_engine;
 
 use std::collections::BTreeSet;
 
-use example_engine::migrated_db;
+use example_engine::{described, expect_described, initialize_store_number, migrated_db};
 use proxima::flavor::{FlavorBundle, PgSidecarRegistry, register_core_pg_sidecars};
 use proxima_core::flavor::ExportRule;
 use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportTarget, OwnerSurfaces};
@@ -33,16 +33,9 @@ fn both_flavors() -> FlavorRegistryFrozen {
 
 /// The runtime storage over a migrated clone, wired to both flavors.
 async fn storage(db: &proxima::testkit::SplitRoleDb) -> PgStorage {
-    proxima_storage_pg::PgMigrationStorage::connect_with_config(
-        db.platform_url(),
-        proxima_storage_pg::PgPoolConfig::default(),
-        proxima_storage_pg::PgTuning::default(),
-    )
-    .await
-    .expect("migration connection")
-    .initialize_store_number(0)
-    .await
-    .expect("store number");
+    initialize_store_number(db)
+        .await
+        .unwrap_or_else(|why| panic!("{why}"));
     let registry = both_flavors();
     let mut sidecars = PgSidecarRegistry::new();
     register_core_pg_sidecars(&mut sidecars);
@@ -50,17 +43,23 @@ async fn storage(db: &proxima::testkit::SplitRoleDb) -> PgStorage {
     let sidecars = sidecars
         .freeze_against(&registry)
         .expect("the example sidecars match the registry");
-    let platform_pool = sqlx::PgPool::connect(db.platform_url())
-        .await
-        .expect("platform connection");
-    let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_example"])
-        .await
-        .expect("platform validation");
-    PgStorage::connect(db.runtime_url(), platform_scope, 0)
-        .await
-        .expect("runtime connection")
-        .with_sidecars(sidecars)
-        .with_flavors(&registry)
+    let platform_pool = expect_described(
+        "platform connection",
+        sqlx::PgPool::connect(db.platform_url()).await,
+    )
+    .await;
+    let platform_scope = expect_described(
+        "platform validation",
+        PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_example"]).await,
+    )
+    .await;
+    expect_described(
+        "runtime connection",
+        PgStorage::connect(db.runtime_url(), platform_scope, 0).await,
+    )
+    .await
+    .with_sidecars(sidecars)
+    .with_flavors(&registry)
 }
 
 /// Acceptance 2 of #478 over a composed registry: no surface the erase
@@ -198,7 +197,13 @@ async fn every_base_table_is_a_declared_surface_or_a_stated_exemption() {
                 AND table_name <> '_sqlx_migrations'
               ORDER BY 1",
         )
-        .fetch_all(&sqlx::PgPool::connect(&db.admin_url()).await?)
+        .fetch_all(
+            &described(
+                "admin connection",
+                sqlx::PgPool::connect(&db.admin_url()).await,
+            )
+            .await?,
+        )
         .await?;
         assert!(
             present.len() > 30,
