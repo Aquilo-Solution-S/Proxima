@@ -1,6 +1,7 @@
 //! Pins on the node, PK outbound, GIN inbound, lineage by t.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
+use proxima_core::MemoryKind;
 use proxima_core::read_models::MemorySchemaSpec;
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{InboundPinQuery, MemoryReadPort, OwnerWritePermit};
@@ -40,7 +41,7 @@ fn memory_schema_specs(registry: &proxima_core::FlavorRegistryFrozen) -> Vec<Mem
         .collect()
 }
 
-fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
+fn draft(kind: MemoryKind, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
     FactWriteCommand {
         schema_id: SchemaId::new("core/upload-v1".to_owned()),
         schema_version: SchemaVersion::new(1),
@@ -61,7 +62,7 @@ fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
             .collect(),
         refs,
         blob_id: None,
-        kind: kind.into(),
+        kind,
         request: None,
     }
 }
@@ -83,9 +84,13 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let leaf = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
-        let mut derived_cmd = draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]);
+        let mut derived_cmd = draft(
+            MemoryKind::Abstraction,
+            vec![],
+            vec![leaf.memory_id.into_inner()],
+        );
         derived_cmd.schema_id = SchemaId::new(AgentDerivationV1::SCHEMA_ID.into());
         // `agent-derivation-v1` is `LanguagePolicy::PerRow`: the write names a
         // language.
@@ -215,24 +220,28 @@ async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let a = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let b = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let c = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
         let foreign = pg
-            .ingest_fact_atomic(&other_permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(
+                &other_permit,
+                &draft(MemoryKind::Fact, vec![], vec![]),
+                None,
+            )
             .await?;
         let hub = pg
             .ingest_fact_atomic(
                 &permit,
                 &draft(
-                    "abstraction",
+                    MemoryKind::Abstraction,
                     vec![foreign.memory_id.into_inner()],
                     vec![
                         a.memory_id.into_inner(),
@@ -319,16 +328,20 @@ async fn lineage_redacts_foreign_origin_instead_of_dropping() {
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
 
         let own = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let foreign = pg
-            .ingest_fact_atomic(&other_permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(
+                &other_permit,
+                &draft(MemoryKind::Fact, vec![], vec![]),
+                None,
+            )
             .await?;
         let derived = pg
             .ingest_fact_atomic(
                 &permit,
                 &draft(
-                    "abstraction",
+                    MemoryKind::Abstraction,
                     vec![],
                     vec![own.memory_id.into_inner(), foreign.memory_id.into_inner()],
                 ),
@@ -408,14 +421,18 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let hub = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let mut ids = Vec::new();
         for _ in 0..300 {
             let child = pg
                 .ingest_fact_atomic(
                     &permit,
-                    &draft("abstraction", vec![], vec![hub.memory_id.into_inner()]),
+                    &draft(
+                        MemoryKind::Abstraction,
+                        vec![],
+                        vec![hub.memory_id.into_inner()],
+                    ),
                     None,
                 )
                 .await?;
@@ -485,19 +502,27 @@ async fn inbound_heads_only_drops_superseded_pin() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let hub = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let other = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let old = pg
             .ingest_fact_atomic(
                 &permit,
-                &draft("abstraction", vec![], vec![hub.memory_id.into_inner()]),
+                &draft(
+                    MemoryKind::Abstraction,
+                    vec![],
+                    vec![hub.memory_id.into_inner()],
+                ),
                 None,
             )
             .await?;
-        let mut next = draft("abstraction", vec![], vec![other.memory_id.into_inner()]);
+        let mut next = draft(
+            MemoryKind::Abstraction,
+            vec![],
+            vec![other.memory_id.into_inner()],
+        );
         next.handle = Some(old.handle);
         let new = pg.ingest_fact_atomic(&permit, &next, None).await?;
         assert_ne!(old.memory_id, new.memory_id);
@@ -562,19 +587,27 @@ async fn lineage_diamond_visits_shared_node_once() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let leaf = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let e1 = pg
             .ingest_fact_atomic(
                 &permit,
-                &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+                &draft(
+                    MemoryKind::Abstraction,
+                    vec![],
+                    vec![leaf.memory_id.into_inner()],
+                ),
                 None,
             )
             .await?;
         let e2 = pg
             .ingest_fact_atomic(
                 &permit,
-                &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+                &draft(
+                    MemoryKind::Abstraction,
+                    vec![],
+                    vec![leaf.memory_id.into_inner()],
+                ),
                 None,
             )
             .await?;
@@ -582,7 +615,7 @@ async fn lineage_diamond_visits_shared_node_once() {
             .ingest_fact_atomic(
                 &permit,
                 &draft(
-                    "abstraction",
+                    MemoryKind::Abstraction,
                     vec![],
                     vec![e1.memory_id.into_inner(), e2.memory_id.into_inner()],
                 ),
@@ -592,14 +625,22 @@ async fn lineage_diamond_visits_shared_node_once() {
         let left = pg
             .ingest_fact_atomic(
                 &permit,
-                &draft("abstraction", vec![], vec![meet.memory_id.into_inner()]),
+                &draft(
+                    MemoryKind::Abstraction,
+                    vec![],
+                    vec![meet.memory_id.into_inner()],
+                ),
                 None,
             )
             .await?;
         let right = pg
             .ingest_fact_atomic(
                 &permit,
-                &draft("abstraction", vec![], vec![meet.memory_id.into_inner()]),
+                &draft(
+                    MemoryKind::Abstraction,
+                    vec![],
+                    vec![meet.memory_id.into_inner()],
+                ),
                 None,
             )
             .await?;
@@ -607,7 +648,7 @@ async fn lineage_diamond_visits_shared_node_once() {
             .ingest_fact_atomic(
                 &permit,
                 &draft(
-                    "abstraction",
+                    MemoryKind::Abstraction,
                     vec![],
                     vec![left.memory_id.into_inner(), right.memory_id.into_inner()],
                 ),
@@ -691,14 +732,18 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let leaf = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let mut mids = Vec::new();
         for _ in 0..5 {
             let mid = pg
                 .ingest_fact_atomic(
                     &permit,
-                    &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+                    &draft(
+                        MemoryKind::Abstraction,
+                        vec![],
+                        vec![leaf.memory_id.into_inner()],
+                    ),
                     None,
                 )
                 .await?;
@@ -708,7 +753,7 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
             .ingest_fact_atomic(
                 &permit,
                 &draft(
-                    "abstraction",
+                    MemoryKind::Abstraction,
                     vec![],
                     mids.iter().map(|id| id.into_inner()).collect(),
                 ),
@@ -813,16 +858,16 @@ async fn the_forgotten_probe_keeps_to_the_readers_kind_permits() {
         let owner = OwnerId::from(proxima_core::GroupId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let grounding = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let other_grounding = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let abstraction = pg
             .ingest_fact_atomic(
                 &permit,
                 &draft(
-                    "abstraction",
+                    MemoryKind::Abstraction,
                     vec![],
                     vec![grounding.memory_id.into_inner()],
                 ),
@@ -830,7 +875,7 @@ async fn the_forgotten_probe_keeps_to_the_readers_kind_permits() {
             )
             .await?;
         let loose = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let _ = other_grounding;
         let abstraction_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Abstraction);

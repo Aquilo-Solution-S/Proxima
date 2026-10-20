@@ -65,7 +65,7 @@ fn draft(language: Option<&str>) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: "fact".into(),
+        kind: proxima_core::MemoryKind::Fact,
         request: None,
     }
 }

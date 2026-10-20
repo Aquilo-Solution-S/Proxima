@@ -52,10 +52,7 @@ fn bind_fact_natural_key(
 /// time is admitted against this host's clock and stored in the form
 /// storage keeps ([`check_occurred_at`]).
 fn normalize_fact_draft(draft: &mut FactWriteCommand) -> Result<(), ProtocolError> {
-    if draft.kind.is_empty() {
-        "fact".clone_into(&mut draft.kind);
-    }
-    if draft.kind != "fact" {
+    if draft.kind != crate::MemoryKind::Fact {
         return Err(ProtocolError::invalid_argument(
             "kind",
             "Fact ingest requires a Fact source",
@@ -1263,7 +1260,7 @@ mod tests {
         let engine = reference_engine(owner, None, false, None, observed.clone());
         let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
         let mut draft = referenced_draft(&payload);
-        "abstraction".clone_into(&mut draft.kind);
+        draft.kind = crate::MemoryKind::Abstraction;
 
         let error = engine
             .fact_ingest(&authz, draft)
@@ -1379,7 +1376,7 @@ mod tests {
                 fact_id: "fact-1".to_owned(),
             },
         );
-        "abstraction".clone_into(&mut draft.kind);
+        draft.kind = crate::MemoryKind::Abstraction;
 
         let error = engine
             .authorize_fact_ingest(&AuthzContext::denied_for_owner(&owner), draft, &[])

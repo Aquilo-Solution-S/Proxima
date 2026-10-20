@@ -589,7 +589,7 @@ mod lifecycle_lock_tests {
             additional_references: Vec::new(),
             refs: Vec::new(),
             blob_id: None,
-            kind: "fact".into(),
+            kind: proxima_core::MemoryKind::Fact,
             request: None,
         }
     }
@@ -600,12 +600,12 @@ mod lifecycle_lock_tests {
     ) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
         let fact_out = pg.ingest_fact_atomic(permit, &fact(), None).await?;
         let mut abstraction = fact();
-        abstraction.kind = "abstraction".into();
+        abstraction.kind = proxima_core::MemoryKind::Abstraction;
         abstraction.additional_references =
             vec![EdgeEndpoint::memory(EntityKind::Fact, fact_out.memory_id)];
         let abstraction = pg.ingest_fact_atomic(permit, &abstraction, None).await?;
         let mut perspective = fact();
-        perspective.kind = "perspective".into();
+        perspective.kind = proxima_core::MemoryKind::Perspective;
         perspective.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Abstraction,
             abstraction.memory_id,

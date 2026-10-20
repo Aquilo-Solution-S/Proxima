@@ -5,6 +5,7 @@
 //! same engine, write-session, and Postgres paths used by a composed host.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
+use proxima_core::MemoryKind;
 use proxima_core::flavor::{
     CounterRule, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule,
     KeyShape, ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
@@ -259,7 +260,7 @@ async fn seed_abstraction(
         Uuid::now_v7(),
         Uuid::now_v7(),
     );
-    "abstraction".clone_into(&mut draft.kind);
+    draft.kind = proxima_core::MemoryKind::Abstraction;
     draft.source_id = None;
     draft.ingest_key = None;
     draft.receipt = None;
@@ -280,7 +281,7 @@ async fn seed_perspective(pg: &PgStorage, owner: OwnerId) -> Result<MemoryId, St
         Uuid::now_v7(),
         Uuid::now_v7(),
     );
-    "perspective".clone_into(&mut draft.kind);
+    draft.kind = proxima_core::MemoryKind::Perspective;
     draft.source_id = None;
     draft.ingest_key = None;
     draft.receipt = None;
@@ -973,7 +974,7 @@ async fn malformed_fact_source_and_endpoints_are_rejected_before_write() {
         let engine = engine(&pg, &registry);
 
         let mut non_fact = direct_draft("non-fact-source", Vec::new());
-        non_fact.kind = "abstraction".to_owned();
+        non_fact.kind = MemoryKind::Abstraction;
         let error = engine
             .authorize_fact_ingest(&authz, non_fact, &[])
             .await

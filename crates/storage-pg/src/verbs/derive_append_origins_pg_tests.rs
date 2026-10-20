@@ -12,6 +12,7 @@
 use super::{DerivedDraft, DerivedOutcome};
 use crate::PgStorage;
 use crate::test_fixtures::create_core_db;
+use proxima_core::MemoryKind;
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
@@ -22,9 +23,9 @@ use proxima_core::{
 use proxima_pg_testkit::{db_url, drop_db};
 use uuid::Uuid;
 
-fn draft(kind: &str) -> FactWriteCommand {
+fn draft(kind: MemoryKind) -> FactWriteCommand {
     FactWriteCommand {
-        schema_id: SchemaId::new(format!("d2/{kind}")),
+        schema_id: SchemaId::new(format!("d2/{}", kind.as_str())),
         schema_version: SchemaVersion::new(1),
         handle: None,
         source_id: None,
@@ -38,7 +39,7 @@ fn draft(kind: &str) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: kind.into(),
+        kind,
         request: None,
     }
 }
@@ -135,11 +136,13 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Perspective);
         let pool = pg.pool_for_tests();
 
-        let fact = pg.ingest_fact_atomic(&permit, &draft("fact"), None).await?;
-        let mut abs = draft("abstraction");
+        let fact = pg
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact), None)
+            .await?;
+        let mut abs = draft(MemoryKind::Abstraction);
         abs.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
         let abs = pg.ingest_fact_atomic(&permit, &abs, None).await?;
-        let mut perspective = draft("perspective");
+        let mut perspective = draft(MemoryKind::Perspective);
         perspective.additional_references =
             vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
         let perspective = pg.ingest_fact_atomic(&permit, &perspective, None).await?;
@@ -258,9 +261,11 @@ async fn a_reference_to_no_readable_live_row_is_refused() {
         let pool = &pg.pool;
         let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
 
-        let fact = pg.ingest_fact_atomic(&permit, &draft("fact"), None).await?;
+        let fact = pg
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact), None)
+            .await?;
         let foreign = pg
-            .ingest_fact_atomic(&stranger_permit, &draft("fact"), None)
+            .ingest_fact_atomic(&stranger_permit, &draft(MemoryKind::Fact), None)
             .await?;
         let origins = [EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
         let validate = |references: Vec<EdgeEndpoint>, memory_id: Uuid| async move {

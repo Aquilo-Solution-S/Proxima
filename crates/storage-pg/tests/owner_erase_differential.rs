@@ -189,7 +189,7 @@ fn draft(
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id,
-        kind: "fact".into(),
+        kind: proxima_core::MemoryKind::Fact,
         request: None,
     }
 }

@@ -181,9 +181,9 @@ pub struct FactWriteCommand {
     /// F/A citation. Perspectives must leave this `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob_id: Option<Uuid>,
-    /// `fact` | `abstraction` | `perspective`. Default fact.
+    /// What the row is. A draft that names none is a Fact.
     #[serde(default)]
-    pub kind: String,
+    pub kind: crate::MemoryKind,
     /// Tool `idempotency_key` ledger entry. When set, storage judges this
     /// request before receipt replay and claims the ledger rows on admit.
     /// Not receipt material and never serialized.
@@ -793,7 +793,7 @@ impl FactWriteCommand {
             additional_references: Vec::new(),
             refs: Vec::new(),
             blob_id: None,
-            kind: "fact".into(),
+            kind: crate::MemoryKind::Fact,
             request: None,
         }
     }

@@ -185,7 +185,7 @@ pub(crate) async fn ingest_write_act_at(
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: "fact".into(),
+        kind: proxima_core::MemoryKind::Fact,
         request: None,
     };
     ingest_unpinned_fact_at(
@@ -480,7 +480,7 @@ pub(crate) async fn persist_goal_change_fact(
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: "fact".into(),
+        kind: proxima_core::MemoryKind::Fact,
         request: None,
     };
     let tables = sidecars.tables_for_payloads(std::slice::from_ref(&payload))?;

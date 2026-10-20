@@ -6,6 +6,7 @@
     clippy::used_underscore_binding
 )]
 
+use proxima_core::MemoryKind;
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
@@ -29,7 +30,7 @@ fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
     )
 }
 
-fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: &str) -> FactWriteCommand {
+fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: MemoryKind) -> FactWriteCommand {
     FactWriteCommand {
         schema_id: SchemaId::new(schema.to_string()),
         schema_version: SchemaVersion::new(1),
@@ -50,7 +51,7 @@ fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: &str) -> FactWr
             .collect(),
         refs,
         blob_id: None,
-        kind: kind.into(),
+        kind,
         request: None,
     }
 }
@@ -69,12 +70,21 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
         let pool = pg.pool_for_tests();
 
         let visit = pg
-            .ingest_fact_atomic(&permit, &fact("visit", vec![], vec![], "fact"), None)
+            .ingest_fact_atomic(
+                &permit,
+                &fact("visit", vec![], vec![], MemoryKind::Fact),
+                None,
+            )
             .await?;
         let file = pg
             .ingest_fact_atomic(
                 &permit,
-                &fact("file", vec![visit.memory_id.into_inner()], vec![], "fact"),
+                &fact(
+                    "file",
+                    vec![visit.memory_id.into_inner()],
+                    vec![],
+                    MemoryKind::Fact,
+                ),
                 None,
             )
             .await?;
@@ -85,7 +95,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
                     "chunk",
                     vec![visit.memory_id.into_inner(), file.memory_id.into_inner()],
                     vec![],
-                    "fact",
+                    MemoryKind::Fact,
                 ),
                 None,
             )
@@ -97,7 +107,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
                     "chunk",
                     vec![visit.memory_id.into_inner(), file.memory_id.into_inner()],
                     vec![],
-                    "fact",
+                    MemoryKind::Fact,
                 ),
                 None,
             )
@@ -106,7 +116,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
             "sum",
             vec![],
             vec![c1.memory_id.into_inner(), c2.memory_id.into_inner()],
-            "abstraction",
+            MemoryKind::Abstraction,
         );
         let sum = pg.ingest_fact_atomic(&permit, &sum_draft, None).await?;
         let self_p = pg
@@ -116,7 +126,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
                     "self",
                     vec![sum.memory_id.into_inner()],
                     vec![],
-                    "perspective",
+                    MemoryKind::Perspective,
                 ),
                 None,
             )

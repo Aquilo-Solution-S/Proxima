@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use proxima_core::MemoryKind;
 use proxima_core::publication::{
     PublicationExtensions, PublicationLimits, PublicationSource, PublicationStamp,
 };
@@ -29,9 +30,9 @@ use uuid::Uuid;
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 type History = (String, String, i32, Option<Uuid>, Option<String>);
 
-fn fact_draft(kind: &str) -> FactWriteCommand {
+fn fact_draft(kind: MemoryKind) -> FactWriteCommand {
     FactWriteCommand {
-        schema_id: SchemaId::new(format!("tree/{kind}")),
+        schema_id: SchemaId::new(format!("tree/{}", kind.as_str())),
         schema_version: SchemaVersion::new(1),
         handle: None,
         source_id: None,
@@ -45,7 +46,7 @@ fn fact_draft(kind: &str) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: kind.into(),
+        kind,
         request: None,
     }
 }
@@ -103,12 +104,12 @@ impl Tree {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let fact = pg
-            .ingest_fact_atomic(&permit, &fact_draft("fact"), None)
+            .ingest_fact_atomic(&permit, &fact_draft(MemoryKind::Fact), None)
             .await?;
-        let mut abs = fact_draft("abstraction");
+        let mut abs = fact_draft(MemoryKind::Abstraction);
         abs.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
         let abs = pg.ingest_fact_atomic(&permit, &abs, None).await?;
-        let mut perspective = fact_draft("perspective");
+        let mut perspective = fact_draft(MemoryKind::Perspective);
         perspective.additional_references =
             vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
         let perspective = pg.ingest_fact_atomic(&permit, &perspective, None).await?;

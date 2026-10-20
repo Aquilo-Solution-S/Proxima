@@ -12,6 +12,57 @@ pub enum EntityKind {
     Goal,
 }
 
+/// The kinds a memory row can be: an `EntityKind` without the Goal, which is
+/// its own entity. Serialized as the lowercase words the database stores.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryKind {
+    #[default]
+    Fact,
+    Abstraction,
+    Perspective,
+}
+
+impl MemoryKind {
+    /// The lowercase word the database stores and the wire carries.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fact => "fact",
+            Self::Abstraction => "abstraction",
+            Self::Perspective => "perspective",
+        }
+    }
+
+    #[must_use]
+    pub const fn entity_kind(self) -> EntityKind {
+        match self {
+            Self::Fact => EntityKind::Fact,
+            Self::Abstraction => EntityKind::Abstraction,
+            Self::Perspective => EntityKind::Perspective,
+        }
+    }
+
+    /// The memory kind of an entity kind; a Goal is not a memory.
+    #[must_use]
+    pub const fn of(kind: EntityKind) -> Option<Self> {
+        match kind {
+            EntityKind::Fact => Some(Self::Fact),
+            EntityKind::Abstraction => Some(Self::Abstraction),
+            EntityKind::Perspective => Some(Self::Perspective),
+            EntityKind::Goal => None,
+        }
+    }
+}
+
+impl From<MemoryKind> for EntityKind {
+    fn from(kind: MemoryKind) -> Self {
+        kind.entity_kind()
+    }
+}
+
 impl EntityKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -80,4 +131,26 @@ impl MemoryOperatorKind {
 pub enum EntityRef {
     Memory(MemoryId),
     Goal(GoalId),
+}
+
+#[cfg(test)]
+mod memory_kind_tests {
+    use super::*;
+
+    #[test]
+    fn memory_kind_keeps_the_words_the_database_stores() {
+        for (kind, word) in [
+            (MemoryKind::Fact, "fact"),
+            (MemoryKind::Abstraction, "abstraction"),
+            (MemoryKind::Perspective, "perspective"),
+        ] {
+            assert_eq!(kind.as_str(), word);
+            let json = serde_json::to_string(&kind).expect("serializes");
+            assert_eq!(json, format!("\"{word}\""));
+            assert_eq!(serde_json::from_str::<MemoryKind>(&json).ok(), Some(kind));
+        }
+        assert_eq!(MemoryKind::default(), MemoryKind::Fact);
+        assert!(serde_json::from_str::<MemoryKind>("\"goal\"").is_err());
+        assert_eq!(MemoryKind::of(EntityKind::Goal), None);
+    }
 }

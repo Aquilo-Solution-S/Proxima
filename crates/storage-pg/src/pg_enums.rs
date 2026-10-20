@@ -4,7 +4,7 @@
 //! decode error; exhaustive `From` matches cover every admitted Rust variant.
 
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{EntityKind, StorageError};
+use proxima_core::{EntityKind, MemoryKind, StorageError};
 
 /// `proxima_core.memory_kind`. Three labels — `Goal` is not one of them; a
 /// goal is a separate entity, not a memory kind.
@@ -40,17 +40,24 @@ impl PgMemoryKind {
             EntityKind::Goal => None,
         }
     }
+}
 
-    /// The kind a write draft's text names, where the draft enters storage.
-    /// A draft that names none is a Fact.
-    pub(crate) fn from_draft_text(text: &str) -> Result<Self, StorageError> {
-        match text {
-            "" | "fact" => Ok(Self::Fact),
-            "abstraction" => Ok(Self::Abstraction),
-            "perspective" => Ok(Self::Perspective),
-            _ => Err(StorageError::ConstraintViolation(
-                "kind must be fact, abstraction, or perspective".into(),
-            )),
+impl From<MemoryKind> for PgMemoryKind {
+    fn from(value: MemoryKind) -> Self {
+        match value {
+            MemoryKind::Fact => Self::Fact,
+            MemoryKind::Abstraction => Self::Abstraction,
+            MemoryKind::Perspective => Self::Perspective,
+        }
+    }
+}
+
+impl From<PgMemoryKind> for MemoryKind {
+    fn from(value: PgMemoryKind) -> Self {
+        match value {
+            PgMemoryKind::Fact => Self::Fact,
+            PgMemoryKind::Abstraction => Self::Abstraction,
+            PgMemoryKind::Perspective => Self::Perspective,
         }
     }
 }
@@ -170,30 +177,6 @@ impl From<PgPinTargetKind> for EntityKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn draft_text_names_one_memory_kind() {
-        assert_eq!(
-            PgMemoryKind::from_draft_text("").ok(),
-            Some(PgMemoryKind::Fact)
-        );
-        for kind in [
-            PgMemoryKind::Fact,
-            PgMemoryKind::Abstraction,
-            PgMemoryKind::Perspective,
-        ] {
-            assert_eq!(PgMemoryKind::from_draft_text(kind.label()).ok(), Some(kind));
-        }
-        for bad in ["Fact", "goal", "note"] {
-            assert!(
-                matches!(
-                    PgMemoryKind::from_draft_text(bad),
-                    Err(StorageError::ConstraintViolation(_))
-                ),
-                "{bad}"
-            );
-        }
-    }
 
     #[test]
     fn a_goal_has_no_memory_payload_kind() {

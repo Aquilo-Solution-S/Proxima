@@ -1,6 +1,7 @@
 //! Export projects pins from memory rows; no reconstructed Edge table.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
+use proxima_core::MemoryKind;
 use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportTarget, OwnerSurfaces};
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerInversePort, OwnerWritePermit};
@@ -50,9 +51,9 @@ fn citation_surfaces() -> OwnerSurfaces {
     ])
 }
 
-fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
+fn draft(kind: MemoryKind, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
     FactWriteCommand {
-        schema_id: SchemaId::new(format!("export/{kind}")),
+        schema_id: SchemaId::new(format!("export/{}", kind.as_str())),
         schema_version: SchemaVersion::new(1),
         handle: None,
         source_id: None,
@@ -69,7 +70,7 @@ fn draft(kind: &str, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteCommand {
             .collect(),
         refs,
         blob_id: None,
-        kind: kind.into(),
+        kind,
         request: None,
     }
 }
@@ -88,12 +89,16 @@ async fn export_edges_are_the_pins_already_on_memory() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let leaf = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let derived = pg
             .ingest_fact_atomic(
                 &permit,
-                &draft("abstraction", vec![], vec![leaf.memory_id.into_inner()]),
+                &draft(
+                    MemoryKind::Abstraction,
+                    vec![],
+                    vec![leaf.memory_id.into_inner()],
+                ),
                 None,
             )
             .await?;
@@ -131,7 +136,7 @@ async fn export_edges_are_the_pins_already_on_memory() {
     result.expect("export pin projection failed");
 }
 
-fn sketched(kind: &str, text: &str) -> FactWriteCommand {
+fn sketched(kind: MemoryKind, text: &str) -> FactWriteCommand {
     let mut command = draft(kind, vec![], vec![]);
     command.rendered_text = Some(text.to_owned());
     command
@@ -155,10 +160,10 @@ async fn export_carries_forgotten_rows_and_sketches() {
         let pool = pg.pool_for_tests();
 
         let hot = pg
-            .ingest_fact_atomic(&permit, &sketched("fact", "Still hot"), None)
+            .ingest_fact_atomic(&permit, &sketched(MemoryKind::Fact, "Still hot"), None)
             .await?;
         let forgotten = pg
-            .ingest_fact_atomic(&permit, &sketched("fact", "Forgotten\nbody"), None)
+            .ingest_fact_atomic(&permit, &sketched(MemoryKind::Fact, "Forgotten\nbody"), None)
             .await?;
         let forgotten_t = forgotten.memory_id.into_inner();
         MemoryAuthoringPort::forget_memory(&pg, &permit, forgotten.memory_id).await?;
@@ -167,7 +172,7 @@ async fn export_carries_forgotten_rows_and_sketches() {
         let other = OwnerId::from(UserId::new(Uuid::now_v7()));
         let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
         let neighbour = pg
-            .ingest_fact_atomic(&other_permit, &sketched("fact", "Not yours"), None)
+            .ingest_fact_atomic(&other_permit, &sketched(MemoryKind::Fact, "Not yours"), None)
             .await?;
         MemoryAuthoringPort::forget_memory(&pg, &other_permit, neighbour.memory_id).await?;
 
@@ -388,7 +393,7 @@ async fn export_carries_registered_citation_sidecar_rows() {
             (other, "core/cited-v1", 9u8, "not mine", 11),
         ] {
             let permit = OwnerWritePermit::new_for_tests(holder, AccessKind::Fact);
-            pg.ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            pg.ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
                 .await?;
             let blob_id: Uuid = sqlx::query_scalar(
                 "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
@@ -468,7 +473,7 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
 
         for holder in [owner, other] {
             let permit = OwnerWritePermit::new_for_tests(holder, AccessKind::Fact);
-            pg.ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            pg.ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
                 .await?;
         }
 
@@ -647,12 +652,16 @@ async fn export_carries_the_owners_content_rows() {
         let pool = pg.pool_for_tests();
         // Writing a Fact registers each owner, which content's FK needs.
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
-        pg.ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+        pg.ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?;
         let neighbour = OwnerId::from(UserId::new(Uuid::now_v7()));
         let neighbour_permit = OwnerWritePermit::new_for_tests(neighbour, AccessKind::Fact);
-        pg.ingest_fact_atomic(&neighbour_permit, &draft("fact", vec![], vec![]), None)
-            .await?;
+        pg.ingest_fact_atomic(
+            &neighbour_permit,
+            &draft(MemoryKind::Fact, vec![], vec![]),
+            None,
+        )
+        .await?;
         let content_id: Uuid = sqlx::query_scalar(
             "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/test-abs-v1', $2)
@@ -714,19 +723,19 @@ async fn a_forgotten_memorys_origins_and_refs_are_edges() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
         let origin = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?
             .memory_id
             .into_inner();
         let referenced = pg
-            .ingest_fact_atomic(&permit, &draft("fact", vec![], vec![]), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
             .await?
             .memory_id
             .into_inner();
         let derived = pg
             .ingest_fact_atomic(
                 &permit,
-                &draft("abstraction", vec![referenced], vec![origin]),
+                &draft(MemoryKind::Abstraction, vec![referenced], vec![origin]),
                 None,
             )
             .await?

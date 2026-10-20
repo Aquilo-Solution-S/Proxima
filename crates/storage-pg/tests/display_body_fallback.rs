@@ -48,7 +48,7 @@ async fn search_and_by_id_reads_fall_back_to_the_memorys_own_text()
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: "fact".into(),
+        kind: proxima_core::MemoryKind::Fact,
         request: None,
     };
     let authorized = AuthorizedFactWrite::new_for_tests(

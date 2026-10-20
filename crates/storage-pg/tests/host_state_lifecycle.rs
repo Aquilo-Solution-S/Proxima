@@ -4,6 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use proxima_core::MemoryKind;
 use proxima_core::flavor::{
     CounterRule, EraseRule, ExportRule, FlavorContract, FlavorDescriptor, FlavorProvenance,
     ForgetRule, KeyShape, ProjectionDecl, Surface, TransferRule,
@@ -831,7 +832,7 @@ fn draft(source_id: &str, ingest_key: &str) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: "fact".to_owned(),
+        kind: MemoryKind::Fact,
         request: None,
     }
 }

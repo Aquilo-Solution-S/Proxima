@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use proxima_core::MemoryKind;
 use proxima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget,
     OwnerExportTarget, OwnerSurfaces,
@@ -41,9 +42,9 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 /// `set_at`.
 const TICK: Duration = Duration::from_millis(15);
 
-fn memory_draft(kind: &str) -> FactWriteCommand {
+fn memory_draft(kind: MemoryKind) -> FactWriteCommand {
     FactWriteCommand {
-        schema_id: SchemaId::new(format!("goal-text/{kind}")),
+        schema_id: SchemaId::new(format!("goal-text/{}", kind.as_str())),
         schema_version: SchemaVersion::new(1),
         handle: None,
         source_id: None,
@@ -57,7 +58,7 @@ fn memory_draft(kind: &str) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: kind.into(),
+        kind,
         request: None,
     }
 }
@@ -93,13 +94,13 @@ impl Harness {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let fact = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
+            .ingest_fact_atomic(&permit, &memory_draft(MemoryKind::Fact), None)
             .await?;
-        let mut abstraction = memory_draft("abstraction");
+        let mut abstraction = memory_draft(MemoryKind::Abstraction);
         abstraction.additional_references =
             vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
         let abstraction = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;
-        let mut perspective = memory_draft("perspective");
+        let mut perspective = memory_draft(MemoryKind::Perspective);
         perspective.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Abstraction,
             abstraction.memory_id,
@@ -224,7 +225,7 @@ impl Harness {
     async fn evidence(&self) -> TestResult<MemoryId> {
         Ok(self
             .pg
-            .ingest_fact_atomic(&self.permit, &memory_draft("fact"), None)
+            .ingest_fact_atomic(&self.permit, &memory_draft(MemoryKind::Fact), None)
             .await?
             .memory_id)
     }

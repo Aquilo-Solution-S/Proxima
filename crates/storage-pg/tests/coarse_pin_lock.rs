@@ -44,14 +44,14 @@ fn fact_draft() -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: "fact".into(),
+        kind: proxima_core::MemoryKind::Fact,
         request: None,
     }
 }
 
 fn abstraction_draft(origin: MemoryId) -> FactWriteCommand {
     let mut draft = fact_draft();
-    draft.kind = "abstraction".into();
+    draft.kind = proxima_core::MemoryKind::Abstraction;
     draft.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, origin)];
     draft
 }

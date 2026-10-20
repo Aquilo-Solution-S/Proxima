@@ -457,7 +457,7 @@ fn validated_admission_kind(draft: &FactWriteCommand) -> Result<PgMemoryKind, St
             "source_id and ingest_key must both be set or both be absent".into(),
         ));
     }
-    let kind = PgMemoryKind::from_draft_text(&draft.kind)?;
+    let kind = PgMemoryKind::from(draft.kind);
     let is_fact = kind == PgMemoryKind::Fact;
     if !is_fact && (draft.source_id.is_some() || draft.ingest_key.is_some()) {
         return Err(StorageError::ConstraintViolation(

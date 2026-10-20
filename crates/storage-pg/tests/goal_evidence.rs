@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use proxima_core::MemoryKind;
 use proxima_core::storage_ports::FactIngestPort;
 use proxima_core::storage_ports::MemoryAuthoringPort;
 use proxima_core::storage_ports::{GoalReadPort, GoalWritePort, OwnerWritePermit};
@@ -25,9 +26,9 @@ use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::forget::MemoryColdStore;
 use uuid::Uuid;
 
-fn draft(kind: &str) -> FactWriteCommand {
+fn draft(kind: MemoryKind) -> FactWriteCommand {
     FactWriteCommand {
-        schema_id: SchemaId::new(format!("d7/{kind}")),
+        schema_id: SchemaId::new(format!("d7/{}", kind.as_str())),
         schema_version: SchemaVersion::new(1),
         handle: None,
         source_id: None,
@@ -41,7 +42,7 @@ fn draft(kind: &str) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: kind.into(),
+        kind,
         request: None,
     }
 }
@@ -60,11 +61,11 @@ async fn perspective_evidence_is_rejected_in_tx() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let owner_scope = owner_scope_for_tests(&[owner]);
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
-        let fact = pg.ingest_fact_atomic(&permit, &draft("fact"), None).await?;
-        let mut abs = draft("abstraction");
+        let fact = pg.ingest_fact_atomic(&permit, &draft(MemoryKind::Fact), None).await?;
+        let mut abs = draft(MemoryKind::Abstraction);
         abs.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
         let abs = pg.ingest_fact_atomic(&permit, &abs, None).await?;
-        let mut perspective = draft("perspective");
+        let mut perspective = draft(MemoryKind::Perspective);
         perspective.additional_references =
             vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
         let perspective = pg.ingest_fact_atomic(&permit, &perspective, None).await?;
@@ -160,7 +161,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
         );
 
         let orphan = pg
-            .ingest_fact_atomic(&permit, &draft("fact"), None)
+            .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact), None)
             .await?;
         let stale_goal = pg
             .create_goal_atomic(
@@ -520,11 +521,13 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
         .with_cold(Arc::new(MemoryColdStore));
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
-    let fact = pg.ingest_fact_atomic(&permit, &draft("fact"), None).await?;
-    let mut abs = draft("abstraction");
+    let fact = pg
+        .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact), None)
+        .await?;
+    let mut abs = draft(MemoryKind::Abstraction);
     abs.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
     let abs = pg.ingest_fact_atomic(&permit, &abs, None).await?;
-    let mut perspective = draft("perspective");
+    let mut perspective = draft(MemoryKind::Perspective);
     perspective.additional_references =
         vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
     let perspective = pg.ingest_fact_atomic(&permit, &perspective, None).await?;

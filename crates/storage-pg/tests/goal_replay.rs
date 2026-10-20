@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use proxima_core::MemoryKind;
 use proxima_core::publication::{
     PublicationExtensions, PublicationLimits, PublicationSource, PublicationStamp,
 };
@@ -31,9 +32,9 @@ use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory};
 use uuid::Uuid;
 
-fn memory_draft(kind: &str) -> FactWriteCommand {
+fn memory_draft(kind: MemoryKind) -> FactWriteCommand {
     FactWriteCommand {
-        schema_id: SchemaId::new(format!("p5/{kind}")),
+        schema_id: SchemaId::new(format!("p5/{}", kind.as_str())),
         schema_version: SchemaVersion::new(1),
         handle: None,
         source_id: None,
@@ -47,7 +48,7 @@ fn memory_draft(kind: &str) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: kind.into(),
+        kind,
         request: None,
     }
 }
@@ -57,12 +58,12 @@ async fn ingest_grounded_perspective(
     permit: &OwnerWritePermit,
 ) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, proxima_core::StorageError> {
     let fact = pg
-        .ingest_fact_atomic(permit, &memory_draft("fact"), None)
+        .ingest_fact_atomic(permit, &memory_draft(MemoryKind::Fact), None)
         .await?;
-    let mut abs = memory_draft("abstraction");
+    let mut abs = memory_draft(MemoryKind::Abstraction);
     abs.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
     let abs = pg.ingest_fact_atomic(permit, &abs, None).await?;
-    let mut perspective = memory_draft("perspective");
+    let mut perspective = memory_draft(MemoryKind::Perspective);
     perspective.additional_references =
         vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
     pg.ingest_fact_atomic(permit, &perspective, None).await
@@ -241,7 +242,7 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
         };
         let assignment = ingest_grounded_perspective(&pg, &permit).await?.memory_id;
         let evidence = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
+            .ingest_fact_atomic(&permit, &memory_draft(MemoryKind::Fact), None)
             .await?
             .memory_id;
         let step = |prior_goal_id, transition, id: &str| TransitionGoalAtomicRequest {
@@ -407,7 +408,7 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
         // a fresh key still enters live admission and fails.
         let create_assignment = ingest_grounded_perspective(&pg, &permit).await?;
         let create_evidence = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
+            .ingest_fact_atomic(&permit, &memory_draft(MemoryKind::Fact), None)
             .await?;
         let create_first = pg
             .create_goal_atomic(
@@ -591,10 +592,10 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
         // renewed admission dependency for the request that already won.
         let achieve_assignment = ingest_grounded_perspective(&pg, &permit).await?;
         let achieve_evidence = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
+            .ingest_fact_atomic(&permit, &memory_draft(MemoryKind::Fact), None)
             .await?;
         let changed_evidence = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
+            .ingest_fact_atomic(&permit, &memory_draft(MemoryKind::Fact), None)
             .await?;
         let achieve_source = pg
             .create_goal_atomic(
@@ -693,7 +694,7 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
         // prior declaration. Replay must not load those now-retired targets.
         let modify_assignment = ingest_grounded_perspective(&pg, &permit).await?;
         let modify_evidence = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
+            .ingest_fact_atomic(&permit, &memory_draft(MemoryKind::Fact), None)
             .await?;
         let modify_source = pg
             .create_goal_atomic(
@@ -781,7 +782,7 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
         // changing one child or mixing old and fresh child keys conflicts.
         let decompose_assignment = ingest_grounded_perspective(&pg, &permit).await?;
         let decompose_evidence = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
+            .ingest_fact_atomic(&permit, &memory_draft(MemoryKind::Fact), None)
             .await?;
         let decompose_parent = pg
             .create_goal_atomic(
@@ -931,9 +932,9 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let assignment = ingest_grounded_perspective(&pg, &permit).await?;
         let fact = pg
-            .ingest_fact_atomic(&permit, &memory_draft("fact"), None)
+            .ingest_fact_atomic(&permit, &memory_draft(MemoryKind::Fact), None)
             .await?;
-        let mut abstraction = memory_draft("abstraction");
+        let mut abstraction = memory_draft(MemoryKind::Abstraction);
         abstraction.additional_references =
             vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
         let abstraction = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;

@@ -56,7 +56,7 @@ async fn fact(pg: &PgStorage, owner: OwnerId, schema: &str, targets: &[Uuid]) ->
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: "fact".into(),
+        kind: proxima_core::MemoryKind::Fact,
         request: None,
     };
     let links = AuthorizedNodeLinks::new_for_tests(

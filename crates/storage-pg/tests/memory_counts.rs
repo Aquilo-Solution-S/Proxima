@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use proxima_core::MemoryKind;
 use proxima_core::error::ErrorCode;
 use proxima_core::read_models::MemoryCounts;
 use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
@@ -23,7 +24,7 @@ use uuid::Uuid;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-fn memory(kind: &str, handle: Option<Uuid>) -> FactWriteCommand {
+fn memory(kind: MemoryKind, handle: Option<Uuid>) -> FactWriteCommand {
     FactWriteCommand {
         schema_id: SchemaId::new("core/test-fact-v1".to_string()),
         schema_version: SchemaVersion::new(1),
@@ -39,7 +40,7 @@ fn memory(kind: &str, handle: Option<Uuid>) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: kind.into(),
+        kind,
         request: None,
     }
 }
@@ -68,23 +69,27 @@ fn seeded_counts(extra_facts: u64) -> MemoryCounts {
 async fn seed(pg: &PgStorage, owner: OwnerId, extra_facts: u64) -> TestResult<Seeded> {
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let forgettable = pg
-        .ingest_fact_atomic(&permit, &memory("fact", None), None)
+        .ingest_fact_atomic(&permit, &memory(MemoryKind::Fact, None), None)
         .await?;
     for _ in 0..extra_facts {
-        pg.ingest_fact_atomic(&permit, &memory("fact", None), None)
+        pg.ingest_fact_atomic(&permit, &memory(MemoryKind::Fact, None), None)
             .await?;
     }
     let series = pg
-        .ingest_fact_atomic(&permit, &memory("fact", None), None)
+        .ingest_fact_atomic(&permit, &memory(MemoryKind::Fact, None), None)
         .await?;
-    pg.ingest_fact_atomic(&permit, &memory("fact", Some(series.handle)), None)
-        .await?;
+    pg.ingest_fact_atomic(
+        &permit,
+        &memory(MemoryKind::Fact, Some(series.handle)),
+        None,
+    )
+    .await?;
 
-    let mut abstraction = memory("abstraction", None);
+    let mut abstraction = memory(MemoryKind::Abstraction, None);
     abstraction.additional_references =
         vec![EdgeEndpoint::memory(EntityKind::Fact, series.memory_id)];
     let abstraction = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;
-    let mut perspective = memory("perspective", None);
+    let mut perspective = memory(MemoryKind::Perspective, None);
     perspective.refs = vec![abstraction.memory_id.into_inner()];
     pg.ingest_fact_atomic(&permit, &perspective, None).await?;
 

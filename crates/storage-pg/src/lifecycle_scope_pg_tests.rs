@@ -46,7 +46,7 @@ async fn seed(pg: &crate::PgStorage, permit: &OwnerWritePermit) -> Seeded {
         .into_inner();
     // Lineage runs on origins: an Abstraction derived from the parent.
     let mut cites = draft(None);
-    cites.kind = "abstraction".into();
+    cites.kind = proxima_core::MemoryKind::Abstraction;
     cites.additional_references = vec![proxima_core::EdgeEndpoint::memory(
         proxima_core::EntityKind::Fact,
         proxima_core::MemoryId::new(parent),

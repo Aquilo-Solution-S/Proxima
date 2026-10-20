@@ -391,7 +391,7 @@ impl WriteSession for PgWriteSession {
         )
         .await?;
         if !outcome.idempotent_replay {
-            let kind = PgMemoryKind::from_draft_text(&authorized.draft().kind)?;
+            let kind = PgMemoryKind::from(authorized.draft().kind);
             verbs::sketch::upsert_sketch(
                 &mut self.tx,
                 authorized.owner_write_permit().owner().into_inner(),

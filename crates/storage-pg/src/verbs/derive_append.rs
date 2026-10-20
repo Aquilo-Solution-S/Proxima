@@ -382,7 +382,7 @@ fn derived_memory_command(
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: kind.label().into(),
+        kind: kind.into(),
         request: None,
     }
 }

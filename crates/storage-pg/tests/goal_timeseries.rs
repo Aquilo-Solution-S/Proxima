@@ -36,7 +36,7 @@ fn fact_draft() -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: "fact".into(),
+        kind: proxima_core::MemoryKind::Fact,
         request: None,
     }
 }
@@ -241,12 +241,12 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
 
         let base = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
         let mut abstraction = fact_draft();
-        abstraction.kind = "abstraction".into();
+        abstraction.kind = proxima_core::MemoryKind::Abstraction;
         abstraction.additional_references =
             vec![EdgeEndpoint::memory(EntityKind::Fact, base.memory_id)];
         let abstraction = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;
         let mut perspective = fact_draft();
-        perspective.kind = "perspective".into();
+        perspective.kind = proxima_core::MemoryKind::Perspective;
         perspective.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Abstraction,
             abstraction.memory_id,
@@ -316,7 +316,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
 
         // Several Perspectives select the goals assigned to any of them.
         let mut second = fact_draft();
-        second.kind = "perspective".into();
+        second.kind = proxima_core::MemoryKind::Perspective;
         second.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Abstraction,
             abstraction.memory_id,

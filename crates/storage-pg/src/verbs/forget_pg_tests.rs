@@ -235,7 +235,7 @@ pub(crate) fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: "fact".into(),
+        kind: proxima_core::MemoryKind::Fact,
         request: None,
     }
 }
@@ -905,7 +905,7 @@ async fn non_head_erase_racing_append_preserves_the_greatest_head() {
 
 fn derived_abstraction(origin_kind: EntityKind, origin: Uuid) -> FactWriteCommand {
     let mut cmd = draft(None);
-    cmd.kind = "abstraction".into();
+    cmd.kind = proxima_core::MemoryKind::Abstraction;
     cmd.additional_references = vec![EdgeEndpoint::memory(
         origin_kind,
         proxima_core::MemoryId::new(origin),
@@ -915,7 +915,7 @@ fn derived_abstraction(origin_kind: EntityKind, origin: Uuid) -> FactWriteComman
 
 fn derived_perspective(origin: Uuid) -> FactWriteCommand {
     let mut cmd = draft(None);
-    cmd.kind = "perspective".into();
+    cmd.kind = proxima_core::MemoryKind::Perspective;
     cmd.additional_references = vec![EdgeEndpoint::memory(
         EntityKind::Abstraction,
         proxima_core::MemoryId::new(origin),
@@ -1418,7 +1418,7 @@ async fn concurrent_forgets_of_both_sources_both_commit() {
             )
             .await?;
         let mut both = draft(None);
-        both.kind = "abstraction".into();
+        both.kind = proxima_core::MemoryKind::Abstraction;
         both.additional_references = vec![
             EdgeEndpoint::memory(EntityKind::Abstraction, a1.memory_id),
             EdgeEndpoint::memory(EntityKind::Abstraction, a2.memory_id),
