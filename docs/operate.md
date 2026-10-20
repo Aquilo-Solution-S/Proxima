@@ -60,6 +60,55 @@ For encrypted PostgreSQL, use the URL's TLS options and the deployment's CA
 trust. A successful TCP connection is not proof of the correct runtime grants;
 exercise an authenticated owner read and write after deployment.
 
+## Behind a connection pooler
+
+The serving connection (`DATABASE_URL`) can go through PgBouncer in
+transaction mode. Serving code keeps no state on a connection between
+transactions: settings are `SET LOCAL` or `set_config(.., true)`, locks are
+transaction locks, export and erase exclude each other through a table lock,
+maintenance passes hold a lease row, and nothing uses `LISTEN`. A CI job runs
+the storage suites that depend on this through PgBouncer.
+
+- Use PgBouncer 1.26.1 or later (the CI job installs 1.26.1 or later from
+  the PostgreSQL apt repository; Ubuntu 24.04 ships 1.22). Before 1.26.0 a
+  parameter listed in `track_extra_parameters` that the server does not
+  report back, `statement_timeout` among them, misbehaves when a client sets
+  it at startup; 1.26.1 fixes security issues, one of them in SCRAM
+  authentication.
+- Set `max_prepared_statements` above zero: queries are protocol-level
+  prepared statements.
+- Proxima sends `PROXIMA_PG_STATEMENT_TIMEOUT_MS` as a startup option.
+  PgBouncer refuses a startup option it does not track, so add
+  `statement_timeout` to `track_extra_parameters`. Alternatively set
+  `PROXIMA_PG_STATEMENT_TIMEOUT_MS=0` and give the role its timeout
+  (`ALTER ROLE runtime_role SET statement_timeout = '30s'`), which applies to
+  every server connection the pooler opens as that role. Do not add
+  `options` to `ignore_startup_parameters`: the timeout would be dropped
+  without an error. `extra_float_digits` needs no entry; Proxima does not
+  send it.
+- Keep `PROXIMA_PLATFORM_DATABASE_URL` direct, or on a session-mode pool
+  (with PgBouncer, a second database entry with `pool_mode = session`). Boot
+  migrates, or with `PROXIMA_SKIP_MIGRATIONS` runs the migration preflight,
+  on that connection under a session lock and session settings. An
+  out-of-band migration job (`tools/dev-migrate`) also needs a direct or
+  session-mode connection.
+- Budget connections by where they are held. Each host holds a runtime and
+  a platform pool of up to `PROXIMA_PG_MAX_CONNECTIONS` client connections
+  each (default 5), and a migration pool of the same size during boot.
+  Behind a transaction pooler the runtime pools of every host share the
+  pooler's server pool (`default_pool_size` per database and role), so the
+  server's `max_connections` must cover the pooler's server pools, every
+  direct or session-mode platform pool, migrations and operator sessions.
+- An idle host keeps few server connections busy: the outbox and embedding
+  drains wake on writes the host commits and otherwise back off to one claim
+  every 30 s (outbox) and 60 s (embeddings, or
+  `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` if longer). Work another process
+  enqueues is picked up within those intervals.
+- AWS RDS Proxy pins a client to its server connection when a session sets a
+  setting, creates a temporary table or uses prepared statements, which
+  Proxima's transactions do. It works, but pinned clients get little
+  multiplexing; PgBouncer is the tested pooler.
+
 ## Container and network boundary
 
 Build the default substrate-only MCP image:

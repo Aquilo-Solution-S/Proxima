@@ -7,7 +7,8 @@ is the serving connection; `PROXIMA_PLATFORM_DATABASE_URL` is the required
 migration and maintenance connection. Both roles use owner RLS. A serving host
 holds two pools of `PROXIMA_PG_MAX_CONNECTIONS` each (runtime and platform),
 plus a migration pool of the same size during boot; size the server's
-`max_connections` for every host on it plus operator connections. The settings gate checks every `PROXIMA_*` row.
+`max_connections` for every host on it plus operator connections
+([behind a connection pooler](operate.md#behind-a-connection-pooler)). The settings gate checks every `PROXIMA_*` row.
 
 | Setting | Purpose | When needed | Reader |
 |---|---|---|---|
