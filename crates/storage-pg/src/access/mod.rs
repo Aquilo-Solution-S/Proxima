@@ -1,5 +1,11 @@
+mod authority;
 pub mod owner_columns;
 pub mod scope_surfaces;
+
+pub use authority::{
+    AuthorityTargets, DirectGroupMembership, DirectUserMembership, GroupContainment,
+    PgAuthorityGroup, PgAuthorityPerson, PgAuthoritySession, RegisteredOwner,
+};
 
 use async_trait::async_trait;
 use proxima_core::{

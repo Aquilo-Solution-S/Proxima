@@ -6,11 +6,12 @@ use std::time::Duration;
 
 use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseTarget, OwnerSurfaces};
 use proxima_core::storage_ports::OwnerInversePort;
-use proxima_core::{AccessCeiling, GroupId, OwnerId, Relation, Role, UserId};
+use proxima_core::{AccessCeiling, GroupId, OwnerId, Relation, Role, StorageError, UserId};
 use proxima_pg_testkit::{DbGuard, create_db, db_url, split_role_urls};
 use proxima_storage_pg::{
-    PgStorage, add_group_member, begin_migration_transaction, group_role, register_group,
-    remove_group_member, remove_group_member_relation, replace_group_member_relation,
+    AuthorityTargets, PgPlatformScope, PgStorage, add_group_member, begin_migration_transaction,
+    group_role, register_group, remove_group_member, remove_group_member_relation,
+    replace_group_member_relation,
 };
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
@@ -661,5 +662,177 @@ async fn owner_scoped_writes_fold_the_whole_tree_without_leaking_platform_scope(
         .await?;
     add_group_member(&mut tx, g[2], person, Relation::Admin).await?;
     tx.commit().await?;
+    h.assert_projection().await
+}
+
+#[tokio::test]
+async fn authority_rechecks_the_original_root_map_then_fences_the_fresh_roots() -> TestResult {
+    let h = Harness::new().await?;
+    let scope = PgPlatformScope::new(h.platform.clone(), &["proxima_core"]).await?;
+    let groups = h.groups(3).await?;
+    let (moving, stable, destination) = (groups[0], groups[1], groups[2]);
+    let mut movement = scope.begin().await?;
+    add_group_member(&mut movement, destination, moving.into(), Relation::Viewer).await?;
+
+    // Both requested groups were roots in the reader's provisional map.
+    // Moving one while it waits must not be hidden by checking only the
+    // final acquired root or by silently chasing a replacement root.
+    let mut tx = scope.begin().await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *tx)
+        .await?;
+    let pending_scope = scope.clone();
+    let pending = tokio::spawn(async move {
+        let result = pending_scope
+            .authority_on(
+                &mut tx,
+                AuthorityTargets {
+                    groups: vec![stable, moving],
+                    ..AuthorityTargets::default()
+                },
+            )
+            .await
+            .map(drop);
+        (tx, result)
+    });
+    wait_for_advisory(&h.pool, pid).await?;
+    assert!(!pending.is_finished());
+    movement.commit().await?;
+    let (tx, result) = pending.await?;
+    assert!(
+        matches!(result, Err(StorageError::Retryable(_))),
+        "full-map drift must refuse before exposing facts: {result:?}"
+    );
+    tx.rollback().await?;
+
+    // This new transaction is required by the deliberate Retryable above.
+    let mut fresh = scope.begin().await?;
+    let mut authority = scope
+        .authority_on(
+            &mut fresh,
+            AuthorityTargets {
+                groups: vec![moving, stable],
+                ..AuthorityTargets::default()
+            },
+        )
+        .await?;
+    assert_eq!(authority.group(moving)?.root().await?, destination);
+    assert_eq!(authority.group(stable)?.root().await?, stable);
+    let parent = authority
+        .group(moving)?
+        .parent()
+        .await?
+        .expect("moved group");
+    assert_eq!(
+        (parent.group, parent.relation),
+        (destination, Relation::Viewer)
+    );
+    drop(authority);
+
+    // A tree-only request proves the new root remains held after the Rust
+    // session is dropped, without relying on a membership row or kind key.
+    let mut contender = scope.begin().await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *contender)
+        .await?;
+    let pending = tokio::spawn(async move {
+        sqlx::query("INSERT INTO proxima_core.group_lock_request (request_id, left_group_id) VALUES ($1, $2)")
+            .bind(Uuid::now_v7()).bind(destination.into_inner()).execute(&mut *contender).await?;
+        contender.commit().await
+    });
+    wait_for_advisory(&h.pool, pid).await?;
+    assert!(!pending.is_finished());
+    fresh.rollback().await?;
+    pending.await??;
+    h.assert_projection().await
+}
+
+#[tokio::test]
+async fn authority_refuses_a_new_direct_group_discovered_after_the_person_key_wait() -> TestResult {
+    let h = Harness::new().await?;
+    let scope = PgPlatformScope::new(h.platform.clone(), &["proxima_core"]).await?;
+    let group = h.groups(1).await?[0];
+    let person = UserId::new(Uuid::now_v7());
+    let mut writer = scope.begin().await?;
+    // Follow the raw membership trigger's group-tree -> person-kind order.
+    // The gateway can take the initially empty person's pseudotree, then
+    // positively wait on this key before a new direct group is committed.
+    sqlx::query(
+        "INSERT INTO proxima_core.group_lock_request (request_id, left_group_id) VALUES ($1, $2)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(group.into_inner())
+    .execute(&mut *writer)
+    .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('proxima-owner-kind:' || $1::uuid::text, 0))")
+        .bind(person.into_inner()).execute(&mut *writer).await?;
+    let mut tx = scope.begin().await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *tx)
+        .await?;
+    let pending_scope = scope.clone();
+    let pending = tokio::spawn(async move {
+        let result = pending_scope
+            .authority_on(
+                &mut tx,
+                AuthorityTargets {
+                    people: vec![person],
+                    ..AuthorityTargets::default()
+                },
+            )
+            .await
+            .map(drop);
+        (tx, result)
+    });
+    wait_for_advisory(&h.pool, pid).await?;
+    assert!(!pending.is_finished());
+    sqlx::query("INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation) VALUES ($1, $2, 'viewer')")
+        .bind(group.into_inner()).bind(person.into_inner()).execute(&mut *writer).await?;
+    writer.commit().await?;
+    let (tx, result) = pending.await?;
+    assert!(
+        matches!(result, Err(StorageError::Retryable(_))),
+        "a newly required tree must restart the whole transaction: {result:?}"
+    );
+    tx.rollback().await?;
+
+    let mut fresh = scope.begin().await?;
+    let mut authority = scope
+        .authority_on(
+            &mut fresh,
+            AuthorityTargets {
+                people: vec![person],
+                ..AuthorityTargets::default()
+            },
+        )
+        .await?;
+    let direct = authority.person(person).await?.direct_groups().await?;
+    assert_eq!(direct.len(), 1);
+    assert_eq!(
+        (direct[0].group, direct[0].relation),
+        (group, Relation::Viewer)
+    );
+    assert_eq!(
+        authority
+            .person(person)
+            .await?
+            .effective_roles()
+            .await?
+            .role_for(&group.into()),
+        Some(Role::viewer())
+    );
+    drop(authority);
+    let mut removal = scope.begin().await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *removal)
+        .await?;
+    let pending = tokio::spawn(async move {
+        remove_group_member(&mut removal, group, person.into()).await?;
+        removal.commit().await.map_err(proxima_storage_pg::map_err)
+    });
+    wait_for_advisory(&h.pool, pid).await?;
+    assert!(!pending.is_finished());
+    fresh.rollback().await?;
+    pending.await??;
     h.assert_projection().await
 }

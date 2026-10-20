@@ -291,6 +291,17 @@ pub use proxima_mcp_server::{
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).
 pub use proxima_storage_pg::PgOwnerAccessResolver;
+/// Fenced authority facts on a host's existing platform-scoped transaction.
+///
+/// [`PgPlatformScope::authority_on`] takes the complete [`AuthorityTargets`]
+/// before returning a [`PgAuthoritySession`]. Group and person views read fresh
+/// direct relations, effective roles, registered owner kinds and group topology;
+/// these facts grant no authorization. The host retains SQL, commit and
+/// whole-transaction retries.
+pub use proxima_storage_pg::{
+    AuthorityTargets, DirectGroupMembership, DirectUserMembership, GroupContainment,
+    PgAuthorityGroup, PgAuthorityPerson, PgAuthoritySession, RegisteredOwner,
+};
 /// Owner-registry and membership writes on a host's own transaction.
 ///
 /// No authorization runs, the authorization hooks included: the host vouches
@@ -300,8 +311,8 @@ pub use proxima_storage_pg::PgOwnerAccessResolver;
 /// its whole transaction on [`StorageError::Retryable`]. All effects follow
 /// from the committed rows; no post-commit action is required.
 pub use proxima_storage_pg::{
-    add_group_member, bootstrap_group_admin, register_group, remove_group_member,
-    remove_group_member_relation, replace_group_member_relation,
+    MembershipAddOutcome, add_group_member, bootstrap_group_admin, register_group,
+    remove_group_member, remove_group_member_relation, replace_group_member_relation,
 };
 /// Role probes on a host's own transaction (see
 /// [`proxima_storage_pg::roles_for_subject`]): the answers

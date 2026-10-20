@@ -110,6 +110,31 @@ impl PgPlatformScope {
         self.bind_transaction(&mut transaction).await?;
         Ok(transaction)
     }
+
+    /// Borrow the host's transaction for protected authority reads and its
+    /// declared membership edits, including before authenticating an owner.
+    ///
+    /// Declare all groups, people and registered-owner targets the operation
+    /// needs before acquiring host revision/claim mutation locks. Existing
+    /// tree, owner-kind and person-projection fences remain on this actual
+    /// transaction through commit or rollback. Reads see earlier own writes.
+    /// The caller owns transaction completion and whole-transaction retry.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a database/effective role that differs from this boot-validated
+    /// capability, fixed-snapshot isolation, unknown registered owners/groups,
+    /// and group-registered person targets. A footprint changed while waiting
+    /// returns [`StorageError::Retryable`]. Roll back the whole transaction on
+    /// failure; no partially fenced session is returned.
+    pub async fn authority_on<'session, 'connection>(
+        &self,
+        transaction: &'session mut Transaction<'connection, Postgres>,
+        targets: crate::AuthorityTargets,
+    ) -> Result<crate::PgAuthoritySession<'session, 'connection>, StorageError> {
+        crate::PgAuthoritySession::new(self, transaction, targets).await
+    }
+
     pub(crate) async fn detached_connection(&self) -> Result<sqlx::PgConnection, StorageError> {
         Ok(self.pool.acquire().await.map_err(map_err)?.detach())
     }

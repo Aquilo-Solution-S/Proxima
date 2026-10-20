@@ -929,6 +929,17 @@ pub async fn bootstrap_group_admin_on_connection(
     Ok(())
 }
 
+/// Result of an idempotent membership addition in the caller's transaction.
+///
+/// The change becomes durable only when that transaction commits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembershipAddOutcome {
+    /// The requested person relation or group edge was inserted.
+    Changed,
+    /// The exact requested relation or group edge already existed.
+    AlreadyPresent,
+}
+
 /// Adding a member to an id never seen before creates the group, so the
 /// id is registered as a group first.
 ///
@@ -959,12 +970,16 @@ pub(crate) async fn add_group_member(
             member_authority,
         )
         .await;
-        crate::owner_scope::finish_transaction(tx, result).await
+        crate::owner_scope::finish_transaction(tx, result)
+            .await
+            .map(|_| ())
     })
     .await
 }
 
 /// Register an unseen group and add a relation; an existing relation stays.
+/// The outcome distinguishes an insertion from an exact replay under the
+/// same membership lock as the write.
 ///
 /// No authorization runs, the authorization hooks included: the host vouches
 /// for this write as for its own rows.
@@ -983,7 +998,7 @@ pub async fn add_group_member_on_connection(
     group_id: GroupId,
     member: OwnerId,
     relation: Relation,
-) -> Result<(), StorageError> {
+) -> Result<MembershipAddOutcome, StorageError> {
     add_group_member_on_connection_authorized(
         conn,
         group_id,
@@ -1000,7 +1015,7 @@ async fn add_group_member_on_connection_authorized(
     member: OwnerId,
     relation: Relation,
     member_authority: MembershipMemberAuthority,
-) -> Result<(), StorageError> {
+) -> Result<MembershipAddOutcome, StorageError> {
     let member_is_group = lock_group_membership_write_tx(conn, group_id, member).await?;
     insert_group_row(conn, group_id).await?;
     if member_is_group {
@@ -1023,7 +1038,7 @@ async fn add_group_member_on_connection_authorized(
         .map_err(map_err)?;
         if let Some((existing_parent, existing_relation)) = existing {
             if existing_parent == group_id.into_inner() && existing_relation == relation {
-                return Ok(());
+                return Ok(MembershipAddOutcome::AlreadyPresent);
             }
             return Err(StorageError::Conflict(
                 "group is already attached to a parent".into(),
@@ -1045,8 +1060,9 @@ async fn add_group_member_on_connection_authorized(
                 "group is already attached to a parent".into(),
             ));
         }
+        Ok(MembershipAddOutcome::Changed)
     } else {
-        sqlx::query(
+        let inserted = sqlx::query(
             "INSERT INTO proxima_core.group_memberships
                 (group_id, member_user_id, relation)
              VALUES ($1, $2, $3)
@@ -1058,8 +1074,12 @@ async fn add_group_member_on_connection_authorized(
         .execute(&mut *conn)
         .await
         .map_err(map_err)?;
+        Ok(if inserted.rows_affected() == 0 {
+            MembershipAddOutcome::AlreadyPresent
+        } else {
+            MembershipAddOutcome::Changed
+        })
     }
-    Ok(())
 }
 
 /// Under the group-tree lock: the caller the engine authorized must still

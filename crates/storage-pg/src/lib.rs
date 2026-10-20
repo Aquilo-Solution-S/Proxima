@@ -79,11 +79,16 @@ pub use access::PgOwnerAccessResolver;
 /// for these writes as for its own rows. No transaction control, scope setting or retry runs; the caller
 /// retries its whole transaction. All effects follow from committed rows.
 pub use access::owner_columns::{
-    add_group_member_on_connection as add_group_member,
+    MembershipAddOutcome, add_group_member_on_connection as add_group_member,
     bootstrap_group_admin_on_connection as bootstrap_group_admin, register_group,
     remove_group_member_on_connection as remove_group_member,
     remove_group_member_relation_on_connection as remove_group_member_relation,
     replace_group_member_relation_on_connection as replace_group_member_relation,
+};
+/// Authority facts protected through a caller-owned platform transaction.
+pub use access::{
+    AuthorityTargets, DirectGroupMembership, DirectUserMembership, GroupContainment,
+    PgAuthorityGroup, PgAuthorityPerson, PgAuthoritySession, RegisteredOwner,
 };
 /// Role probes on a caller's connection (see [`access::roles_for_subject`]):
 /// what the resolver answers, for a host that already holds a transaction.

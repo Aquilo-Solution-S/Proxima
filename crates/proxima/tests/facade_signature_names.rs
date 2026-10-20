@@ -298,6 +298,13 @@ facade_names! {
         both_tiers: [],
     }
 
+    // Needed by `PgPlatformScope::authority_on`, its borrowed views, and
+    // `add_group_member`'s idempotent outcome.
+    host_authority_transactions {
+        host_only: [AuthorityTargets, DirectGroupMembership, DirectUserMembership, GroupContainment, MembershipAddOutcome, PgAuthorityGroup, PgAuthorityPerson, PgAuthoritySession, RegisteredOwner],
+        both_tiers: [],
+    }
+
     // Needed by exact caller scopes, deployment surfaces, and their shared admission.
     // `McpToolDescriptor::{palette_keys, owner_only_keys}`.
     scope_keys {

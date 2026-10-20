@@ -450,6 +450,30 @@ REVOKE ALL ON FUNCTION proxima_core.goal_pin_target_checks() FROM PUBLIC;
 
 -- Group functions
 
+-- The platform gateway acquires all trees before these ordered kind and
+-- projection keys. Keep the key construction beside the membership writers.
+CREATE OR REPLACE FUNCTION proxima_core.lock_authority_targets(p_owners uuid[], p_subjects uuid[])
+ RETURNS void
+ LANGUAGE plpgsql VOLATILE SECURITY INVOKER
+ SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+AS $function$
+DECLARE
+    target uuid;
+BEGIN
+    FOR target IN SELECT DISTINCT id FROM unnest(p_owners) AS ids(id) ORDER BY id
+    LOOP
+        PERFORM pg_advisory_xact_lock(
+            hashtextextended('proxima-owner-kind:' || target::text, 0));
+    END LOOP;
+    FOR target IN SELECT DISTINCT id FROM unnest(p_subjects) AS ids(id) ORDER BY id
+    LOOP
+        PERFORM pg_advisory_xact_lock(
+            hashtextextended('proxima-group-projection:' || target::text, 0));
+    END LOOP;
+END
+$function$;
+REVOKE ALL ON FUNCTION proxima_core.lock_authority_targets(uuid[], uuid[]) FROM PUBLIC;
+
 -- The authenticated subject's authority projection is distinct from memory
 -- owner reach. VOLATILE gives the query after a lock wait a fresh snapshot.
 CREATE OR REPLACE FUNCTION proxima_core.read_subject_authority(p_subject uuid)

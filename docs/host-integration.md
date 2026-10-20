@@ -176,6 +176,35 @@ write policies enforce these boundaries. Lock requests retain both endpoints
 for tree serialization; their read and write policies require manage authority
 on either endpoint.
 
+For authority facts on a host-owned transaction, call
+`PgPlatformScope::authority_on(&mut tx, targets)` with an already open
+`READ COMMITTED` transaction. Declare the complete group, person and
+registered-owner footprint in `AuthorityTargets`, including membership-edit
+endpoints, before taking host revision or claim mutation locks. Construction
+acquires the existing tree and subject fences and rechecks the root map before
+returning a `PgAuthoritySession`. A changed footprint returns `Retryable`; a
+newly discovered target requires restarting the whole transaction with the
+complete selection. This trusted platform path works before authentication and
+requires no `AuthzContext`; its facts grant no authorization.
+
+`session.group(id)` and `session.person(id).await` return views that query fresh
+facts, including earlier writes on that transaction. Direct membership rows
+carry `Relation`; `effective_roles().await` includes inheritance.
+`session.registered_owner(id).await` reads the registered owner kind;
+`session.containment(ancestor, descendant).await` reads directional group
+containment with a distinct `SameGroup` result. Group principals remain groups;
+they are refused by the person view. Unknown registered owners refuse lookup.
+The caller retains its SQL, conditional writes, commit and
+whole-transaction retry; dropping the session only releases the Rust borrow,
+while PostgreSQL keeps its fences until commit or rollback.
+`add_group_member` returns `MembershipAddOutcome::Changed` or `AlreadyPresent`
+under its write fence, so a host can update a revision only for a change.
+
+Inside an authenticated Proxima write callback, use
+`PgHostStateSession::authority_memberships` for the current subject's effective
+memberships instead. That session derives its subject from the sealed write
+permit; it does not accept the platform gateway's caller-selected footprint.
+
 ## Other stores and HTTP
 
 Use `FlavorApp::services` to expose a typed service, and
