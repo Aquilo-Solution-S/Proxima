@@ -1332,14 +1332,12 @@ async fn exact_write_leaf_does_not_advertise_or_admit_a_dispatchers_omitted_read
             .iter()
             .find(|descriptor| descriptor["tool_id"] == tool)
             .unwrap();
-        if tool == FLAVOR_DISPATCH {
-            assert_eq!(
-                described["actions"].as_array().unwrap().len(),
-                1,
-                "{described}"
-            );
-            assert_eq!(described["actions"][0]["action"], write);
-        }
+        assert_eq!(
+            described["actions"].as_array().unwrap().len(),
+            1,
+            "{described}"
+        );
+        assert_eq!(described["actions"][0]["action"], write);
         assert!(matches!(
             host.call_tool(tool, read_args.clone(), author(), Some(ctx.clone()))
                 .await,
@@ -1739,6 +1737,64 @@ async fn an_annotated_argv_read_command_keeps_role_and_query_under_a_write_tool(
     assert!(viewer_openapi["paths"][&uri]["query"].is_object());
     let writer_openapi = get(&router, "/v1/openapi.json", &writer).await.json();
     assert!(writer_openapi["paths"][&uri].get("query").is_none());
+}
+
+#[tokio::test]
+async fn argv_catalog_actions_follow_permissions_and_describe_the_shared_envelope() {
+    use proxima_core::mcp::core_tools::list_substrate_tools::{
+        ListSubstrateToolsArgs, list_substrate_tools,
+    };
+
+    let host = argv_host();
+    let descriptor = host.registry().mcp_tool(FLAVOR_ARGV).unwrap();
+    for (ctx, expected) in [
+        (auth(ToolScope::All), vec!["approval", "approval-decide"]),
+        (viewer_auth(ToolScope::All), vec!["approval"]),
+        (
+            auth(palette_of(&[
+                &format!("{FLAVOR_ARGV}:approval-decide"),
+                protocol_resource::TOOLS,
+            ])),
+            vec!["approval-decide"],
+        ),
+    ] {
+        let catalog = host
+            .read_resource("proxima://tools", author(), Some(ctx.clone()))
+            .await
+            .unwrap();
+        let direct = list_substrate_tools(
+            host.ctx_for(author(), &ctx).unwrap(),
+            ListSubstrateToolsArgs::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(catalog, serde_json::to_value(direct).unwrap());
+        let actions = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["tool_id"] == FLAVOR_ARGV)
+            .unwrap()["actions"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            actions
+                .iter()
+                .map(|row| row["action"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        for row in actions {
+            let action = row["action"].as_str().unwrap();
+            assert_eq!(row["scope_key"], format!("{FLAVOR_ARGV}:{action}"));
+            assert_eq!(row["description"], descriptor.description);
+            assert_eq!(row["argument_schema"], descriptor.args_schema);
+            assert_eq!(row["annotations"]["read_only"], action == "approval");
+            for field in ["allowed_fields", "required_fields", "produces_schema_ids"] {
+                assert_eq!(row[field], serde_json::json!([]), "{field}: {row}");
+            }
+        }
+    }
 }
 
 /// `QUERY` and `POST` are the same read, so they must answer identically —

@@ -27,8 +27,11 @@ pub struct SubstrateToolActionItem {
     pub description: String,
     pub produces_schema_ids: Vec<String>,
     pub annotations: McpToolAnnotations,
+    /// Tagged action's own schema, or an argv command's shared tool envelope.
     pub argument_schema: serde_json::Value,
+    /// Declared tagged-action fields; empty for an argv-owned CLI grammar.
     pub allowed_fields: Vec<String>,
+    /// Declared tagged-action requirements; empty for an argv-owned CLI grammar.
     pub required_fields: Vec<String>,
 }
 
@@ -70,51 +73,50 @@ pub async fn list_substrate_tools(
 
 /// The catalog's per-action rows for one tool.
 ///
-/// Driven by the descriptor's `action_arg_specs`, which is THE enumeration
-/// of a dispatcher's actions. `core_action_meta` is decoration a substrate
-/// action gets and a flavor action does not — scope key and produced schema
-/// ids — so it is looked up per already-known action rather than iterated.
-/// Every action's prose is its enum-variant doc comment. Driving the loop from `all_core_actions()`
-/// meant a flavor dispatcher listed no actions at all in `proxima://tools`:
-/// present in the catalog, described as if it were flat.
+/// The descriptor enumerates both tagged and argv actions. Tagged metadata
+/// comes from the variant contract; argv commands share the tool's argument
+/// envelope and prose, with no per-command field declarations. Core action
+/// metadata decorates known actions rather than defining the enumeration.
 pub(super) fn substrate_tool_actions(
     ctx: &McpToolCtx,
     desc: &McpToolDescriptor,
 ) -> Vec<SubstrateToolActionItem> {
-    desc.action_arg_specs
-        .iter()
-        .filter(|spec| action_visible(ctx, desc, spec.action))
-        .map(|spec| {
-            let meta = core_action_meta(desc.name, spec.action);
+    desc.actions()
+        .filter(|(action, _)| action_visible(ctx, desc, action))
+        .map(|(action, effect)| {
+            let spec = desc.action_arg_spec(action);
+            let (description, argument_schema) = match spec {
+                Some(_) => (
+                    desc.action_description(action).unwrap_or_default(),
+                    desc.action_argument_schema(action)
+                        .expect("try_freeze matched every spec to a derived action schema"),
+                ),
+                None => (desc.description, &desc.args_schema),
+            };
+            let meta = core_action_meta(desc.name, action);
             SubstrateToolActionItem {
-                action: spec.action.to_string(),
+                action: action.to_string(),
                 scope_key: meta.map_or_else(
-                    || format!("{}:{}", desc.name, spec.action),
+                    || format!("{}:{action}", desc.name),
                     |meta| meta.scope_key.to_string(),
                 ),
-                description: desc
-                    .action_description(spec.action)
-                    .unwrap_or_default()
-                    .to_string(),
+                description: description.to_string(),
                 produces_schema_ids: meta
                     .map(|meta| meta.produces_schema_ids)
                     .unwrap_or_default()
                     .iter()
                     .map(|id| (*id).to_string())
                     .collect(),
-                annotations: McpToolAnnotations::registered(spec.effect),
-                argument_schema: desc
-                    .action_argument_schema(spec.action)
-                    .cloned()
-                    .expect("try_freeze matched every spec to a derived action schema"),
+                annotations: McpToolAnnotations::registered(effect),
+                argument_schema: argument_schema.clone(),
                 allowed_fields: spec
-                    .allowed_fields
-                    .iter()
+                    .into_iter()
+                    .flat_map(|spec| spec.allowed_fields)
                     .map(|field| (*field).to_string())
                     .collect(),
                 required_fields: spec
-                    .required_fields
-                    .iter()
+                    .into_iter()
+                    .flat_map(|spec| spec.required_fields)
                     .map(|field| (*field).to_string())
                     .collect(),
             }

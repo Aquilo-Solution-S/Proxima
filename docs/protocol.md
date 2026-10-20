@@ -16,6 +16,11 @@ Catalogs are caller-scoped. Discover them on the running deployment; linked
 flavors, deployment profiles, and effective tool scope determine the result.
 Types, defaults, and limits belong to rustdoc and the generated schemas.
 
+Catalog action rows include caller-visible commands from tagged and argv
+dispatchers. An argv command uses its tool's shared argument schema and
+description; its per-action field lists are empty because the tool owns its
+CLI grammar.
+
 ## Owner scope
 
 The host authenticates the bearer and resolves a user through `OwnerAccessPort`
