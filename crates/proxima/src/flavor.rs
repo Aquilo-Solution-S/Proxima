@@ -58,6 +58,8 @@ pub use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
 /// flat tool, `McpActionArgSpec::effect` per action of a dispatcher.
 /// Resolve dependencies with `ctx.service::<T>()` and model labels with
 /// [`ToolCtx::operator_label`]. The authenticated model identity takes precedence.
+/// Read application-specific verified claims through
+/// `ctx.authz().verified_claims()`; interpretation belongs to the flavor.
 pub use proxima_core::mcp::{
     KeyDeclaration, McpActionArgSpec, McpAuthorContext, Replay, ToolEffect,
 };

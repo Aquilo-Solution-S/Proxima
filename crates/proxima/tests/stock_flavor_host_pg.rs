@@ -70,6 +70,8 @@ struct ProbeArgs {}
 /// What one served call looked like from inside the tool.
 #[derive(serde::Serialize, schemars::JsonSchema)]
 struct ProbeOutput {
+    /// One application value from this request's verified token payload.
+    application: Option<Value>,
     /// `x-flavor-ticket`, when the allowlist copied it.
     ticket: Option<String>,
     /// Every header name the tool can see.
@@ -111,6 +113,11 @@ impl Tool for Probe {
                 .err()
                 .map(|err| err.to_string());
             Ok(ProbeOutput {
+                application: ctx
+                    .authz()
+                    .verified_claims()
+                    .and_then(|claims| claims.get("application"))
+                    .cloned(),
                 ticket: headers
                     .as_ref()
                     .and_then(|headers| headers.get(TICKET_HEADER))
@@ -248,9 +255,21 @@ impl Idp {
         sub: &str,
         owner: Option<(Uuid, proxima_core::WriterAttribution)>,
     ) -> TestResult<String> {
+        self.bearer_with_application(sub, owner, None)
+    }
+
+    fn bearer_with_application(
+        &self,
+        sub: &str,
+        owner: Option<(Uuid, proxima_core::WriterAttribution)>,
+        application: Option<Value>,
+    ) -> TestResult<String> {
         let exp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 3600;
         let header = json!({"alg": "RS256", "kid": KID, "typ": "JWT"});
         let mut claims = json!({"iss": self.issuer, "aud": AUDIENCE, "sub": sub, "exp": exp});
+        if let Some(application) = application {
+            claims["application"] = application;
+        }
         if let Some((owner, writer)) = owner {
             claims["owner"] = json!(owner);
             claims["by"] = json!(writer.by);
@@ -635,6 +654,59 @@ async fn a_forwarded_call_reaches_the_tool_with_its_ticket_under_the_fixed_role(
     .await;
     stack.cleanup();
     result.expect("forwarded call test failed");
+}
+
+/// Each call reads its own verified application payload through the facade,
+/// including successive tokens on one session after forwarded-owner narrowing.
+#[tokio::test]
+async fn verified_application_claims_reach_each_flavor_call_on_the_same_session() {
+    let stack = Stack::new().await;
+    let result: TestResult = async {
+        let (running, base) = stack.boot(&[]).await?;
+        let client = reqwest::Client::new();
+        let group = stack.new_group().await?;
+        let writer = proxima_core::WriterAttribution {
+            by: Uuid::now_v7(),
+            via: None,
+        };
+        let first = json!({"request": "first", "nested": {"enabled": true}});
+        let second = json!({"request": "second", "nested": {"enabled": false}});
+        let first_token = stack.idp.bearer_with_application(
+            FORWARDER_SUB,
+            Some((group, writer)),
+            Some(first.clone()),
+        )?;
+        let second_token = stack.idp.bearer_with_application(
+            FORWARDER_SUB,
+            Some((group, writer)),
+            Some(second.clone()),
+        )?;
+        let session = open_session(&client, &base, &first_token, Some(&group_key(group))).await?;
+        for (token, expected) in [
+            (&first_token, &first),
+            (&second_token, &second),
+            (&first_token, &first),
+        ] {
+            let seen = call_probe(
+                &client,
+                &base,
+                token,
+                &session,
+                &[("x-application", "not-a-verified-claim")],
+            )
+            .await?;
+            assert_eq!(&seen["application"], expected, "{seen}");
+            assert_eq!(seen["owner"], group_key(group), "{seen}");
+            assert_eq!(seen["principal"], stack.forwarder.to_string(), "{seen}");
+            assert_eq!(seen["readable_owners"], json!([group_key(group)]), "{seen}");
+            assert_eq!(seen["header_names"], json!([]), "{seen}");
+        }
+        running.shutdown().await;
+        Ok(())
+    }
+    .await;
+    stack.cleanup();
+    result.expect("verified claims must remain local to each served request");
 }
 
 /// The role is the configured one, not a member's: with

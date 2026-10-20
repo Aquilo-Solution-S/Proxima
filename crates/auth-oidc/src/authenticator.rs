@@ -460,7 +460,8 @@ impl Authenticator for OidcAuthenticator {
         let ctx =
             context_for_verified_token(self.owner_access.as_ref(), binding.user_id, &token).await?;
         tracing::debug!(sub = %claims.subject, "oidc token accepted (host-resolved)");
-        bind_trusted_model_id(ctx, binding.trusted_model_id)
+        let ctx = bind_trusted_model_id(ctx, binding.trusted_model_id)?;
+        Ok(ctx.with_verified_claims(token.custom))
     }
 }
 

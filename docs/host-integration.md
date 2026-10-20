@@ -125,6 +125,15 @@ OIDC adapter from `auth-oidc`. The authenticator validates the bearer, maps
 `X-Proxima-Owner` value is a raw owner UUID selected from that authorized
 scope. It is not an authorization proof.
 
+The stock `OidcAuthenticator` and `OidcBindingSet` retain the verified token
+payload on that request's `AuthzContext`. A Flavor handler reads it through
+`ctx.authz().verified_claims()`, which borrows an immutable JSON claim map
+without exposing the bearer. The map includes registered claims; the host or
+Flavor interprets its application-specific fields. Owner selection and
+narrowing preserve the map, while each authentication supplies its own values.
+Custom authenticators may attach their already verified payload with
+`AuthzContext::with_verified_claims`; contexts without one return `None`.
+
 The scope gate judges the caller's role on the owner the call's `space`
 resolves to.
 

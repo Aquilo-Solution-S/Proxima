@@ -418,6 +418,10 @@ impl ToolCtx {
         self.owner
     }
 
+    /// This request's authenticated authority and immutable verified claims.
+    ///
+    /// [`AuthzContext::verified_claims`] exposes application claims when the
+    /// authenticator retained them, without exposing the bearer credential.
     #[must_use]
     pub fn authz(&self) -> &AuthzContext {
         &self.authz

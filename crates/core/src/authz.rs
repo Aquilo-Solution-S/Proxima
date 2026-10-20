@@ -348,6 +348,15 @@ impl DelegationRuntimeBinding {
     }
 }
 
+#[derive(Clone, PartialEq)]
+struct VerifiedClaims(Arc<serde_json::Map<String, serde_json::Value>>);
+
+impl std::fmt::Debug for VerifiedClaims {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerifiedClaims").finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthzContext {
     identity: Identity,
@@ -366,6 +375,9 @@ pub struct AuthzContext {
     /// [`AuthzContext::identity_for_revalidation`] and be re-presented as
     /// authenticated identity material.
     publication_extensions: PublicationExtensions,
+    /// Uninterpreted verified payload for this request, outside the identity
+    /// carried into stream revalidation.
+    verified_claims: Option<VerifiedClaims>,
     /// The owner the HOST names for a request that selects none. Always an
     /// owner `owner_roles` carries; see [`AuthzContext::with_default_owner`].
     default_owner: Option<OwnerId>,
@@ -679,6 +691,33 @@ impl AuthzContext {
         self.identity.trusted_model_id.as_deref()
     }
 
+    /// The complete verified payload this request's authenticator retained,
+    /// including registered claims, or `None` when it retained none.
+    ///
+    /// Access is immutable and survives cloning and owner narrowing. This
+    /// exposes JSON claims, never the raw bearer credential. The consumer
+    /// interprets its application claims; their presence grants no authority.
+    #[must_use]
+    pub fn verified_claims(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.verified_claims
+            .as_ref()
+            .map(|claims| claims.0.as_ref())
+    }
+
+    /// Retain this request's already verified payload unchanged.
+    ///
+    /// For trusted authenticators only: `claims` must come from their verified
+    /// payload, never an unverified header or tool argument. This does not
+    /// validate or interpret claims, or grant owner or tool authority.
+    #[must_use]
+    pub fn with_verified_claims(
+        mut self,
+        claims: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        self.verified_claims = Some(VerifiedClaims(Arc::new(claims)));
+        self
+    }
+
     /// `CloudEvents` extension attributes this context contributes to every
     /// Fact it captures. Empty unless the host bound some.
     #[must_use]
@@ -831,6 +870,7 @@ impl AuthzContext {
             owner_scope: None,
             forwarded_owner: None,
             publication_extensions: PublicationExtensions::new(),
+            verified_claims: None,
             default_owner: None,
             invoking_tool: None,
             system_binding: None,
@@ -1182,6 +1222,7 @@ impl AuthzContext {
             owner_scope: None,
             forwarded_owner: None,
             publication_extensions: PublicationExtensions::new(),
+            verified_claims: None,
             default_owner: None,
             invoking_tool: None,
             system_binding: None,
@@ -1407,6 +1448,17 @@ mod tests {
 
     fn owner() -> OwnerId {
         OwnerId::from(UserId::new(uuid::Uuid::now_v7()))
+    }
+
+    fn claims() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({
+            "iss": "https://issuer.example",
+            "sub": "subject",
+            "application": {"request": "claim-value", "enabled": true}
+        })
+        .as_object()
+        .expect("claim fixture is an object")
+        .clone()
     }
 
     #[test]
@@ -2135,6 +2187,49 @@ mod tests {
             .narrowed_to_owner(OwnerId::from(subject))
             .expect("own personal owner");
         assert_eq!(narrowed.default_owner(), None);
+    }
+
+    #[test]
+    fn contexts_carry_no_verified_claims_by_default() {
+        let owner = owner();
+        for context in [
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+            AuthzContext::denied_for_owner(&owner),
+        ] {
+            assert_eq!(context.verified_claims(), None);
+        }
+    }
+
+    #[test]
+    fn verified_claims_survive_cloning_and_owner_narrowing() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let group = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let claims = claims();
+        let context = AuthzContext::for_subject_with_role(
+            subject,
+            [(group, Role::editor())],
+            AuthPath::HostBearer,
+        )
+        .with_verified_claims(claims.clone());
+        assert_eq!(context.verified_claims(), Some(&claims));
+        assert_eq!(context.clone().verified_claims(), Some(&claims));
+
+        for owner in [group, OwnerId::from(subject)] {
+            let narrowed = context
+                .clone()
+                .narrowed_to_owner(owner)
+                .expect("owner role");
+            assert_eq!(narrowed.verified_claims(), Some(&claims));
+        }
+    }
+
+    #[test]
+    fn verified_claim_values_are_redacted_from_context_debug() {
+        let context = AuthzContext::single_owner(&owner(), AuthPath::HostBearer)
+            .with_verified_claims(claims());
+        let debug = format!("{context:?}");
+        assert!(!debug.contains("claim-value"));
+        assert!(!debug.contains("https://issuer.example"));
     }
 
     /// `trusted_model_id` is identity, not a capability: it must survive

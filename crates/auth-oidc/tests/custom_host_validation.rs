@@ -7,6 +7,9 @@
 //! `OidcAuthConfig { owner, .. }` anywhere in this file (that field no
 //! longer exists on `OidcAuthConfig`; this file compiling is part of the
 //! proof).
+//!
+//! Stock authenticators retain the verified claim map on the authenticated
+//! context, so a host or Flavor reads application claims without bearer access.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -511,6 +514,75 @@ fn forwarding_claims(owner: Option<serde_json::Value>) -> serde_json::Value {
     claims
 }
 
+fn ordinary_claims(application: serde_json::Value) -> serde_json::Value {
+    let mut claims = forwarding_claims(None);
+    claims["sub"] = serde_json::json!(ORDINARY_SUBJECT);
+    claims["application"] = application;
+    claims
+}
+
+#[tokio::test]
+async fn stock_authentication_keeps_each_requests_claims_through_owner_narrowing() {
+    let keys = test_keys();
+    let mut absent = ordinary_claims(serde_json::Value::Null);
+    absent.as_object_mut().unwrap().remove("application");
+    let requests = [
+        ordinary_claims(serde_json::json!({
+            "label": "first", "groups": ["one", "two"], "enabled": true, "limit": 3,
+        })),
+        ordinary_claims(serde_json::json!({"label": "second"})),
+        absent,
+    ];
+    for (path, authenticator) in forwarding_authenticators(&keys) {
+        let mut retained = Vec::new();
+        for claims in &requests {
+            let credentials = Credentials::Bearer(signed_claims(&keys, claims, "JWT"));
+            let context = proxima_core::authenticate(authenticator.as_ref(), &credentials)
+                .await
+                .expect("ordinary mapped subject authenticates");
+            assert_eq!(context.verified_claims(), claims.as_object(), "{path}");
+            let narrowed = context
+                .narrowed_to_owner(OwnerId::from(ordinary_subject()))
+                .expect("the subject may select its own owner");
+            assert_eq!(narrowed.verified_claims(), claims.as_object(), "{path}");
+            retained.push(narrowed);
+        }
+        for (context, claims) in retained.iter().zip(&requests) {
+            assert_eq!(context.verified_claims(), claims.as_object(), "{path}");
+        }
+        assert_eq!(
+            retained[2].verified_claims().unwrap().get("application"),
+            None,
+            "a later request does not inherit an earlier application's value: {path}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn overlapping_stock_requests_keep_separate_verified_claims() {
+    let keys = test_keys();
+    for (path, authenticator) in forwarding_authenticators(&keys) {
+        let both_authenticated = Arc::new(tokio::sync::Barrier::new(2));
+        let request = |claims: serde_json::Value| {
+            let credentials = Credentials::Bearer(signed_claims(&keys, &claims, "JWT"));
+            let authenticator = authenticator.clone();
+            let both_authenticated = both_authenticated.clone();
+            async move {
+                let context = proxima_core::authenticate(authenticator.as_ref(), &credentials)
+                    .await
+                    .expect("ordinary mapped subject authenticates");
+                // Both contexts exist before either reads its retained request claims.
+                both_authenticated.wait().await;
+                assert_eq!(context.verified_claims(), claims.as_object(), "{path}");
+            }
+        };
+        tokio::join!(
+            request(ordinary_claims(serde_json::json!({"label": "first"}))),
+            request(ordinary_claims(serde_json::json!({"label": "second"}))),
+        );
+    }
+}
+
 #[tokio::test]
 async fn forwarded_owner_remains_pending_in_single_and_multiple_bindings() {
     let keys = test_keys();
@@ -521,6 +593,7 @@ async fn forwarded_owner_remains_pending_in_single_and_multiple_bindings() {
         let context = proxima_core::authenticate(authenticator.as_ref(), &bearer)
             .await
             .expect("a verified owner claim authenticates");
+        assert_eq!(context.verified_claims(), claims.as_object(), "{path}");
         assert_eq!(context.subject(), Some(forwarding_subject()), "{path}");
         assert_eq!(
             context.principal(),

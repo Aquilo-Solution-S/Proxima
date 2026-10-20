@@ -248,7 +248,8 @@ impl OidcBinding {
             .await?,
             binding.trusted_model_id,
         )?;
-        self.role_shape.apply(ctx, &token)
+        let ctx = self.role_shape.apply(ctx, &token)?;
+        Ok(ctx.with_verified_claims(token.custom))
     }
 }
 
@@ -879,6 +880,10 @@ mod tests {
         OtherSubject,
         /// Drop the expiry; the binding clamps it back to the token's.
         DropExpiry,
+        /// Rebuild an allowed context without carrying request claims forward.
+        Rebuild,
+        /// Replace the request claims while rebuilding an allowed context.
+        ReplaceClaims,
     }
 
     impl OidcRoleShaper for Reshape {
@@ -901,6 +906,12 @@ mod tests {
                     AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::HostBearer)
                 }
                 Self::DropExpiry => context.with_expires_at(None),
+                Self::Rebuild => AuthzContext::for_subject(subject, AuthPath::HostBearer),
+                Self::ReplaceClaims => AuthzContext::for_subject(subject, AuthPath::HostBearer)
+                    .with_verified_claims(serde_json::Map::from_iter([(
+                        "application".to_owned(),
+                        serde_json::json!("replacement"),
+                    )])),
             })
         }
     }
@@ -910,6 +921,11 @@ mod tests {
         let keys = test_keys();
         let owner = UserId::new(Uuid::from_u128(0x0E1E));
         let later = jsonwebtoken::get_current_timestamp() + 3_600;
+        let claims = claims_with(
+            OWNER_AUD,
+            later,
+            serde_json::json!({"application": "original"}),
+        );
         let authenticate = |reshape: Reshape| {
             let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
                 agent: UserId::new(Uuid::from_u128(0xA9E1)),
@@ -926,7 +942,7 @@ mod tests {
             )
             .expect("binding")])
             .expect("binding set");
-            let token = signed(&keys, &claims_with(OWNER_AUD, later, serde_json::json!({})));
+            let token = signed(&keys, &claims);
             async move { bindings.authenticate(&Credentials::Bearer(token)).await }
         };
 
@@ -948,6 +964,12 @@ mod tests {
             Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(later)),
             "the stream cannot outlive the token"
         );
+        for shape in [Reshape::Rebuild, Reshape::ReplaceClaims] {
+            let rebuilt = authenticate(shape)
+                .await
+                .expect("a context with fewer owner roles is an allowed shape");
+            assert_eq!(rebuilt.verified_claims(), claims.as_object());
+        }
     }
 
     /// Counts the key lookups a binding's resolver serves.
@@ -1061,14 +1083,17 @@ mod tests {
             ],
         );
 
+        let mut claims = claims_of(ISSUER, OWNER_AUD);
+        claims["application"] = serde_json::json!({"label": "first"});
         let ctx = bindings
-            .authenticate(&Credentials::Bearer(signed(
-                &keys,
-                &claims_of(ISSUER, OWNER_AUD),
-            )))
+            .authenticate(&Credentials::Bearer(signed(&keys, &claims)))
             .await
             .expect("the owner binding of ISSUER accepts");
         assert_eq!(ctx.auth_path(), AuthPath::HostBearer);
+        assert_eq!(ctx.verified_claims(), claims.as_object());
+        let owner = OwnerId::from(ctx.subject().expect("mapped subject"));
+        let narrowed = ctx.narrowed_to_owner(owner).expect("own personal owner");
+        assert_eq!(narrowed.verified_claims(), claims.as_object());
         assert_eq!(lookups(&counters), [1, 1, 0]);
 
         bindings
@@ -1079,6 +1104,7 @@ mod tests {
             .await
             .expect("the binding of the other issuer accepts");
         assert_eq!(lookups(&counters), [1, 1, 1]);
+        assert_eq!(narrowed.verified_claims(), claims.as_object());
     }
 
     /// A payload that cannot be read selects nothing: every binding runs, as
