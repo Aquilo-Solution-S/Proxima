@@ -340,6 +340,32 @@ fn inline_citation() -> InlineCitedObjectDraft {
     }
 }
 
+/// A pending upload of the content `inline_citation` cites: the staged bytes
+/// an uploaded-blob citation must stand on.
+async fn stage_inline_citation_upload(pg: &PgStorage, owner: OwnerId) -> Result<(), sqlx::Error> {
+    let owner_id = owner.into_inner();
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')
+         ON CONFLICT (owner_id) DO NOTHING",
+    )
+    .bind(owner_id)
+    .execute(pg.pool_for_tests())
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.blob_uploads
+            (owner_id, bucket, object_key, filename, mime, expected_byte_len,
+             content_hash, sha256, expires_at, object_store)
+         VALUES ($1, 'test', 'authorized-fact-refs', 'refs.txt', 'text/plain', 16,
+                 $2, $3, now() + interval '1 hour', 'memory:')",
+    )
+    .bind(owner_id)
+    .bind(vec![7_u8; 32])
+    .bind(vec![8_u8; 32])
+    .execute(pg.pool_for_tests())
+    .await?;
+    Ok(())
+}
+
 fn custom_draft(payload: &ReferencedFactV1) -> FactWriteCommand {
     FactWriteCommand::from_payload("test/authorized-fact-refs", payload)
 }
@@ -561,6 +587,7 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
         );
         let inline_draft =
             FactWriteCommand::from_payload("test/authorized-citation", &inline_payload);
+        stage_inline_citation_upload(&pg, owner).await?;
         let cited_object = inline_citation();
         let authorized = engine
             .authorize_fact_with_citation(
@@ -644,6 +671,7 @@ async fn by_ref_citation_refuses_missing_and_foreign_objects_alike() {
         let foreign_authz = proxima_core::test_fixtures::authenticated_context(
             AuthzContext::single_owner(&foreign_owner, AuthPath::HostBearer),
         );
+        stage_inline_citation_upload(&pg, foreign_owner).await?;
         let authorized = engine
             .authorize_fact_with_citation(
                 &foreign_authz,
@@ -711,6 +739,66 @@ async fn by_ref_citation_refuses_missing_and_foreign_objects_alike() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("by-ref citation accepted an object outside the Fact's owner");
+}
+
+/// An uploaded-blob citation stands on an upload this owner staged. Without
+/// one the Fact is refused and no cited object row is minted, so the dedupe
+/// probe never sees a hash with no bytes behind it.
+#[tokio::test]
+async fn an_uploaded_blob_citation_needs_a_staged_upload() {
+    let (db_name, pg, registry) = bootstrap().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = owner();
+        stage_inline_citation_upload(&pg, self::owner()).await?;
+        let fact_id = seed_fact(&pg, owner).await?;
+        let goal_id =
+            create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
+        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+            &owner,
+            AuthPath::HostBearer,
+        ));
+        let engine = engine(&pg, &registry);
+        let cite = |label: &'static str| {
+            let payload = payload(label, fact_id.into_inner(), goal_id.into_inner());
+            let engine = &engine;
+            let authz = &authz;
+            async move {
+                let authorized = engine
+                    .authorize_fact_with_citation(
+                        authz,
+                        custom_draft(&payload),
+                        inline_citation(),
+                        &[SidecarPayload::fact(payload.clone())],
+                    )
+                    .await?;
+                engine
+                    .ingest_fact_with_citation_and_typed_sidecar(&authorized)
+                    .await
+            }
+        };
+
+        // Another owner's staged upload of the same bytes is no help.
+        let error = cite("no-upload").await.expect_err("no staged upload");
+        assert!(
+            error.to_string().contains("no staged or completed upload"),
+            "{error}"
+        );
+        let minted: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxima_core.blob WHERE schema_id = 'core/uploaded-blob-v1'",
+        )
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(minted, 0, "a refused citation mints no cited object");
+
+        stage_inline_citation_upload(&pg, owner).await?;
+        cite("staged").await?;
+        // A second Fact citing the same bytes stands on the same upload.
+        cite("staged-again").await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("an uploaded-blob citation needs a staged upload");
 }
 
 #[tokio::test]

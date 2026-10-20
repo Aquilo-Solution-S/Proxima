@@ -295,11 +295,9 @@ pub(super) async fn find_held_blobs_on_connection(
 ) -> Result<Vec<CitedBlobHeld>, BlobError> {
     const SQL: &str = with_live_blob_upload!(
         "SELECT b.content_hash, b.blob_id,
-                COALESCE(u.expected_byte_len, 0) AS byte_len,
-                COALESCE(u.mime, '') AS mime,
-                COALESCE(u.filename, '') AS filename
+                u.expected_byte_len AS byte_len, u.mime, u.filename
            FROM proxima_core.blob b
-           LEFT JOIN",
+           JOIN",
         "WHERE b.owner_id = $1
             AND b.schema_id = $2
             AND b.content_hash = ANY($3::bytea[])"

@@ -13,6 +13,7 @@
 //! `proxima::flavor`; they cannot invoke it — see
 //! [`crate::sidecars::SidecarInsertPermit`].
 
+use crate::access::owner_columns::UploadStatus;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -404,6 +405,9 @@ async fn upsert_blob(
     content_hash: &[u8; 32],
 ) -> Result<uuid::Uuid, StorageError> {
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
+    if schema_id == proxima_core::UPLOADED_BLOB_SCHEMA_ID {
+        require_staged_upload(tx, owner_id, content_hash).await?;
+    }
     sqlx::query_scalar(
         "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, $2, $3)
@@ -417,6 +421,43 @@ async fn upsert_blob(
     .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)
+}
+
+/// An uploaded-blob citation stands on bytes this owner staged or finished.
+/// The upload row is share-locked, so an abort or expiry decides before or
+/// after this Fact, never between the check and the commit. A live upload
+/// of the content wins over an ended one; an owner whose only upload of it
+/// ended hears which way it ended.
+async fn require_staged_upload(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_id: uuid::Uuid,
+    content_hash: &[u8; 32],
+) -> Result<(), StorageError> {
+    let status: Option<UploadStatus> = sqlx::query_scalar(
+        "SELECT status FROM proxima_core.blob_uploads
+          WHERE owner_id = $1 AND content_hash = $2
+          ORDER BY status IN ('pending', 'completed') DESC
+          LIMIT 1
+            FOR SHARE",
+    )
+    .bind(owner_id)
+    .bind(&content_hash[..])
+    .fetch_optional(tx.as_mut())
+    .await
+    .map_err(map_err)?;
+    match status {
+        Some(UploadStatus::Pending | UploadStatus::Completed) => Ok(()),
+        Some(UploadStatus::Aborted) => Err(StorageError::Conflict(
+            "upload is aborted; prepare and stage the bytes again".into(),
+        )),
+        Some(UploadStatus::Expired) => Err(StorageError::Conflict(
+            "upload is expired; prepare and stage the bytes again".into(),
+        )),
+        None => Err(StorageError::ConstraintViolation(
+            "uploaded-blob citation has no staged or completed upload of that content for this owner"
+                .into(),
+        )),
+    }
 }
 
 async fn persist_draft_citation(

@@ -249,3 +249,65 @@ async fn a_staged_upload_past_its_ttl_still_finishes() {
     drop(pool);
     drop_db(&db_name).await.expect("drop db");
 }
+
+/// #483 item 2: the dedupe probe answers a hash only for bytes a completed
+/// upload holds. A cited-object row with no upload behind it is not held, and
+/// the answer appears when the upload completes.
+#[tokio::test]
+async fn find_held_blobs_answers_only_completed_uploads() {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset");
+        return;
+    }
+    let (pg, db_name) = fresh_storage().await;
+    let pool = pg.pool_for_tests().clone();
+    let config = s3_config_for_dev();
+    let store = lifecycle_store(&pg, &config);
+    let owner = owner_fixture();
+    let ctx = host_ctx(owner);
+
+    let unbacked = [9_u8; 32];
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')
+         ON CONFLICT (owner_id) DO NOTHING",
+    )
+    .bind(owner.into_inner())
+    .execute(&pool)
+    .await
+    .expect("owner row");
+    sqlx::query(
+        "INSERT INTO proxima_core.blob (schema_id, owner_id, content_hash)
+         VALUES ('core/uploaded-blob-v1', $1, $2)",
+    )
+    .bind(owner.into_inner())
+    .bind(&unbacked[..])
+    .execute(&pool)
+    .await
+    .expect("a cited object row with no upload");
+    let held = store
+        .find_held_blobs(&ctx, owner, &[unbacked])
+        .await
+        .expect("probe");
+    assert!(held.is_empty(), "no completed upload holds {unbacked:?}");
+
+    let body: &'static [u8] = b"%PDF-1.7 held once completed";
+    let upload_id = staged_upload(&pool, &store, &config, &ctx, owner, "held.pdf", body).await;
+    let digest = *blake3::hash(body).as_bytes();
+    let staged = store
+        .find_held_blobs(&ctx, owner, &[digest])
+        .await
+        .expect("probe");
+    assert!(staged.is_empty(), "a staged upload holds nothing yet");
+    complete_via_engine(&pg, &store, &ctx, owner, &upload_id)
+        .await
+        .expect("complete");
+    let held = store
+        .find_held_blobs(&ctx, owner, &[digest, unbacked])
+        .await
+        .expect("probe");
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].content_hash, digest);
+
+    drop(pool);
+    drop_db(&db_name).await.expect("drop db");
+}
