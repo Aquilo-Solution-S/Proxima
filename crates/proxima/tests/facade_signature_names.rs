@@ -359,6 +359,18 @@ facade_names! {
     }
 }
 
+/// Flavor-tier reads of the #474 in-tree inventory (issue comment of
+/// 2026-10-20 03:15 UTC): natural-key sidecar heads and the owner-id read.
+/// They exist only in `proxima::flavor`, so they sit outside the two-tier
+/// macro. A trimmed re-export fails to compile here.
+#[allow(unused_imports)]
+mod inventory_flavor_reads {
+    use proxima::flavor::{
+        SidecarHead, SidecarHeadsPage, SidecarHeadsRequest, SidecarHeadsScope, read_owner_ids,
+        sidecar_heads_by_key,
+    };
+}
+
 #[test]
 fn projection_generator_and_artifact_fields_are_usable_through_the_sdk() {
     use proxima::flavor::{

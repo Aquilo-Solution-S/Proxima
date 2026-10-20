@@ -16,12 +16,15 @@ use proxima_example::StampV1;
 use sqlx::{Connection, PgConnection, SqlSafeStr};
 use uuid::Uuid;
 
-/// The example schema's classification, as the example migrator states it
-/// (baseline, `stamp_follows`, then `stamp_follows_memory_rls`).
+/// The example schema's classification as its migrations list it (baseline,
+/// `stamp_follows`, then `stamp_follows_memory_rls`). The host's Follows marks
+/// supersede the listed class for `stamp_v1`.
 const OWNER_ID_TABLES: &[&str] = &["notebooks"];
 const FK_PARENT_TABLES: &[&str] = &["note_v1", "digest_v1"];
 const OWNERLESS_TABLES: &[&str] = &["settings"];
-/// The `owner: follows` stamp: visible exactly when its memory is.
+/// The `owner: follows` stamp, listed by the example as `memory_owner`. That
+/// listing is superseded: the host installs the follows rule (own `owner_id` AND
+/// EXISTS over its memory) whatever class the flavor lists.
 const MEMORY_OWNER_TABLES: &[&str] = &["stamp_v1"];
 
 const POLICIES: &str = "SELECT c.relname::text, p.polname::text, p.polcmd::text,
@@ -376,6 +379,7 @@ async fn installer_refuses_invalid_classifications_and_preserves_live_policies()
             + MEMORY_OWNER_TABLES.len()),
         "every example table carries the three owner-RLS policies"
     );
+    assert_follows_rule(&live);
     assert_eq!(live, expected, "live policies are the installer result");
 
     for table in FK_PARENT_TABLES {
@@ -454,13 +458,17 @@ async fn policies(conn: &mut PgConnection) -> Vec<PolicyRow> {
 }
 
 /// Both owner policies of `stamp_v1` are the host follows rule: its own
-/// `owner_id` check AND an EXISTS over its memory.
+/// `owner_id` check AND an EXISTS over its memory. The memory half carries
+/// `parent.owner_id = ANY` too, so the own-column half is looked for with the
+/// parent's occurrences removed: a plain `memory_owner` policy fails here.
+#[track_caller]
 fn assert_follows_rule(policies: &[PolicyRow]) {
     let read = named_policy(policies, "stamp_v1", "proxima_owner_read");
     let write = named_policy(policies, "stamp_v1", "proxima_owner_write");
     for expr in [&read.5, &write.5, &write.6] {
         assert!(
-            expr.contains("owner_id = ANY")
+            expr.replace("parent.owner_id", "")
+                .contains("owner_id = ANY")
                 && expr.contains("FROM proxima_core.memory parent")
                 && expr.contains("parent.t = stamp_v1.t"),
             "stamp_v1 carries the follows rule: {expr}"
@@ -893,6 +901,83 @@ async fn preflight_refuses_missing_follows_state_and_empty_sql_run_repairs_it() 
             .await
             .expect("read-only preflight sees platform-owned Follows marks");
     }
+    pg.clone_pool_for_backend().close().await;
+}
+
+/// Upgrade (the r3 leak): a database migrated before the host marked
+/// Follows tables carries `stamp_v1` under the owner-only `owner_id` policy and
+/// no mark. Preflight refuses it, and the next run with no pending SQL
+/// installs the follows rule.
+#[tokio::test]
+async fn empty_sql_run_replaces_an_owner_only_follows_policy() {
+    use proxima::flavor::FlavorBundle;
+    use proxima::{MigrationError, PgMigrationStorage, PgPoolConfig, PgTuning};
+    use proxima_example::ExampleFlavor;
+
+    let db = example_engine::migrated_db("proxima_follows_owner_only_upgrade").await;
+    let pg = PgMigrationStorage::connect_with_config(
+        db.platform_url(),
+        PgPoolConfig::default(),
+        PgTuning::default(),
+    )
+    .await
+    .expect("migration storage");
+    let sidecars = example_engine::frozen_sidecars();
+
+    // Recreate the pre-200fe438 state: no mark, flavor-installed owner_id class.
+    let pool = pg.clone_pool_for_backend();
+    let mut connection = pool.acquire().await.expect("connection");
+    let mut transaction = proxima::begin_migration_transaction(&mut connection)
+        .await
+        .expect("platform transaction");
+    sqlx::query(
+        "DELETE FROM proxima_core.owner_follows WHERE table_name = 'proxima_example.stamp_v1'",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("unmark stamp_v1");
+    sqlx::query(
+        "SELECT proxima_core.install_owner_rls_table('proxima_example', 'stamp_v1', 'owner_id')",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("the flavor installs the owner-only class");
+    transaction.commit().await.expect("commit");
+    drop(connection);
+
+    let mut conn = PgConnection::connect(db.platform_url())
+        .await
+        .expect("platform connection");
+    let before = policies(&mut conn).await;
+    let read = named_policy(&before, "stamp_v1", "proxima_owner_read");
+    assert!(
+        read.5.contains("owner_id = ANY") && !read.5.contains("proxima_core.memory parent"),
+        "precondition: stamp_v1 is owner-only: {}",
+        read.5
+    );
+
+    let refused =
+        proxima::preflight_without_migrations(&pg, ExampleFlavor::migrators(), &sidecars).await;
+    assert!(
+        matches!(refused, Err(MigrationError::SidecarOwnerRls(_))),
+        "preflight refuses the unmarked Follows table: {refused:?}"
+    );
+    assert!(
+        proxima::pending_migrations(&pg.clone_pool_for_backend(), &ExampleFlavor::migrators())
+            .await
+            .expect("plan")
+            .is_empty(),
+        "no SQL is pending"
+    );
+    proxima::run_core_and_flavor_migrations(&pg, ExampleFlavor::migrators(), &sidecars)
+        .await
+        .expect("an empty SQL run repairs the Follows policy");
+
+    assert_follows_rule(&policies(&mut conn).await);
+    proxima::preflight_without_migrations(&pg, ExampleFlavor::migrators(), &sidecars)
+        .await
+        .expect("preflight accepts the repaired deployment");
+    conn.close().await.expect("close");
     pg.clone_pool_for_backend().close().await;
 }
 
