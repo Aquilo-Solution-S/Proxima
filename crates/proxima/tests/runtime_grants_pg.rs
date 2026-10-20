@@ -407,10 +407,12 @@ async fn boot_refuses_unsafe_runtime_privileges_in_a_composed_flavor_schema() {
     let error = build(&fixture, owner, false, true)
         .await
         .expect_err("runtime safety covers linked flavor schemas as well as core");
+    let message = error.to_string();
     assert!(
-        matches!(error, ProximaError::Storage(ref message)
-            if message.contains("proxima_example.notebooks") && message.contains("TRUNCATE")),
-        "{error}"
+        matches!(error, ProximaError::Storage(_))
+            && message.contains("proxima_example.notebooks")
+            && message.contains("TRUNCATE"),
+        "{message}"
     );
     cleanup(fixture).await;
 }

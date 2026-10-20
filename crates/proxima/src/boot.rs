@@ -126,11 +126,11 @@ pub(crate) async fn boot<A: FlavorBundle>(
     let pg = pg
         .with_sidecars(pg_sidecars.as_ref().clone())
         .try_with_flavors(&registry)
-        .map_err(|error| ProximaError::Storage(error.to_string()))?
+        .map_err(|error| ProximaError::Storage(error.into()))?
         .with_embedding_runtime_policy(config.embedding_runtime_policy);
     let erase_context = pg
         .host_state_erase_context()
-        .map_err(|error| ProximaError::Storage(error.to_string()))?;
+        .map_err(|error| ProximaError::Storage(error.into()))?;
     let (publication_origin_eligibility, origin_scope) = publication_origin_ports(&pg).await?;
 
     let pool = pg.clone_pool_for_backend();
@@ -168,7 +168,7 @@ pub(crate) async fn boot<A: FlavorBundle>(
         engine.into_runtime_authorities();
     let host_state_maintenance_authority = engine
         .host_state_maintenance_authority(&system_authority)
-        .map_err(|error| ProximaError::Engine(error.to_string()))?;
+        .map_err(|error| ProximaError::Engine(error.into()))?;
     if let Some(store) = &blobs {
         store
             .bind_system_authority(&system_authority)
@@ -179,7 +179,7 @@ pub(crate) async fn boot<A: FlavorBundle>(
         .clone()
         .start()
         .await
-        .map_err(|e| ProximaError::Engine(e.to_string()))?;
+        .map_err(|e| ProximaError::Engine(e.into()))?;
     let registry = Arc::new(engine.registry().clone());
     Ok(Booted {
         engine,
@@ -215,7 +215,7 @@ async fn connect_serving_storage(
         .map_err(storage_error)?;
     let platform_scope = PgPlatformScope::new(platform_pool, &schema_refs)
         .await
-        .map_err(|error| ProximaError::Storage(error.to_string()))?;
+        .map_err(|error| ProximaError::Storage(error.into()))?;
     let pg = PgStorage::connect_with_config(
         &config.database_url,
         config.pg_pool_config,
@@ -279,7 +279,7 @@ async fn publication_origin_ports(
     let scope = pg
         .origin_scope()
         .await
-        .map_err(|error| ProximaError::Storage(error.to_string()))?;
+        .map_err(|error| ProximaError::Storage(error.into()))?;
     Ok((Arc::new(pg.clone()), scope))
 }
 
@@ -507,7 +507,7 @@ pub(crate) fn storage_error(err: StorageError) -> ProximaError {
         StorageError::SchemaResetRequired { details } => {
             ProximaError::SchemaResetRequired { details }
         }
-        other => ProximaError::Storage(other.to_string()),
+        other => ProximaError::Storage(other.into()),
     }
 }
 
@@ -517,6 +517,6 @@ pub(crate) fn storage_error(err: StorageError) -> ProximaError {
 fn migration_error(err: MigrationError) -> ProximaError {
     match err {
         MigrationError::CorePreflight(storage_err) => storage_error(storage_err),
-        other => ProximaError::Storage(other.to_string()),
+        other => ProximaError::Storage(other.into()),
     }
 }

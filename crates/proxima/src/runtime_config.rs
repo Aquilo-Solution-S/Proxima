@@ -1486,6 +1486,36 @@ impl std::fmt::Debug for RuntimeParts {
     }
 }
 
+/// The error a facade failure wraps. A message alone converts with
+/// `.into()`.
+pub type Cause = Box<dyn std::error::Error + Send + Sync>;
+
+/// Name a failure in the facade's words and keep the failure as the source.
+pub fn cause_with(
+    message: impl Into<String>,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> Cause {
+    #[derive(Debug)]
+    struct Named {
+        message: String,
+        source: Cause,
+    }
+    impl std::fmt::Display for Named {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.message)
+        }
+    }
+    impl std::error::Error for Named {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(self.source.as_ref())
+        }
+    }
+    Box::new(Named {
+        message: message.into(),
+        source: Box::new(source),
+    })
+}
+
 /// Errors from the application-facing facade.
 #[derive(Debug, thiserror::Error)]
 pub enum ProximaError {
@@ -1495,14 +1525,16 @@ pub enum ProximaError {
     Registry(#[from] proxima_core::FlavorRegistryError),
     #[error("flavor services: {0}")]
     FlavorServices(#[from] FlavorServiceError),
+    /// Carries the error the storage layer returned, so a host can walk
+    /// [`std::error::Error::source`]; the message reads as that error does.
     #[error("storage: {0}")]
-    Storage(String),
+    Storage(#[source] Cause),
     #[error("engine: {0}")]
-    Engine(String),
+    Engine(#[source] Cause),
     #[error("security: {0}")]
     Security(String),
     #[error("mcp: {0}")]
-    Mcp(String),
+    Mcp(#[source] Cause),
     /// The target database does not match this binary's schema and must
     /// be reset. Distinct from [`Self::Storage`] so hosts can match on it.
     #[error(
@@ -1756,6 +1788,22 @@ mod tests {
     use proxima_core::{AuthError, AuthzContext, Credentials, GroupId, OwnerId};
 
     use super::*;
+
+    #[test]
+    fn a_wrapped_failure_keeps_its_message_and_its_source() {
+        let io = std::io::Error::other("disk gone");
+        let error = ProximaError::Storage(cause_with("reading the ledger", io));
+        assert_eq!(error.to_string(), "storage: reading the ledger");
+        let cause = std::error::Error::source(&error).expect("the cause is the source");
+        assert_eq!(
+            std::error::Error::source(cause)
+                .expect("the failure")
+                .to_string(),
+            "disk gone"
+        );
+        let plain = ProximaError::Mcp("listener disabled".into());
+        assert_eq!(plain.to_string(), "mcp: listener disabled");
+    }
 
     #[test]
     fn missing_migrations_require_an_explicit_host_policy() {

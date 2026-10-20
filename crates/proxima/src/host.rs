@@ -27,8 +27,8 @@ pub use crate::runtime::{
 /// The type of the public field [`RuntimeConfig::auth`].
 pub use crate::runtime_config::RuntimeAuthState;
 pub use crate::runtime_config::{
-    McpSettings, PlatformAuthContext, PlatformAuthenticatorFactory, ProximaError, RuntimeBuilder,
-    RuntimeConfig, RuntimeParts, embedding_runtime_policy_from_lookup,
+    Cause, McpSettings, PlatformAuthContext, PlatformAuthenticatorFactory, ProximaError,
+    RuntimeBuilder, RuntimeConfig, RuntimeParts, cause_with, embedding_runtime_policy_from_lookup,
     migration_database_url_from_lookup, missing_migration_policy_from_lookup, parse_store_number,
 };
 /// The S3-backed cited-blob lane.

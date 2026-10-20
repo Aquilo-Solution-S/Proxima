@@ -38,6 +38,7 @@ use sqlx::{AssertSqlSafe, PgPool};
 
 use crate::ProximaError;
 use crate::migrations::NamedMigrator;
+use crate::runtime_config::cause_with;
 
 /// `pg_advisory_xact_lock` key owned by this step: ASCII `proxgrnt`, beside
 /// storage's `proxembm` / `proxretn` maintenance keys.
@@ -93,18 +94,18 @@ impl RuntimeGrants {
         let mut tx = platform
             .begin()
             .await
-            .map_err(|error| failed("BEGIN", "platform pool", &error))?;
+            .map_err(|error| failed("BEGIN", "platform pool", error))?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(RUNTIME_GRANTS_LOCK_KEY)
             .execute(&mut *tx)
             .await
-            .map_err(|error| failed("advisory lock", "runtime grants", &error))?;
+            .map_err(|error| failed("advisory lock", "runtime grants", error))?;
         let runtime_exists: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)")
                 .bind(&self.runtime_role)
                 .fetch_one(&mut *tx)
                 .await
-                .map_err(|error| failed("role lookup", &self.runtime_role, &error))?;
+                .map_err(|error| failed("role lookup", &self.runtime_role, error))?;
         if !runtime_exists {
             return Err(ProximaError::Config(format!(
                 "runtime grants: DATABASE_URL role {:?} does not exist",
@@ -117,7 +118,7 @@ impl RuntimeGrants {
         .bind(&self.schemas)
         .fetch_all(&mut *tx)
         .await
-        .map_err(|error| failed("schema lookup", "composed schemas", &error))?;
+        .map_err(|error| failed("schema lookup", "composed schemas", error))?;
         // `to_regclass` resolves each compiled-in ledger name the way SQLx's
         // pinned-`public` migrator does and yields NULL for a ledger not yet
         // created; the join drops those. Schema `USAGE` is probed so an
@@ -136,7 +137,7 @@ impl RuntimeGrants {
         .bind(&self.runtime_role)
         .fetch_all(&mut *tx)
         .await
-        .map_err(|error| failed("ledger lookup", "migration ledgers", &error))?
+        .map_err(|error| failed("ledger lookup", "migration ledgers", error))?
         .into_iter()
         .map(|(schema, table, runtime_schema_usage)| Ledger {
             schema,
@@ -151,12 +152,12 @@ impl RuntimeGrants {
             sqlx::raw_sql(AssertSqlSafe(statement.sql))
                 .execute(&mut *tx)
                 .await
-                .map_err(|error| failed(statement.class, &statement.object, &error))?;
+                .map_err(|error| failed(statement.class, &statement.object, error))?;
         }
         self.grant_candidate_execution(&mut tx, &schemas).await?;
         tx.commit()
             .await
-            .map_err(|error| failed("COMMIT", "runtime grants", &error))?;
+            .map_err(|error| failed("COMMIT", "runtime grants", error))?;
         tracing::info!(
             runtime_role = %self.runtime_role,
             schemas = ?schemas,
@@ -192,16 +193,14 @@ impl RuntimeGrants {
         .bind(&self.runtime_role)
         .fetch_all(&mut *connection)
         .await
-        .map_err(|error| failed("candidate function lookup", "composed schemas", &error))?;
+        .map_err(|error| failed("candidate function lookup", "composed schemas", error))?;
         for statement in statements {
             // SQL-POLICY: fixed-fragment — PostgreSQL format quotes catalog signatures,
             // the runtime identifier and the DO body; only the fixed owner is admitted.
             sqlx::raw_sql(AssertSqlSafe(statement))
                 .execute(&mut *connection)
                 .await
-                .map_err(|error| {
-                    failed("GRANT EXECUTE ON FUNCTION", "search candidates", &error)
-                })?;
+                .map_err(|error| failed("GRANT EXECUTE ON FUNCTION", "search candidates", error))?;
         }
         Ok(())
     }
@@ -243,9 +242,10 @@ fn url_user(url: &str, variable: &str) -> Result<String, ProximaError> {
         .map_err(|_| ProximaError::Config(format!("{variable} is not a valid Postgres URL")))
 }
 
-fn failed(class: &str, object: &str, error: &sqlx::Error) -> ProximaError {
-    ProximaError::Storage(format!(
-        "runtime grants: {class} on {object} failed: {error}"
+fn failed(class: &str, object: &str, error: sqlx::Error) -> ProximaError {
+    ProximaError::Storage(cause_with(
+        format!("runtime grants: {class} on {object} failed: {error}"),
+        error,
     ))
 }
 

@@ -31,6 +31,7 @@ use crate::features::{
     BootReport, Feature, FeatureControl, FeatureDecision, FeatureInputs, Features,
 };
 use crate::owner_access::ForwarderPolicy;
+use crate::runtime_config::cause_with;
 use crate::{AppContext, FlavorApp, ProximaError, ProximaHost, RuntimeBuilder};
 #[cfg(test)]
 use proxima_storage_pg::PgPlatformScope;
@@ -480,10 +481,10 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             let app = build_router::<A>(app_ctx.clone(), &edge, &cancel, &config);
             let listener = tokio::net::TcpListener::bind(mcp.bind)
                 .await
-                .map_err(|err| ProximaError::Mcp(err.to_string()))?;
+                .map_err(|err| ProximaError::Mcp(err.into()))?;
             let bound = listener
                 .local_addr()
-                .map_err(|err| ProximaError::Mcp(err.to_string()))?;
+                .map_err(|err| ProximaError::Mcp(err.into()))?;
             let shutdown = cancel.clone();
             let server = tokio::spawn(async move {
                 if let Err(err) = axum::serve(listener, app)
@@ -879,8 +880,8 @@ impl RunningProxima {
                 joined = server => {
                     listener_stopped = true;
                     Err(ProximaError::Mcp(match joined {
-                        Ok(()) => "the listener stopped before a shutdown signal".to_owned(),
-                        Err(err) => format!("the listener task failed: {err}"),
+                        Ok(()) => "the listener stopped before a shutdown signal".into(),
+                        Err(err) => cause_with(format!("the listener task failed: {err}"), err),
                     }))
                 }
             },
@@ -949,7 +950,10 @@ pub async fn serve<A: FlavorApp + 'static>() -> Result<(), ProximaError> {
 /// SIGTERM (what an orchestrator sends) or SIGINT; Ctrl-C off Unix.
 async fn shutdown_signal() -> Result<(), ProximaError> {
     let install = |err: std::io::Error| {
-        ProximaError::Mcp(format!("installing the shutdown signal handler: {err}"))
+        ProximaError::Mcp(cause_with(
+            format!("installing the shutdown signal handler: {err}"),
+            err,
+        ))
     };
     #[cfg(unix)]
     {

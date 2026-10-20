@@ -268,7 +268,7 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
         Some(store) => store
             .reconcile_all(built.system_authority())
             .await
-            .map_err(|err| ProximaError::Storage(err.to_string())),
+            .map_err(|err| ProximaError::Storage(err.into())),
         None => Err(ProximaError::Config(
             "maintain-blobs booted without its required S3 store".into(),
         )),
@@ -322,7 +322,7 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     let Some(lock) = storage
         .try_embedding_maintenance_lock()
         .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?
+        .map_err(|err| ProximaError::Storage(err.into()))?
     else {
         println!("skipped: another embedding maintenance pass holds the lease");
         return Ok(());
@@ -332,7 +332,7 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
         let sweep = storage
             .sweep_orphan_embedding_rows()
             .await
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+            .map_err(|err| ProximaError::Storage(err.into()))?;
         println!(
             "orphan-sweep: embeddings={} heads={} jobs={}",
             sweep.embeddings_deleted, sweep.heads_deleted, sweep.jobs_deleted
@@ -346,7 +346,7 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
         // the scope of the pass is visible in its own output.
         let core_registry = proxima_core::FlavorRegistry::new()
             .try_freeze()
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+            .map_err(|err| ProximaError::Storage(err.into()))?;
         let non_embeddable = core_registry.non_embeddable_schema_ids();
         let outcome = storage
             .reconcile_embeddings(EmbeddingReconcileOptions {
@@ -359,7 +359,7 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
                 non_embeddable_schemas: non_embeddable,
             })
             .await
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+            .map_err(|err| ProximaError::Storage(err.into()))?;
         println!(
             "reconcile: scanned={} enqueued={} skipped={} not-embeddable=[{}]",
             outcome.scanned,
@@ -371,7 +371,7 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
         let health = storage
             .embedding_ann_observability()
             .await
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+            .map_err(|err| ProximaError::Storage(err.into()))?;
         println!(
             "backlog: pending={} processing={} failed={} stale-processing={}",
             health.backlog.pending,
@@ -436,9 +436,9 @@ async fn maintenance_storage(
         )?,
     )?;
     let config = proxima_storage_pg::PgPoolConfig::from_env()
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        .map_err(|err| ProximaError::Storage(err.into()))?;
     let tuning = proxima_storage_pg::PgTuning::from_env()
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        .map_err(|err| ProximaError::Storage(err.into()))?;
     let mut registry = FlavorRegistry::new();
     ProximaMcpApp::register(&mut registry).map_err(ProximaError::from)?;
     let registry = registry.try_freeze().map_err(ProximaError::from)?;
@@ -449,7 +449,7 @@ async fn maintenance_storage(
     ProximaMcpApp::register_pg_sidecars(&mut sidecars);
     let sidecars = sidecars
         .freeze_against(&registry)
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        .map_err(|err| ProximaError::Storage(err.into()))?;
     // Migrations hold a session lock and session settings: they run on
     // PROXIMA_MIGRATION_DATABASE_URL when the platform URL goes through a
     // transaction-mode pooler. This one-shot command keeps that connection
@@ -460,7 +460,7 @@ async fn maintenance_storage(
         tuning,
     )
     .await
-    .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    .map_err(|err| ProximaError::Storage(err.into()))?;
     run_core_and_flavor_migrations_with_policy(
         &migration_pg,
         ProximaMcpApp::migrators(),
@@ -468,22 +468,22 @@ async fn maintenance_storage(
         missing_policy,
     )
     .await
-    .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    .map_err(|err| ProximaError::Storage(err.into()))?;
     let platform_scope = proxima_storage_pg::PgPlatformScope::new(
         migration_pg.clone_pool_for_backend(),
         &schema_refs,
     )
     .await
-    .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    .map_err(|err| ProximaError::Storage(err.into()))?;
     migration_pg
         .initialize_store_number(store_number)
         .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        .map_err(|err| ProximaError::Storage(err.into()))?;
     drop(migration_pg);
     let storage =
         PgStorage::connect_with_config(database_url, config, tuning, platform_scope, store_number)
             .await
-            .map_err(|err| ProximaError::Storage(err.to_string()))?
+            .map_err(|err| ProximaError::Storage(err.into()))?
             .with_sidecars(sidecars)
             .with_embedding_runtime_policy(embedding_policy);
     Ok(storage)
@@ -548,7 +548,7 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
         <ProximaMcpApp as FlavorBundle>::register_pg_sidecars(&mut sidecars);
         let sidecars = sidecars
             .freeze_against(&registry)
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+            .map_err(|err| ProximaError::Storage(err.into()))?;
         let blobs = CitedBlobStore::new(
             storage.clone_pool_for_backend(),
             s3,
@@ -572,7 +572,7 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
     let Some(lock) = storage
         .try_storage_maintenance_lock()
         .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?
+        .map_err(|err| ProximaError::Storage(err.into()))?
     else {
         println!("skipped: another storage maintenance pass holds the lease");
         return Ok(());
@@ -606,11 +606,11 @@ async fn storage_maintenance_steps(
         let remaining = loop {
             lock.renew()
                 .await
-                .map_err(|err| ProximaError::Storage(err.to_string()))?;
+                .map_err(|err| ProximaError::Storage(err.into()))?;
             let batch = blobs
                 .sweep_expired_uploads(authority, limit)
                 .await
-                .map_err(|err| ProximaError::Storage(err.to_string()))?;
+                .map_err(|err| ProximaError::Storage(err.into()))?;
             expired += batch.expired;
             owed += batch.owed;
             if batch.expired == 0 || batch.remaining == 0 {
@@ -623,7 +623,7 @@ async fn storage_maintenance_steps(
     if config.retry_cold_object_purges {
         lock.renew()
             .await
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+            .map_err(|err| ProximaError::Storage(err.into()))?;
         let outcome = storage
             .retry_cold_object_purges(
                 ColdPurgeRetryOptions::default()
@@ -631,19 +631,22 @@ async fn storage_maintenance_steps(
                     .dry_run(config.dry_run),
             )
             .await
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+            .map_err(|err| ProximaError::Storage(err.into()))?;
         for line in cold_purge_retry_report(&outcome, dry_run_suffix) {
             println!("{line}");
         }
         if outcome.foreign > 0 {
             // The drain left them in place; the operator still has to wire
             // the store they are owed to, so this pass is not a success.
-            return Err(ProximaError::Storage(format!(
-                "purge queue holds {} debt(s) owed to object stores this process is not \
-                 wired to; run the drain with the PROXIMA_S3_* settings (or \
-                 PROXIMA_S3_STORE_ID) of the store each is owed to",
-                outcome.foreign
-            ))
+            return Err(ProximaError::Storage(
+                format!(
+                    "purge queue holds {} debt(s) owed to object stores this process is not \
+                     wired to; run the drain with the PROXIMA_S3_* settings (or \
+                     PROXIMA_S3_STORE_ID) of the store each is owed to",
+                    outcome.foreign
+                )
+                .into(),
+            )
             .into());
         }
     }
