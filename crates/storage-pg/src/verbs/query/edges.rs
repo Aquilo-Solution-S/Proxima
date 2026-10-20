@@ -1,12 +1,12 @@
 use proxima_core::storage_ports::InboundPinQuery;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{
-    Edge, EdgeKind, EntityKind, GoalId, MemoryId, OwnerId, PinNode, StorageError,
-    project_window_edges,
+    Edge, EdgeKind, GoalId, MemoryId, OwnerId, PinNode, StorageError, project_window_edges,
 };
 use sqlx::PgConnection;
 
 use crate::error::map_err;
+use crate::pg_enums::PgMemoryKind;
 
 /// Hard upper bound on edges returned by snapshot-edge mode.
 /// Decoupled from `QueryRequest::limit`, which sizes the node window.
@@ -15,7 +15,7 @@ const MAX_SNAPSHOT_EDGES: usize = 50_000;
 #[derive(Debug, sqlx::FromRow)]
 struct PinNodeRow {
     t: uuid::Uuid,
-    kind: String,
+    kind: PgMemoryKind,
     schema_id: String,
     origins: Vec<uuid::Uuid>,
     refs: Vec<uuid::Uuid>,
@@ -23,15 +23,15 @@ struct PinNodeRow {
 }
 
 impl PinNodeRow {
-    fn into_pin_node(self) -> Option<PinNode> {
-        Some(PinNode {
+    fn into_pin_node(self) -> PinNode {
+        PinNode {
             id: MemoryId::new(self.t),
-            kind: parse_kind(&self.kind)?,
+            kind: self.kind.into(),
             schema_id: proxima_core::SchemaId::new(self.schema_id),
             origins: self.origins.into_iter().map(MemoryId::new).collect(),
             refs: self.refs.into_iter().map(MemoryId::new).collect(),
             goal_refs: self.goal_refs.into_iter().map(GoalId::new).collect(),
-        })
+        }
     }
 }
 
@@ -70,13 +70,10 @@ pub(crate) async fn load_pin_nodes_on_connection(
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
     let owner_ids = owner_ids(read_owners);
     let rows: Vec<PinNodeRow> = sqlx::query_as(
-        "SELECT t, kind::text, schema_id, origins, refs, goal_refs FROM proxima_core.memory WHERE t = ANY($1::uuid[]) AND owner_id = ANY($2::uuid[])",
+        "SELECT t, kind, schema_id, origins, refs, goal_refs FROM proxima_core.memory WHERE t = ANY($1::uuid[]) AND owner_id = ANY($2::uuid[])",
     )
     .bind(&ids).bind(&owner_ids).fetch_all(&mut *connection).await.map_err(map_err)?;
-    Ok(rows
-        .into_iter()
-        .filter_map(PinNodeRow::into_pin_node)
-        .collect())
+    Ok(rows.into_iter().map(PinNodeRow::into_pin_node).collect())
 }
 
 /// Owner-scoped GIN page of rows that list any of `query.targets`.
@@ -105,10 +102,7 @@ pub(crate) async fn load_inbound_pin_nodes_on_connection(
         .fetch_all(&mut *connection)
         .await
         .map_err(map_err)?;
-    Ok(rows
-        .into_iter()
-        .filter_map(PinNodeRow::into_pin_node)
-        .collect())
+    Ok(rows.into_iter().map(PinNodeRow::into_pin_node).collect())
 }
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
@@ -139,7 +133,7 @@ fn inbound_pin_sql(heads_only: bool, kind: Option<EdgeKind>, goal_targets: bool)
 fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
     match (heads_only, kind) {
         (true, Some(EdgeKind::Origin)) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
@@ -149,7 +143,7 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
                   LIMIT $4"
         }
         (true, Some(EdgeKind::Reference)) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
@@ -159,7 +153,7 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
                   LIMIT $4"
         }
         (true, None) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
@@ -169,7 +163,7 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
                   LIMIT $4"
         }
         (false, Some(EdgeKind::Origin)) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND m.origins && $1::uuid[]
@@ -178,7 +172,7 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
                   LIMIT $4"
         }
         (false, Some(EdgeKind::Reference)) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND m.refs && $1::uuid[]
@@ -187,7 +181,7 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
                   LIMIT $4"
         }
         (false, None) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND (m.origins && $1::uuid[] OR m.refs && $1::uuid[])
@@ -205,7 +199,7 @@ fn inbound_pin_sql_memory_targets(heads_only: bool, kind: Option<EdgeKind>) -> &
 fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'static str {
     match (heads_only, kind) {
         (true, Some(EdgeKind::Origin)) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
@@ -215,7 +209,7 @@ fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'s
                   LIMIT $4"
         }
         (true, Some(EdgeKind::Reference)) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
@@ -225,7 +219,7 @@ fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'s
                   LIMIT $4"
         }
         (true, None) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory_head h
                    JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
@@ -235,7 +229,7 @@ fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'s
                   LIMIT $4"
         }
         (false, Some(EdgeKind::Origin)) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND m.origins && $1::uuid[]
@@ -244,7 +238,7 @@ fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'s
                   LIMIT $4"
         }
         (false, Some(EdgeKind::Reference)) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND m.goal_refs && $1::uuid[]
@@ -253,7 +247,7 @@ fn inbound_pin_sql_goal_targets(heads_only: bool, kind: Option<EdgeKind>) -> &'s
                   LIMIT $4"
         }
         (false, None) => {
-            "SELECT m.t, m.kind::text, m.schema_id, m.origins, m.refs, m.goal_refs
+            "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
                    FROM proxima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND (m.origins && $1::uuid[] OR m.goal_refs && $1::uuid[])
@@ -284,13 +278,4 @@ fn owner_ids(read_owners: &[OwnerId]) -> Vec<uuid::Uuid> {
         .copied()
         .map(OwnerId::into_inner)
         .collect()
-}
-
-fn parse_kind(kind: &str) -> Option<EntityKind> {
-    match kind {
-        "fact" => Some(EntityKind::Fact),
-        "abstraction" => Some(EntityKind::Abstraction),
-        "perspective" => Some(EntityKind::Perspective),
-        _ => None,
-    }
 }

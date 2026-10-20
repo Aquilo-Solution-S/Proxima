@@ -12,6 +12,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
+use crate::pg_enums::PgMemoryKind;
 use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::verbs::memory_timeseries::ingest_unpinned_fact_at;
 
@@ -727,7 +728,7 @@ async fn validate_goal_targets_live(
             tx,
             assignment,
             "goal assignment perspective",
-            &["perspective"],
+            &[PgMemoryKind::Perspective],
         )
         .await?;
     }
@@ -745,7 +746,13 @@ async fn validate_goal_targets_live(
         }
     }
     for evidence in &draft.evidence_t {
-        ensure_live_memory_kind(tx, *evidence, "goal evidence", &["fact", "abstraction"]).await?;
+        ensure_live_memory_kind(
+            tx,
+            *evidence,
+            "goal evidence",
+            &[PgMemoryKind::Fact, PgMemoryKind::Abstraction],
+        )
+        .await?;
     }
     for target in [draft.close_fact_t, draft.write_act_t]
         .into_iter()
@@ -754,7 +761,7 @@ async fn validate_goal_targets_live(
         if reserved_lifecycle.contains(&Some(target)) {
             continue;
         }
-        ensure_live_memory_kind(tx, target, "goal lifecycle Fact", &["fact"]).await?;
+        ensure_live_memory_kind(tx, target, "goal lifecycle Fact", &[PgMemoryKind::Fact]).await?;
     }
     Ok(())
 }
@@ -763,10 +770,10 @@ async fn ensure_live_memory_kind(
     tx: &mut Transaction<'_, Postgres>,
     t: Uuid,
     label: &str,
-    allowed: &[&str],
+    allowed: &[PgMemoryKind],
 ) -> Result<(), StorageError> {
-    let kind: Option<String> =
-        sqlx::query_scalar("SELECT kind::text FROM proxima_core.memory WHERE t = $1")
+    let kind: Option<PgMemoryKind> =
+        sqlx::query_scalar("SELECT kind FROM proxima_core.memory WHERE t = $1")
             .bind(t)
             .fetch_optional(tx.as_mut())
             .await
@@ -776,9 +783,10 @@ async fn ensure_live_memory_kind(
             "{label} does not exist"
         )));
     };
-    if allowed.contains(&kind.as_str()) {
+    if allowed.contains(&kind) {
         Ok(())
     } else {
+        let allowed = allowed.iter().map(|kind| kind.label()).collect::<Vec<_>>();
         Err(StorageError::ConstraintViolation(format!(
             "{label} must be {}",
             allowed.join(" or ")

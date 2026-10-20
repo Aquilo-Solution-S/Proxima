@@ -6,6 +6,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
+use crate::pg_enums::PgSketchKind;
 
 pub const SKETCH_CHARS: usize = 160;
 
@@ -132,19 +133,17 @@ pub async fn load_sketches_on_connection(
         .copied()
         .map(OwnerId::into_inner)
         .collect();
-    let rows: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as(concat!(
-        "SELECT s.t, s.owner_id, s.kind::text, s.text FROM proxima_core.sketch s JOIN proxima_core.owners o ON o.owner_id = s.owner_id WHERE s.t = ANY($1::uuid[]) AND s.owner_id = ANY($2::uuid[]) AND ",
+    let rows: Vec<(Uuid, Uuid, PgSketchKind, String)> = sqlx::query_as(concat!(
+        "SELECT s.t, s.owner_id, s.kind, s.text FROM proxima_core.sketch s JOIN proxima_core.owners o ON o.owner_id = s.owner_id WHERE s.t = ANY($1::uuid[]) AND s.owner_id = ANY($2::uuid[]) AND ",
         sketch_parent_readable!(),
     )).bind(&ts).bind(&owners).fetch_all(&mut *connection).await.map_err(map_err)?;
     Ok(rows
         .into_iter()
-        .filter_map(|(t, oid, k, text)| {
-            Some(SketchRow {
-                id: MemoryId::new(t),
-                owner: OwnerId::new(oid),
-                kind: parse_kind(&k)?,
-                text,
-            })
+        .map(|(t, oid, kind, text)| SketchRow {
+            id: MemoryId::new(t),
+            owner: OwnerId::new(oid),
+            kind: kind.into(),
+            text,
         })
         .collect())
 }
@@ -158,15 +157,5 @@ fn sketch_kind_sql(kind: &str) -> Result<&'static str, StorageError> {
         other => Err(StorageError::ConstraintViolation(format!(
             "unknown sketch kind {other}"
         ))),
-    }
-}
-
-fn parse_kind(kind: &str) -> Option<EntityKind> {
-    match kind {
-        "fact" => Some(EntityKind::Fact),
-        "abstraction" => Some(EntityKind::Abstraction),
-        "perspective" => Some(EntityKind::Perspective),
-        "goal" => Some(EntityKind::Goal),
-        _ => None,
     }
 }

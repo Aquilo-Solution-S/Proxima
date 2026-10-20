@@ -235,7 +235,7 @@ async fn project_memory_rows_on_connection(
 ) -> Result<Vec<MemoryRow>, StorageError> {
     let mut schema_versions = HashMap::new();
     for row in &rows {
-        let kind = parse_memory_kind(&row.kind)?;
+        let kind = EntityKind::from(row.kind);
         let spec = proxima_core::resolve_memory_schema(
             schemas,
             kind,
@@ -260,7 +260,7 @@ async fn project_memory_rows_on_connection(
             .ok_or_else(|| StorageError::Internal("query schema resolution lost row".into()))?;
         if proxima_core::resolve_memory_schema(
             schemas,
-            parse_memory_kind(&row.kind)?,
+            EntityKind::from(row.kind),
             &SchemaId::new(row.schema_id.clone()),
         )?
         .sidecar_table
@@ -304,7 +304,7 @@ async fn load_row_payloads_batch_on_connection(
 ) -> Result<HashMap<MemoryId, SidecarPayload>, StorageError> {
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for row in rows {
-        let entity_kind = parse_memory_kind(&row.kind)?;
+        let entity_kind = EntityKind::from(row.kind);
         let spec = proxima_core::resolve_memory_schema(
             schemas,
             entity_kind,
@@ -358,7 +358,7 @@ fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64)
         "SELECT m.t AS memory_id, m.handle, \
                 proxima_core.memory_created_at(m.t) AS created_at, \
                 m.owner_id, m.schema_id, m.sidecar_tables, \
-                m.kind::text AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at, m.\"by\", m.via \
+                m.kind AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at, m.\"by\", m.via \
          FROM proxima_core.memory m \
          {head_join}\
          JOIN proxima_core.owners o ON o.owner_id = m.owner_id \
@@ -380,7 +380,7 @@ fn head_page_sql(filters: &[MemoryFilter], fetch_limit: u64) -> String {
            SELECT m.t AS memory_id, m.handle, \
                   proxima_core.memory_created_at(m.t) AS created_at, \
                   m.owner_id, m.schema_id, m.sidecar_tables, \
-                  m.kind::text AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at, m.\"by\", m.via \
+                  m.kind AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at, m.\"by\", m.via \
            FROM (SELECT h.handle, h.t FROM proxima_core.memory_head h \
                  WHERE h.owner_id = o.owner_id",
     );
@@ -419,17 +419,6 @@ fn append_memory_filters(sql: &mut String, filters: &[MemoryFilter], heads_only:
         if filter.binds() {
             placeholder = placeholder.saturating_add(1);
         }
-    }
-}
-
-fn parse_memory_kind(kind: &str) -> Result<EntityKind, StorageError> {
-    match kind {
-        "fact" | "Fact" => Ok(EntityKind::Fact),
-        "abstraction" | "Abstraction" => Ok(EntityKind::Abstraction),
-        "perspective" | "Perspective" => Ok(EntityKind::Perspective),
-        other => Err(StorageError::ConstraintViolation(format!(
-            "invalid memory kind {other}"
-        ))),
     }
 }
 

@@ -18,6 +18,7 @@ use proxima_core::{
 use sqlx::{Acquire, Postgres, Transaction};
 
 use crate::error::map_err;
+use crate::pg_enums::PgMemoryKind;
 use crate::sidecars::PgSidecarFuture;
 
 type InputProofRow = (uuid::Uuid, EntityKind, Option<uuid::Uuid>, bool, bool);
@@ -815,8 +816,8 @@ async fn load_replay_input_proof_rows_in_tx(
     input_ids: &[uuid::Uuid],
 ) -> Result<Vec<InputProofRow>, StorageError> {
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
-    let rows: Result<Vec<(uuid::Uuid, String)>, StorageError> = sqlx::query_as(
-        "SELECT m.t, m.kind::text
+    let rows: Result<Vec<(uuid::Uuid, PgMemoryKind)>, StorageError> = sqlx::query_as(
+        "SELECT m.t, m.kind
            FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (a replay's inputs may have been forgotten since) */
           WHERE m.t = ANY($1::uuid[])",
     )
@@ -825,9 +826,10 @@ async fn load_replay_input_proof_rows_in_tx(
     .await
     .map_err(map_err);
     let rows = lifecycle.finish(tx.as_mut(), rows).await?;
-    rows.into_iter()
-        .map(|(id, kind)| Ok((id, parse_stored_kind(&kind)?, None, true, true)))
-        .collect()
+    Ok(rows
+        .into_iter()
+        .map(|(id, kind)| (id, kind.into(), None, true, true))
+        .collect())
 }
 
 async fn load_live_input_proof_rows_in_tx(
@@ -848,8 +850,8 @@ async fn load_stored_memory_kinds_in_tx(
     if ids.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text
+    let rows: Vec<(uuid::Uuid, PgMemoryKind)> = sqlx::query_as(
+        "SELECT m.t, m.kind
            FROM proxima_core.memory m /* FORGET-POLICY: live-only (a write never builds on a forgotten memory; owner RLS hides it too) */
           WHERE m.t = ANY($1::uuid[]) AND m.forgotten_at IS NULL",
     )
@@ -857,20 +859,10 @@ async fn load_stored_memory_kinds_in_tx(
     .fetch_all(&mut **tx)
     .await
     .map_err(map_err)?;
-    rows.into_iter()
-        .map(|(id, kind)| Ok((id, parse_stored_kind(&kind)?)))
-        .collect()
-}
-
-fn parse_stored_kind(kind: &str) -> Result<EntityKind, StorageError> {
-    match kind {
-        "fact" => Ok(EntityKind::Fact),
-        "abstraction" => Ok(EntityKind::Abstraction),
-        "perspective" => Ok(EntityKind::Perspective),
-        other => Err(StorageError::Internal(format!(
-            "invalid memory kind {other}"
-        ))),
-    }
+    Ok(rows
+        .into_iter()
+        .map(|(id, kind)| (id, kind.into()))
+        .collect())
 }
 
 #[cfg(test)]

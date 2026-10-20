@@ -7,6 +7,7 @@ use proxima_core::{EntityKind, MemoryId, OwnerId, SchemaId, SidecarPayload, Stor
 use sqlx::PgConnection;
 
 use crate::error::map_err;
+use crate::pg_enums::PgMemoryKind;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 /// # Errors
@@ -18,9 +19,9 @@ pub(crate) async fn load_memory_by_id_on_connection(
     schemas: &[MemorySchemaSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
     let raw: Option<StoredMemoryRow> = sqlx::query_as(
-        "SELECT m.t, m.kind::text AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
+        "SELECT m.t, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
     ).bind(memory_id.into_inner()).fetch_optional(&mut *connection).await.map_err(map_err)?;
-    let Some(row) = raw.and_then(StoredMemoryRow::into_hydration) else {
+    let Some(row) = raw.map(StoredMemoryRow::into_hydration) else {
         return Ok(None);
     };
     let rows = [row];
@@ -48,11 +49,11 @@ pub(crate) async fn load_memories_by_ids_on_connection(
         .collect();
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
     let raw: Vec<StoredMemoryRow> = sqlx::query_as(
-        "SELECT m.t, m.kind::text AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
+        "SELECT m.t, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
     ).bind(&owner_ids).bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     let rows = raw
         .into_iter()
-        .filter_map(StoredMemoryRow::into_hydration)
+        .map(StoredMemoryRow::into_hydration)
         .collect::<Vec<_>>();
     snapshots_from_rows_on_connection(connection, pg_sidecars, &rows, schemas).await
 }
@@ -73,16 +74,11 @@ pub(crate) async fn load_memory_graph_payloads_on_connection(
         .iter()
         .map(|i| i.memory_id.into_inner())
         .collect();
-    let raw: Vec<(uuid::Uuid, String, String, Vec<String>)> = sqlx::query_as("SELECT m.t, m.kind::text, m.schema_id, m.sidecar_tables FROM proxima_core.memory m WHERE m.t = ANY($1::uuid[])").bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
+    let raw: Vec<(uuid::Uuid, PgMemoryKind, String, Vec<String>)> = sqlx::query_as("SELECT m.t, m.kind, m.schema_id, m.sidecar_tables FROM proxima_core.memory m WHERE m.t = ANY($1::uuid[])").bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     let by_id = raw
         .into_iter()
-        .map(|(id, kind, schema_id, tables)| {
-            let kind = parse_memory_kind(&kind).ok_or_else(|| {
-                StorageError::ConstraintViolation(format!("invalid memory kind for {id}"))
-            })?;
-            Ok((id, (kind, schema_id, tables)))
-        })
-        .collect::<Result<HashMap<_, _>, StorageError>>()?;
+        .map(|(id, kind, schema_id, tables)| (id, (EntityKind::from(kind), schema_id, tables)))
+        .collect::<HashMap<_, _>>();
     let mut ids_by_key = HashMap::new();
     for identity in identities {
         let Some((kind, schema_id, tables)) = by_id.get(&identity.memory_id.into_inner()) else {
@@ -164,21 +160,11 @@ fn payload_kind_for(kind: EntityKind) -> Option<PayloadKind> {
     }
 }
 
-fn parse_memory_kind(kind: &str) -> Option<EntityKind> {
-    match kind {
-        "fact" | "Fact" => Some(EntityKind::Fact),
-        "abstraction" | "Abstraction" => Some(EntityKind::Abstraction),
-        "perspective" | "Perspective" => Some(EntityKind::Perspective),
-        _ => None,
-    }
-}
-
-/// One `memory` row as the by-id loaders select it, before its kind is
-/// parsed.
+/// One `memory` row as the by-id loaders select it.
 #[derive(sqlx::FromRow)]
 struct StoredMemoryRow {
     t: uuid::Uuid,
-    kind: String,
+    kind: PgMemoryKind,
     schema_id: String,
     owner_id: uuid::Uuid,
     by: uuid::Uuid,
@@ -188,12 +174,10 @@ struct StoredMemoryRow {
 }
 
 impl StoredMemoryRow {
-    /// The row to hydrate, or `None` for a kind the memory reads do not
-    /// serve.
-    fn into_hydration(self) -> Option<MemoryHydrationRow> {
-        Some(MemoryHydrationRow {
+    fn into_hydration(self) -> MemoryHydrationRow {
+        MemoryHydrationRow {
             memory_id: self.t,
-            kind: parse_memory_kind(&self.kind)?,
+            kind: self.kind.into(),
             schema_id: self.schema_id,
             owner: OwnerId::new(self.owner_id),
             writer: proxima_core::WriterAttribution {
@@ -202,7 +186,7 @@ impl StoredMemoryRow {
             },
             sidecar_tables: self.sidecar_tables,
             occurred_at: self.occurred_at,
-        })
+        }
     }
 }
 

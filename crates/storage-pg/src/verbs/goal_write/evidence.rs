@@ -2,6 +2,7 @@ use super::{
     EntityKind, EvidenceTarget, GoalEvidenceRef, GoalId, HashSet, MemoryId, OwnerId, Postgres,
     StorageError, Transaction, map_err,
 };
+use crate::pg_enums::PgMemoryKind;
 
 /// The one evidence-kind rule for every goal write (set, modify, decompose
 /// child, episode goal, `mark_achieved`): a live owned Fact or Abstraction; a
@@ -19,27 +20,18 @@ pub(super) async fn validate_evidence_in_owner(
                 "duplicate goal evidence".into(),
             ));
         }
-        let kind_text: Option<String> =
-            sqlx::query_scalar("SELECT kind::text FROM proxima_core.memory WHERE t = $1")
+        let stored: Option<PgMemoryKind> =
+            sqlx::query_scalar("SELECT kind FROM proxima_core.memory WHERE t = $1")
                 .bind(item.memory_id().into_inner())
                 .fetch_optional(&mut **tx)
                 .await
                 .map_err(map_err)?;
-        let Some(kind_text) = kind_text else {
+        let Some(stored) = stored else {
             return Err(StorageError::ConstraintViolation(
                 proxima_core::verbs::goal_write::EVIDENCE_DOES_NOT_EXIST.into(),
             ));
         };
-        let kind = match kind_text.as_str() {
-            "fact" => EntityKind::Fact,
-            "abstraction" => EntityKind::Abstraction,
-            "perspective" => EntityKind::Perspective,
-            _ => {
-                return Err(StorageError::ConstraintViolation(
-                    proxima_core::verbs::goal_write::EVIDENCE_DOES_NOT_EXIST.into(),
-                ));
-            }
-        };
+        let kind = EntityKind::from(stored);
         match kind {
             EntityKind::Fact | EntityKind::Abstraction => out.push(EvidenceTarget {
                 kind,

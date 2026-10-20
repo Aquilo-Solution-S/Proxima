@@ -1,3 +1,4 @@
+use crate::pg_enums::PgMemoryKind;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{GoalRow, MemoryRow};
 use proxima_core::{
@@ -14,7 +15,7 @@ pub(super) fn memory_row_from_db(
     Ok(MemoryRow {
         handle: r.handle,
         id: MemoryId::new(r.memory_id),
-        kind: parse_memory_kind(&r.kind)?,
+        kind: r.kind.into(),
         schema_id,
         schema_version,
         owner: owner_from_parts(r.owner_id)?,
@@ -49,17 +50,6 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
         set_at: r.set_at,
         changed_at: r.created_at,
     })
-}
-
-fn parse_memory_kind(kind: &str) -> Result<proxima_core::EntityKind, StorageError> {
-    match kind {
-        "fact" | "Fact" => Ok(proxima_core::EntityKind::Fact),
-        "abstraction" | "Abstraction" => Ok(proxima_core::EntityKind::Abstraction),
-        "perspective" | "Perspective" => Ok(proxima_core::EntityKind::Perspective),
-        other => Err(StorageError::Internal(format!(
-            "invalid memory kind {other}"
-        ))),
-    }
 }
 
 fn owner_from_parts(owner_id: Option<uuid::Uuid>) -> Result<OwnerId, StorageError> {
@@ -98,7 +88,7 @@ pub(super) struct MemoryRowDb {
     via: Option<uuid::Uuid>,
     pub(super) schema_id: String,
     pub(super) sidecar_tables: Vec<String>,
-    pub(super) kind: String,
+    pub(super) kind: PgMemoryKind,
     pub(super) origins: Vec<uuid::Uuid>,
     pub(super) refs: Vec<uuid::Uuid>,
     pub(super) goal_refs: Vec<uuid::Uuid>,

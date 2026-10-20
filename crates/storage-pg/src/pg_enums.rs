@@ -15,12 +15,45 @@ pub(crate) enum PgMemoryKind {
     Perspective,
 }
 
+impl PgMemoryKind {
+    /// The database label, for messages that name an admitted kind.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Fact => "fact",
+            Self::Abstraction => "abstraction",
+            Self::Perspective => "perspective",
+        }
+    }
+}
+
 impl From<PgMemoryKind> for EntityKind {
     fn from(value: PgMemoryKind) -> Self {
         match value {
             PgMemoryKind::Fact => Self::Fact,
             PgMemoryKind::Abstraction => Self::Abstraction,
             PgMemoryKind::Perspective => Self::Perspective,
+        }
+    }
+}
+
+/// `proxima_core.sketch_kind`: the memory kinds plus `goal`, the kinds a
+/// sketch row can describe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "proxima_core.sketch_kind", rename_all = "lowercase")]
+pub(crate) enum PgSketchKind {
+    Fact,
+    Abstraction,
+    Perspective,
+    Goal,
+}
+
+impl From<PgSketchKind> for EntityKind {
+    fn from(value: PgSketchKind) -> Self {
+        match value {
+            PgSketchKind::Fact => Self::Fact,
+            PgSketchKind::Abstraction => Self::Abstraction,
+            PgSketchKind::Perspective => Self::Perspective,
+            PgSketchKind::Goal => Self::Goal,
         }
     }
 }

@@ -13,12 +13,13 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::error::map_err;
+use crate::pg_enums::PgMemoryKind;
 use crate::pg_ident::PgIdent;
 use crate::projection::{projection_key_ident, snippet_sql};
 
 /// Outbound origin pins of the frontier, newest `(src, tgt)` first.
 const ANCESTOR_HOP_SQL: &str = "SELECT DISTINCT ON (m.t, pin)
-       m.t AS src, m.kind::text AS src_kind, pin AS tgt,
+       m.t AS src, m.kind AS src_kind, pin AS tgt,
        proxima_core.memory_created_at(m.t) AS created_at
   FROM proxima_core.memory m /* FORGET-POLICY: live-only (a lineage hop walks readable memories; owner RLS hides it too) */
   JOIN unnest(m.origins) AS pin ON true
@@ -32,7 +33,7 @@ const ANCESTOR_HOP_SQL: &str = "SELECT DISTINCT ON (m.t, pin)
 /// Children whose `origins` overlap the frontier; `tgt` is only a parent
 /// in that frontier (not the child's other pins).
 const DESCENDANT_HOP_SQL: &str = "SELECT DISTINCT ON (child.t, pin)
-       child.t AS src, child.kind::text AS src_kind, pin AS tgt,
+       child.t AS src, child.kind AS src_kind, pin AS tgt,
        proxima_core.memory_created_at(child.t) AS created_at
   FROM proxima_core.memory child /* FORGET-POLICY: live-only (a lineage hop walks readable memories; owner RLS hides it too) */
   JOIN unnest(child.origins) AS pin ON true
@@ -140,20 +141,16 @@ async fn assemble_lineage_page_on_connection(
             external_edges: Vec::new(),
         });
     }
-    let visible: HashMap<Uuid, EntityKind> = rows
-        .iter()
-        .filter_map(|(id, kind, _)| parse_kind(kind).map(|k| (*id, k)))
-        .collect();
+    let visible: HashMap<Uuid, EntityKind> =
+        rows.iter().map(|(id, kind, _)| (*id, *kind)).collect();
     let nodes = rows
         .into_iter()
-        .filter_map(|(id, kind, schema)| {
-            Some(MemoryLineageNode {
-                memory_id: MemoryId::new(id),
-                kind: parse_kind(&kind)?,
-                schema_id: SchemaId::new(schema),
-                snippet: snippets.remove(&id).unwrap_or_default(),
-                distance: node_distance(direction, start, &hops, id),
-            })
+        .map(|(id, kind, schema)| MemoryLineageNode {
+            memory_id: MemoryId::new(id),
+            kind,
+            schema_id: SchemaId::new(schema),
+            snippet: snippets.remove(&id).unwrap_or_default(),
+            distance: node_distance(direction, start, &hops, id),
         })
         .collect();
     let unseen: Vec<Uuid> = hops
@@ -169,7 +166,7 @@ async fn assemble_lineage_page_on_connection(
             .collect();
     let edges = hops
         .iter()
-        .filter_map(|h| project_lineage_edge(h, &visible, &forgotten))
+        .map(|h| project_lineage_edge(h, &visible, &forgotten))
         .collect();
     // Other-store edges (origin or reference) of the page's visible nodes.
     let visible_ids: Vec<Uuid> = visible.keys().copied().collect();
@@ -200,9 +197,9 @@ async fn lineage_node_rows_on_connection(
     node_ids: &[Uuid],
     owner_ids: &[Uuid],
     projections: &[MemorySearchProjection],
-) -> Result<(Vec<(Uuid, String, String)>, HashMap<Uuid, String>), StorageError> {
-    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, m.schema_id FROM proxima_core.memory m /* FORGET-POLICY: live-only (a lineage node is a readable memory; owner RLS hides it too) */
+) -> Result<(Vec<(Uuid, EntityKind, String)>, HashMap<Uuid, String>), StorageError> {
+    let rows: Vec<(Uuid, PgMemoryKind, String)> = sqlx::query_as(
+        "SELECT m.t, m.kind, m.schema_id FROM proxima_core.memory m /* FORGET-POLICY: live-only (a lineage node is a readable memory; owner RLS hides it too) */
           WHERE m.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])
             AND m.forgotten_at IS NULL",
     )
@@ -211,6 +208,10 @@ async fn lineage_node_rows_on_connection(
     .fetch_all(&mut *connection)
     .await
     .map_err(map_err)?;
+    let rows: Vec<(Uuid, EntityKind, String)> = rows
+        .into_iter()
+        .map(|(id, kind, schema)| (id, kind.into(), schema))
+        .collect();
     let keys: Vec<(Uuid, String)> = rows
         .iter()
         .map(|(id, _, schema)| (*id, schema.clone()))
@@ -230,14 +231,12 @@ pub(crate) async fn lineage_nodes_on_connection(
         lineage_node_rows_on_connection(connection, memory_ids, owner_ids, projections).await?;
     Ok(rows
         .into_iter()
-        .filter_map(|(id, kind, schema)| {
-            Some(MemoryLineageNode {
-                memory_id: MemoryId::new(id),
-                kind: parse_kind(&kind)?,
-                schema_id: SchemaId::new(schema),
-                snippet: snippets.remove(&id).unwrap_or_default(),
-                distance: 0,
-            })
+        .map(|(id, kind, schema)| MemoryLineageNode {
+            memory_id: MemoryId::new(id),
+            kind,
+            schema_id: SchemaId::new(schema),
+            snippet: snippets.remove(&id).unwrap_or_default(),
+            distance: 0,
         })
         .collect())
 }
@@ -260,8 +259,8 @@ pub(crate) async fn forgotten_nodes_on_connection(
         return Ok(Vec::new());
     }
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(&mut *connection).await?;
-    let rows: Result<Vec<(Uuid, String, String)>, StorageError> = sqlx::query_as(
-        "SELECT m.t, m.kind::text, m.schema_id
+    let rows: Result<Vec<(Uuid, PgMemoryKind, String)>, StorageError> = sqlx::query_as(
+        "SELECT m.t, m.kind, m.schema_id
            FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (forgotten-target probe: only the forgotten rows the reader's permits reach) */
           WHERE m.t = ANY($1::uuid[]) AND m.owner_id = ANY($2::uuid[])
             AND m.forgotten_at IS NOT NULL",
@@ -274,14 +273,12 @@ pub(crate) async fn forgotten_nodes_on_connection(
     let rows = lifecycle.finish(&mut *connection, rows).await?;
     Ok(rows
         .into_iter()
-        .filter_map(|(id, kind, schema)| {
-            Some(MemoryLineageNode {
-                memory_id: MemoryId::new(id),
-                kind: parse_kind(&kind)?,
-                schema_id: SchemaId::new(schema),
-                snippet: String::new(),
-                distance: 0,
-            })
+        .map(|(id, kind, schema)| MemoryLineageNode {
+            memory_id: MemoryId::new(id),
+            kind: kind.into(),
+            schema_id: SchemaId::new(schema),
+            snippet: String::new(),
+            distance: 0,
         })
         .collect())
 }
@@ -356,7 +353,7 @@ fn project_lineage_edge(
     hop: &WalkHop,
     visible_kind: &HashMap<Uuid, EntityKind>,
     forgotten: &HashSet<Uuid>,
-) -> Option<MemoryLineageEdge> {
+) -> MemoryLineageEdge {
     let target = match visible_kind.get(&hop.tgt).copied() {
         Some(kind) => {
             EdgeTargetProjection::visible(EdgeEndpoint::memory(kind, MemoryId::new(hop.tgt)))
@@ -364,21 +361,21 @@ fn project_lineage_edge(
         None if forgotten.contains(&hop.tgt) => EdgeTargetProjection::Forgotten,
         None => EdgeTargetProjection::Redacted,
     };
-    Some(MemoryLineageEdge {
+    MemoryLineageEdge {
         edge: Edge {
-            source: EdgeEndpoint::memory(parse_kind(&hop.src_kind)?, MemoryId::new(hop.src)),
+            source: EdgeEndpoint::memory(hop.src_kind, MemoryId::new(hop.src)),
             target,
             kind: EdgeKind::Origin,
             created_at: hop.created_at,
         },
         distance: hop.dist,
-    })
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct HopRow {
     src: Uuid,
-    src_kind: String,
+    src_kind: PgMemoryKind,
     tgt: Uuid,
     created_at: time::OffsetDateTime,
 }
@@ -386,7 +383,7 @@ struct HopRow {
 #[derive(Debug, Clone)]
 struct WalkHop {
     src: Uuid,
-    src_kind: String,
+    src_kind: EntityKind,
     tgt: Uuid,
     dist: u8,
     created_at: time::OffsetDateTime,
@@ -444,7 +441,7 @@ async fn walk_lineage_hops_on_connection(
         .await?;
         hops.extend(rows.into_iter().map(|r| WalkHop {
             src: r.src,
-            src_kind: r.src_kind,
+            src_kind: r.src_kind.into(),
             tgt: r.tgt,
             dist,
             created_at: r.created_at,
@@ -571,15 +568,6 @@ pub(super) async fn load_one_schema_snippets_on_connection(
         .into_iter()
         .map(|row| (row.t, row.snippet.unwrap_or_default()))
         .collect())
-}
-
-fn parse_kind(kind: &str) -> Option<EntityKind> {
-    match kind {
-        "fact" => Some(EntityKind::Fact),
-        "abstraction" => Some(EntityKind::Abstraction),
-        "perspective" => Some(EntityKind::Perspective),
-        _ => None,
-    }
 }
 
 /// A lineage edge always sources at a memory row, so the endpoint decode

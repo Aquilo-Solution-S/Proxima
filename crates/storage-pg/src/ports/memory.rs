@@ -155,8 +155,8 @@ impl MemoryAuthoringPort for PgStorage {
             crate::owner_scope::require_owner_scope(owner_scope)?,
         )
         .await?;
-        let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-            "SELECT m.t, m.kind::text
+        let rows: Vec<(uuid::Uuid, crate::pg_enums::PgMemoryKind)> = sqlx::query_as(
+            "SELECT m.t, m.kind
              FROM proxima_core.memory m
              WHERE m.owner_id = $1
                AND m.t = ANY($2::uuid[])",
@@ -167,24 +167,13 @@ impl MemoryAuthoringPort for PgStorage {
         .await
         .map_err(internal)?;
         crate::write_wake::commit(tx).await?;
-        rows.into_iter()
-            .map(|(memory_id, kind)| {
-                let kind = match kind.as_str() {
-                    "fact" | "Fact" => proxima_core::EntityKind::Fact,
-                    "abstraction" | "Abstraction" => proxima_core::EntityKind::Abstraction,
-                    "perspective" | "Perspective" => proxima_core::EntityKind::Perspective,
-                    other => {
-                        return Err(StorageError::Internal(format!(
-                            "invalid memory kind {other}"
-                        )));
-                    }
-                };
-                Ok(MemoryKindRow {
-                    memory_id: MemoryId::new(memory_id),
-                    kind,
-                })
+        Ok(rows
+            .into_iter()
+            .map(|(memory_id, kind)| MemoryKindRow {
+                memory_id: MemoryId::new(memory_id),
+                kind: kind.into(),
             })
-            .collect()
+            .collect())
     }
 
     async fn forget_memory(

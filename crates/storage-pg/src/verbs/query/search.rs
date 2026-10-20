@@ -41,6 +41,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::error::map_err;
+use crate::pg_enums::PgMemoryKind;
 use crate::pg_ident::PgIdent;
 use crate::pgvector::set_hnsw_search_sql;
 use crate::projection::{projection_key_ident, sidecar_text_sql};
@@ -107,7 +108,7 @@ struct AdmitRow {
     by: uuid::Uuid,
     via: Option<uuid::Uuid>,
     t: uuid::Uuid,
-    kind: String,
+    kind: PgMemoryKind,
     schema_id: String,
     created_at: time::OffsetDateTime,
     occurred_at: Option<time::OffsetDateTime>,
@@ -1059,7 +1060,7 @@ fn search_admit_sql(heads_only: bool) -> String {
     };
     format!(
         "SELECT m.t,
-                m.kind::text,
+                m.kind,
                 m.schema_id,
                 proxima_core.memory_created_at(m.t) AS created_at,
                 m.occurred_at, m.\"by\", m.via
@@ -1293,7 +1294,7 @@ async fn admit_hits_on_connection(
         .into_iter()
         .filter_map(|row| {
             let hit = hits.get(&row.t)?;
-            let kind = parse_kind(&row.kind)?;
+            let kind = EntityKind::from(row.kind);
             let score = match req.mode {
                 SearchMode::Semantic => hit.similarity_score.unwrap_or_default(),
                 // Hybrid with an embedding is fused after admission. Without
@@ -1432,15 +1433,6 @@ pub fn semantic_candidate_admission_sql_for_tests(
 #[must_use]
 pub fn search_admit_sql_for_tests(heads_only: bool) -> String {
     search_admit_sql(heads_only)
-}
-
-fn parse_kind(kind: &str) -> Option<EntityKind> {
-    match kind {
-        "fact" => Some(EntityKind::Fact),
-        "abstraction" => Some(EntityKind::Abstraction),
-        "perspective" => Some(EntityKind::Perspective),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
