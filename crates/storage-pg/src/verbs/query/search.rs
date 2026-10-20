@@ -757,6 +757,7 @@ fn ranked_projection_sql_parts(
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 const RANKED_MEMORY_ID: &str = "p.memory_id";
 /// …and in a substring leg, which already drives `proxima_core.memory m`.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 const SUBSTRING_MEMORY_ID: &str = "m.t";
 
 /// Fixed candidate statements emitted into a projection's migration.
@@ -931,6 +932,7 @@ fn kind_literal(kind: Option<EntityKind>) -> Option<&'static str> {
 /// the nested loop's index names when it gets a nested loop and does not
 /// forbid the alternative. `include_superseded` requests with no `kind`
 /// filter render nothing here and keep the unfiltered window.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 fn admit_side_restriction(req: &MemorySearchRequest, memory_id: &str) -> String {
     let heads_only = matches!(req.supersession, SupersessionStatus::HeadsOnly);
     let kind = kind_literal(req.kind);
