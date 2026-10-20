@@ -5,7 +5,11 @@ use std::time::Duration;
 use proxima_core::StorageError;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-const DEFAULT_MAX_CONNECTIONS: u32 = 10;
+/// Per pool. A serving host holds two pools (runtime and platform), so the
+/// default host opens at most ten backends. A store's work rarely needs more
+/// concurrent transactions than this; past the server's saturation point,
+/// more connections lower throughput rather than raise it.
+const DEFAULT_MAX_CONNECTIONS: u32 = 5;
 const DEFAULT_STATEMENT_TIMEOUT: Duration = Duration::from_mins(5);
 const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_mins(10);
@@ -205,11 +209,11 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_the_existing_finite_pool_policy() {
+    fn defaults_are_the_finite_pool_policy() {
         assert_eq!(
             PgPoolConfig::default(),
             PgPoolConfig {
-                max_connections: 10,
+                max_connections: 5,
                 statement_timeout: Duration::from_mins(5),
                 acquire_timeout: Duration::from_secs(5),
                 idle_timeout: Duration::from_mins(10),

@@ -2393,7 +2393,7 @@ mod tests {
             ..PgPoolConfig::default()
         };
         let injected = RuntimeBuilder::default()
-            .apply_lookup(lookup(&[("PROXIMA_PG_MAX_CONNECTIONS", "10")]))
+            .apply_lookup(lookup(&[("PROXIMA_PG_MAX_CONNECTIONS", "5")]))
             .expect("explicit default-valued pool env");
         let configured_base = RuntimeBuilder::default()
             .database_url("postgres://localhost/proxima")
@@ -2408,7 +2408,7 @@ mod tests {
             .resolve()
             .expect("resolved pool policy");
 
-        assert_eq!(config.pg_pool_config.max_connections, 10);
+        assert_eq!(config.pg_pool_config.max_connections, 5);
     }
 
     #[test]
