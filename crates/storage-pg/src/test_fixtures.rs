@@ -97,14 +97,14 @@ pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
         .initialize_store_number(1)
         .await
         .expect("fixture store identity");
-    let platform_pool = sqlx::PgPool::connect(&platform_url)
+    let platform_pool = serving_platform_pool(&platform_url)
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but platform connect failed: {e}"));
     let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core"])
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but platform validation failed: {e}"));
     let storage = match PgStorage::connect_with_config(
-        &runtime_url,
+        &proxima_pg_testkit::through_test_pooler(&runtime_url),
         PgPoolConfig::default(),
         PgTuning::default(),
         platform_scope,
@@ -125,6 +125,19 @@ pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
         storage.with_admin_pool_for_tests(admin_pool),
         DbGuard::adopt(db_name),
     )
+}
+
+/// The fixture's platform pool: direct, or through the transaction-mode
+/// pooler named by `PROXIMA_TEST_PGBOUNCER_URL` with the serving pool policy
+/// (a pooler refuses the startup parameters a bare `sqlx` connect sends).
+async fn serving_platform_pool(platform_url: &str) -> Result<sqlx::PgPool, StorageError> {
+    if proxima_pg_testkit::test_pooler_url().is_some() {
+        return PgPoolConfig::default()
+            .connect_lazy(&proxima_pg_testkit::through_test_pooler(platform_url));
+    }
+    sqlx::PgPool::connect(platform_url)
+        .await
+        .map_err(|error| StorageError::Unavailable(error.to_string()))
 }
 
 /// Connect a disposable database through the real split-role boot sequence.
@@ -159,12 +172,10 @@ pub async fn connect_for_tests(url: String) -> Result<PgStorage, StorageError> {
     .await?;
     migration.run_migrations().await?;
     migration.initialize_store_number(1).await?;
-    let platform_pool = sqlx::PgPool::connect(&platform_url)
-        .await
-        .map_err(|error| StorageError::Unavailable(error.to_string()))?;
+    let platform_pool = serving_platform_pool(&platform_url).await?;
     let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core"]).await?;
     let storage = PgStorage::connect_with_config(
-        &runtime_url,
+        &proxima_pg_testkit::through_test_pooler(&runtime_url),
         PgPoolConfig::default(),
         PgTuning::default(),
         platform_scope,

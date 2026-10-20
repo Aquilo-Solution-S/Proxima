@@ -92,6 +92,15 @@ backends; re-measure (`pg_stat_activity`) before raising `test-threads`.
 A fixture boot that times out on its pool reports the server's connection
 use in its panic.
 
+The PgBouncer lane runs the storage suites that depend on what a connection
+carries between transactions (export/erase fence, maintenance lease, pool
+startup parameters) with their serving pools behind PgBouncer 1.26.1 or later
+in transaction mode. Set `PROXIMA_TEST_PGBOUNCER_URL` to that PgBouncer (in
+front of the `PROXIMA_TEST_PG_URL` server, configured like the `pgbouncer`
+job in `.github/workflows/ci.yml`) and run the job's nextest filter. Without
+the variable, `pgbouncer_pg` returns early and the other suites connect
+direct.
+
 The cited-blob tests return early and pass when the `PROXIMA_S3_*` variables
 are unset. A complete run needs an S3-compatible store with a versioned
 bucket and the five variables CI sets in `.github/workflows/ci.yml`. CI

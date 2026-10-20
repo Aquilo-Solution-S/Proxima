@@ -88,6 +88,7 @@ plus a migration pool of the same size during boot; size the server's
 | PROXIMA_DEV_POSTGRES_PORT | Compose Postgres host port | local Compose | [dev Compose](https://github.com/Aquilo-Solution-S/Proxima/blob/main/docker-compose.dev.yml) |
 | PROXIMA_DEV_S3_PORT | Compose S3 host port | local Compose | [dev Compose](https://github.com/Aquilo-Solution-S/Proxima/blob/main/docker-compose.dev.yml) |
 | PROXIMA_TEST_PG_URL | test Postgres admin URL | pg-testkit tests | [PG testkit](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/pg-testkit/src/lib.rs) |
+| PROXIMA_TEST_PGBOUNCER_URL | transaction-mode PgBouncer in front of the test server; the storage fixtures route serving pools through it | PgBouncer test lane | [PG testkit](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/pg-testkit/src/lib.rs) |
 | PROXIMA_PG_TESTKIT_CHILD | pg-testkit child-process marker | split-template tests | [split-template test](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/pg-testkit/tests/split_template.rs) |
 | PROXIMA_PG_TESTKIT_TEMPLATE | pg-testkit template database name | split-template tests | [split-template test](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/pg-testkit/tests/split_template.rs) |
 | PROXIMA_DIFFERENTIAL_DIR | differential dump directory | differential test inspection | [differential tests](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/storage-pg/tests/owner_erase_differential.rs) |

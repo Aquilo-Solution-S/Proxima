@@ -51,6 +51,13 @@ const UNTRACKED_GRACE: time::Duration = time::Duration::minutes(5);
 const SPLIT_PLATFORM_ROLE: &str = "proxima_test_platform";
 const SPLIT_RUNTIME_ROLE: &str = "proxima_test_runtime";
 const SPLIT_ROLE_PASSWORD: &str = "proxima_test_fixture_password";
+/// The SCRAM-SHA-256 verifier of [`SPLIT_ROLE_PASSWORD`] with a fixed salt
+/// (`proxima-fixture!`, 4096 iterations). Fixture provisioning sets the
+/// roles' password to this exact verifier on every run: a plaintext
+/// `PASSWORD` would be re-salted each time, and a pooler that cached the
+/// previous verifier's SCRAM keys (`PgBouncer` with `auth_query`) would then
+/// fail the next server login with "password authentication failed".
+const SPLIT_ROLE_SCRAM_VERIFIER: &str = "SCRAM-SHA-256$4096:cHJveGltYS1maXh0dXJlIQ==$KkHJiBZCT4yCgl53VpmtLPotR/SKsNM46MGUaurVMxA=:900L6wrNsK7qb8uGyn/tR71et8wN2/mx8DJHBUsaj4A=";
 /// The query parameters `sqlx` lets override the authority's credentials.
 const QUERY_USER: &str = "user";
 const QUERY_PASSWORD: &str = "password";
@@ -91,6 +98,45 @@ fn configured_admin_url() -> Option<String> {
 fn trimmed_url(raw: Option<String>) -> Option<String> {
     raw.map(|raw| raw.trim().to_string())
         .filter(|url| !url.is_empty())
+}
+
+const POOLER_URL_VAR: &str = "PROXIMA_TEST_PGBOUNCER_URL";
+
+/// `PROXIMA_TEST_PGBOUNCER_URL`, trimmed: a transaction-mode pooler in front
+/// of the `PROXIMA_TEST_PG_URL` server. `None` when unset or empty. When set,
+/// the storage fixtures connect their serving pools through it; migrations
+/// and the admin pool stay direct, as they must in production.
+#[must_use]
+pub fn test_pooler_url() -> Option<String> {
+    trimmed_url(std::env::var(POOLER_URL_VAR).ok())
+}
+
+/// `url` with its host and port replaced by the pooler's from
+/// [`test_pooler_url`]; `url` unchanged when no pooler is configured. Role,
+/// password and database stay those of `url`.
+///
+/// # Panics
+///
+/// Panics when either URL does not parse or the pooler URL names no host.
+#[must_use]
+pub fn through_test_pooler(url: &str) -> String {
+    let Some(pooler) = test_pooler_url() else {
+        return url.to_owned();
+    };
+    let pooler =
+        url::Url::parse(&pooler).unwrap_or_else(|_| panic!("{POOLER_URL_VAR} is not a URL"));
+    let mut routed = url::Url::parse(url).expect("a fixture database URL parses");
+    routed
+        .set_host(Some(
+            pooler
+                .host_str()
+                .unwrap_or_else(|| panic!("{POOLER_URL_VAR} names no host")),
+        ))
+        .expect("a postgres URL takes a host");
+    routed
+        .set_port(pooler.port())
+        .expect("a postgres URL takes a port");
+    routed.into()
 }
 
 /// [`configured_admin_url`] as the error every async entry point returns.
@@ -436,7 +482,7 @@ pub async fn split_role_urls_for(
                  END $$",
                 name = sql_literal(role),
                 role = quoted_ident(role),
-                password = sql_literal(SPLIT_ROLE_PASSWORD),
+                password = sql_literal(SPLIT_ROLE_SCRAM_VERIFIER),
             );
             // SQL-POLICY: fixed-fragment — generated role identifiers and a local fixture password.
             sqlx::raw_sql(AssertSqlSafe(statement))
@@ -1762,6 +1808,52 @@ mod tests {
         create_db, db_url, db_url_from_admin, drop_unused_db_on, name_is_stale_clone, quoted_ident,
         redacted_url, role_url_from_admin, template_family, trimmed_url, unique_db_name,
     };
+
+    /// Provisioning twice leaves the fixture roles with one, fixed SCRAM
+    /// verifier (a re-salted verifier breaks a pooler's cached SCRAM keys),
+    /// and the fixture password still logs in against it.
+    #[tokio::test]
+    async fn split_role_provisioning_keeps_one_scram_verifier() {
+        use sqlx::Connection as _;
+        if super::admin_url_or_skip().is_none() {
+            return;
+        }
+        let db = unique_db_name("scram_verifier");
+        create_db(&db).await.expect("fixture database");
+        let verifier = async {
+            let mut admin = connect_admin().await.expect("admin");
+            sqlx::query_scalar::<_, String>(
+                "SELECT rolpassword FROM pg_authid WHERE rolname = 'proxima_test_runtime'",
+            )
+            .fetch_one(&mut admin)
+            .await
+            .expect("runtime role verifier")
+        };
+        let (runtime_url, _) = super::split_role_urls(&db).await.expect("provisioned");
+        let first = verifier.await;
+        let verifier = async {
+            let mut admin = connect_admin().await.expect("admin");
+            sqlx::query_scalar::<_, String>(
+                "SELECT rolpassword FROM pg_authid WHERE rolname = 'proxima_test_runtime'",
+            )
+            .fetch_one(&mut admin)
+            .await
+            .expect("runtime role verifier")
+        };
+        super::split_role_urls(&db)
+            .await
+            .expect("provisioned again");
+        let second = verifier.await;
+        assert_eq!(first, super::SPLIT_ROLE_SCRAM_VERIFIER);
+        assert_eq!(first, second, "provisioning again does not re-salt");
+        sqlx::PgConnection::connect(&runtime_url)
+            .await
+            .expect("the fixture password matches the verifier")
+            .close()
+            .await
+            .expect("close");
+        super::drop_db(&db).await.expect("drop fixture database");
+    }
 
     #[test]
     fn invalid_admin_url_error_contains_no_credentials() {

@@ -330,3 +330,123 @@ jobs:
         run: cargo nextest run --workspace --all-targets --all-features --locked
       - name: test shipped host defaults
         run: cargo nextest run -p proxima-mcp --all-targets --locked
+
+  # The storage suites whose correctness depends on what a connection carries
+  # between transactions (the export/erase fence, the maintenance lease, the
+  # pool's startup parameters), run with their serving pools behind PgBouncer
+  # in transaction mode. pg-testkit routes the fixtures' runtime and platform
+  # pools through PROXIMA_TEST_PGBOUNCER_URL; migrations and the admin pool
+  # stay direct, as production migrations must.
+  pgbouncer:
+    name: test (pgbouncer transaction mode)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.rust == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18@sha256:212765b63c1462883de295c4c415edcd22191b8d8d46853e86ad05d4b577a4cb
+        env:
+          POSTGRES_USER: proxima
+          POSTGRES_PASSWORD: proxima
+          POSTGRES_DB: proxima
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U proxima"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PROXIMA_TEST_PG_URL: postgres://proxima:proxima@localhost:5432/proxima
+      PROXIMA_TEST_PGBOUNCER_URL: postgres://proxima:proxima@127.0.0.1:6433/proxima
+    steps:
+      # actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+      # Swatinem/rust-cache@v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: start pgbouncer in transaction mode
+        # Not a service container: PgBouncer is configured by its ini file,
+        # and a service takes no file or command line. It runs as the runner
+        # user on its own port.
+        #
+        # From the PostgreSQL apt repository (PGDG), not Ubuntu's archive:
+        # Ubuntu 24.04 ships 1.22.0, and the lane needs 1.26.0 or later.
+        # Before 1.26.0, a parameter in track_extra_parameters that the
+        # server does not report (statement_timeout is one) misbehaves when
+        # a client sets it in its startup packet (PgBouncer #1576); 1.26.1
+        # adds security fixes, including one in SCRAM authentication. The
+        # step fails on anything older. The repository key is checked
+        # against its published fingerprint.
+        #
+        # SCRAM end to end: clients authenticate against the server's
+        # secrets (auth_query as proxima), and PgBouncer logs in to Postgres
+        # with the client's SCRAM keys. extra_float_digits is deliberately
+        # NOT ignored: the serving pools must not send it.
+        run: |
+          key=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o "$key" https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          gpg --show-keys --with-colons "$key" \
+            | grep -q '^fpr:::::::::B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8:$'
+          echo "deb [signed-by=$key] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -q
+          sudo apt-get install -y -q pgbouncer
+          sudo systemctl stop pgbouncer || true
+          version="$(dpkg-query -W -f='${Version}' pgbouncer)"
+          echo "pgbouncer $version"
+          dpkg --compare-versions "$version" ge 1.26.1
+          dir="$RUNNER_TEMP/pgbouncer"
+          mkdir -p "$dir"
+          printf '"proxima" "proxima"\n' > "$dir/userlist.txt"
+          cat > "$dir/pgbouncer.ini" <<INI
+          [databases]
+          * = host=localhost port=5432
+
+          [pgbouncer]
+          listen_addr = 127.0.0.1
+          listen_port = 6433
+          unix_socket_dir =
+          auth_type = scram-sha-256
+          auth_file = $dir/userlist.txt
+          auth_user = proxima
+          pool_mode = transaction
+          max_client_conn = 2000
+          default_pool_size = 20
+          max_prepared_statements = 200
+          track_extra_parameters = IntervalStyle, statement_timeout
+          server_reset_query =
+          logfile = $dir/pgbouncer.log
+          pidfile = $dir/pgbouncer.pid
+          INI
+          pgbouncer -d "$dir/pgbouncer.ini"
+          for _ in $(seq 1 30); do
+            pg_isready -h 127.0.0.1 -p 6433 && break
+            sleep 1
+          done
+          test "$(psql "$PROXIMA_TEST_PGBOUNCER_URL" -Atc 'SELECT 1')" = 1
+      - name: install nextest
+        # taiki-e/install-action@v2
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
+        with:
+          tool: nextest
+      - name: test through pgbouncer
+        run: >-
+          cargo nextest run -p proxima-storage-pg --all-features --locked
+          -E 'binary(pgbouncer_pg) | binary(maintenance_lease_pg) | binary(host_state_lifecycle)
+          | binary(purge_backoff) | binary(owner_export) | binary(owner_erase)'
+      - name: every client went through the pooler
+        # A lane that silently connected direct would pass and prove nothing.
+        run: |
+          log="$RUNNER_TEMP/pgbouncer/pgbouncer.log"
+          logins="$(grep -c 'login attempt: db=proxima_test' "$log" || true)"
+          echo "pooled logins: $logins"
+          test "$logins" -gt 100
+      - name: pgbouncer log
+        if: ${{ failure() }}
+        run: tail -n 200 "$RUNNER_TEMP/pgbouncer/pgbouncer.log"
