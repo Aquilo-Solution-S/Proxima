@@ -685,6 +685,7 @@ pub async fn dump_database(
                 | "export_erase_fence"
                 | "maintenance_lease"
                 | "vector_index_debt"
+                | "publication_backlog"
         ) {
             continue;
         }

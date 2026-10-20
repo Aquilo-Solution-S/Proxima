@@ -249,6 +249,12 @@ SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'pr
 
 ALTER POLICY proxima_owner_read ON proxima_core.publication_consumer USING (((current_setting('app.proxima_scope'::text, true) = 'owner'::text) AND (cardinality(COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[])) > 0)));
 
+-- publication_backlog: the publisher's estimate, read by every listenable
+-- write whatever its owner, like publication_consumer.
+SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'proxima_core', 'publication_backlog', 'ownerless', NULL);
+
+ALTER POLICY proxima_owner_read ON proxima_core.publication_backlog USING (((current_setting('app.proxima_scope'::text, true) = 'owner'::text) AND (cardinality(COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[])) > 0)));
+
 -- publication_delivery
 SELECT proxima_core.owner_rls_apply_class('policies.sql', 'class fk_parent', 'proxima_core', 'publication_delivery', 'fk_parent', NULL);
 

@@ -680,6 +680,8 @@ pub const DROPPED_TABLES: &[&str] = &[
     // changes. An erase settles its own before commit;
     // `semantic_vector_index` pins it.
     "vector_index_debt",
+    // Added by 0052: the publisher's backlog estimate, about no owner.
+    "publication_backlog",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0007 added staged BLAKE3 identity after this frozen baseline;

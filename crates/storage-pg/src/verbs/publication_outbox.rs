@@ -201,7 +201,43 @@ pub(crate) async fn capture_publication_in_tx(
     Ok(())
 }
 
+/// How old the publisher's backlog estimate may be and still admit a write.
+///
+/// The estimate misses the writes since it was taken, so this bounds how far
+/// the pending ceiling can be overshot by the write rate times this window.
+const BACKLOG_ESTIMATE_VALID_FOR: Duration = Duration::from_secs(30);
+
+/// How old the estimate must be before a claim measures it again.
+const BACKLOG_ESTIMATE_REFRESH_AFTER: Duration = Duration::from_secs(10);
+
+/// The estimate a write may trust: one row, and none once it is too old.
+const FRESH_BACKLOG_ESTIMATE_SQL: &str = "SELECT pending FROM proxima_core.publication_backlog
+          WHERE measured_at > now() - make_interval(secs => $1)";
+
+/// Measure the backlog if the estimate is old: the count runs only when the
+/// row passes the age test, so claims inside the window cost one failed
+/// predicate.
+const REFRESH_BACKLOG_ESTIMATE_SQL: &str = "UPDATE proxima_core.publication_backlog
+            SET pending = (SELECT count(*) FROM proxima_core.publication_outbox
+                            WHERE state <> 'published'),
+                measured_at = now()
+          WHERE measured_at < now() - make_interval(secs => $1)";
+
+/// The statement a write reads the estimate with, for the plan pin.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn fresh_backlog_estimate_sql_for_tests() -> &'static str {
+    FRESH_BACKLOG_ESTIMATE_SQL
+}
+
 /// Refuse a capture that would push the undelivered backlog past its bound.
+///
+/// While the publisher keeps `publication_backlog` fresh, a write reads that
+/// one row and the probe below runs only near the ceiling. The estimate
+/// misses the writes since it was taken, so the ceiling is also soft by the
+/// write rate times [`BACKLOG_ESTIMATE_VALID_FOR`]; a publisher that stops
+/// measuring lets the estimate go stale, and the exact probe takes over.
 ///
 /// The probe is `OFFSET max_pending - 1 LIMIT 1` over the partial index,
 /// which costs `min(unpublished, max_pending)` index tuples: `OFFSET N`
@@ -231,6 +267,20 @@ async fn refuse_when_full(
     tx: &mut Transaction<'_, Postgres>,
     limits: &PublicationLimits,
 ) -> Result<(), StorageError> {
+    // A fresh estimate under the ceiling admits the write at the cost of one
+    // row. Anything else — no fresh estimate, or one at the ceiling that may
+    // be stale-high — takes the exact probe below, so a refusal is never
+    // decided by an estimate.
+    let estimate: Option<i64> = sqlx::query_scalar(FRESH_BACKLOG_ESTIMATE_SQL)
+        .bind(BACKLOG_ESTIMATE_VALID_FOR.as_secs_f64())
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(map_err)?;
+    if let Some(pending) = estimate.and_then(|pending| u64::try_from(pending).ok())
+        && pending < limits.max_pending
+    {
+        return Ok(());
+    }
     let Some(offset) = limits.max_pending.checked_sub(1) else {
         // `max_pending = 0` admits no record at all; say so without a query.
         return Err(StorageError::from(PublicationError::CapacityExhausted {
@@ -377,6 +427,13 @@ impl PublicationOutboxPort for PgStorage {
             .bind(lease.as_secs_f64())
             .bind(consumer.as_str())
             .fetch_all(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+        // The drain walks the backlog anyway; it is the one place the
+        // estimate a write trusts is kept.
+        sqlx::query(REFRESH_BACKLOG_ESTIMATE_SQL)
+            .bind(BACKLOG_ESTIMATE_REFRESH_AFTER.as_secs_f64())
+            .execute(tx.as_mut())
             .await
             .map_err(map_err)?;
         let result = rows.iter().map(claimed_from_row).collect();

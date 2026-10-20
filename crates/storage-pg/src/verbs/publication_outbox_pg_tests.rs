@@ -754,6 +754,121 @@ async fn an_exhausted_outbox_refuses_the_next_listenable_write() {
     let _ = drop_db(&db).await;
 }
 
+/// What the capacity check does with the publisher's estimate (#491): a fresh
+/// one under the ceiling admits a write without the probe, and anything else
+/// goes to the exact probe, so a refusal never rests on an estimate.
+#[tokio::test]
+async fn the_capacity_check_trusts_only_a_fresh_estimate_under_the_ceiling() {
+    let (pg, db) = fresh_pg("pub_capture_estimate").await;
+    let limits = PublicationLimits {
+        max_pending: 2,
+        max_payload_bytes: proxima_core::publication::DEFAULT_MAX_PAYLOAD_BYTES,
+    };
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    for n in 0..2 {
+        ingest_listenable_under(&pg, &owner, &probe(&format!("kept-{n}")), None, limits)
+            .await
+            .expect("under the bound");
+    }
+    let set_estimate = |pending: i64, fresh: bool| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "UPDATE proxima_core.publication_backlog
+                    SET pending = $1,
+                        measured_at = CASE WHEN $2 THEN now() ELSE '-infinity' END",
+            )
+            .bind(pending)
+            .bind(fresh)
+            .execute(&pool)
+            .await
+            .expect("estimate is writable");
+        }
+    };
+    let attempt = |label: &'static str| {
+        let (pg, owner) = (&pg, &owner);
+        async move { ingest_listenable_under(pg, owner, &probe(label), None, limits).await }
+    };
+
+    // The seed row is stale: the exact probe sees the two pending records.
+    attempt("no estimate")
+        .await
+        .expect_err("exact probe refuses");
+    // A stale estimate is no estimate, whatever it says.
+    set_estimate(0, false).await;
+    attempt("stale estimate")
+        .await
+        .expect_err("exact probe refuses");
+    // A fresh one under the ceiling admits without probing: the backlog really
+    // holds two, and the write is admitted, which is what trusting it means.
+    set_estimate(0, true).await;
+    attempt("fresh estimate").await.expect("one row decided it");
+    // A fresh one at the ceiling is not trusted to refuse: the probe finds
+    // the backlog below it once the publisher has drained.
+    sqlx::query(
+        "UPDATE proxima_core.publication_outbox SET state = 'published', published_at = now()",
+    )
+    .execute(&pool)
+    .await
+    .expect("drain");
+    set_estimate(2, true).await;
+    attempt("stale-high estimate")
+        .await
+        .expect("the probe admits it");
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
+/// A claim keeps the estimate: it measures the backlog when the estimate is
+/// old and leaves a young one alone.
+#[tokio::test]
+async fn a_claim_measures_the_backlog_when_the_estimate_is_old() {
+    let (pg, db) = fresh_pg("pub_claim_estimate").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    for n in 0..3 {
+        ingest_listenable(&pg, &owner, &probe(&format!("pending-{n}")), None)
+            .await
+            .expect("capture");
+    }
+    let consumer = ConsumerName::new("estimate-probe").expect("consumer name");
+    let publisher = PublisherId::new("estimate-publisher").expect("publisher id");
+    let claim = || {
+        PublicationOutboxPort::claim(
+            &pg,
+            &consumer,
+            &publisher,
+            std::num::NonZeroU32::new(1).unwrap(),
+            std::time::Duration::from_secs(30),
+        )
+    };
+    let estimate = || async {
+        sqlx::query_as::<_, (i64, bool)>(
+            "SELECT pending, measured_at > now() - interval '5 seconds'
+               FROM proxima_core.publication_backlog",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("estimate reads")
+    };
+    assert_eq!(estimate().await.1, false, "nothing has measured it yet");
+    claim().await.expect("claim");
+    assert_eq!(estimate().await, (3, true));
+    // Inside the refresh window a claim does not count again.
+    ingest_listenable(&pg, &owner, &probe("late"), None)
+        .await
+        .expect("capture");
+    claim().await.expect("claim");
+    assert_eq!(estimate().await.0, 3, "a young estimate is left alone");
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
 #[tokio::test]
 async fn the_receipt_only_route_refuses_a_listenable_schema() {
     let (pg, db) = fresh_pg("pub_capture_untyped").await;

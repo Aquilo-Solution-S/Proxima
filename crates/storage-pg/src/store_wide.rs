@@ -67,6 +67,11 @@ pub const STORE_WIDE_TABLES: &[(&str, &str)] = &[
          already stamped with it.",
     ),
     (
+        "proxima_core.publication_backlog",
+        "The publisher's estimate of the undelivered outbox backlog (0052, #491): one row, \
+         platform-written, about no owner.",
+    ),
+    (
         "proxima_core.publication_consumer",
         "The deployment's registry of outbox consumers: operator configuration, \
          platform-written, identical for every owner and about none of them.",

@@ -268,7 +268,7 @@ def run_fixture(path: Path) -> int:
 # bound values, frozen contracts, and per-site proof comments, not this count.
 # Any inventory change requires inspecting --inventory and updating this pin;
 # historical review evidence belongs under .local rather than in the gate.
-EXPECTED_DYNAMIC_SQL_SITES = 202
+EXPECTED_DYNAMIC_SQL_SITES = 204
 
 
 def run_self_test() -> int:

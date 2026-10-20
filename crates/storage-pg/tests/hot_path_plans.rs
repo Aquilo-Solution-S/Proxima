@@ -18,12 +18,14 @@ use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::export_statement_sql_for_tests;
 use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::fact_embeddings::claim_embedding_jobs_sql_for_tests;
-use proxima_storage_pg::verbs::prune_published_sql_for_tests;
 use proxima_storage_pg::verbs::query::{
     ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests, inbound_pin_sql_for_tests,
     memory_page_sql_for_tests, owned_head_handle_sql_for_tests, ranked_projection_sql_for_tests,
     search_admit_sql_for_tests, semantic_candidate_admission_sql_for_tests,
     set_hnsw_search_sql_for_tests, substring_sql_for_tests,
+};
+use proxima_storage_pg::verbs::{
+    fresh_backlog_estimate_sql_for_tests, prune_published_sql_for_tests,
 };
 use uuid::Uuid;
 
@@ -939,4 +941,75 @@ async fn retention_prune_reads_the_published_index() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("retention prune EXPLAIN failed");
+}
+
+/// A write's capacity check reads one row however long the backlog is (#491).
+///
+/// With 50,000 undelivered records and a fresh estimate, the statement that
+/// admits a write touches `publication_backlog` alone and returns that single
+/// row. The backlog is never read: the exact probe it replaces read up to
+/// `max_pending` index entries of it.
+#[tokio::test]
+async fn a_capacity_check_reads_one_row_whatever_the_backlog() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner.into_inner())
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.publication_outbox
+                 (t, owner_id, schema_id, schema_version, event_type, event_id,
+                  envelope, envelope_digest)
+             SELECT uuidv7(), $1, 'core/agent-note-v1', 1, 'type', 'event-' || n,
+                    '\\x00'::bytea, decode(repeat('00', 32), 'hex')
+               FROM generate_series(1, 50000) AS n",
+        )
+        .bind(owner.into_inner())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "UPDATE proxima_core.publication_backlog SET pending = 50000, measured_at = now()",
+        )
+        .execute(pool)
+        .await?;
+        // SQL-POLICY: fixed-fragment
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "ANALYZE proxima_core.publication_outbox; ANALYZE proxima_core.publication_backlog",
+        ))
+        .execute(pool)
+        .await?;
+
+        let explain = format!(
+            "EXPLAIN (ANALYZE, FORMAT JSON) {}",
+            fresh_backlog_estimate_sql_for_tests()
+        );
+        // SQL-POLICY: fixed-fragment — the production capacity-check read.
+        let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain))
+            .bind(30.0_f64)
+            .fetch_one(pool)
+            .await?;
+        let rendered = plan.to_string();
+        assert!(
+            scan_of(&plan, "publication_backlog").is_some(),
+            "the check reads the estimate; plan:\n{rendered}"
+        );
+        assert!(
+            scan_of(&plan, "publication_outbox").is_none(),
+            "the check must not read the backlog; plan:\n{rendered}"
+        );
+        let rows = plan[0]["Plan"]["Actual Rows"].as_f64().unwrap_or(f64::MAX);
+        assert!(rows <= 1.0, "one row, not {rows}; plan:\n{rendered}");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("capacity check EXPLAIN failed");
 }

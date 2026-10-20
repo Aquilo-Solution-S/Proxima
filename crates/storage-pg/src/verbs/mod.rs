@@ -23,7 +23,7 @@ pub(crate) mod owner_erase;
 pub(crate) mod owner_export;
 pub(crate) mod publication_outbox;
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use publication_outbox::prune_published_sql_for_tests;
+pub use publication_outbox::{fresh_backlog_estimate_sql_for_tests, prune_published_sql_for_tests};
 pub mod query;
 pub mod query_timeseries;
 pub(crate) mod request_keys;
