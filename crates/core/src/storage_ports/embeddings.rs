@@ -365,7 +365,9 @@ pub struct EmbeddingReconcileOptions<'a> {
     pub owners: Option<&'a [crate::OwnerId]>,
     pub scope: EmbeddingReconcileScope,
     /// Required at the storage boundary. `None` is a constraint error.
-    /// Engine `None` becomes [`EMBEDDING_RECONCILE_DEFAULT_LIMIT`].
+    /// Engine `None` becomes [`EMBEDDING_RECONCILE_DEFAULT_LIMIT`]. It bounds
+    /// the memories enqueued (`scanned` in the outcome), not the memories
+    /// read to find them.
     pub limit: Option<i64>,
     /// Schema ids that declined a vector
     /// ([`crate::flavor::EmbeddingRecipe::Never`]), excluded from the scan.

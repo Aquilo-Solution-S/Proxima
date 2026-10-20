@@ -688,7 +688,11 @@ impl Engine {
     /// Returns storage errors from the owner scan and the
     /// reconciliation scan/enqueue. `limit: None` uses
     /// [`crate::EMBEDDING_RECONCILE_DEFAULT_LIMIT`]; it bounds the memories
-    /// scanned across all Owners.
+    /// that need a job and are enqueued, across all Owners. The walk that
+    /// finds them reads the memories in key order, a page per storage step,
+    /// and ends when the limit is met or the memories end: a bound on
+    /// examined memories would leave everything past it unreconciled, since
+    /// no cursor survives the call.
     pub async fn reconcile_embeddings(
         &self,
         scope: crate::EmbeddingReconcileScope,

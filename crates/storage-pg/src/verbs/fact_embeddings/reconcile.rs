@@ -9,21 +9,48 @@ pub use proxima_core::{
     EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
 };
 
+/// Memories one reconcile step reads: the page the statement is bounded to.
+const RECONCILE_PAGE: i64 = 2_000;
+
+/// One page of the reconcile scan: the next `$9` live memories after `$8` in
+/// key order, of the owners and age asked for. Of those, the heads that
+/// lack coverage or a job in the space are the candidates, and the first `$2`
+/// of them are enqueued. Each page row probes its head and its embedding head
+/// by key. Returns what was enqueued, how many memories the page
+/// held and the last of them. The page is read by key, so a step reads a page
+/// of the table however the filters fall.
 const RECONCILE_EMBEDDINGS_SQL: &str = "
-WITH scoped AS MATERIALIZED (
-     SELECT m.t AS memory_id,
-            m.owner_id,
-            h2.embedding_version AS head_version
-       FROM proxima_core.memory_head mh
-       JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
-       LEFT JOIN proxima_core.embedding_heads h2
-         ON h2.entity_id = m.t
-        AND h2.model_id = $1
-        AND h2.dim = $6
-      WHERE ($3::text <> 'since'
-             OR proxima_core.memory_created_at(m.t) >= $4)
-        AND mh.schema_id <> ALL($5::text[])
+WITH page AS MATERIALIZED (
+     SELECT m.t, m.handle, m.owner_id
+       FROM proxima_core.memory m /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+      WHERE m.forgotten_at IS NULL
+        AND ($8::uuid IS NULL OR m.t > $8)
         AND ($7::uuid[] IS NULL OR m.owner_id = ANY($7::uuid[]))
+        AND ($3::text <> 'since'
+             OR proxima_core.memory_created_at(m.t) >= $4)
+      ORDER BY m.t ASC
+      LIMIT $9
+ ),
+ scoped AS MATERIALIZED (
+     SELECT p.t AS memory_id,
+            p.owner_id,
+            h2.embedding_version AS head_version
+       FROM page p
+      CROSS JOIN LATERAL (
+            SELECT mh.schema_id
+              FROM proxima_core.memory_head mh
+             WHERE mh.handle = p.handle AND mh.t = p.t
+             LIMIT 1
+       ) mh
+       LEFT JOIN LATERAL (
+            SELECT eh.embedding_version
+              FROM proxima_core.embedding_heads eh
+             WHERE eh.entity_id = p.t
+               AND eh.model_id = $1
+               AND eh.dim = $6
+             LIMIT 1
+       ) h2 ON true
+      WHERE mh.schema_id <> ALL($5::text[])
  ),
  eligible AS MATERIALIZED (
      SELECT s.*
@@ -67,7 +94,17 @@ WITH scoped AS MATERIALIZED (
  )
  SELECT
      (SELECT count(*)::bigint FROM limited) AS scanned,
-     (SELECT count(*)::bigint FROM inserted) AS enqueued";
+     (SELECT count(*)::bigint FROM inserted) AS enqueued,
+     (SELECT count(*)::bigint FROM page) AS examined,
+     (SELECT t FROM page ORDER BY t DESC LIMIT 1) AS last_examined";
+
+/// The reconcile page statement, for EXPLAIN-based plan guards.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn reconcile_embeddings_sql_for_tests() -> &'static str {
+    RECONCILE_EMBEDDINGS_SQL
+}
 
 /// Global reconciliation for embeddable memories.
 ///
@@ -106,31 +143,60 @@ pub(crate) async fn reconcile_embeddings_with_platform(
     options: EmbeddingReconcileOptions<'_>,
     stale_claim_timeout_seconds: i64,
 ) -> Result<EmbeddingReconcileOutcome, StorageError> {
+    let mut budget = resolve_reconcile_limit(options.limit)?;
+    let mut total = EmbeddingReconcileOutcome::default();
+    if budget == 0 {
+        return Ok(total);
+    }
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
-    let result =
-        reconcile_embeddings_on_connection(tx.as_mut(), options, stale_claim_timeout_seconds).await;
-    crate::owner_scope::finish_transaction(tx, result).await
+    let reclaimed = reclaim_stale_embedding_jobs(tx.as_mut(), stale_claim_timeout_seconds).await;
+    crate::owner_scope::finish_transaction(
+        tx,
+        reclaimed.map(|reclaimed| {
+            if reclaimed > 0 {
+                tracing::warn!(
+                    reclaimed,
+                    stale_after_seconds = stale_claim_timeout_seconds,
+                    "reclaimed abandoned processing embedding jobs"
+                );
+            }
+        }),
+    )
+    .await?;
+
+    // One page per transaction: no statement reads more than a page of heads,
+    // however many memories the store holds.
+    let mut after = None;
+    loop {
+        let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
+        let page = reconcile_page(tx.as_mut(), options, budget, after).await;
+        let page = crate::owner_scope::finish_transaction(tx, page).await?;
+        total.scanned += page.scanned;
+        total.enqueued += page.enqueued;
+        total.skipped += page.scanned.saturating_sub(page.enqueued);
+        budget = budget.saturating_sub(i64::try_from(page.scanned).unwrap_or(i64::MAX));
+        match page.next {
+            Some(next) if budget > 0 => after = Some(next),
+            _ => return Ok(total),
+        }
+    }
 }
 
-async fn reconcile_embeddings_on_connection(
+/// What one page of the scan did.
+struct ReconcilePage {
+    scanned: u64,
+    enqueued: u64,
+    /// The last head the page read, when the page was full and more may
+    /// follow it.
+    next: Option<uuid::Uuid>,
+}
+
+async fn reconcile_page(
     pool: &mut sqlx::PgConnection,
     options: EmbeddingReconcileOptions<'_>,
-    stale_claim_timeout_seconds: i64,
-) -> Result<EmbeddingReconcileOutcome, StorageError> {
-    let limit = resolve_reconcile_limit(options.limit)?;
-    if limit == 0 {
-        return Ok(EmbeddingReconcileOutcome::default());
-    }
-
-    let reclaimed = reclaim_stale_embedding_jobs(&mut *pool, stale_claim_timeout_seconds).await?;
-    if reclaimed > 0 {
-        tracing::warn!(
-            reclaimed,
-            stale_after_seconds = stale_claim_timeout_seconds,
-            "reclaimed abandoned processing embedding jobs"
-        );
-    }
-
+    limit: i64,
+    after: Option<uuid::Uuid>,
+) -> Result<ReconcilePage, StorageError> {
     let (scope, since) = match options.scope {
         EmbeddingReconcileScope::MissingOnly => ("missing_only", None),
         EmbeddingReconcileScope::IncludeStale => ("include_stale", None),
@@ -140,7 +206,7 @@ async fn reconcile_embeddings_on_connection(
     let owner_ids: Option<Vec<uuid::Uuid>> = options
         .owners
         .map(|owners| owners.iter().copied().map(OwnerId::into_inner).collect());
-    let row: (i64, i64) = sqlx::query_as(RECONCILE_EMBEDDINGS_SQL)
+    let row: (i64, i64, i64, Option<uuid::Uuid>) = sqlx::query_as(RECONCILE_EMBEDDINGS_SQL)
         .bind(options.space.model_id())
         .bind(limit)
         .bind(scope)
@@ -148,18 +214,24 @@ async fn reconcile_embeddings_on_connection(
         .bind(options.non_embeddable_schemas)
         .bind(crate::pgvector::Lane::of(options.space.dim()).width)
         .bind(owner_ids)
+        .bind(after)
+        .bind(RECONCILE_PAGE)
         .fetch_one(&mut *pool)
         .await
         .map_err(map_err)?;
 
-    let scanned = u64::try_from(row.0)
-        .map_err(|_| StorageError::Internal("scanned count is negative".into()))?;
-    let enqueued = u64::try_from(row.1)
-        .map_err(|_| StorageError::Internal("enqueued count is negative".into()))?;
-    Ok(EmbeddingReconcileOutcome {
-        scanned,
-        enqueued,
-        skipped: scanned.saturating_sub(enqueued),
+    let count = |value: i64, what: &str| {
+        u64::try_from(value)
+            .map_err(|_| StorageError::Internal(format!("{what} count is negative")))
+    };
+    Ok(ReconcilePage {
+        scanned: count(row.0, "scanned")?,
+        enqueued: count(row.1, "enqueued")?,
+        next: if count(row.2, "examined")? == u64::try_from(RECONCILE_PAGE).unwrap_or(u64::MAX) {
+            row.3
+        } else {
+            None
+        },
     })
 }
 

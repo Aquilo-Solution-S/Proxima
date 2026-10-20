@@ -634,6 +634,199 @@ mod pg_tests {
         }
     }
 
+    /// Heads that need a job, seeded below the write path: `count` heads of
+    /// one owner, each with the memory row the reconcile reads.
+    async fn seed_uncovered_heads(
+        pool: &sqlx::PgPool,
+        owner: &OwnerId,
+        count: i32,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind)
+             VALUES ($1, 'group') ON CONFLICT DO NOTHING",
+        )
+        .bind(owner.into_inner())
+        .execute(pool)
+        .await?;
+        // A write takes one advisory lock per memory, so the heads go in in
+        // batches that fit the server's lock table.
+        let mut remaining = count;
+        while remaining > 0 {
+            let batch = remaining.min(1_000);
+            remaining -= batch;
+            let mut tx = pool.begin().await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                 SELECT uuidv7(), 'fact', 'core/agent-note-v1', $1, uuidv7()
+                   FROM generate_series(1, $2)",
+            )
+            .bind(owner.into_inner())
+            .bind(batch)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.memory
+                     (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+                 SELECT h.handle, h.t, 'fact', $1, h.schema_id,
+                        ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp(h.t),
+                        '00000000-0000-0000-0000-000000000509'::uuid, NULL
+                   FROM proxima_core.memory_head h
+                  WHERE h.owner_id = $1
+                    AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)",
+            )
+            .bind(owner.into_inner())
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+                 SELECT m.t, uuidv7(), 'note', 'body', '{}'
+                   FROM proxima_core.memory m
+                  WHERE m.owner_id = $1
+                    AND NOT EXISTS (SELECT 1 FROM proxima_core.agent_note_v1 s WHERE s.t = m.t)",
+            )
+            .bind(owner.into_inner())
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+        }
+        Ok(())
+    }
+
+    /// The reconcile reads the heads a page at a time, and a page boundary
+    /// loses and repeats none: every uncovered head gets one job, and a limit
+    /// that falls inside a page stops exactly there (#491).
+    #[tokio::test]
+    async fn reconcile_pages_across_the_heads_without_losing_any()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let platform = pg.platform_scope_for_host();
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let pool = pg.pool_for_tests();
+            let owner = owner_fixture();
+            seed_uncovered_heads(pool, &owner, 4_500).await?;
+
+            let capped =
+                reconcile_embeddings(pool, &platform, missing_only(2_500), stale_claim_seconds())
+                    .await?;
+            assert_eq!((capped.scanned, capped.enqueued), (2_500, 2_500));
+            let all =
+                reconcile_embeddings(pool, &platform, missing_only(10_000), stale_claim_seconds())
+                    .await?;
+            assert_eq!(
+                (all.scanned, all.enqueued),
+                (2_000, 2_000),
+                "the heads the capped pass left, and none it took"
+            );
+            let (jobs, entities): (i64, i64) = sqlx::query_as(
+                "SELECT count(*), count(DISTINCT entity_id)
+                   FROM proxima_core.embedding_jobs",
+            )
+            .fetch_one(pool)
+            .await?;
+            assert_eq!((jobs, entities), (4_500, 4_500));
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// A reconcile step reads a page of heads, not the store (#491): with
+    /// 20,000 uncovered heads, the statement that starts after the 10,000th
+    /// reads about a page of `memory` rows and scans none of the table.
+    #[tokio::test]
+    async fn a_reconcile_step_reads_one_page_of_heads() -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let pool = pg.pool_for_tests();
+            let owner = owner_fixture();
+            seed_uncovered_heads(pool, &owner, 20_000).await?;
+            sqlx::query("VACUUM (ANALYZE) proxima_core.memory")
+                .execute(pool)
+                .await?;
+            sqlx::query("VACUUM (ANALYZE) proxima_core.memory_head")
+                .execute(pool)
+                .await?;
+            let cursor: Uuid = sqlx::query_scalar(
+                "SELECT t FROM proxima_core.memory ORDER BY t OFFSET 10000 LIMIT 1",
+            )
+            .fetch_one(pool)
+            .await?;
+
+            let mut tx = pool.begin().await?;
+            let explain = format!(
+                "EXPLAIN (ANALYZE, FORMAT JSON) {}",
+                super::super::reconcile_embeddings_sql_for_tests()
+            );
+            // SQL-POLICY: fixed-fragment — the production reconcile page statement.
+            let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain))
+                .bind(STUB_SPACE.model_id())
+                .bind(1_000_000_i64)
+                .bind("missing_only")
+                .bind(None::<time::OffsetDateTime>)
+                .bind(Vec::<String>::new())
+                .bind(1024_i16)
+                .bind(None::<Vec<Uuid>>)
+                .bind(cursor)
+                .bind(2_000_i64)
+                .fetch_one(&mut *tx)
+                .await?;
+            tx.rollback().await?;
+            let (memory_rows, memory_seq_scans) = memory_work(&plan);
+            assert!(
+                memory_rows <= 5_000.0,
+                "the step read {memory_rows} rows of the memory tables, a page is 2,000; plan: {plan}"
+            );
+            assert_eq!(
+                memory_seq_scans, 0,
+                "the step scanned the table; plan: {plan}"
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
+    /// The rows a plan read of the memory tables (kept or filtered away, over
+    /// every loop) and its sequential scans of them.
+    fn memory_work(plan: &serde_json::Value) -> (f64, usize) {
+        let mut rows = 0.0;
+        let mut seq_scans = 0;
+        let mut stack = vec![plan];
+        while let Some(value) = stack.pop() {
+            match value {
+                serde_json::Value::Array(items) => stack.extend(items),
+                serde_json::Value::Object(node) => {
+                    if node
+                        .get("Relation Name")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("memory")
+                    {
+                        let metric = |key: &str| {
+                            node.get(key)
+                                .and_then(serde_json::Value::as_f64)
+                                .unwrap_or_default()
+                        };
+                        rows += (metric("Actual Rows") + metric("Rows Removed by Filter"))
+                            * metric("Actual Loops").max(1.0);
+                        if node.get("Node Type").and_then(serde_json::Value::as_str)
+                            == Some("Seq Scan")
+                        {
+                            seq_scans += 1;
+                        }
+                    }
+                    stack.extend(node.values());
+                }
+                _ => {}
+            }
+        }
+        (rows, seq_scans)
+    }
+
     #[tokio::test]
     async fn insert_memory_embedding_noops_after_source_memory_deleted()
     -> Result<(), Box<dyn std::error::Error>> {

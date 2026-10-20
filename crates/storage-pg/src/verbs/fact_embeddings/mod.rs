@@ -28,6 +28,8 @@ pub(crate) use jobs::{
 pub(crate) use ops::{embedding_ann_observability, sweep_orphan_embedding_rows};
 #[cfg(test)]
 use reconcile::reconcile_embeddings;
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use reconcile::reconcile_embeddings_sql_for_tests;
 pub use reconcile::{
     EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
 };
