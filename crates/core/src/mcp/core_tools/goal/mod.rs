@@ -113,13 +113,13 @@ fn default_empty_object() -> serde_json::Value {
 pub struct GoalSetArgs {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
+    #[serde(default)]
     #[schemars(
-        length(min = 1),
-        description = "Fact or Abstraction handles (`<uuid>`) that motivate the goal; at least one."
+        description = "Optional Fact or Abstraction handles (`<uuid>`) that motivate the goal."
     )]
     pub evidence: Vec<String>,
     #[schemars(
-        description = "Perspective handle (`<uuid>`) the goal is assigned to, e.g. a stance `core_interpret` returned. Required unless the host supplies a caller Perspective."
+        description = "Optional Perspective handle (`<uuid>`) the goal is assigned to. Omit to use the host caller Perspective, if any, or leave the goal unassigned."
     )]
     pub target_perspective: Option<String>,
     #[schemars(
@@ -142,13 +142,13 @@ pub struct CoreGoalTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum CoreGoalArgs {
-    /// Create an Active goal assigned to a Perspective.
+    /// Create an Active goal with optional Perspective assignment and evidence.
     Set(GoalSetArgs),
     /// Pause, resume, or abandon a goal; abandon is refused while a child goal is Active or Paused.
     Transition(GoalTransitionArgs),
     /// Replace an Active goal's title, text and payload; omitted evidence carries over.
     Modify(GoalModifyArgs),
-    /// Mark a goal Achieved, citing the memories that show it; a goal with child goals needs every
+    /// Mark a goal Achieved, optionally citing memories that show it; a goal with child goals needs every
     /// child Achieved or Abandoned and at least one Achieved.
     MarkAchieved(GoalMarkAchievedArgs),
     /// Create Active child Goals under a parent goal.
@@ -164,14 +164,11 @@ pub enum CoreGoalOutput {
 
 impl McpTool for CoreGoalTool {
     const NAME: &'static str = protocol_tool::CORE_GOAL;
-    const DESCRIPTION: &'static str = "Write Goals: set one, decompose it into child goals, \
-         pause/resume/abandon it, replace its content, mark it achieved. Every write returns the \
-         goal's new head `handle`; the next write on that goal names that handle. set and decompose \
-         assign goals to a Perspective: pass target_perspective unless the host supplies a caller \
-         Perspective. A pause names what happens to work already queued for the goal: pending is \
-         keep or discard. A parent is marked achieved only after its children: none Active or \
-         Paused, at least one Achieved. An open goal never sits under a closed one: achieve and \
-         abandon a parent after its children.";
+    const DESCRIPTION: &'static str = "Write Goals: set or decompose, pause/resume/abandon, modify content, \
+         or mark achieved. Use the returned head handle for the next write. Assignment and evidence \
+         are optional; an omitted target uses the host caller Perspective if present. Pause requires \
+         pending: keep or discard. Close a parent only after all children close; achievement also \
+         needs an Achieved child.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = CORE_GOAL_PRODUCES_SCHEMA_IDS;
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
@@ -186,7 +183,7 @@ impl McpTool for CoreGoalTool {
                 "target_perspective",
                 "idempotency_key",
             ],
-            required_fields: &["schema_id", "title", "text", "evidence"],
+            required_fields: &["schema_id", "title", "text"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
@@ -218,7 +215,7 @@ impl McpTool for CoreGoalTool {
         McpActionArgSpec {
             action: "mark_achieved",
             allowed_fields: &["goal", "evidence", "idempotency_key"],
-            required_fields: &["goal", "evidence"],
+            required_fields: &["goal"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
         },
@@ -263,11 +260,6 @@ impl McpTool for CoreGoalTool {
 }
 
 async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput, McpToolError> {
-    if args.evidence.is_empty() {
-        return Err(McpToolError::InvalidInput(
-            "goal set requires >=1 Fact or Abstraction evidence handle motivating the goal".into(),
-        ));
-    }
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = resolve_goal_evidence_handles(&ctx, &args.evidence)?;
     let assignment = target_perspective(&ctx, args.target_perspective.as_deref())?;
@@ -378,10 +370,8 @@ pub struct GoalMarkAchievedArgs {
         description = "Goal handle `<uuid>` from the latest write on this goal; an older handle is refused, and so is a goal while a child goal is still Active or Paused."
     )]
     pub goal: String,
-    #[schemars(
-        length(min = 1),
-        description = "Fact or Abstraction UUIDs that show completion; at least one."
-    )]
+    #[serde(default)]
+    #[schemars(description = "Optional Fact or Abstraction UUIDs that show completion.")]
     pub evidence: Vec<String>,
     #[schemars(
         description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
@@ -393,11 +383,6 @@ async fn goal_mark_achieved(
     ctx: McpToolCtx,
     args: GoalMarkAchievedArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
-    if args.evidence.is_empty() {
-        return Err(McpToolError::InvalidInput(
-            "evidence must contain at least one memory handle".into(),
-        ));
-    }
     let prior = ctx.resolve_goal(&args.goal)?;
     let evidence = resolve_evidence(&ctx, &args.evidence)?;
     let request_id =
@@ -432,8 +417,7 @@ pub struct GoalModifyArgs {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
     #[schemars(
-        length(min = 1),
-        description = "Replacement Fact or Abstraction handles (`<uuid>`), at least one. Omit to keep the current evidence."
+        description = "Replacement Fact or Abstraction handles (`<uuid>`). Omit to keep the current evidence; an empty list clears it."
     )]
     pub evidence: Option<Vec<String>>,
     #[schemars(
@@ -446,11 +430,6 @@ async fn goal_modify(
     ctx: McpToolCtx,
     args: GoalModifyArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
-    if args.evidence.as_ref().is_some_and(Vec::is_empty) {
-        return Err(McpToolError::InvalidInput(
-            "Goal evidence must contain at least one Fact or Abstraction handle".into(),
-        ));
-    }
     let prior = ctx.resolve_goal(&args.goal)?;
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = match args.evidence.as_ref() {
@@ -488,7 +467,7 @@ pub struct GoalDecomposeArgs {
     )]
     pub children: Vec<ChildGoalInput>,
     #[schemars(
-        description = "Perspective handle (`<uuid>`) the children are assigned to; not inherited from the parent. Required unless the host supplies a caller Perspective."
+        description = "Optional Perspective handle (`<uuid>`) the children are assigned to; not inherited from the parent. Omit to use the host caller Perspective, if any, or leave them unassigned."
     )]
     pub target_perspective: Option<String>,
     #[schemars(
@@ -501,9 +480,9 @@ pub struct GoalDecomposeArgs {
 pub struct ChildGoalInput {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
+    #[serde(default)]
     #[schemars(
-        length(min = 1),
-        description = "Fact or Abstraction handles (`<uuid>`) that motivate this child; at least one."
+        description = "Optional Fact or Abstraction handles (`<uuid>`) that motivate this child."
     )]
     pub evidence: Vec<String>,
 }
@@ -641,35 +620,26 @@ fn resolve_evidence(
         .collect()
 }
 
-/// Parse Goal evidence handles (bare UUIDs, at least one); storage checks each is a live owned Fact or Abstraction in the write transaction.
+/// Parse supplied Goal evidence handles (bare UUIDs); storage checks each is a live owned Fact or Abstraction in the write transaction.
 pub(crate) fn resolve_goal_evidence_handles(
     ctx: &McpToolCtx,
     evidence: &[String],
 ) -> Result<Vec<GoalEvidenceRef>, McpToolError> {
-    if evidence.is_empty() {
-        return Err(McpToolError::InvalidInput(
-            "Goal evidence must contain at least one Fact or Abstraction handle".into(),
-        ));
-    }
     resolve_evidence(ctx, evidence)
 }
 
 fn target_perspective(
     ctx: &McpToolCtx,
     target_perspective: Option<&str>,
-) -> Result<GoalAssignmentTarget, McpToolError> {
+) -> Result<Option<GoalAssignmentTarget>, McpToolError> {
     match target_perspective {
         Some(raw) => ctx
             .resolve_memory(raw)
-            .map(GoalAssignmentTarget::perspective),
-        None => ctx
-            .caller_self_perspective
             .map(GoalAssignmentTarget::perspective)
-            .ok_or_else(|| {
-                McpToolError::InvalidInput(
-                    "target_perspective is required: name the Perspective UUID to assign to".into(),
-                )
-            }),
+            .map(Some),
+        None => Ok(ctx
+            .caller_self_perspective
+            .map(GoalAssignmentTarget::perspective)),
     }
 }
 
@@ -981,78 +951,6 @@ mod tests {
         );
     }
 
-    fn goal_set_args(evidence: Vec<String>) -> GoalSetArgs {
-        GoalSetArgs {
-            payload: GoalPayloadArgs {
-                schema_id: "bogus/goal".into(),
-                schema_version: None,
-                title: "t".into(),
-                text: "b".into(),
-                body: serde_json::json!({}),
-            },
-            evidence,
-            target_perspective: None,
-            idempotency_key: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn goal_set_rejects_empty_evidence() {
-        let err = goal_set(test_ctx(), goal_set_args(Vec::new()))
-            .await
-            .expect_err("empty evidence must be rejected");
-        assert!(
-            matches!(err, McpToolError::InvalidInput(ref m) if m.contains("requires >=1")),
-            "got {err:?}",
-        );
-    }
-
-    #[tokio::test]
-    async fn goal_modify_rejects_explicit_empty_evidence_before_engine() {
-        let err = goal_modify(
-            test_ctx(),
-            GoalModifyArgs {
-                goal: format!("{}", uuid::Uuid::now_v7()),
-                payload: GoalPayloadArgs {
-                    schema_id: "bogus/goal".into(),
-                    schema_version: None,
-                    title: "t".into(),
-                    text: "b".into(),
-                    body: serde_json::json!({}),
-                },
-                evidence: Some(Vec::new()),
-                idempotency_key: None,
-            },
-        )
-        .await
-        .expect_err("explicit empty operator evidence must fail at the MCP boundary");
-        assert!(
-            matches!(err, McpToolError::InvalidInput(ref message) if message.contains("at least one")),
-            "got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn goal_set_accepts_nonempty_evidence_before_payload_resolution() {
-        // With evidence present the empty-evidence guard must pass; the call
-        // then fails later on the unregistered schema, proving the guard
-        // only fires on empty evidence (a Fact or Abstraction handle is accepted).
-        let err = goal_set(
-            test_ctx(),
-            goal_set_args(vec![format!("{}", uuid::Uuid::now_v7())]),
-        )
-        .await
-        .expect_err("bogus schema still fails later");
-        assert!(
-            !matches!(err, McpToolError::InvalidInput(ref m) if m.contains("requires >=1")),
-            "guard must not fire for non-empty evidence: {err:?}",
-        );
-        assert!(
-            matches!(err, McpToolError::InvalidInput(ref m) if m.contains("unregistered GoalPayload")),
-            "expected subsequent schema error, got {err:?}",
-        );
-    }
-
     #[test]
     fn goal_evidence_rejects_prefixed_ids_before_storage() {
         let ctx = test_ctx();
@@ -1061,15 +959,5 @@ mod tests {
             let err = resolve_goal_evidence_handles(&ctx, &[raw]).expect_err("bare UUID required");
             assert!(matches!(err, McpToolError::InvalidInput(_)), "{err}");
         }
-    }
-
-    #[test]
-    fn goal_evidence_rejects_empty_input() {
-        let err = resolve_goal_evidence_handles(&test_ctx(), &[])
-            .expect_err("operator Goal evidence must be nonempty");
-        assert!(
-            matches!(err, McpToolError::InvalidInput(ref message) if message.contains("at least one")),
-            "got {err:?}"
-        );
     }
 }

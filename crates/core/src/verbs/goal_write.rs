@@ -43,9 +43,9 @@ impl GoalState {
     /// verb) from `self` to `next`.
     ///
     /// Matrix: `Active → {Active, Paused, Abandoned}`, `Paused → {Active, Abandoned}`.
-    /// `Achieved` is **never** a legal target here — achievement carries
-    /// mandatory evidence and flows through the dedicated achieve path, not a
-    /// plain transition. `Achieved`/`Abandoned` are terminal (no outgoing
+    /// `Achieved` is **never** a legal target here — achievement flows
+    /// through the dedicated achieve path, not a plain transition.
+    /// `Achieved`/`Abandoned` are terminal (no outgoing
     /// transition).
     ///
     /// This predicate and [`Self::may_achieve`] are the authoritative matrix
@@ -78,7 +78,7 @@ impl GoalState {
 ///
 /// Closed, and `pending` exists only on [`Self::Pause`]: a resume or an
 /// abandon cannot carry it, and no transition leads to `Achieved` (that goes
-/// through the achieve verb, which carries evidence).
+/// through the achieve verb, which may carry evidence).
 ///
 /// ```compile_fail
 /// use proxima_core::PendingWork;
@@ -293,17 +293,21 @@ impl GoalDependencyRef {
 /// named and no kind is chosen: the declaration is the whole statement.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalTopologyWrite {
-    assignment: GoalAssignmentTarget,
+    assignment: Option<GoalAssignmentTarget>,
     dependencies: Vec<GoalDependencyRef>,
     evidence: Vec<GoalEvidenceRef>,
 }
 
 impl GoalTopologyWrite {
+    /// Declare an optional assignment and any dependencies or evidence.
+    /// An unassigned Goal belongs to its Owner alone; both reference lists
+    /// may be empty.
+    ///
     /// # Errors
     ///
     /// Returns `InvalidArgument` when dependency or evidence refs contain duplicates.
     pub fn new(
-        assignment: GoalAssignmentTarget,
+        assignment: Option<GoalAssignmentTarget>,
         dependencies: Vec<GoalDependencyRef>,
         evidence: Vec<GoalEvidenceRef>,
     ) -> Result<Self, ProtocolError> {
@@ -333,7 +337,7 @@ impl GoalTopologyWrite {
     }
 
     #[must_use]
-    pub const fn assignment(&self) -> GoalAssignmentTarget {
+    pub const fn assignment(&self) -> Option<GoalAssignmentTarget> {
         self.assignment
     }
 
@@ -434,10 +438,8 @@ impl<P> GoalCreateRequest<P> {
     /// for the signed-in owner. Use [`Self::with_authorship`] for
     /// system-originated goals.
     ///
-    /// The assignment Perspective is explicit by design: current
-    /// Proxima Goal assignment is a reference the Goal row declares at
-    /// creation — the Goal knows the Perspective it inspires — not an
-    /// unassigned owner-scoped row.
+    /// The optional assignment names the Perspective the Goal inspires.
+    /// Without one, the Goal belongs to its Owner alone.
     ///
     /// # Panics
     ///
@@ -446,7 +448,7 @@ impl<P> GoalCreateRequest<P> {
     #[must_use]
     pub fn product(
         owner: OwnerId,
-        assignment: GoalAssignmentTarget,
+        assignment: Option<GoalAssignmentTarget>,
         request_id: IdempotencyKey,
         title: impl Into<String>,
         text: impl Into<String>,

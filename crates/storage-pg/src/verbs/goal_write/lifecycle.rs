@@ -9,7 +9,7 @@ use super::{
 pub(super) struct LifecycleWrite<'a> {
     pub(super) owner: &'a OwnerId,
     pub(super) inserted: InsertedGoal,
-    pub(super) assignment: MemoryId,
+    pub(super) assignment: Option<MemoryId>,
     pub(super) dependencies: &'a [GoalId],
     /// What the write rests on, empty for the verbs that name nothing.
     pub(super) evidence: &'a [EvidenceTarget],

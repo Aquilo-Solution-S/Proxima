@@ -484,7 +484,7 @@ fn flavor_sdk_constructs_contract_goal_and_session_values() {
     let memory = proxima::flavor::MemoryId::new(uuid::Uuid::now_v7());
     let goal = proxima::flavor::GoalId::new(uuid::Uuid::now_v7());
     let topology = GoalTopologyWrite::new(
-        GoalAssignmentTarget::perspective(memory),
+        Some(GoalAssignmentTarget::perspective(memory)),
         vec![GoalDependencyRef::new(goal)],
         vec![GoalEvidenceRef::new(memory)],
     )

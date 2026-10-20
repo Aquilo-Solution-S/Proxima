@@ -69,7 +69,10 @@ pin kinds use three arrays: `origins[]`, `refs[]`, and `goal_refs[]`.
 
 A Goal states what is desired, whose direction it is, its lifecycle state, and
 what it depends on. Goal decomposition, evidence, and assignment are fields of
-the Goal version, so the Goal owns those references. A lifecycle transition is
+the Goal version, so the Goal owns those references. Assignment and evidence
+are optional: a goal may contain only its title and words. Supplied evidence
+must be a Fact or Abstraction, and an assignment must name a Perspective.
+A lifecycle transition is
 an appended `t`; there is no supersession pointer and no in-place mutation.
 
 Goals form a plain tree. `decompose` creates child Goals under a parent; each

@@ -8,12 +8,12 @@ use super::{
     draft_from_stored, insert_or_replay_goal, internal, lifecycle_outcome,
     load_goal_evidence_exact, load_prior_goal, lock_prepared_goal_writes, map_err,
     modify_replay_declaration, persist_prepared_goal_insert, prepare_goal_insert,
-    record_goal_replay_declaration, require_goal_replay, require_operator_evidence_nonempty,
-    resolve_decompose_replay_set, resolve_goal_replay, transition_replay_declaration,
-    validate_active_head, validate_evidence_in_owner, validate_goal_achievement,
-    validate_goal_transition,
+    record_goal_replay_declaration, require_goal_replay, resolve_decompose_replay_set,
+    resolve_goal_replay, transition_replay_declaration, validate_active_head,
+    validate_evidence_in_owner, validate_goal_achievement, validate_goal_transition,
 };
 use crate::error::with_bounded_retry;
+use proxima_core::GoalAssignmentTarget;
 
 // The goal `*_atomic` verbs are pool-scoped write transactions. Each wraps
 // its `_in_pool` body in `with_bounded_retry` so a transient deadlock /
@@ -118,7 +118,6 @@ pub(crate) async fn create_goal_in_tx(
         return Ok(replay);
     }
     let evidence = validate_evidence_in_owner(tx, &owner, req.draft.topology.evidence()).await?;
-    require_operator_evidence_nonempty(&req.draft.authorship, &evidence)?;
     let inserted = insert_or_replay_goal(
         tx,
         sidecars,
@@ -144,7 +143,11 @@ pub(crate) async fn create_goal_in_tx(
         LifecycleWrite {
             owner: &owner,
             inserted,
-            assignment: req.draft.topology.assignment().perspective_id(),
+            assignment: req
+                .draft
+                .topology
+                .assignment()
+                .map(GoalAssignmentTarget::perspective_id),
             dependencies: &dependencies,
             evidence: &evidence,
         },
@@ -263,13 +266,6 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     permit: &OwnerWritePermit,
     store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    // See `transition_goal_atomic_in_pool`: an empty-evidence achievement was
-    // never written, so no declaration can match one.
-    if req.evidence.is_empty() {
-        return Err(StorageError::ConstraintViolation(
-            "achievement evidence must be nonempty".into(),
-        ));
-    }
     let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
     let writer = scope.writer();
     let mut tx = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
@@ -398,7 +394,6 @@ pub(crate) async fn modify_goal_atomic_in_pool(
         request_id: req.request_id.as_str(),
         evidence: &evidence,
     });
-    require_operator_evidence_nonempty(&draft.authorship, &evidence)?;
     let inserted = insert_or_replay_goal(
         &mut tx,
         sidecars,
@@ -467,7 +462,6 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
     )> = Vec::with_capacity(req.children.len());
     for (child, declaration) in req.children.iter().zip(&declarations) {
         let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &child.evidence).await?;
-        require_operator_evidence_nonempty(&req.authorship, &evidence)?;
         let draft = child_draft(
             &req.owner,
             req.parent_goal_id,
@@ -532,7 +526,10 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
             LifecycleWrite {
                 owner: &req.owner,
                 inserted,
-                assignment: req.topology.assignment().perspective_id(),
+                assignment: req
+                    .topology
+                    .assignment()
+                    .map(GoalAssignmentTarget::perspective_id),
                 dependencies: &dependencies,
                 evidence: &evidence,
             },
@@ -1029,7 +1026,7 @@ mod lifecycle_lock_tests {
                 sidecar_payload: None,
                 state: GoalState::Abandoned,
                 topology: GoalTopologyWrite::new(
-                    GoalAssignmentTarget::perspective(assignment.memory_id),
+                    Some(GoalAssignmentTarget::perspective(assignment.memory_id)),
                     Vec::new(),
                     Vec::new(),
                 )?,

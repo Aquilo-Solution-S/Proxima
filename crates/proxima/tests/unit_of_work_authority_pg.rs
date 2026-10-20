@@ -375,7 +375,7 @@ fn goal_request(
     GoalCreateRequest {
         owner,
         topology: GoalTopologyWrite::new(
-            GoalAssignmentTarget::perspective(assignment),
+            Some(GoalAssignmentTarget::perspective(assignment)),
             Vec::new(),
             vec![GoalEvidenceRef::new(evidence)],
         )

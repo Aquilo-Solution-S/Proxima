@@ -8,10 +8,10 @@ use crate::storage_ports::GoalCommandStoragePorts;
 use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    DecomposeGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalCreateRequest, GoalDraft,
-    GoalEvidenceRef, GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalTopologyWrite,
-    GoalTransitionKind, GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey,
-    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    DecomposeGoalOutcome, GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship,
+    GoalCreateRequest, GoalDraft, GoalEvidenceRef, GoalPayloadWrite, GoalReplayOutcome,
+    GoalReplayRequest, GoalTopologyWrite, GoalTransitionKind, GoalWriteBuildError,
+    GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use crate::verbs::schema::PayloadKind;
 use crate::{EntityKind, FactPayload, GoalChangeV1, GoalPayload, MemoryId, SchemaVersion};
@@ -87,10 +87,8 @@ impl Engine {
     /// Create an Active typed Goal for an embedded host or protocol
     /// caller without exposing `proxima_core.goal` storage shape.
     ///
-    /// The request must name the target Perspective explicitly;
-    /// current Proxima Goal assignment is a Goal-declared reference to its
-    /// Perspective,
-    /// not a detached owner-scoped Goal row.
+    /// The request may name a target Perspective. An unassigned Goal belongs
+    /// to its Owner alone.
     ///
     /// # Errors
     ///
@@ -204,8 +202,8 @@ impl Engine {
             .authorize_write(authz, &req.owner, AccessKind::Goal)
             .await?;
         let context = self.goal_atomic_context(authz, req.author_self_perspective_id)?;
-        // `Achieved` is not a `GoalTransitionKind`: achievement carries
-        // mandatory evidence and goes through `mark_goal_achieved`. The
+        // `Achieved` is not a `GoalTransitionKind`: achievement has
+        // its dedicated path through `mark_goal_achieved`. The
         // authoritative legality matrix is `GoalState::may_transition_to`,
         // enforced storage-side.
         let atomic = TransitionGoalAtomicRequest {
@@ -235,7 +233,7 @@ impl Engine {
         .await
     }
 
-    /// Mark a Goal head Achieved with evidence.
+    /// Mark a Goal head Achieved with optional evidence.
     ///
     /// A goal with decompose children is Achieved only when no child's
     /// current head is Active or Paused and at least one is Achieved (#514).
@@ -501,8 +499,11 @@ impl Engine {
         topology: &GoalTopologyWrite,
         written: &[MemoryId],
     ) -> Result<(), ProtocolError> {
-        let assignment = topology.assignment().perspective_id();
-        if !written.contains(&assignment) {
+        if let Some(assignment) = topology
+            .assignment()
+            .map(GoalAssignmentTarget::perspective_id)
+            && !written.contains(&assignment)
+        {
             self.target_perspective_authorized(authz, goal_owner, assignment)
                 .await?;
         }
@@ -822,7 +823,7 @@ mod tests {
 
     fn topology(target: MemoryId) -> GoalTopologyWrite {
         GoalTopologyWrite::new(
-            GoalAssignmentTarget::perspective(target),
+            Some(GoalAssignmentTarget::perspective(target)),
             Vec::new(),
             Vec::new(),
         )

@@ -115,7 +115,7 @@ fn decompose_request<'a>(
         authorship: GoalAuthorship::User,
         context: context(registry),
         topology: GoalTopologyWrite::new(
-            GoalAssignmentTarget::perspective(assignment),
+            Some(GoalAssignmentTarget::perspective(assignment)),
             Vec::new(),
             Vec::new(),
         )?,
@@ -151,7 +151,7 @@ fn active_draft(
         sidecar_payload: None,
         state: GoalState::Active,
         topology: GoalTopologyWrite::new(
-            GoalAssignmentTarget::perspective(assignment),
+            Some(GoalAssignmentTarget::perspective(assignment)),
             Vec::new(),
             evidence,
         )?,

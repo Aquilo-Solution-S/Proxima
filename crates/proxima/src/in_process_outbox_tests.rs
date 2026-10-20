@@ -357,7 +357,7 @@ async fn set_and_pause(world: &World, pending: PendingWork) -> (GoalId, GoalId) 
         .await
         .expect("assignment");
     let topology = GoalTopologyWrite::new(
-        GoalAssignmentTarget::perspective(assignment.memory_id),
+        Some(GoalAssignmentTarget::perspective(assignment.memory_id)),
         Vec::new(),
         Vec::new(),
     );

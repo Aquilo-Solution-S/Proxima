@@ -42,6 +42,12 @@ mod goal_evidence_kinds;
 #[path = "core_mcp_pg/goal_tree.rs"]
 mod goal_tree;
 
+#[path = "core_mcp_pg/unassigned_goals.rs"]
+mod unassigned_goals;
+
+#[path = "core_mcp_pg/recall_unassigned.rs"]
+mod recall_unassigned;
+
 #[path = "core_mcp_pg/memory_reads_alike.rs"]
 mod memory_reads_alike;
 

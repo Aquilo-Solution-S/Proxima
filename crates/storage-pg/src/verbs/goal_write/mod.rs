@@ -30,9 +30,7 @@ mod types;
 
 use children::{ChildRule, ensure_goal_children_closed};
 use edges::assert_goal_topology_references;
-use evidence::{
-    load_goal_evidence_exact, require_operator_evidence_nonempty, validate_evidence_in_owner,
-};
+use evidence::{load_goal_evidence_exact, validate_evidence_in_owner};
 use insert::{
     PostLockGuard, PreparedGoalInsert, insert_or_replay_goal, persist_prepared_goal_insert,
     prepare_goal_insert,

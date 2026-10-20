@@ -10,7 +10,10 @@ boundary and [configuration](configuration.md) for the settings inventory.
 Read and write projector cursors through `Engine::load_source_cursor` and
 `Engine::store_source_cursor`, using the request's `AuthzContext`. Goal display
 fields are validated by `GoalPayloadWrite::from_payload`; its
-`GoalWriteBuildError` carries the typed refusal. HTTP routes are listed in
+`GoalWriteBuildError` carries the typed refusal. `GoalTopologyWrite::new`
+takes an optional assignment: pass `Some(GoalAssignmentTarget::perspective(id))`
+for a supplied Perspective or `None` for an unassigned goal. Evidence may be
+empty, including when marking a goal achieved. HTTP routes are listed in
 [protocol](protocol.md).
 
 ## Boot a composed host

@@ -15,7 +15,7 @@ pub(super) struct StoredGoal {
     pub(super) text: Option<String>,
     pub(super) payload: Vec<u8>,
     pub(super) state: GoalState,
-    pub(super) assignment: MemoryId,
+    pub(super) assignment: Option<MemoryId>,
     pub(super) dependencies: Vec<GoalId>,
 }
 

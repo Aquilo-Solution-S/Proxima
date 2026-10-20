@@ -113,10 +113,13 @@ fn core_goal_action_metadata_preserves_required_fields() {
         required_for("decompose").contains(&"idempotency_key".to_owned()),
         "decompose must advertise its required idempotency_key",
     );
-    assert!(
-        required_for("mark_achieved").contains(&"evidence".to_owned()),
-        "mark_achieved must advertise required completion evidence",
-    );
+    // #524: evidence is optional on every write, including completion.
+    for action in ["set", "modify", "mark_achieved"] {
+        assert!(
+            !required_for(action).contains(&"evidence".to_owned()),
+            "{action} must allow omitted evidence",
+        );
+    }
     let guide = schema
         .pointer("/properties/action/description")
         .and_then(serde_json::Value::as_str)
@@ -144,8 +147,8 @@ fn core_goal_action_metadata_preserves_required_fields() {
         );
     }
     assert!(
-        evidence.contains("at least one"),
-        "action-specific evidence semantics must survive: {evidence}",
+        evidence.contains("empty list clears it"),
+        "modify must distinguish omitted evidence from clearing it: {evidence}",
     );
     for field in ["title", "schema_id"] {
         let description = schema
@@ -168,7 +171,7 @@ fn core_goal_action_metadata_preserves_required_fields() {
 }
 
 #[test]
-fn goal_child_and_episode_evidence_advertise_nonempty_inputs() {
+fn goal_child_and_episode_evidence_are_optional_but_children_are_required() {
     let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
     let schema_for = |name: &str| {
         &frozen
@@ -182,8 +185,8 @@ fn goal_child_and_episode_evidence_advertise_nonempty_inputs() {
         schema_for("core_goal")
             .pointer("/properties/children/items/properties/evidence/minItems")
             .and_then(serde_json::Value::as_u64),
-        Some(1),
-        "decompose child evidence must be nonempty"
+        None,
+        "#524: decompose child evidence may be empty"
     );
     assert_eq!(
         schema_for("core_goal")
@@ -196,8 +199,8 @@ fn goal_child_and_episode_evidence_advertise_nonempty_inputs() {
         schema_for("core_episode_commit")
             .pointer("/properties/goal/items/properties/evidence/minItems")
             .and_then(serde_json::Value::as_u64),
-        Some(1),
-        "episode Goal evidence must be nonempty"
+        None,
+        "#524: episode Goal evidence may be empty"
     );
 }
 

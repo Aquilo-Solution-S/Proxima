@@ -70,7 +70,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
         let perspective = pg.ingest_fact_atomic(&permit, &perspective, None).await?;
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
         let topology = GoalTopologyWrite::new(
-            GoalAssignmentTarget::perspective(perspective.memory_id),
+            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
             Vec::new(),
             vec![GoalEvidenceRef::new(perspective.memory_id)],
         )?;
@@ -112,7 +112,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
         }
 
         let topology = GoalTopologyWrite::new(
-            GoalAssignmentTarget::perspective(perspective.memory_id),
+            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
             Vec::new(),
             vec![GoalEvidenceRef::new(fact.memory_id)],
         )?;
@@ -175,7 +175,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         sidecar_payload: None,
                         state: GoalState::Active,
                         topology: GoalTopologyWrite::new(
-                            GoalAssignmentTarget::perspective(perspective.memory_id),
+                            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
                             Vec::new(),
                             vec![
                                 GoalEvidenceRef::new(fact.memory_id),
@@ -256,7 +256,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
             prompt_version: PromptVersion::new("v1"),
         });
         let operator_fact_topology = GoalTopologyWrite::new(
-            GoalAssignmentTarget::perspective(perspective.memory_id),
+            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
             Vec::new(),
             vec![GoalEvidenceRef::new(fact.memory_id)],
         )?;
@@ -294,7 +294,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
         );
 
         let operator_abstraction_topology = GoalTopologyWrite::new(
-            GoalAssignmentTarget::perspective(perspective.memory_id),
+            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
             Vec::new(),
             vec![GoalEvidenceRef::new(abs.memory_id)],
         )?;
@@ -365,7 +365,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         sidecar_payload: None,
                         state: GoalState::Active,
                         topology: GoalTopologyWrite::new(
-                            GoalAssignmentTarget::perspective(perspective.memory_id),
+                            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
                             Vec::new(),
                             Vec::new(),
                         )?,
@@ -417,7 +417,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         sidecar_payload: None,
                         state: GoalState::Active,
                         topology: GoalTopologyWrite::new(
-                            GoalAssignmentTarget::perspective(perspective.memory_id),
+                            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
                             Vec::new(),
                             vec![GoalEvidenceRef::new(fact.memory_id)],
                         )?,
@@ -446,7 +446,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         publication: None,
                     },
                     topology: GoalTopologyWrite::new(
-                        GoalAssignmentTarget::perspective(perspective.memory_id),
+                        Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
                         Vec::new(),
                         Vec::new(),
                     )?,
@@ -577,7 +577,7 @@ impl Fixture {
         evidence: &[proxima_core::MemoryId],
     ) -> Result<proxima_core::verbs::goal_write::GoalWriteOutcome, StorageError> {
         let topology = GoalTopologyWrite::new(
-            GoalAssignmentTarget::perspective(self.perspective),
+            Some(GoalAssignmentTarget::perspective(self.perspective)),
             Vec::new(),
             evidence.iter().copied().map(GoalEvidenceRef::new).collect(),
         )
@@ -694,6 +694,16 @@ async fn operator_modify_and_decompose_accept_fact_evidence() {
             Some(vec![fact]),
             "carried"
         );
+        let cleared = fx
+            .modify(
+                &registry,
+                "op-mod-clear-evidence",
+                carried.goal_id,
+                operator_authorship(),
+                Some(&[]),
+            )
+            .await?;
+        assert_eq!(fx.evidence_of(cleared.goal_id).await?, Some(Vec::new()));
 
         // (c) operator decompose with children [fact] and [fact, abs].
         let parent = fx
@@ -717,7 +727,7 @@ async fn operator_modify_and_decompose_accept_fact_evidence() {
                     authorship: operator_authorship(),
                     context: context(&registry),
                     topology: GoalTopologyWrite::new(
-                        GoalAssignmentTarget::perspective(fx.perspective),
+                        Some(GoalAssignmentTarget::perspective(fx.perspective)),
                         Vec::new(),
                         Vec::new(),
                     )?,
@@ -748,11 +758,10 @@ async fn operator_modify_and_decompose_accept_fact_evidence() {
     result.expect("operator Fact evidence on modify and decompose");
 }
 
-/// #513: with the operator kind check gone, a Perspective is still refused
-/// by the one in-transaction kind rule, and an operator write still needs
-/// non-empty evidence (F7: the carried-empty modify, message wording).
+/// Supplied evidence still follows the in-transaction kind rule when omitted
+/// and empty evidence are allowed (#524).
 #[tokio::test]
-async fn operator_perspective_and_empty_evidence_are_refused() {
+async fn operator_perspective_evidence_is_refused() {
     let fx = fixture().await.expect("fixture");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
@@ -779,37 +788,100 @@ async fn operator_perspective_and_empty_evidence_are_refused() {
         );
         assert_eq!(message, "evidence must be Fact or Abstraction");
 
-        let message = constraint(
-            fx.create(&registry, "f7-op-empty", operator_authorship(), &[])
-                .await,
-            "operator create with empty evidence",
-        );
-        assert_eq!(
-            message,
-            "operator-authored Goal requires non-empty evidence"
-        );
-
-        let user_empty = fx
-            .create(&registry, "f7-user-empty", GoalAuthorship::User, &[])
-            .await?;
-        let message = constraint(
-            fx.modify(
-                &registry,
-                "f7-op-mod-carried-empty",
-                user_empty.goal_id,
-                operator_authorship(),
-                None,
-            )
-            .await,
-            "operator modify carrying empty evidence",
-        );
-        assert_eq!(
-            message,
-            "operator-authored Goal requires non-empty evidence"
-        );
         Ok(())
     }
     .await;
     let _ = drop_db(&fx.db_name).await;
-    result.expect("operator Perspective and empty evidence refused");
+    result.expect("operator Perspective evidence refused");
+}
+
+/// #524: absent assignment and empty evidence remain valid through later
+/// writes, including the prior-goal reload and the decomposition parent check.
+#[tokio::test]
+async fn unassigned_operator_goals_allow_empty_evidence_through_successors() {
+    let fx = fixture().await.expect("fixture");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let create = CreateGoalAtomicRequest {
+            draft: GoalDraft::active_from_payload_write(
+                fx.owner,
+                payload("unassigned goal"),
+                GoalTopologyWrite::new(None, Vec::new(), Vec::new())?,
+                operator_authorship(),
+                IdempotencyKey::new("unassigned-create")?,
+            ),
+            context: context(&registry),
+            write_act_t: None,
+        };
+        let created = fx.pg.create_goal_atomic(&create, &fx.permit).await?;
+        assert_eq!(created.edge_count, 0);
+        let mut versions = vec![created.goal_id];
+        let modified = fx
+            .modify(
+                &registry,
+                "unassigned-modify",
+                created.goal_id,
+                operator_authorship(),
+                None,
+            )
+            .await?;
+        assert_eq!(modified.edge_count, 0);
+        versions.push(modified.goal_id);
+        let decomposed = fx
+            .pg
+            .decompose_goal_atomic(
+                &DecomposeGoalAtomicRequest {
+                    owner: fx.owner,
+                    parent_goal_id: modified.goal_id,
+                    authorship: operator_authorship(),
+                    context: context(&registry),
+                    topology: GoalTopologyWrite::new(None, Vec::new(), Vec::new())?,
+                    children: vec![ChildGoalDraft {
+                        payload: payload("unassigned child"),
+                        evidence: Vec::new(),
+                        request_id: IdempotencyKey::new("unassigned-child")?,
+                    }],
+                },
+                &fx.permit,
+            )
+            .await?;
+        assert_eq!(decomposed.children.len(), 1);
+        let child = &decomposed.children[0].outcome;
+        assert_eq!(child.edge_count, 1, "the child names its parent dependency");
+        versions.push(child.goal_id);
+        for (index, prior) in [child.goal_id, modified.goal_id].into_iter().enumerate() {
+            let achieved = fx
+                .pg
+                .achieve_goal_atomic(
+                    &AchieveGoalAtomicRequest {
+                        owner: fx.owner,
+                        prior_goal_id: prior,
+                        authorship: operator_authorship(),
+                        request_id: IdempotencyKey::new(format!("unassigned-achieve-{index}"))?,
+                        context: context(&registry),
+                        evidence: Vec::new(),
+                    },
+                    &fx.permit,
+                )
+                .await?;
+            versions.push(achieved.goal_id);
+        }
+        let ids: Vec<_> = versions.iter().map(|id| id.into_inner()).collect();
+        let valid_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxima_core.goal
+              WHERE t = ANY($1) AND assignment_t IS NULL AND evidence_t = '{}'::uuid[]",
+        )
+        .bind(&ids)
+        .fetch_one(fx.pg.pool_for_tests())
+        .await?;
+        assert_eq!(usize::try_from(valid_count)?, versions.len());
+        let replay = fx.pg.create_goal_atomic(&create, &fx.permit).await?;
+        assert_eq!(replay.goal_id, created.goal_id);
+        assert_eq!(replay.edge_count, 0);
+        assert!(replay.idempotent_replay);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&fx.db_name).await;
+    result.expect("unassigned goals allow optional evidence throughout their lifecycle");
 }

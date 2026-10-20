@@ -136,7 +136,7 @@ impl Tree {
 
     fn topology(&self, dependencies: &[GoalId], evidence: bool) -> GoalTopologyWrite {
         GoalTopologyWrite::new(
-            GoalAssignmentTarget::perspective(self.perspective),
+            Some(GoalAssignmentTarget::perspective(self.perspective)),
             dependencies
                 .iter()
                 .copied()

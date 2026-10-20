@@ -202,7 +202,10 @@ pub(super) async fn prepare_goal_insert<'a>(
         state: draft.state,
         request_id: draft.request_id.clone(),
         close_fact_t: None,
-        assignment_t: Some(draft.topology.assignment().perspective_id().into_inner()),
+        assignment_t: draft
+            .topology
+            .assignment()
+            .map(|target| target.perspective_id().into_inner()),
         dependency_t: draft
             .topology
             .dependencies()

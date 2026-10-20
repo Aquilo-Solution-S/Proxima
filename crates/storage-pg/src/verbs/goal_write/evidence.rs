@@ -1,26 +1,7 @@
 use super::{
-    EntityKind, EvidenceTarget, GoalAuthorship, GoalEvidenceRef, GoalId, HashSet, MemoryId,
-    OwnerId, Postgres, StorageError, SystemOrigin, Transaction, map_err,
+    EntityKind, EvidenceTarget, GoalEvidenceRef, GoalId, HashSet, MemoryId, OwnerId, Postgres,
+    StorageError, Transaction, map_err,
 };
-
-/// An operator-authored Goal write (set, modify, decompose child) must carry
-/// evidence. No kind check: the kind rule is `validate_evidence_in_owner`'s.
-/// User-authored goals may carry empty evidence.
-pub(super) fn require_operator_evidence_nonempty(
-    authorship: &GoalAuthorship,
-    evidence: &[EvidenceTarget],
-) -> Result<(), StorageError> {
-    if matches!(
-        authorship,
-        GoalAuthorship::System(SystemOrigin::Operator { .. })
-    ) && evidence.is_empty()
-    {
-        return Err(StorageError::ConstraintViolation(
-            "operator-authored Goal requires non-empty evidence".into(),
-        ));
-    }
-    Ok(())
-}
 
 /// The one evidence-kind rule for every goal write (set, modify, decompose
 /// child, episode goal, `mark_achieved`): a live owned Fact or Abstraction; a

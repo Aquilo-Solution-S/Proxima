@@ -135,7 +135,7 @@ impl Harness {
 
     fn topology(&self) -> TestResult<GoalTopologyWrite> {
         Ok(GoalTopologyWrite::new(
-            GoalAssignmentTarget::perspective(self.assignment),
+            Some(GoalAssignmentTarget::perspective(self.assignment)),
             Vec::new(),
             Vec::new(),
         )?)

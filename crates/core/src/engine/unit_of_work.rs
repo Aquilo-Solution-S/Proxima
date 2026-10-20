@@ -12,7 +12,8 @@ use crate::storage_ports::{
 };
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::goal_write::{
-    CreateGoalAtomicRequest, GoalCreateRequest, GoalDraft, GoalReplayRequest, GoalWriteOutcome,
+    CreateGoalAtomicRequest, GoalAssignmentTarget, GoalCreateRequest, GoalDraft, GoalReplayRequest,
+    GoalWriteOutcome,
 };
 use crate::verbs::own_erase::{
     EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,
@@ -1174,21 +1175,26 @@ impl<'a> UnitOfWork<'a> {
         req: &super::GoalCreatePayloadWriteRequest,
         goal_owner: &OwnerId,
     ) -> Result<(), ProtocolError> {
-        let assignment = req.topology.assignment().perspective_id();
-        if let Some((_, owner)) = self.written_owners.iter().find(|(id, _)| *id == assignment)
-            && owner != goal_owner
+        if let Some(assignment) = req
+            .topology
+            .assignment()
+            .map(GoalAssignmentTarget::perspective_id)
         {
-            return Err(ProtocolError::forbidden(
-                super::pipeline::ENTRY_NOT_FOUND_MESSAGE,
-            ));
-        }
-        if let Some((_, kind)) = self.written_kinds.iter().find(|(id, _)| *id == assignment)
-            && *kind != EntityKind::Perspective
-        {
-            return Err(ProtocolError::invalid_argument(
-                "assignment",
-                "Goal assignment must reference a Perspective",
-            ));
+            if let Some((_, owner)) = self.written_owners.iter().find(|(id, _)| *id == assignment)
+                && owner != goal_owner
+            {
+                return Err(ProtocolError::forbidden(
+                    super::pipeline::ENTRY_NOT_FOUND_MESSAGE,
+                ));
+            }
+            if let Some((_, kind)) = self.written_kinds.iter().find(|(id, _)| *id == assignment)
+                && *kind != EntityKind::Perspective
+            {
+                return Err(ProtocolError::invalid_argument(
+                    "assignment",
+                    "Goal assignment must reference a Perspective",
+                ));
+            }
         }
         for evidence in req.topology.evidence() {
             if let Some((_, kind)) = self

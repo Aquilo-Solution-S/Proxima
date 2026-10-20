@@ -117,14 +117,14 @@ pub struct EpisodeStanceItem {
 pub struct EpisodeGoalItem {
     #[serde(flatten)]
     pub payload: GoalPayloadArgs,
+    #[serde(default)]
     #[schemars(
-        length(min = 1),
         description = "Facts or Abstractions motivating the goal: `<uuid>`, this call's `remember:N`, or this call's `derive`."
     )]
     pub evidence: Vec<String>,
     #[serde(default)]
     #[schemars(
-        description = "Perspective the goal is assigned to: `<uuid>` or this call's `stance:N`. Required unless the host supplies a caller Perspective."
+        description = "Optional Perspective the goal is assigned to: `<uuid>` or this call's `stance:N`. Defaults to the caller Perspective when supplied by the host; otherwise the goal is unassigned."
     )]
     pub target_perspective: Option<String>,
     #[serde(default)]
@@ -562,12 +562,6 @@ impl EpisodeWrite<'_> {
         let act_id = self.act_id;
         let mut goals = Vec::new();
         for (idx, item) in items.iter().enumerate() {
-            if item.evidence.is_empty() {
-                return Err(McpToolError::InvalidInput(
-                    "goal set requires >=1 Fact or Abstraction evidence handle motivating the goal"
-                        .into(),
-                ));
-            }
             let payload = encode_goal_payload(ctx, item.payload.clone())?;
             let evidence = resolve_goal_evidence(ctx, &self.slots, &item.evidence)?;
             let assignment =
@@ -714,7 +708,7 @@ fn resolve_goal_assignment(
     ctx: &McpToolCtx,
     slots: &EpisodeSlots,
     target_perspective: Option<&str>,
-) -> Result<GoalAssignmentTarget, McpToolError> {
+) -> Result<Option<GoalAssignmentTarget>, McpToolError> {
     match target_perspective {
         Some(handle) => {
             if let Some(slot) = resolve_local_slot(slots, handle)? {
@@ -723,19 +717,15 @@ fn resolve_goal_assignment(
                         "target_perspective must name a Perspective".into(),
                     ));
                 }
-                return Ok(GoalAssignmentTarget::perspective(slot.id));
+                return Ok(Some(GoalAssignmentTarget::perspective(slot.id)));
             }
             ctx.resolve_memory(handle)
                 .map(GoalAssignmentTarget::perspective)
+                .map(Some)
         }
-        None => ctx
+        None => Ok(ctx
             .caller_self_perspective
-            .map(GoalAssignmentTarget::perspective)
-            .ok_or_else(|| {
-                McpToolError::InvalidInput(
-                    "target_perspective or caller Perspective context is required".into(),
-                )
-            }),
+            .map(GoalAssignmentTarget::perspective)),
     }
 }
 

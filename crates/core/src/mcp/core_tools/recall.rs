@@ -42,7 +42,7 @@ pub struct RecallArgs {
     pub subjects: Vec<String>,
     #[serde(default)]
     #[schemars(
-        description = "Perspective also keeps the Active Goals assigned to the returned Perspectives."
+        description = "Perspective also keeps the Active Goals assigned to the returned Perspectives and the selected owner's unassigned Active Goals."
     )]
     pub kind: Option<RecallKind>,
     #[serde(default = "default_limit")]
@@ -99,6 +99,7 @@ enum RecallReason {
     CueTouch,
     Question,
     AssignedGoal,
+    UnassignedGoal,
 }
 
 impl RecallReason {
@@ -108,13 +109,14 @@ impl RecallReason {
             Self::CueTouch => "cue_touch",
             Self::Question => "question",
             Self::AssignedGoal => "assigned_goal",
+            Self::UnassignedGoal => "unassigned_goal",
         }
     }
 }
 
 impl McpTool for RecallTool {
     const NAME: &'static str = protocol_tool::CORE_RECALL;
-    const DESCRIPTION: &'static str = "Recall what is known about a question and/or subject handles: short sketches of the subjects, Perspectives about them, question matches, and Active Goals assigned to recalled Perspectives. No bodies; use core_search_memories for filtered search.";
+    const DESCRIPTION: &'static str = "Recall what is known about a question and/or subject handles: short sketches of the subjects, Perspectives about them, question matches, Active Goals assigned to recalled Perspectives, and the selected owner's unassigned Active Goals. No bodies; use core_search_memories for filtered search.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = RecallArgs;
     type Output = RecallOutput;
@@ -170,8 +172,9 @@ async fn recall(ctx: McpToolCtx, args: RecallArgs) -> Result<RecallOutput, McpTo
         .await?;
     }
     mark_perspective_heads(engine, &ctx, &mut packet).await?;
-    if includes_assigned_goals(args.kind) {
+    if includes_goals(args.kind) {
         collect_assigned_goals(&ctx, engine, space.owner, limit, &mut packet).await?;
+        collect_unassigned_goals(&ctx, engine, space.owner, limit, &mut packet).await?;
     }
 
     Ok(RecallOutput {
@@ -387,8 +390,57 @@ async fn collect_assigned_goals(
                 ctx,
                 crate::GoalId::new(sketch.id.into_inner()),
                 &sketch.text,
+                RecallReason::AssignedGoal,
             );
         }
+    }
+    Ok(())
+}
+
+async fn collect_unassigned_goals(
+    ctx: &McpToolCtx,
+    engine: &crate::Engine,
+    owner: crate::OwnerId,
+    limit: u32,
+    packet: &mut Packet,
+) -> Result<(), McpToolError> {
+    let authz = ctx
+        .authz
+        .clone()
+        .narrowed_to_owner(owner)
+        .ok_or_else(|| McpToolError::NotAuthorized("memory space read".into()))?;
+    let mut req = QueryRequest::readable();
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_states.insert(GoalState::Active);
+    req.include_payloads = false;
+    req.limit = limit;
+    let mut collected = 0;
+    loop {
+        let page = engine.query(&authz, &req).await?;
+        let goal_ids: Vec<MemoryId> = page
+            .goals
+            .into_iter()
+            .filter(|goal| goal.assignment.is_none())
+            .map(|goal| MemoryId::new(goal.id.into_inner()))
+            .filter(|id| !packet.contains(*id))
+            .collect();
+        let sketches = engine.load_sketches(&authz, &goal_ids).await?;
+        collected += sketches.len();
+        for sketch in sketches {
+            packet.insert_goal(
+                ctx,
+                crate::GoalId::new(sketch.id.into_inner()),
+                &sketch.text,
+                RecallReason::UnassignedGoal,
+            );
+        }
+        if collected >= limit as usize {
+            break;
+        }
+        let Some(after) = page.next_cursor else {
+            break;
+        };
+        req.page.after = Some(after);
     }
     Ok(())
 }
@@ -450,7 +502,13 @@ impl Packet {
         }
     }
 
-    fn insert_goal(&mut self, _ctx: &McpToolCtx, id: crate::GoalId, title: &str) {
+    fn insert_goal(
+        &mut self,
+        _ctx: &McpToolCtx,
+        id: crate::GoalId,
+        title: &str,
+        reason: RecallReason,
+    ) {
         let key = id.into_inner();
         if self.by_id.contains_key(&key) {
             return;
@@ -458,12 +516,12 @@ impl Packet {
         self.by_id.insert(
             key,
             Entry {
-                reason: RecallReason::AssignedGoal,
+                reason,
                 sketch: RecallSketch {
                     handle: id.into_inner().to_string(),
                     kind: EntityKind::Goal.as_str().to_string(),
                     sketch: truncate_sketch(title),
-                    reason: RecallReason::AssignedGoal.as_str().to_string(),
+                    reason: reason.as_str().to_string(),
                 },
                 owner: None,
                 is_head: true,
@@ -530,7 +588,7 @@ fn kind_matches(filter: RecallKind, kind: &str, is_head: bool) -> bool {
     }
 }
 
-fn includes_assigned_goals(kind: Option<RecallKind>) -> bool {
+fn includes_goals(kind: Option<RecallKind>) -> bool {
     matches!(
         kind,
         None | Some(RecallKind::Perspective | RecallKind::Goal)

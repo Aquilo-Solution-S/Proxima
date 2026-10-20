@@ -72,7 +72,7 @@ async fn goal_assignment_targets_only_intended_engineer_instance() {
         .create_goal(GoalCreateRequest {
             owner,
             topology: GoalTopologyWrite::new(
-                GoalAssignmentTarget::perspective(alice_self),
+                Some(GoalAssignmentTarget::perspective(alice_self)),
                 Vec::new(),
                 vec![GoalEvidenceRef::new(evidence)],
             )

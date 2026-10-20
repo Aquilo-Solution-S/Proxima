@@ -33,9 +33,6 @@ pub(super) async fn load_prior_goal(
     let Some((schema_id, title, text, state, assignment, dependency_t)) = row else {
         return Err(StorageError::NotFound);
     };
-    let assignment = assignment.ok_or_else(|| {
-        StorageError::ConstraintViolation("goal assignment perspective missing".into())
-    })?;
     Ok(StoredGoal {
         schema_id: SchemaId::new(schema_id),
         schema_version: SchemaVersion::new(1),
@@ -43,7 +40,7 @@ pub(super) async fn load_prior_goal(
         text,
         payload: Vec::new(),
         state,
-        assignment: MemoryId::new(assignment),
+        assignment: assignment.map(MemoryId::new),
         dependencies: dependency_t.into_iter().map(GoalId::new).collect(),
     })
 }
@@ -144,7 +141,9 @@ pub(super) fn draft_from_stored(
         sidecar_payload: None,
         state,
         topology: proxima_core::GoalTopologyWrite::new(
-            proxima_core::GoalAssignmentTarget::perspective(stored.assignment),
+            stored
+                .assignment
+                .map(proxima_core::GoalAssignmentTarget::perspective),
             stored
                 .dependencies
                 .iter()
@@ -164,7 +163,7 @@ pub(super) struct DraftFromPayload<'a> {
     pub(super) owner: &'a OwnerId,
     pub(super) payload: &'a GoalPayloadWrite,
     pub(super) state: GoalState,
-    pub(super) assignment: MemoryId,
+    pub(super) assignment: Option<MemoryId>,
     pub(super) dependencies: Vec<GoalId>,
     pub(super) supersedes: Option<GoalId>,
     pub(super) authorship: GoalAuthorship,
@@ -183,7 +182,9 @@ pub(super) fn draft_from_payload(input: DraftFromPayload<'_>) -> GoalDraft {
         sidecar_payload: input.payload.sidecar_payload.clone(),
         state: input.state,
         topology: proxima_core::GoalTopologyWrite::new(
-            proxima_core::GoalAssignmentTarget::perspective(input.assignment),
+            input
+                .assignment
+                .map(proxima_core::GoalAssignmentTarget::perspective),
             input
                 .dependencies
                 .into_iter()

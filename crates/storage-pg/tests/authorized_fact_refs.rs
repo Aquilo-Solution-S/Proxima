@@ -377,7 +377,7 @@ async fn create_goal(
     perspective: MemoryId,
 ) -> Result<GoalId, Box<dyn std::error::Error>> {
     let topology = GoalTopologyWrite::new(
-        GoalAssignmentTarget::perspective(perspective),
+        Some(GoalAssignmentTarget::perspective(perspective)),
         Vec::new(),
         Vec::new(),
     )?;

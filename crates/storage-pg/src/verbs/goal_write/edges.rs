@@ -16,12 +16,13 @@ pub(super) async fn assert_goal_topology_references(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
     goal_id: GoalId,
-    assignment: MemoryId,
+    assignment: Option<MemoryId>,
     dependencies: &[GoalId],
     evidence: &[EvidenceTarget],
 ) -> Result<usize, StorageError> {
-    let mut targets = Vec::with_capacity(1 + dependencies.len() + evidence.len());
-    targets.push(EdgeEndpoint::memory(EntityKind::Perspective, assignment));
+    let mut targets =
+        Vec::with_capacity(usize::from(assignment.is_some()) + dependencies.len() + evidence.len());
+    targets.extend(assignment.map(|id| EdgeEndpoint::memory(EntityKind::Perspective, id)));
     targets.extend(dependencies.iter().copied().map(EdgeEndpoint::goal));
     targets.extend(
         evidence
