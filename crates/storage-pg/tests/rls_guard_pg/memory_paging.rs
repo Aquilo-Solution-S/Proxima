@@ -144,9 +144,7 @@ async fn page(connection: &mut PgConnection, req: &QueryRequest, owners: &[Uuid]
     if let Some(schema) = &req.schema_id {
         query = query.bind(schema.as_str());
     }
-    if let Some(kind) = kind_filter(req.entity_kind) {
-        query = query.bind(kind);
-    }
+    // The kind filter is a SQL literal (#490 C2); it takes no bind.
     if !req.memory_ids.is_empty() {
         query = query.bind(
             req.memory_ids

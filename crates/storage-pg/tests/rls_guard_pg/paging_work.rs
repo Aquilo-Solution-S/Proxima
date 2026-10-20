@@ -152,8 +152,7 @@ async fn page_and_work(
         q = q.bind(schema);
         e = e.bind(schema);
     }
-    q = q.bind("fact");
-    e = e.bind("fact");
+    // The kind filter is a SQL literal (#490 C2); it takes no bind.
     let rows = q.fetch_all(&mut *tx).await.unwrap();
     let plan: serde_json::Value = e.fetch_one(&mut *tx).await.unwrap();
     let ids = rows.into_iter().map(|row| row.get("memory_id")).collect();
@@ -227,6 +226,148 @@ async fn owner_paged_memory_work_is_bounded_after_filters() {
         }
         tx.rollback().await.unwrap();
     }
+    runtime.close().await;
+    platform.close().await;
+    super::cleanup(&database, admin, &platform_role, &runtime_role).await;
+}
+
+/// Every plan node that scans `memory_head`, with its index name (if any) and
+/// the rows it removed by filter, summed over loops.
+fn head_scans(plan: &serde_json::Value, out: &mut Vec<(String, f64)>) {
+    match plan {
+        serde_json::Value::Array(xs) => xs.iter().for_each(|node| head_scans(node, out)),
+        serde_json::Value::Object(node) => {
+            if node
+                .get("Relation Name")
+                .and_then(serde_json::Value::as_str)
+                == Some("memory_head")
+            {
+                let index = node
+                    .get("Index Name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("<no index>")
+                    .to_owned();
+                let removed =
+                    metric(node, "Rows Removed by Filter") * metric(node, "Actual Loops").max(1.0);
+                out.push((index, removed));
+            }
+            node.values().for_each(|node| head_scans(node, out));
+        }
+        _ => {}
+    }
+}
+
+fn assert_kind_page_uses_partial_index(plan: &serde_json::Value, label: &str) {
+    let mut scans = Vec::new();
+    head_scans(plan, &mut scans);
+    assert!(
+        !scans.is_empty(),
+        "{label}: the kind page must read memory_head; plan: {plan}"
+    );
+    for (index, removed) in &scans {
+        assert_eq!(
+            index, "memory_head_owner_perspective_t_idx",
+            "{label}: a Perspective page must read the perspective partial index, not \
+             walk the owner's Facts; plan: {plan}"
+        );
+        assert!(
+            *removed < 100.0,
+            "{label}: memory_head removed {removed} rows by filter; plan: {plan}"
+        );
+    }
+}
+
+/// A kind-filtered page for an owner with many Facts and no Perspectives
+/// (#490). Under owner RLS the enum `=` on `kind` is not leakproof, so it can
+/// never be an index condition: without a per-kind partial index the page
+/// walks every head the owner has and filters them all away. The partial
+/// index carries the kind in its predicate, which the planner can only prove
+/// from a literal — so the second half plans the statement generically, as
+/// sqlx's statement cache does after five executions.
+#[tokio::test]
+async fn kind_page_reads_its_partial_index_under_rls_and_generic_plans() {
+    let (database, admin, runtime, platform, platform_role, runtime_role, _) =
+        super::setup_full_schema().await;
+    let owners: Vec<_> = (0..100).map(|_| Uuid::now_v7()).collect();
+    let _rows = seed(&admin, &owners).await;
+    // The rest of the corpus holds Perspectives too (heads suffice: the page
+    // starts at heads), about 1,000 heads per owner of which one in ten is a
+    // Perspective, so the planner's per-owner estimate is not toy-sized.
+    // Owner 0 has 10,000 Facts and no Perspective.
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, t, kind, owner_id, schema_id)
+         SELECT uuidv7(), uuidv7(),
+                (CASE WHEN g % 10 = 0 THEN 'perspective' ELSE 'fact' END)::proxima_core.memory_kind,
+                o, 'paging/fill'
+           FROM unnest($1::uuid[]) AS o, generate_series(1, 900) AS g",
+    )
+    .bind(&owners[1..])
+    .execute(&admin)
+    .await
+    .unwrap();
+    sqlx::query("VACUUM (ANALYZE) proxima_core.memory_head")
+        .execute(&admin)
+        .await
+        .unwrap();
+    let roles = vec![(OwnerId::from(GroupId::new(owners[0])), Role::viewer())];
+    let verifier = super::SyntheticVerifier {
+        roles: OwnerRoles::for_subject(UserId::new(Uuid::now_v7()), roles).unwrap(),
+    };
+    let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("kind-page".into()))
+        .await
+        .unwrap();
+    let mut req = QueryRequest::readable();
+    req.entity_kind = Some(EntityKind::Perspective);
+    req.limit = 50;
+    let sql = memory_page_sql_for_tests(&req).unwrap();
+    let owner_ids = vec![owners[0]];
+
+    let mut tx = begin_owner_transaction(&runtime, authz.owner_scope().unwrap())
+        .await
+        .unwrap();
+    // (1) Custom plan, as the runtime role under the shipped RLS policies.
+    let explain = format!("EXPLAIN (ANALYZE, FORMAT JSON) {sql}");
+    // SQL-POLICY: fixed-fragment — the closed production page builder.
+    let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain))
+        .bind(&owner_ids)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_kind_page_uses_partial_index(&plan, "custom plan");
+
+    // (2) Generic plan: the kind must still prove the partial predicate.
+    sqlx::query("SET LOCAL plan_cache_mode = force_generic_plan")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let prepare = format!("PREPARE gt490_kind_page(uuid[]) AS {sql}");
+    // SQL-POLICY: fixed-fragment — the closed production page builder.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(prepare))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // EXECUTE's arguments cannot be bound through EXPLAIN; the one argument
+    // is a `Uuid`, rendered by its own Display (hex and hyphens only).
+    let execute = format!(
+        "EXPLAIN (ANALYZE, FORMAT JSON) EXECUTE gt490_kind_page('{{{}}}'::uuid[])",
+        owners[0]
+    );
+    // SQL-POLICY: fixed-fragment — literal statement plus a Uuid's Display.
+    let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(execute))
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("DEALLOCATE gt490_kind_page")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_kind_page_uses_partial_index(&plan, "generic plan");
+    assert_eq!(
+        plan[0]["Plan"]["Actual Rows"].as_f64(),
+        Some(0.0),
+        "the owner has no Perspectives: {plan}"
+    );
+    tx.rollback().await.unwrap();
     runtime.close().await;
     platform.close().await;
     super::cleanup(&database, admin, &platform_role, &runtime_role).await;

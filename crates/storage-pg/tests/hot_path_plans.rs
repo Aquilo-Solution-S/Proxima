@@ -624,7 +624,6 @@ async fn hot_path_plans_use_expected_indexes() {
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(heads_explain))
             .bind(&owner_ids)
             .bind("core/agent-note-v1")
-            .bind("fact")
             .fetch_one(&mut *tx)
             .await?;
         let heads_plan = plan.to_string();

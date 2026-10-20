@@ -97,7 +97,8 @@ async fn fetch_memory_page_on_connection(
     for filter in filters {
         q = match filter {
             MemoryFilter::Schema(schema_id) => q.bind(schema_id),
-            MemoryFilter::Kind(kind) => q.bind(kind),
+            // The kind is a literal in the SQL (see `MemoryFilter::predicate`).
+            MemoryFilter::Kind(_) => q,
             MemoryFilter::Ids(ids) => q.bind(ids),
             MemoryFilter::ReferencedGoalHandles(handles) => q.bind(handles),
             MemoryFilter::Cursor(t) => q.bind(t),
@@ -110,10 +111,13 @@ async fn fetch_memory_page_on_connection(
 ///
 /// Keeping the two halves in one value is what removes the bookkeeping: a
 /// filter contributes a predicate and an argument or neither, and its
-/// placeholder number is simply its index in the list.
+/// placeholder number is its position among the filters that bind.
+/// `Kind` is the one filter that binds nothing: its value is one of three
+/// closed `PageKind` literals written into the SQL, so a generic plan
+/// can still prove a per-kind partial index predicate (a `$n` cannot).
 enum MemoryFilter {
     Schema(String),
-    Kind(&'static str),
+    Kind(PageKind),
     Ids(Vec<Uuid>),
     ReferencedGoalHandles(Vec<Uuid>),
     Cursor(Uuid),
@@ -130,8 +134,9 @@ impl MemoryFilter {
         let alias = if heads_only { "h" } else { "m" };
         match self {
             Self::Schema(_) => format!(" AND {alias}.schema_id = ${placeholder}"),
-            Self::Kind(_) => {
-                format!(" AND {alias}.kind = ${placeholder}::text::proxima_core.memory_kind")
+            Self::Kind(kind) => {
+                let kind = kind.literal();
+                format!(" AND {alias}.kind = '{kind}'::proxima_core.memory_kind")
             }
             Self::Ids(_) => format!(" AND {alias}.t = ANY(${placeholder}::uuid[])"),
             Self::ReferencedGoalHandles(_) => format!(
@@ -142,6 +147,30 @@ impl MemoryFilter {
                    AND g.owner_id = ANY($1::uuid[]))"
             ),
             Self::Cursor(_) => format!(" AND {alias}.t < ${placeholder}"),
+        }
+    }
+
+    /// Whether this filter takes a bind (and so a placeholder number).
+    const fn binds(&self) -> bool {
+        !matches!(self, Self::Kind(_))
+    }
+}
+
+/// The closed set of kinds a memory page may filter on. The type, not a
+/// string check, is what keeps the SQL literal inside these three values.
+#[derive(Clone, Copy)]
+enum PageKind {
+    Fact,
+    Abstraction,
+    Perspective,
+}
+
+impl PageKind {
+    const fn literal(self) -> &'static str {
+        match self {
+            Self::Fact => "fact",
+            Self::Abstraction => "abstraction",
+            Self::Perspective => "perspective",
         }
     }
 }
@@ -157,9 +186,9 @@ fn memory_filters(req: &QueryRequest) -> Vec<MemoryFilter> {
         filters.push(MemoryFilter::Schema(schema_id.as_str().to_owned()));
     }
     match req.entity_kind {
-        Some(EntityKind::Fact) => filters.push(MemoryFilter::Kind("fact")),
-        Some(EntityKind::Abstraction) => filters.push(MemoryFilter::Kind("abstraction")),
-        Some(EntityKind::Perspective) => filters.push(MemoryFilter::Kind("perspective")),
+        Some(EntityKind::Fact) => filters.push(MemoryFilter::Kind(PageKind::Fact)),
+        Some(EntityKind::Abstraction) => filters.push(MemoryFilter::Kind(PageKind::Abstraction)),
+        Some(EntityKind::Perspective) => filters.push(MemoryFilter::Kind(PageKind::Perspective)),
         Some(EntityKind::Goal) | None => {}
     }
     if !req.referenced_goal_handles.is_empty() {
@@ -376,15 +405,20 @@ fn head_page_sql(filters: &[MemoryFilter], fetch_limit: u64) -> String {
 }
 
 fn append_memory_filters(sql: &mut String, filters: &[MemoryFilter], heads_only: bool) {
-    // `$1` is the owner array; the filters take the placeholders after it,
-    // in the order the caller binds them.
-    for (index, filter) in filters.iter().enumerate() {
-        let placeholder = u32::try_from(index).unwrap_or(u32::MAX).saturating_add(2);
-        // SQL-POLICY: fixed-fragment — every arm of `MemoryFilter::predicate`
-        // is a literal; the only interpolations are a column picked between
-        // two literals by `heads_only` and this `u32` placeholder index. No
-        // caller-supplied text reaches the statement, only binds.
+    // `$1` is the owner array; the binding filters take the placeholders
+    // after it, densely, in the order the caller binds them. A filter that
+    // binds nothing (`Kind`) consumes no number.
+    let mut placeholder: u32 = 2;
+    for filter in filters {
+        // Every arm of `MemoryFilter::predicate` is a literal; the only
+        // interpolations are a column picked between two literals by
+        // `heads_only`, this `u32` placeholder index, and a kind from the
+        // closed three-literal `PageKind` set. Caller text only binds.
+        // SQL-POLICY: fixed-fragment
         sql.push_str(&filter.predicate(placeholder, heads_only));
+        if filter.binds() {
+            placeholder = placeholder.saturating_add(1);
+        }
     }
 }
 
@@ -516,6 +550,44 @@ mod tests {
             src.contains("m.schema_id"),
             "query page selects memory.schema_id"
         );
+    }
+
+    #[test]
+    fn kind_is_a_literal_and_placeholders_are_dense_in_bind_order() {
+        use super::{MemoryFilter, PageKind};
+        let id = uuid::Uuid::now_v7();
+        for heads_only in [true, false] {
+            let filters = [
+                MemoryFilter::Schema("s".to_owned()),
+                MemoryFilter::Kind(PageKind::Perspective),
+                MemoryFilter::Ids(vec![id]),
+                MemoryFilter::Cursor(id),
+            ];
+            let sql = super::memory_page_sql(heads_only, &filters, 10);
+            let alias = if heads_only { "h" } else { "m" };
+            assert!(
+                sql.contains(&format!(
+                    "{alias}.kind = 'perspective'::proxima_core.memory_kind"
+                )),
+                "kind must be a literal so a generic plan can prove the partial index: {sql}"
+            );
+            assert!(sql.contains(&format!("{alias}.schema_id = $2")), "{sql}");
+            assert!(
+                sql.contains(&format!("{alias}.t = ANY($3::uuid[])")),
+                "{sql}"
+            );
+            assert!(sql.contains(&format!("{alias}.t < $4")), "{sql}");
+            assert!(!sql.contains("$5"), "no placeholder past the binds: {sql}");
+            let binds = filters.iter().filter(|filter| filter.binds()).count();
+            assert_eq!(binds, 3, "Kind binds nothing");
+        }
+        // Kind first: the next binding filter still takes $2.
+        let sql = super::memory_page_sql(
+            true,
+            &[MemoryFilter::Kind(PageKind::Fact), MemoryFilter::Cursor(id)],
+            10,
+        );
+        assert!(sql.contains("h.t < $2") && !sql.contains("$3"), "{sql}");
     }
 
     #[test]
