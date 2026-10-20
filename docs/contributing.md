@@ -83,7 +83,24 @@ python3 -m mkdocs build --strict
 ```
 
 Postgres-backed tests need `PROXIMA_TEST_PG_URL`; the local development
-bootstrap is described in [get started](get-started.md). Do not hide a failing
+bootstrap is described in [get started](get-started.md).
+
+The suite runs eight test processes at once with no retries
+(`.config/nextest.toml`), and they share the server's `max_connections`.
+The dev compose file and CI set it to 200. A full run peaks near 60 client
+backends; re-measure (`pg_stat_activity`) before raising `test-threads`.
+A fixture boot that times out on its pool reports the server's connection
+use in its panic.
+
+The cited-blob tests return early and pass when the `PROXIMA_S3_*` variables
+are unset. A complete run needs an S3-compatible store with a versioned
+bucket and the five variables CI sets in `.github/workflows/ci.yml`. CI
+serves bucket `proxima-cited-blobs` at `http://localhost:9000`. Locally, the
+dev compose file serves `http://127.0.0.1:9100` (`PROXIMA_DEV_S3_PORT`
+overrides the port) with keys `proxima` / `proxima-dev`, and
+`docker compose -f docker-compose.dev.yml --profile init up s3-init` creates
+its versioned bucket `proxima-dev`; region `us-east-1` works for both. Report
+a run without the variables as skipping that lane. Do not hide a failing
 required check. Fix it, record a precise `.local` ledger entry with command
 and output, or escalate the blocker.
 

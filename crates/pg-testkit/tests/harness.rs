@@ -42,3 +42,32 @@ async fn panicking_guard_keeps_the_database() {
     assert!(exists(&name).await, "panic must keep the clone");
     drop_db(&name).await.expect("cleanup kept clone");
 }
+
+#[tokio::test]
+async fn the_connection_budget_reads_the_servers_slots_and_their_use() {
+    let budget = proxima_pg_testkit::connection_budget()
+        .await
+        .expect("budget");
+    assert!(budget.max_connections > budget.superuser_reserved);
+    assert!(
+        budget.client_backends >= 1,
+        "the budget's own connection is a client backend: {budget}"
+    );
+    assert!(budget.non_superuser_backends <= budget.client_backends);
+
+    let exhausted = proxima_pg_testkit::describe_connection_error(
+        "runtime connection",
+        &"pool timed out while waiting for an open connection",
+    )
+    .await;
+    assert!(
+        exhausted.starts_with(
+            "runtime connection: pool timed out while waiting for an open connection; test server: max_connections="
+        ),
+        "{exhausted}"
+    );
+    let other =
+        proxima_pg_testkit::describe_connection_error("platform validation", &"scope refused")
+            .await;
+    assert_eq!(other, "platform validation: scope refused");
+}

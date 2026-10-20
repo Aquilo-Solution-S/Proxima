@@ -18,7 +18,9 @@
 #[allow(dead_code, reason = "each suite uses part of the shared fixture")]
 mod example_engine;
 
-use example_engine::{compose, fixture_pool, migrated_db};
+use example_engine::{
+    compose, expect_described, fixture_pool, initialize_store_number, migrated_db,
+};
 use proxima::flavor::{lock_scope_fence_exclusive_tx, lock_scope_fence_shared_tx};
 use proxima::testkit::SplitRoleDb;
 use proxima_core::test_fixtures::{authenticated_context, owner_scope_for_tests};
@@ -118,20 +120,12 @@ struct Fixture {
 impl Fixture {
     async fn new(prefix: &str) -> Self {
         let db = migrated_db(prefix).await;
-        proxima_storage_pg::PgMigrationStorage::connect_with_config(
-            db.platform_url(),
-            proxima_storage_pg::PgPoolConfig::default(),
-            proxima_storage_pg::PgTuning::default(),
-        )
-        .await
-        .expect("migration connection")
-        .initialize_store_number(0)
-        .await
-        .expect("store number");
-        let engine = compose(db.runtime_url(), db.platform_url(), |_| {}).await;
-        let admin = fixture_pool(&db.admin_url(), 2)
+        initialize_store_number(&db)
             .await
-            .expect("admin connection");
+            .unwrap_or_else(|why| panic!("{why}"));
+        let engine = compose(db.runtime_url(), db.platform_url(), |_| {}).await;
+        let admin =
+            expect_described("admin connection", fixture_pool(&db.admin_url(), 2).await).await;
         Self { admin, engine, db }
     }
 
@@ -168,9 +162,11 @@ impl Fixture {
         owner: OwnerId,
         notebook_id: Uuid,
     ) -> (sqlx::PgPool, sqlx::Transaction<'static, sqlx::Postgres>) {
-        let pool = fixture_pool(&self.db.admin_url(), 1)
-            .await
-            .expect("barrier connection");
+        let pool = expect_described(
+            "barrier connection",
+            fixture_pool(&self.db.admin_url(), 1).await,
+        )
+        .await;
         let mut barrier = pool.begin().await.expect("barrier transaction");
         sqlx::query(HOLD_NOTEBOOK_ROW_SQL)
             .bind(owner.into_inner())
@@ -184,9 +180,11 @@ impl Fixture {
     /// A fresh connection that takes the notebook fence itself, the way a
     /// writer holds it.
     async fn writer(&self) -> (sqlx::PgPool, sqlx::Transaction<'static, sqlx::Postgres>) {
-        let pool = fixture_pool(&self.db.admin_url(), 1)
-            .await
-            .expect("writer connection");
+        let pool = expect_described(
+            "writer connection",
+            fixture_pool(&self.db.admin_url(), 1).await,
+        )
+        .await;
         let tx = pool.begin().await.expect("writer transaction");
         (pool, tx)
     }
@@ -273,9 +271,11 @@ impl Fixture {
         notebook_id: Uuid,
     ) -> tokio::task::JoinHandle<Result<NotebookEraseReceipt, String>> {
         let engine = self.task_engine().await;
-        let pool = fixture_pool(self.db.runtime_url(), 1)
-            .await
-            .expect("erase connection");
+        let pool = expect_described(
+            "erase connection",
+            fixture_pool(self.db.runtime_url(), 1).await,
+        )
+        .await;
         tokio::spawn(async move {
             erase_notebook_with_scope(&engine, &authz(owner), &pool, owner, notebook_id)
                 .await

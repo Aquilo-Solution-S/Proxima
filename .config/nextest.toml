@@ -1,18 +1,22 @@
 [profile.default]
-# PG tests clone one DB per test and each `PgStorage` pool opens up to
-# 10 connections. Keep 8 * 10 under the local max_connections=100 headroom;
-# raise this cap only when the dev PG max_connections setting is raised.
+# Each test is its own process with its own pools, and the eight that run at
+# once share one server's max_connections. A serving boot validates on one
+# connection per pool, and fixture Engines size their pools to four, so a
+# full workspace run at eight threads peaks near 60 client backends (about 40
+# non-superuser). The dev compose file and CI run Postgres with
+# max_connections=200; the docs-default 100 still holds with margin.
+# Re-measure before raising test-threads (docs/contributing.md).
 test-threads = 8
-# One retry absorbs the rare PG pool / template-clone race so a transient
-# blip doesn't redden CI; a genuinely failing test still fails on the retry.
-retries = 1
+# No retries: a retry turns a test that failed on a missing resource into a
+# pass and hides the failure. A failing test fails the run.
+retries = 0
 # A hung test is killed and reported by name (TIMEOUT) instead of holding CI
 # until the job times out. Flagged SLOW after each 60s period, killed after 5
 # (300s). The slowest test in a full local run takes about 40s
 # (host_template_pg sixteen_concurrent_clones_are_distinct_and_complete), the
 # next cluster of Postgres e2e tests about 23s, and the split_role_boot_refuses_*
-# tests under 6s, so 300s leaves 7x headroom for a slower CI runner. With the one
-# retry a hung test costs at most 10 minutes, inside the test job's 45.
+# tests under 6s, so 300s leaves 7x headroom for a slower CI runner. A hung
+# test costs at most 5 minutes, inside the test job's 45.
 slow-timeout = { period = "60s", terminate-after = 5 }
 failure-output = "immediate-final"
 success-output = "never"

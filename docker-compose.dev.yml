@@ -23,6 +23,9 @@ services:
       - ./scripts/pg-init.sql:/docker-entrypoint-initdb.d/00-pg-stat-statements.sql:ro
     command:
       - "postgres"
+      # The test suite's connection budget: see .config/nextest.toml.
+      - "-c"
+      - "max_connections=200"
       - "-c"
       - "shared_preload_libraries=pg_stat_statements,auto_explain"
       - "-c"

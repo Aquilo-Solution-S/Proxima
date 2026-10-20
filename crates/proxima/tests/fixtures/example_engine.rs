@@ -10,7 +10,7 @@
 use std::sync::{Arc, LazyLock};
 
 use proxima::flavor::{FlavorBundle, PgSidecarRegistry, register_core_pg_sidecars};
-use proxima::testkit::{HostTemplate, SplitRoleDb, TemplateFamily};
+use proxima::testkit::{HostTemplate, SplitRoleDb, TemplateFamily, describe_connection_error};
 use proxima_core::{Engine, FlavorRegistry, OwnerId};
 use proxima_example::ExampleFlavor;
 use proxima_storage_pg::{PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
@@ -81,10 +81,61 @@ pub fn frozen_sidecars() -> proxima::flavor::PgSidecarRegistryFrozen {
 ///
 /// When Postgres is unavailable.
 pub async fn migrated_db(prefix: &str) -> SplitRoleDb {
-    TEMPLATE
-        .clone_split_role(prefix, &["proxima_example"])
+    expect_described(
+        "PG required for tests",
+        TEMPLATE
+            .clone_split_role(prefix, &["proxima_example"])
+            .await,
+    )
+    .await
+}
+
+/// `result`'s value, or its error as `context: error`. When the error reads
+/// as the server or a pool out of connections, the text also carries the
+/// test server's connection use ([`describe_connection_error`]), so a setup
+/// failure names its resource instead of only a pool timeout.
+///
+/// # Errors
+///
+/// The described error.
+pub async fn described<T, E: std::fmt::Display>(
+    context: &str,
+    result: Result<T, E>,
+) -> Result<T, String> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(describe_connection_error(context, &error).await),
+    }
+}
+
+/// [`described`] for setup that cannot go on without its value.
+///
+/// # Panics
+///
+/// With the described error.
+pub async fn expect_described<T, E: std::fmt::Display>(context: &str, result: Result<T, E>) -> T {
+    described(context, result)
         .await
-        .expect("PG required for tests")
+        .unwrap_or_else(|why| panic!("{why}"))
+}
+
+/// Record store number 0 on a fresh clone, as a serving boot requires.
+///
+/// # Errors
+///
+/// The described migration-connection or store-number error.
+pub async fn initialize_store_number(db: &SplitRoleDb) -> Result<(), String> {
+    let migration = described(
+        "migration connection",
+        PgMigrationStorage::connect_with_config(
+            db.platform_url(),
+            PgPoolConfig::default(),
+            PgTuning::default(),
+        )
+        .await,
+    )
+    .await?;
+    described("store number", migration.initialize_store_number(0).await).await
 }
 
 /// One test's database and the Engine over it.
@@ -105,20 +156,12 @@ impl ExampleEngine {
     /// When Postgres is unavailable or the composition is refused.
     pub async fn new(prefix: &str, extra: impl FnOnce(&mut FlavorRegistry)) -> Self {
         let db = migrated_db(prefix).await;
-        PgMigrationStorage::connect_with_config(
-            db.platform_url(),
-            PgPoolConfig::default(),
-            PgTuning::default(),
-        )
-        .await
-        .expect("migration connection")
-        .initialize_store_number(0)
-        .await
-        .expect("store number");
-        let engine = compose(db.runtime_url(), db.platform_url(), extra).await;
-        let pool = fixture_pool(&db.admin_url(), 2)
+        initialize_store_number(&db)
             .await
-            .expect("admin connection");
+            .unwrap_or_else(|why| panic!("{why}"));
+        let engine = compose(db.runtime_url(), db.platform_url(), extra).await;
+        let pool =
+            expect_described("admin connection", fixture_pool(&db.admin_url(), 2).await).await;
         Self { pool, engine, db }
     }
 
@@ -147,7 +190,8 @@ impl ExampleEngine {
 ///
 /// # Panics
 ///
-/// When Postgres is unavailable or the composition is refused.
+/// When Postgres is unavailable or the composition is refused. A boot that
+/// ran out of connections says how full the test server was.
 pub async fn compose(
     runtime_url: &str,
     platform_url: &str,
@@ -163,21 +207,28 @@ pub async fn compose(
     let sidecars = sidecars
         .freeze_against(&registry)
         .expect("the example sidecars match the registry");
-    let platform_pool = fixture_pool(platform_url, ENGINE_POOL_CONNECTIONS)
-        .await
-        .expect("platform connection");
-    let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_example"])
-        .await
-        .expect("platform validation");
-    let pg = PgStorage::connect_with_config(
-        runtime_url,
-        engine_pool_config(),
-        PgTuning::default(),
-        platform_scope,
-        0,
+    let platform_pool = expect_described(
+        "platform connection",
+        fixture_pool(platform_url, ENGINE_POOL_CONNECTIONS).await,
+    )
+    .await;
+    let platform_scope = expect_described(
+        "platform validation",
+        PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_example"]).await,
+    )
+    .await;
+    let pg = expect_described(
+        "runtime connection",
+        PgStorage::connect_with_config(
+            runtime_url,
+            engine_pool_config(),
+            PgTuning::default(),
+            platform_scope,
+            0,
+        )
+        .await,
     )
     .await
-    .expect("runtime connection")
     .with_sidecars(sidecars)
     .with_flavors(&registry);
     Engine::new(registry).with_storage_ports(Arc::new(pg).storage_ports())

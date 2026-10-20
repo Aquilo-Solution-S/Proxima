@@ -1629,8 +1629,130 @@ fn is_sqlstate(err: &sqlx::Error, expected: &str) -> bool {
     }
 }
 
+/// The test server's connection slots and how many are in use.
+///
+/// Every test process nextest runs at once shares one server's
+/// `max_connections`, less the slots reserved for superusers. A test whose
+/// pool cannot open a connection sees `PoolTimedOut` after the acquire
+/// timeout, because the pool retries a refused connect (SQLSTATE 53300)
+/// until then. [`describe_connection_error`] attaches this to such an error
+/// so the failure names the resource instead of only the timeout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ConnectionBudget {
+    /// `max_connections`.
+    pub max_connections: i64,
+    /// `superuser_reserved_connections`.
+    pub superuser_reserved: i64,
+    /// `reserved_connections` (Postgres 16+, otherwise 0).
+    pub reserved: i64,
+    /// Client backends connected to the server, every database included.
+    pub client_backends: i64,
+    /// The client backends of roles that are not superusers: the ones the
+    /// reserved slots are not kept for.
+    pub non_superuser_backends: i64,
+}
+
+impl fmt::Display for ConnectionBudget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "max_connections={} (superuser_reserved_connections={}, reserved_connections={}); \
+             {} client backends connected, {} of them non-superuser",
+            self.max_connections,
+            self.superuser_reserved,
+            self.reserved,
+            self.client_backends,
+            self.non_superuser_backends
+        )
+    }
+}
+
+/// Read the test server's [`ConnectionBudget`] over one admin connection.
+///
+/// # Errors
+///
+/// Returns the admin URL's configuration error, or the connection or query
+/// error.
+pub async fn connection_budget() -> Result<ConnectionBudget, sqlx::Error> {
+    let mut conn = PgConnection::connect(&try_admin_url()?).await?;
+    let (max_connections, superuser_reserved, reserved, client_backends, non_superuser_backends) =
+        sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
+            "SELECT current_setting('max_connections')::bigint,
+                    current_setting('superuser_reserved_connections')::bigint,
+                    coalesce(current_setting('reserved_connections', true), '0')::bigint,
+                    count(*)::bigint,
+                    count(*) FILTER (WHERE NOT coalesce(r.rolsuper, false))::bigint
+               FROM pg_stat_activity AS a LEFT JOIN pg_roles AS r ON r.oid = a.usesysid
+              WHERE a.backend_type = 'client backend'",
+        )
+        .fetch_one(&mut conn)
+        .await?;
+    conn.close().await?;
+    Ok(ConnectionBudget {
+        max_connections,
+        superuser_reserved,
+        reserved,
+        client_backends,
+        non_superuser_backends,
+    })
+}
+
+/// Whether an error's text reads as the server or a pool running out of
+/// connections: a pool timeout, or a connect refused for lack of slots.
+#[must_use]
+pub fn is_connection_exhaustion(message: &str) -> bool {
+    [
+        "pool timed out while waiting for an open connection",
+        "too many clients already",
+        "remaining connection slots are reserved",
+        "too many connections for",
+        "53300",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
+/// `context: error`, followed by the server's [`ConnectionBudget`] when the
+/// error reads as connection exhaustion ([`is_connection_exhaustion`]).
+///
+/// For a fixture's panic message: a boot that timed out on its pool then
+/// says how full the server was, which separates a server out of
+/// connections from an operation that stalled for another reason. The
+/// budget is read over a superuser admin connection, which the reserved
+/// slots normally still admit; when even that fails, the message says so.
+pub async fn describe_connection_error(context: &str, error: &dyn fmt::Display) -> String {
+    let message = format!("{context}: {error}");
+    if !is_connection_exhaustion(&message) {
+        return message;
+    }
+    match connection_budget().await {
+        Ok(budget) => format!("{message}; test server: {budget}"),
+        Err(budget_error) => {
+            format!("{message}; test server connection budget unavailable: {budget_error}")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn connection_exhaustion_is_read_from_the_pool_and_server_messages() {
+        for message in [
+            "runtime connection: Unavailable(\"pool timed out while waiting for an open connection\")",
+            "error returned from database: sorry, too many clients already",
+            "remaining connection slots are reserved for roles with the SUPERUSER attribute",
+            "too many connections for database \"proxima_test_x\"",
+        ] {
+            assert!(super::is_connection_exhaustion(message), "{message}");
+        }
+        for message in [
+            "RLS catalog guard refused pool: runtime role proxima_test_runtime is a superuser",
+            "scope not registered",
+        ] {
+            assert!(!super::is_connection_exhaustion(message), "{message}");
+        }
+    }
 
     use time::OffsetDateTime;
 

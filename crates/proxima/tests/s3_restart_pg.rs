@@ -512,20 +512,29 @@ async fn recover_and_cleanup(
     }
     if canonical_debt.is_some() {
         let (runtime_url, platform_url) = split_role_urls(database).await?;
-        let platform = proxima_storage_pg::PgPlatformScope::new(
+        let platform = described(
+            "platform connection",
             sqlx::postgres::PgPoolOptions::new()
                 .max_connections(4)
                 .connect(&platform_url)
-                .await?,
-            &["proxima_core"],
+                .await,
         )
         .await?;
-        let maintenance = PgStorage::connect_with_config(
-            &runtime_url,
-            fixture_pool_config(),
-            proxima_storage_pg::PgTuning::from_env()?,
-            platform,
-            0,
+        let platform = described(
+            "platform validation",
+            proxima_storage_pg::PgPlatformScope::new(platform, &["proxima_core"]).await,
+        )
+        .await?;
+        let maintenance = described(
+            "maintenance runtime connection",
+            PgStorage::connect_with_config(
+                &runtime_url,
+                fixture_pool_config(),
+                proxima_storage_pg::PgTuning::from_env()?,
+                platform,
+                0,
+            )
+            .await,
         )
         .await?
         .with_cold(Arc::new(cold.clone()));
@@ -604,7 +613,7 @@ async fn boot(
     if let Some(s3) = s3 {
         app = app.s3(s3);
     }
-    Ok(app.build().await?)
+    described("boot", app.build().await).await
 }
 
 async fn stop(boot: BuiltProxima) {
@@ -633,10 +642,28 @@ async fn corpus_counts(pool: &sqlx::PgPool) -> TestResult<(i64, i64)> {
 }
 
 async fn admin_pool(database: &str) -> TestResult<sqlx::PgPool> {
-    Ok(sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&db_url(database))
-        .await?)
+    described(
+        "admin connection",
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&db_url(database))
+            .await,
+    )
+    .await
+}
+
+/// `result`'s value, or its error as `context: error`, with the test
+/// server's connection use when the error reads as connection exhaustion,
+/// so a setup failure names its resource instead of only a pool timeout.
+async fn described<T, E: std::fmt::Display>(context: &str, result: Result<T, E>) -> TestResult<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(
+            proxima_pg_testkit::describe_connection_error(context, &error)
+                .await
+                .into(),
+        ),
+    }
 }
 
 /// The shipped pool policy sized for one test: a reboot fixture drives one

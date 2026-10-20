@@ -279,16 +279,25 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: relax test Postgres durability
+      - name: relax test Postgres durability, size its connections
         # Disposable database: crash safety buys nothing here. Every per-test
         # DROP DATABASE forces a checkpoint, and with fsync on each one waits
-        # on the runner's disk. All three settings reload without a restart.
+        # on the runner's disk. Those three settings reload; max_connections
+        # (the test suite's connection budget, see .config/nextest.toml) only
+        # takes effect on a restart, and a service container takes no
+        # command-line flags, so the step restarts it.
         run: |
           psql "postgres://proxima:proxima@localhost:5432/proxima" -v ON_ERROR_STOP=1 \
             -c 'ALTER SYSTEM SET fsync = off' \
             -c 'ALTER SYSTEM SET synchronous_commit = off' \
             -c 'ALTER SYSTEM SET full_page_writes = off' \
-            -c 'SELECT pg_reload_conf()'
+            -c 'ALTER SYSTEM SET max_connections = 200'
+          docker restart "${{ job.services.postgres.id }}"
+          for _ in $(seq 1 30); do
+            pg_isready -h localhost -p 5432 -U proxima && break
+            sleep 2
+          done
+          test "$(psql "postgres://proxima:proxima@localhost:5432/proxima" -Atc 'SHOW max_connections')" = 200
       - name: create cited-blob bucket
         # The AWS CLI reads only its own variable names; this step alone
         # gets the configured pair under them.
