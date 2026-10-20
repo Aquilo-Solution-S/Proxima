@@ -209,9 +209,10 @@ async fn connect_serving_storage(
 ) -> Result<PgStorage, ProximaError> {
     let schema_names = composed_schema_names(registry);
     let schema_refs: Vec<&str> = schema_names.iter().map(String::as_str).collect();
-    let platform_pool = sqlx::PgPool::connect(&config.platform_database_url)
-        .await
-        .map_err(|error| ProximaError::Storage(error.to_string()))?;
+    let platform_pool = config
+        .pg_pool_config
+        .connect_lazy(&config.platform_database_url)
+        .map_err(storage_error)?;
     let platform_scope = PgPlatformScope::new(platform_pool, &schema_refs)
         .await
         .map_err(|error| ProximaError::Storage(error.to_string()))?;

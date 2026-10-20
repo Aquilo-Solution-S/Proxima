@@ -619,3 +619,70 @@ async fn split_role_boot_refuses_unrelated_newer_ledger_version() {
     );
     cleanup(&database, admin, &runtime, &platform).await;
 }
+
+/// Non-superuser backends of `role` on `database`.
+async fn role_backends(admin: &PgPool, database: &str, role: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM pg_stat_activity WHERE datname = $1 AND usename = $2",
+    )
+    .bind(database)
+    .bind(role)
+    .fetch_one(admin)
+    .await
+    .expect("backend census")
+}
+
+/// `PROXIMA_PG_*` bounds the platform pool as well as the runtime pool. The
+/// platform pool used to be a bare `PgPool::connect`: ten connections and no
+/// statement timeout whatever the host configured. With a maximum of two,
+/// two open platform transactions hold the whole pool and a third waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn split_role_boot_bounds_the_platform_pool_by_the_pool_config() {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
+    let booted = expect_described(
+        "split-role boot with a two-connection pool policy",
+        Proxima::<ExampleApp>::app()
+            .store_number(0)
+            .database_url(runtime_url)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .served_surface(ServedSurface::All)
+            .pg_pool_config(PgPoolConfig {
+                max_connections: 2,
+                statement_timeout: std::time::Duration::from_millis(7_250),
+                ..PgPoolConfig::default()
+            })
+            .build()
+            .await,
+    )
+    .await;
+    let scope = booted.host().platform_scope_for_host();
+    let mut first = scope.begin().await.expect("first platform transaction");
+    let second = scope.begin().await.expect("second platform transaction");
+    let timeout: String = sqlx::query_scalar("SELECT current_setting('statement_timeout')")
+        .fetch_one(&mut *first)
+        .await
+        .expect("platform session timeout");
+    assert_eq!(
+        timeout, "7250ms",
+        "the platform pool sends the statement timeout"
+    );
+    let third = tokio::time::timeout(std::time::Duration::from_secs(1), scope.begin()).await;
+    assert!(
+        third.is_err(),
+        "a third platform transaction waits while two hold the pool"
+    );
+    assert_eq!(role_backends(&admin, &database, &platform).await, 2);
+    drop((first, second));
+    let third = scope
+        .begin()
+        .await
+        .expect("a released connection serves the next transaction");
+    drop(third);
+    booted.shutdown().await;
+    cleanup(&database, admin, &runtime, &platform).await;
+}

@@ -22,8 +22,7 @@ use proxima_core::mcp::{
 };
 use proxima_core::protocol::resource as protocol_resource;
 use proxima_core::{
-    Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, StorageError,
-    composed_schema_names,
+    Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, composed_schema_names,
 };
 use serde::Serialize;
 
@@ -194,9 +193,7 @@ impl McpToolHost {
         let frozen = registry.try_freeze()?;
         let schema_names = composed_schema_names(&frozen);
         let schema_refs: Vec<&str> = schema_names.iter().map(String::as_str).collect();
-        let platform_pool = sqlx::PgPool::connect(platform_url)
-            .await
-            .map_err(|error| StorageError::Unavailable(error.to_string()))?;
+        let platform_pool = pool_config.connect_lazy(platform_url)?;
         let platform =
             proxima_storage_pg::PgPlatformScope::new(platform_pool, &schema_refs).await?;
         let pg = proxima_storage_pg::PgStorage::connect_with_config(

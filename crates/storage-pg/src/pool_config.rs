@@ -127,10 +127,35 @@ impl PgPoolConfig {
         ))
     }
 
+    /// Build a lazy pool under this policy, opening no connection yet.
+    ///
+    /// Every serving pool a host builds goes through this policy, the
+    /// platform pool included, so `PROXIMA_PG_*` bounds all of them. The first
+    /// acquire opens the first connection; constructors that validate the
+    /// pool (`PgPlatformScope::new`) hold that one connection for every check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Unavailable`] when max connections is zero or
+    /// the URL does not parse.
+    pub fn connect_lazy(self, url: &str) -> Result<sqlx::PgPool, StorageError> {
+        let config = self.validate()?;
+        Ok(config
+            .pool_options()
+            .connect_lazy_with(config.connect_options(url)?))
+    }
+
     pub(crate) fn connect_options(self, url: &str) -> Result<PgConnectOptions, StorageError> {
         let mut options: PgConnectOptions = url.parse().map_err(|error: sqlx::Error| {
             StorageError::Unavailable(format!("invalid DATABASE_URL: {error}"))
         })?;
+        // SQLx sends `extra_float_digits=2` as a startup parameter by default.
+        // Postgres 12 and later already print the shortest exact float text
+        // at the default of 1, and a transaction-mode pooler such as
+        // PgBouncer refuses startup parameters it does not know, so the
+        // connection is refused before it starts. Binary results, which
+        // prepared queries use, are unaffected either way.
+        options = options.extra_float_digits(None::<i8>);
         if !self.statement_timeout.is_zero() {
             options = options.options([(
                 "statement_timeout",
@@ -261,5 +286,38 @@ mod tests {
                 .get_options(),
             Some("-c statement_timeout=17000")
         );
+    }
+
+    /// A lazily built pool carries the whole policy onto the server: the pool
+    /// bound, the statement timeout as a startup option, and no
+    /// `extra_float_digits` startup parameter (the server keeps its default
+    /// of 1), which a transaction-mode pooler would refuse.
+    #[tokio::test]
+    async fn a_lazy_pool_applies_the_policy_on_its_connections() {
+        let Some(url) = proxima_pg_testkit::admin_url_or_skip() else {
+            return;
+        };
+        let pool = PgPoolConfig {
+            max_connections: 2,
+            statement_timeout: Duration::from_millis(7_250),
+            ..PgPoolConfig::default()
+        }
+        .connect_lazy(&url)
+        .expect("lazy pool");
+        assert_eq!(pool.size(), 0, "a lazy pool opens nothing up front");
+        assert_eq!(pool.options().get_max_connections(), 2);
+        let mut first = pool.acquire().await.expect("first connection");
+        let (timeout, float_digits): (String, String) = sqlx::query_as(
+            "SELECT current_setting('statement_timeout'), current_setting('extra_float_digits')",
+        )
+        .fetch_one(&mut *first)
+        .await
+        .expect("session settings");
+        assert_eq!(timeout, "7250ms");
+        assert_eq!(float_digits, "1", "no extra_float_digits startup parameter");
+        let second = pool.acquire().await.expect("second connection");
+        assert_eq!(pool.size(), 2);
+        drop((first, second));
+        pool.close().await;
     }
 }

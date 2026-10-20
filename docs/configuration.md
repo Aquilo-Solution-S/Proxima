@@ -54,8 +54,8 @@ migration and maintenance connection. Both roles use owner RLS. The settings gat
 | PROXIMA_MISSING_MIGRATION_POLICY | missing-version policy (`reject` or `allow`) | releases intentionally share a database | `missing_migration_policy_from_lookup` |
 | PROXIMA_SKIP_MIGRATIONS | migration boot switch | split-role deployment | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_RUNTIME_GRANTS | runtime grant boot switch | owner-RLS deployment | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
-| PROXIMA_PG_MAX_CONNECTIONS | pool size | pool tuning | [pool config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/storage-pg/src/pool_config.rs) |
-| PROXIMA_PG_STATEMENT_TIMEOUT_MS | statement timeout | database tuning | [pool config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/storage-pg/src/pool_config.rs) |
+| PROXIMA_PG_MAX_CONNECTIONS | size of each pool: runtime, platform, and the boot-time migration pool | pool tuning | [pool config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/storage-pg/src/pool_config.rs) |
+| PROXIMA_PG_STATEMENT_TIMEOUT_MS | statement timeout of every pool, sent as a startup option | database tuning | [pool config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/storage-pg/src/pool_config.rs) |
 | PROXIMA_PG_ACQUIRE_TIMEOUT_SECS | pool acquire timeout | database tuning | [pool config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/storage-pg/src/pool_config.rs) |
 | PROXIMA_PG_IDLE_TIMEOUT_SECS | idle connection timeout | database tuning | [pool config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/storage-pg/src/pool_config.rs) |
 | PROXIMA_PG_MAX_LIFETIME_SECS | connection lifetime | database tuning | [pool config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/storage-pg/src/pool_config.rs) |
