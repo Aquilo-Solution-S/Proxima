@@ -28,7 +28,17 @@ use crate::{EntityKind, GoalId, MemoryId, SchemaId};
 /// seems to need a third kind fails the node-home test (docs/concepts.md
 /// Thesis) and is missing a node, not a kind.
 ///
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum EdgeKind {
     /// A memory declares what it was made from. Written only by a node

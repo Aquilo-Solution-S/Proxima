@@ -370,7 +370,7 @@ mod other_stores {
             space: "current".into(),
             by: uuid::Uuid::from_u128(10),
             via: None,
-            kind: "Fact".into(),
+            kind: crate::EntityKind::Fact,
             schema_id: "core/agent-note-v1".into(),
             created_at: time::OffsetDateTime::UNIX_EPOCH,
             occurred_at: Some(time::OffsetDateTime::UNIX_EPOCH),
@@ -412,7 +412,7 @@ mod other_stores {
             local[1].memory.clone(),
         ];
         let mut output = SearchMemoriesOutput {
-            mode: "lexical".into(),
+            mode: SearchMode::Lexical,
             degraded_to_lexical: false,
             ranking: SearchRanking::Score,
             memories: local,
@@ -483,7 +483,7 @@ mod other_stores {
             wiki[1].handle.to_string(),
         ];
         let mut output = SearchMemoriesOutput {
-            mode: "hybrid".into(),
+            mode: SearchMode::Hybrid,
             degraded_to_lexical: true,
             ranking: SearchRanking::Score,
             memories: local,

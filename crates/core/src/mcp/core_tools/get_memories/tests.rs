@@ -359,7 +359,7 @@ async fn batch_preserves_request_order_with_erased_missing_and_mismatched_unansw
 
 fn assert_read_projection(row: &GetMemoryOutput, local: &MemorySnapshot) {
     assert_eq!(row.handle, row.memory);
-    assert_eq!(row.kind, "Fact");
+    assert_eq!(row.kind, crate::EntityKind::Fact);
     let writer = if row.memory == local.memory_id.into_inner().to_string() {
         assert_eq!(row.body.as_deref(), Some("local body"));
         assert_eq!(row.occurred_at, Some(time::OffsetDateTime::UNIX_EPOCH));

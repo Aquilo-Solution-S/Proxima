@@ -10,7 +10,7 @@ use serde::Serialize;
 pub struct NeighborEdge {
     pub source: String,
     pub target: String,
-    pub kind: String,
+    pub kind: crate::EdgeKind,
 }
 
 pub(crate) fn neighbor_edges_from_rows(
@@ -21,7 +21,7 @@ pub(crate) fn neighbor_edges_from_rows(
         .map(|edge| NeighborEdge {
             source: wire_ref::format_endpoint(ctx, edge.source),
             target: wire_ref::format_target_projection(ctx, edge.target),
-            kind: edge.kind.as_str().to_string(),
+            kind: edge.kind,
         })
         .collect()
 }

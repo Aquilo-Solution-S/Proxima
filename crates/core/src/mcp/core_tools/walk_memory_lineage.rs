@@ -42,13 +42,22 @@ pub struct WalkMemoryLineageArgs {
     pub cursor: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum WalkMemoryLineageDirectionArg {
     /// Toward what this memory was derived from.
     Ancestors,
     /// Toward what was derived from this memory.
     Descendants,
+}
+
+impl From<MemoryLineageDirection> for WalkMemoryLineageDirectionArg {
+    fn from(value: MemoryLineageDirection) -> Self {
+        match value {
+            MemoryLineageDirection::Ancestors => Self::Ancestors,
+            MemoryLineageDirection::Descendants => Self::Descendants,
+        }
+    }
 }
 
 impl From<WalkMemoryLineageDirectionArg> for MemoryLineageDirection {
@@ -63,7 +72,7 @@ impl From<WalkMemoryLineageDirectionArg> for MemoryLineageDirection {
 #[derive(Debug, Serialize)]
 pub struct WalkMemoryLineageOutput {
     pub start: String,
-    pub direction: String,
+    pub direction: WalkMemoryLineageDirectionArg,
     pub nodes: Vec<LineageNodeOutput>,
     pub edges: Vec<LineageEdgeOutput>,
     /// More lineage edges exist beyond this page; `true` iff
@@ -111,7 +120,7 @@ pub struct LineageNodeOutput {
 pub struct LineageEdgeOutput {
     pub source: String,
     pub target: String,
-    pub kind: String,
+    pub kind: crate::EdgeKind,
     pub distance: u8,
 }
 
@@ -176,7 +185,7 @@ pub async fn walk_memory_lineage(
         let has_more = next_cursor.is_some();
         return Ok(WalkMemoryLineageOutput {
             start: args.memory,
-            direction: format!("{direction:?}").to_lowercase(),
+            direction: direction.into(),
             nodes: page.nodes,
             edges: page.edges,
             has_more,
@@ -231,7 +240,7 @@ pub async fn walk_memory_lineage(
         .map(|hop| LineageEdgeOutput {
             source: super::wire_ref::format_endpoint(&ctx, hop.edge.source),
             target: super::wire_ref::format_target_projection(&ctx, hop.edge.target),
-            kind: hop.edge.kind.as_str().to_string(),
+            kind: hop.edge.kind,
             distance: hop.distance,
         })
         .collect();
@@ -246,7 +255,7 @@ pub async fn walk_memory_lineage(
     let has_more = next_cursor.is_some();
     Ok(WalkMemoryLineageOutput {
         start: args.memory,
-        direction: format!("{direction:?}").to_lowercase(),
+        direction: direction.into(),
         nodes,
         edges,
         has_more,
@@ -455,7 +464,7 @@ async fn render_ancestor_page(
                 edges.push(LineageEdgeOutput {
                     source,
                     target,
-                    kind: hop.edge.kind.as_str().to_string(),
+                    kind: hop.edge.kind,
                     distance: hop.distance,
                 });
             }
@@ -505,7 +514,7 @@ async fn append_external_edges(
         edges.push(LineageEdgeOutput {
             source,
             target: handle,
-            kind: edge_kind.as_str().to_string(),
+            kind: edge_kind,
             distance,
         });
     }

@@ -56,7 +56,7 @@ fn default_limit() -> u32 {
     super::DEFAULT_PAGE_LIMIT
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkDirection {
     #[default]
@@ -67,7 +67,7 @@ pub enum ThinkDirection {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ThinkOutput {
-    pub direction: String,
+    pub direction: ThinkDirection,
     pub visits: Vec<ThinkVisit>,
     pub has_more: bool,
     pub next_cursor: Option<String>,
@@ -82,7 +82,7 @@ pub struct ThinkVisit {
     /// Kind of the edge that first reached this visit: `origin` (made
     /// from) or `reference` (about). Absent on seeds and episode siblings.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub edge: Option<String>,
+    pub edge: Option<EdgeKind>,
     /// Set only on a memory of another store: its store number. Such a
     /// visit is a leaf; the walk does not continue past it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -280,7 +280,7 @@ async fn pin_bfs(
     });
     let visits = hydrate_visits(engine, ctx, page).await?;
     Ok(ThinkOutput {
-        direction: direction_name(walk.direction),
+        direction: walk.direction,
         visits,
         has_more,
         next_cursor,
@@ -310,7 +310,7 @@ async fn hydrate_visits(
         .iter()
         .map(|visit| {
             let handle = visit.id.into_inner();
-            let edge = visit.edge.map(|edge| edge.as_str().to_string());
+            let edge = visit.edge;
             if let Some(kind) = visit.kind {
                 ThinkVisit {
                     handle: handle.to_string(),
@@ -461,7 +461,7 @@ async fn episode_siblings(
     targets.dedup();
     if targets.is_empty() {
         return Ok(ThinkOutput {
-            direction: direction_name(ThinkDirection::EpisodeSiblings),
+            direction: ThinkDirection::EpisodeSiblings,
             visits: Vec::new(),
             has_more: false,
             next_cursor: None,
@@ -513,7 +513,7 @@ async fn episode_siblings(
         })
         .collect();
     Ok(ThinkOutput {
-        direction: direction_name(ThinkDirection::EpisodeSiblings),
+        direction: ThinkDirection::EpisodeSiblings,
         visits,
         has_more,
         next_cursor,
@@ -521,17 +521,9 @@ async fn episode_siblings(
 }
 
 fn think_fingerprint(seeds: &[String], direction: ThinkDirection, depth: Option<u8>) -> String {
-    let canon = serde_json::to_string(&(seeds, direction_name(direction), depth))
-        .expect("fingerprint canon serializes");
+    let canon =
+        serde_json::to_string(&(seeds, direction, depth)).expect("fingerprint canon serializes");
     wire_cursor::fingerprint(&canon)
-}
-
-fn direction_name(direction: ThinkDirection) -> String {
-    match direction {
-        ThinkDirection::Ancestors => "ancestors".into(),
-        ThinkDirection::Descendants => "descendants".into(),
-        ThinkDirection::EpisodeSiblings => "episode_siblings".into(),
-    }
 }
 
 fn require_seeds(seeds: &[String]) -> Result<(), McpToolError> {

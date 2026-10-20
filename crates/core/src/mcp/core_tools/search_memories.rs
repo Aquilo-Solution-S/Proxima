@@ -204,7 +204,7 @@ pub struct SearchMemoriesArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchMemoriesOutput {
-    pub mode: String,
+    pub mode: SearchMode,
     pub degraded_to_lexical: bool,
     /// `score`: every result's `score` is on one scale. `rank`: the
     /// searched spaces were scored on different scales — Owners embedded
@@ -251,7 +251,7 @@ pub struct SearchMemoryOutput {
     pub space: String,
     pub by: uuid::Uuid,
     pub via: Option<uuid::Uuid>,
-    pub kind: String,
+    pub kind: crate::EntityKind,
     pub schema_id: String,
     #[serde(with = "time::serde::rfc3339")]
     #[schemars(with = "String")]
@@ -328,7 +328,7 @@ impl McpTool for SearchMemoriesTool {
                 ));
             } else {
                 SearchMemoriesOutput {
-                    mode: format!("{:?}", SearchMode::from(args.mode)).to_lowercase(),
+                    mode: SearchMode::from(args.mode),
                     degraded_to_lexical: false,
                     ranking: SearchRanking::Rank,
                     memories: Vec::new(),
@@ -515,7 +515,7 @@ fn remote_hit_output(
         space: store.to_string(),
         by: hit.writer.by,
         via: hit.writer.via,
-        kind: hit.kind.as_str().to_string(),
+        kind: hit.kind,
         schema_id: hit.schema_id,
         created_at: hit.created_at,
         // Another store's hit reports no occurrence time.
@@ -602,7 +602,7 @@ async fn search_local(
     retain_surviving_neighbor_edges(&memories, &mut all_neighbor_edges);
 
     Ok(SearchMemoriesOutput {
-        mode: format!("{mode:?}").to_lowercase(),
+        mode,
         degraded_to_lexical,
         ranking,
         memories,
@@ -1269,7 +1269,7 @@ fn search_memory_output(
         space: space.to_string(),
         by: row.writer.by,
         via: row.writer.via,
-        kind: row.kind.as_str().to_string(),
+        kind: row.kind,
         schema_id: row.schema_id.as_str().to_string(),
         created_at: row.created_at,
         occurred_at: row.occurred_at,
@@ -1332,7 +1332,7 @@ fn retain_surviving_neighbor_edges(memories: &[SearchMemoryOutput], edges: &mut 
             surviving.contains(edge.source.as_str()) || surviving.contains(edge.target.as_str());
         // `&&` short-circuits: a non-touching edge is never marked seen, so a
         // later touching duplicate is still evaluated on its own merits.
-        touches && seen_edges.insert((edge.source.clone(), edge.target.clone(), edge.kind.clone()))
+        touches && seen_edges.insert((edge.source.clone(), edge.target.clone(), edge.kind))
     });
 }
 

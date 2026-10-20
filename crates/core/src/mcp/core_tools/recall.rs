@@ -89,30 +89,20 @@ pub struct RecallOutput {
 #[derive(Debug, Serialize, JsonSchema, Clone)]
 pub struct RecallSketch {
     pub handle: String,
-    pub kind: String,
+    pub kind: EntityKind,
     pub sketch: String,
-    pub reason: String,
+    pub reason: RecallReason,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum RecallReason {
+/// Why a sketch is in the packet, in packet order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecallReason {
     Subject,
     CueTouch,
     Question,
     AssignedGoal,
     UnassignedGoal,
-}
-
-impl RecallReason {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Subject => "subject",
-            Self::CueTouch => "cue_touch",
-            Self::Question => "question",
-            Self::AssignedGoal => "assigned_goal",
-            Self::UnassignedGoal => "unassigned_goal",
-        }
-    }
 }
 
 impl McpTool for RecallTool {
@@ -569,9 +559,9 @@ impl Packet {
             .take(limit as usize)
             .map(|entry| RecallSketch {
                 handle: entry.handle.to_string(),
-                kind: entry.kind.as_str().to_string(),
+                kind: entry.kind,
                 sketch: entry.sketch,
-                reason: entry.reason.as_str().to_string(),
+                reason: entry.reason,
             })
             .collect()
     }
@@ -640,5 +630,40 @@ mod tests {
     fn question_or_subject_is_enough() {
         assert!(require_cue(Some("what do I believe"), &[]).is_ok());
         assert!(require_cue(None, &["00000000-0000-8000-8000-000000000001".into()]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    #[test]
+    fn a_sketch_keeps_the_words_clients_read() {
+        let sketch = RecallSketch {
+            handle: "h".into(),
+            kind: EntityKind::Perspective,
+            sketch: "s".into(),
+            reason: RecallReason::CueTouch,
+        };
+        assert_eq!(
+            serde_json::to_value(&sketch).expect("serializes"),
+            serde_json::json!({
+                "handle": "h", "kind": "Perspective", "sketch": "s", "reason": "cue_touch"
+            })
+        );
+        for (reason, word) in [
+            (RecallReason::Subject, "subject"),
+            (RecallReason::Question, "question"),
+            (RecallReason::AssignedGoal, "assigned_goal"),
+            (RecallReason::UnassignedGoal, "unassigned_goal"),
+        ] {
+            assert_eq!(serde_json::to_value(reason).expect("serializes"), word);
+        }
+        let schema =
+            serde_json::to_string(&schemars::schema_for!(RecallOutput)).expect("schema serializes");
+        assert!(
+            schema.contains("cue_touch") && schema.contains("Perspective"),
+            "{schema}"
+        );
     }
 }
