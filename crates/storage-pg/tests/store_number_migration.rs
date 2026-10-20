@@ -375,6 +375,15 @@ fn store_identity_policies() -> &'static str {
     through
 }
 
+/// Owner policies without the `owner_follows` section (migration 0042), for
+/// fixtures that stop before that table exists.
+fn policies_before_follows() -> &'static str {
+    let (through, _) = definitions::POLICIES
+        .split_once("\n-- owner_follows:")
+        .expect("the owner_follows section ends the owner policies");
+    through
+}
+
 #[tokio::test]
 async fn retained_writer_rows_refuse_attribution_migration_without_changes() -> TestResult {
     let (_guard, platform, admin) = empty_store().await?;
@@ -616,7 +625,7 @@ async fn seed_external_parent(
 #[tokio::test]
 async fn external_origin_edge_kind_backfill_reads_interpretations_as_references() -> TestResult {
     let (_guard, platform, admin) = empty_store().await?;
-    apply_historical_schema(&platform, &[33, 34, 35, 36], definitions::POLICIES).await?;
+    apply_historical_schema(&platform, &[33, 34, 35, 36], policies_before_follows()).await?;
     let owner = Uuid::now_v7();
     sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
         .bind(owner)
@@ -769,7 +778,8 @@ async fn seed_v039_memory(admin: &PgPool, owner: Uuid, cooled: bool) -> TestResu
 async fn forget_state_migration_refuses_a_used_store_without_changes() -> TestResult {
     for cooled in [false, true] {
         let (_guard, platform, admin) = empty_store().await?;
-        apply_historical_schema(&platform, &[33, 34, 35, 36, 37], definitions::POLICIES).await?;
+        apply_historical_schema(&platform, &[33, 34, 35, 36, 37], policies_before_follows())
+            .await?;
         let owner = Uuid::now_v7();
         sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner)
@@ -821,7 +831,7 @@ async fn drop_cooled_migration_keeps_only_upload_purge_rows() -> TestResult {
     apply_historical_schema(
         &platform,
         &[33, 34, 35, 36, 37, 38, 39],
-        definitions::POLICIES,
+        policies_before_follows(),
     )
     .await?;
     sqlx::query(
