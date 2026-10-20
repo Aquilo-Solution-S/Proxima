@@ -315,89 +315,96 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
 
 /// One embedding self-healing pass: orphan sweep, reconcile enqueue,
 /// health report. Serialized across processes by a
-/// Postgres advisory lock — an overlapping pass skips with exit 0 so cron
+/// maintenance lease — an overlapping pass skips with exit 0 so cron
 /// overlap is harmless by construction, not by scheduling discipline.
 async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     let space = maintenance_embedding_space(config.model, proxima_core::process_env)?;
     let embedding_policy = embedding_runtime_policy_from_lookup(&proxima_core::process_env)?;
     let storage = maintenance_storage(&config.database_url, embedding_policy).await?;
 
-    let Some(_lock) = storage
+    let Some(lock) = storage
         .try_embedding_maintenance_lock()
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?
     else {
-        println!("skipped: another embedding maintenance pass holds the lock");
+        println!("skipped: another embedding maintenance pass holds the lease");
         return Ok(());
     };
 
-    let sweep = storage
-        .sweep_orphan_embedding_rows()
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    println!(
-        "orphan-sweep: embeddings={} heads={} jobs={}",
-        sweep.embeddings_deleted, sweep.heads_deleted, sweep.jobs_deleted
-    );
+    let pass: Result<(), CliError> = async {
+        let sweep = storage
+            .sweep_orphan_embedding_rows()
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        println!(
+            "orphan-sweep: embeddings={} heads={} jobs={}",
+            sweep.embeddings_deleted, sweep.heads_deleted, sweep.jobs_deleted
+        );
 
-    // This pass runs against a bare `PgStorage` with no flavor app booted,
-    // so the only declarations it can see are core's own, which is where
-    // `core/upload-v1` lives. A host whose FLAVORS declare non-embeddable
-    // schemas must reconcile through its own binary, where the full
-    // registry exists; this pass would re-enqueue those. Printed below, so
-    // the scope of the pass is visible in its own output.
-    let core_registry = proxima_core::FlavorRegistry::new()
-        .try_freeze()
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    let non_embeddable = core_registry.non_embeddable_schema_ids();
-    let outcome = storage
-        .reconcile_embeddings(EmbeddingReconcileOptions {
-            space: &space,
-            owners: None,
-            scope: reconcile_scope(config.scope),
-            // Omitted `--limit` is the operator full pass. Process boot
-            // never takes this path; it uses EMBEDDING_RECONCILE_DEFAULT_LIMIT.
-            limit: Some(config.limit.unwrap_or(i64::MAX)),
-            non_embeddable_schemas: non_embeddable,
-        })
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    println!(
-        "reconcile: scanned={} enqueued={} skipped={} not-embeddable=[{}]",
-        outcome.scanned,
-        outcome.enqueued,
-        outcome.skipped,
-        non_embeddable.join(", ")
-    );
+        // This pass runs against a bare `PgStorage` with no flavor app booted,
+        // so the only declarations it can see are core's own, which is where
+        // `core/upload-v1` lives. A host whose FLAVORS declare non-embeddable
+        // schemas must reconcile through its own binary, where the full
+        // registry exists; this pass would re-enqueue those. Printed below, so
+        // the scope of the pass is visible in its own output.
+        let core_registry = proxima_core::FlavorRegistry::new()
+            .try_freeze()
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        let non_embeddable = core_registry.non_embeddable_schema_ids();
+        let outcome = storage
+            .reconcile_embeddings(EmbeddingReconcileOptions {
+                space: &space,
+                owners: None,
+                scope: reconcile_scope(config.scope),
+                // Omitted `--limit` is the operator full pass. Process boot
+                // never takes this path; it uses EMBEDDING_RECONCILE_DEFAULT_LIMIT.
+                limit: Some(config.limit.unwrap_or(i64::MAX)),
+                non_embeddable_schemas: non_embeddable,
+            })
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        println!(
+            "reconcile: scanned={} enqueued={} skipped={} not-embeddable=[{}]",
+            outcome.scanned,
+            outcome.enqueued,
+            outcome.skipped,
+            non_embeddable.join(", ")
+        );
 
-    let health = storage
-        .embedding_ann_observability()
-        .await
-        .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    println!(
-        "backlog: pending={} processing={} failed={} stale-processing={}",
-        health.backlog.pending,
-        health.backlog.processing,
-        health.backlog.failed,
-        health.stale_processing_jobs
-    );
-    println!(
-        "orphans-remaining: embeddings={} heads={} jobs={}",
-        health.orphan_rows.embeddings, health.orphan_rows.heads, health.orphan_rows.jobs
-    );
-    match health.recall_canary {
-        Some(canary) => println!(
-            "recall-canary: model={} recall@{}={:.3} (ann={} exact={} overlap={})",
-            canary.model_id,
-            canary.k,
-            canary.recall_at_k,
-            canary.ann_count,
-            canary.exact_count,
-            canary.overlap_count
-        ),
-        None => println!("recall-canary: none (no embeddings yet)"),
+        let health = storage
+            .embedding_ann_observability()
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+        println!(
+            "backlog: pending={} processing={} failed={} stale-processing={}",
+            health.backlog.pending,
+            health.backlog.processing,
+            health.backlog.failed,
+            health.stale_processing_jobs
+        );
+        println!(
+            "orphans-remaining: embeddings={} heads={} jobs={}",
+            health.orphan_rows.embeddings, health.orphan_rows.heads, health.orphan_rows.jobs
+        );
+        match health.recall_canary {
+            Some(canary) => println!(
+                "recall-canary: model={} recall@{}={:.3} (ann={} exact={} overlap={})",
+                canary.model_id,
+                canary.k,
+                canary.recall_at_k,
+                canary.ann_count,
+                canary.exact_count,
+                canary.overlap_count
+            ),
+            None => println!("recall-canary: none (no embeddings yet)"),
+        }
+        Ok(())
     }
-    Ok(())
+    .await;
+    if let Err(err) = lock.release().await {
+        tracing::debug!(error = %err, "embedding maintenance lease release failed; it expires instead");
+    }
+    pass
 }
 
 async fn maintenance_storage(
@@ -470,9 +477,9 @@ fn maintenance_platform_url() -> Result<String, CliError> {
 
 /// One storage-maintenance pass: the expired-upload sweep, when
 /// `--sweep-expired-uploads` asks for it, then the cold-object purge drain,
-/// when `--retry-cold-object-purges` does. The same lock serializes it with
+/// when `--retry-cold-object-purges` does. The same lease serializes it with
 /// the in-process drain of every Proxima server on this database. Serialized across
-/// processes by its own Postgres advisory lock — an overlapping pass skips
+/// processes by its own maintenance lease — an overlapping pass skips
 /// with exit 0, like `maintain-embeddings`.
 async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), CliError> {
     let s3 = ((config.retry_cold_object_purges && !config.dry_run) || config.sweep_expired_uploads)
@@ -522,25 +529,44 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
         (storage, None)
     };
 
-    let Some(_lock) = storage
+    let Some(lock) = storage
         .try_storage_maintenance_lock()
         .await
         .map_err(|err| ProximaError::Storage(err.to_string()))?
     else {
-        println!("skipped: another storage maintenance pass holds the lock");
+        println!("skipped: another storage maintenance pass holds the lease");
         return Ok(());
     };
 
+    // Release the lease on every exit, so the next cron fire need not wait
+    // for it to expire.
+    let pass = storage_maintenance_steps(&config, &storage, sweeper.as_ref(), &lock).await;
+    if let Err(err) = lock.release().await {
+        tracing::debug!(error = %err, "storage maintenance lease release failed; it expires instead");
+    }
+    pass
+}
+
+/// The steps of one storage-maintenance pass, run under its lease.
+async fn storage_maintenance_steps(
+    config: &StorageMaintenanceConfig,
+    storage: &PgStorage,
+    sweeper: Option<&(CitedBlobStore, proxima_core::authz::SystemAuthority)>,
+    lock: &proxima_storage_pg::StorageMaintenanceLock,
+) -> Result<(), CliError> {
     let dry_run_suffix = if config.dry_run { " (dry-run)" } else { "" };
 
     if config.sweep_expired_uploads {
-        let (blobs, authority) = sweeper.as_ref().ok_or_else(|| {
+        let (blobs, authority) = sweeper.ok_or_else(|| {
             ProximaError::Config("the expired-upload sweep needs the PROXIMA_S3_* block".into())
         })?;
         let limit = u32::try_from(config.batch_size).unwrap_or(u32::MAX);
         let mut expired = 0_u64;
         let mut owed = 0_u64;
         let remaining = loop {
+            lock.renew()
+                .await
+                .map_err(|err| ProximaError::Storage(err.to_string()))?;
             let batch = blobs
                 .sweep_expired_uploads(authority, limit)
                 .await
@@ -555,6 +581,9 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
     }
 
     if config.retry_cold_object_purges {
+        lock.renew()
+            .await
+            .map_err(|err| ProximaError::Storage(err.to_string()))?;
         let outcome = storage
             .retry_cold_object_purges(
                 ColdPurgeRetryOptions::default()
@@ -578,7 +607,6 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
             .into());
         }
     }
-
     Ok(())
 }
 

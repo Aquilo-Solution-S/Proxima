@@ -47,6 +47,7 @@ pub mod definitions;
 mod delegated_authority;
 mod error;
 mod lifecycle_scope;
+mod maintenance_lease;
 mod owner_scope;
 #[cfg(test)]
 mod pause_point;
@@ -823,16 +824,38 @@ impl std::fmt::Debug for PgStorage {
     }
 }
 
-/// Advisory-lock key serializing embedding maintenance passes across
-/// processes. ASCII `proxembm` as a big-endian i64 — arbitrary but stable;
-/// changing it would let old and new binaries run maintenance concurrently.
-const EMBEDDING_MAINTENANCE_LOCK_KEY: i64 = i64::from_be_bytes(*b"proxembm");
-
-/// Guard for the global embedding-maintenance advisory lock. The session
-/// lock lives on a connection detached from the pool; dropping the guard
-/// closes that connection, and Postgres releases the lock with the session.
+/// A held embedding-maintenance lease: no other embedding maintenance pass
+/// runs on this database while it is held.
+///
+/// The lease is a row of `proxima_core.maintenance_lease`, renewed in the
+/// background while the guard lives. [`Self::release`] deletes it; dropping
+/// the guard deletes it best effort, and a lease nobody renews expires after
+/// a minute. Nothing about it is tied to one database session, so it holds
+/// behind a transaction-mode pooler.
 pub struct EmbeddingMaintenanceLock {
-    _conn: sqlx::postgres::PgConnection,
+    lease: maintenance_lease::MaintenanceLease,
+}
+
+impl EmbeddingMaintenanceLock {
+    /// Confirm the lease is still this pass's, extending it.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError::Unavailable`] when the lease expired and another
+    /// pass may hold it; stop the pass.
+    pub async fn renew(&self) -> Result<(), StorageError> {
+        self.lease.renew().await
+    }
+
+    /// Delete the lease now, so the next pass need not wait for it to
+    /// expire.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the delete; the lease then expires.
+    pub async fn release(self) -> Result<(), StorageError> {
+        self.lease.release().await
+    }
 }
 
 impl std::fmt::Debug for EmbeddingMaintenanceLock {
@@ -842,21 +865,35 @@ impl std::fmt::Debug for EmbeddingMaintenanceLock {
     }
 }
 
-/// Advisory-lock key serializing storage-maintenance passes across
-/// processes. ASCII `proxretn` as a big-endian i64 — arbitrary but stable,
-/// distinct from [`EMBEDDING_MAINTENANCE_LOCK_KEY`] so the two maintenance
-/// families may run concurrently but never overlap themselves.
-///
-/// The bytes are a key, not a label: they need not describe the pass, and
-/// rotating them would let a process on the old value and one on the new
-/// run the pass at the same time.
-const STORAGE_MAINTENANCE_LOCK_KEY: i64 = i64::from_be_bytes(*b"proxretn");
-
-/// Guard for the global storage-maintenance advisory lock. Same
-/// detached-connection design as [`EmbeddingMaintenanceLock`]: dropping the
-/// guard closes the connection, and Postgres releases the session lock.
+/// A held storage-maintenance lease: no other storage maintenance pass (the
+/// object-purge drain and upload sweep, in process or from
+/// `proxima-mcp maintain-storage`) runs on this database while it is held.
+/// Same lease design as [`EmbeddingMaintenanceLock`], under its own name, so
+/// the two families may run concurrently but never overlap themselves.
 pub struct StorageMaintenanceLock {
-    _conn: sqlx::postgres::PgConnection,
+    lease: maintenance_lease::MaintenanceLease,
+}
+
+impl StorageMaintenanceLock {
+    /// Confirm the lease is still this pass's, extending it.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError::Unavailable`] when the lease expired and another
+    /// pass may hold it; stop the pass.
+    pub async fn renew(&self) -> Result<(), StorageError> {
+        self.lease.renew().await
+    }
+
+    /// Delete the lease now, so the next pass need not wait for it to
+    /// expire.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from the delete; the lease then expires.
+    pub async fn release(self) -> Result<(), StorageError> {
+        self.lease.release().await
+    }
 }
 
 impl std::fmt::Debug for StorageMaintenanceLock {
@@ -1333,65 +1370,43 @@ impl PgStorage {
         .await
     }
 
-    /// Try to take the global embedding-maintenance advisory lock.
+    /// Try to take the embedding-maintenance lease.
     ///
-    /// Returns `None` when another maintenance pass already holds it, so
-    /// overlapping cron fires skip instead of double-scanning. The lock is
-    /// session-scoped on a connection detached from the pool; dropping the
-    /// returned guard closes that connection, which releases the lock
-    /// server-side — there is no unlock call to forget.
+    /// Returns `None` when another embedding maintenance pass holds a live
+    /// lease, so overlapping cron fires skip instead of double-scanning.
     ///
     /// # Errors
     ///
-    /// Returns storage errors from acquiring the connection or the lock query.
+    /// Returns storage errors from the lease transaction.
     pub async fn try_embedding_maintenance_lock(
         &self,
     ) -> Result<Option<EmbeddingMaintenanceLock>, StorageError> {
-        Ok(self
-            .try_maintenance_lock_conn(EMBEDDING_MAINTENANCE_LOCK_KEY)
-            .await?
-            .map(|conn| EmbeddingMaintenanceLock { _conn: conn }))
+        Ok(maintenance_lease::MaintenanceLease::try_acquire(
+            &self.platform_scope,
+            maintenance_lease::LeaseName::Embedding,
+        )
+        .await?
+        .map(|lease| EmbeddingMaintenanceLock { lease }))
     }
 
-    /// Try to take the global storage-maintenance advisory lock.
+    /// Try to take the storage-maintenance lease.
     ///
-    /// Same contract as [`Self::try_embedding_maintenance_lock`], on its own
-    /// key: `None` means another maintenance pass already holds it and this
-    /// run should skip.
+    /// Same contract as [`Self::try_embedding_maintenance_lock`], under its
+    /// own name: `None` means another storage maintenance pass holds a live
+    /// lease and this run should skip.
     ///
     /// # Errors
     ///
-    /// Returns storage errors from acquiring the connection or the lock query.
+    /// Returns storage errors from the lease transaction.
     pub async fn try_storage_maintenance_lock(
         &self,
     ) -> Result<Option<StorageMaintenanceLock>, StorageError> {
-        Ok(self
-            .try_maintenance_lock_conn(STORAGE_MAINTENANCE_LOCK_KEY)
-            .await?
-            .map(|conn| StorageMaintenanceLock { _conn: conn }))
-    }
-
-    /// Session-scoped `pg_try_advisory_lock` on a connection detached from
-    /// the pool; the caller wraps the connection in a guard whose drop
-    /// closes it, releasing the lock server-side.
-    async fn try_maintenance_lock_conn(
-        &self,
-        key: i64,
-    ) -> Result<Option<sqlx::postgres::PgConnection>, StorageError> {
-        let mut conn = self
-            .pool
-            .acquire()
-            .await
-            .map_err(|err| {
-                StorageError::Unavailable(format!("acquire maintenance lock connection: {err}"))
-            })?
-            .detach();
-        let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-            .bind(key)
-            .fetch_one(&mut conn)
-            .await
-            .map_err(crate::error::map_err)?;
-        Ok(locked.then_some(conn))
+        Ok(maintenance_lease::MaintenanceLease::try_acquire(
+            &self.platform_scope,
+            maintenance_lease::LeaseName::Storage,
+        )
+        .await?
+        .map(|lease| StorageMaintenanceLock { lease }))
     }
 
     /// Drain one bounded batch of the wired object store's due purge debts.
@@ -1421,7 +1436,7 @@ impl PgStorage {
         .await
     }
 
-    /// One object-purge pass: take the storage maintenance lock, then drain
+    /// One object-purge pass: take the storage maintenance lease, then drain
     /// the wired store's due debts in batches of `options`' size until none
     /// is due or `max_batches` ran.
     ///
@@ -1448,20 +1463,26 @@ impl PgStorage {
             )
             .await;
         };
-        self.drain_due_object_purge_debt(&lock, options, max_batches)
-            .await
+        let pass = self
+            .drain_due_object_purge_debt(&lock, options, max_batches)
+            .await;
+        if let Err(error) = lock.release().await {
+            tracing::debug!(%error, "storage maintenance lease release failed; it expires instead");
+        }
+        pass
     }
 
     /// [`Self::run_object_purge_pass`] for a caller that already holds the
-    /// storage maintenance lock, and so may combine the drain with other
-    /// maintenance under one lock.
+    /// storage maintenance lease, and so may combine the drain with other
+    /// maintenance under one lease. The lease is renewed before each batch.
     ///
     /// # Errors
     ///
-    /// As [`Self::run_object_purge_pass`].
+    /// As [`Self::run_object_purge_pass`], and [`StorageError::Unavailable`]
+    /// when the lease expired before a batch: the pass stops there.
     pub async fn drain_due_object_purge_debt(
         &self,
-        _held: &StorageMaintenanceLock,
+        held: &StorageMaintenanceLock,
         options: ColdPurgeRetryOptions,
         max_batches: u32,
     ) -> Result<ObjectPurgePassOutcome, StorageError> {
@@ -1469,6 +1490,7 @@ impl PgStorage {
             &self.pool,
             &self.platform_scope,
             self.cold.as_ref(),
+            &held.lease,
             options,
             max_batches,
         )

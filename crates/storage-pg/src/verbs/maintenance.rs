@@ -184,7 +184,7 @@ impl ColdPurgeRetryOutcome {
 /// left (or the batch bound is reached), and the queue the wired store is
 /// left with.
 ///
-/// `skipped` means another process held the storage maintenance lock and
+/// `skipped` means another process held the storage maintenance lease and
 /// this pass drained nothing; the queue counts are still current.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
@@ -227,11 +227,12 @@ impl ObjectPurgePassOutcome {
 }
 
 /// Drain due debts in batches until none is due or `max_batches` ran. The
-/// caller holds the storage maintenance lock.
+/// caller holds the storage maintenance lease.
 pub(crate) async fn drain_due_purge_debt(
     pool: &PgPool,
     platform: &PgPlatformScope,
     cold: &dyn ColdObjectStore,
+    lease: &crate::maintenance_lease::MaintenanceLease,
     options: ColdPurgeRetryOptions,
     max_batches: u32,
 ) -> Result<ObjectPurgePassOutcome, StorageError> {
@@ -245,6 +246,9 @@ pub(crate) async fn drain_due_purge_debt(
         if pass.batches >= max_batches {
             break;
         }
+        // A batch deletes objects with no transaction open; confirm the pass
+        // still holds the store's maintenance lease before starting one.
+        lease.renew().await?;
         let batch = retry_cold_object_purges(pool, platform, cold, options).await?;
         pass.batches += 1;
         pass.purged += batch.purged;
@@ -272,7 +276,7 @@ pub(crate) async fn drain_due_purge_debt(
 }
 
 /// The queue counts of a pass that drained nothing; `skipped` when it
-/// could not take the maintenance lock.
+/// could not take the maintenance lease.
 pub(crate) async fn undrained_purge_pass(
     platform: &PgPlatformScope,
     cold: &dyn ColdObjectStore,

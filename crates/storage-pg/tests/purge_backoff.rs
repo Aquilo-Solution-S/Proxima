@@ -375,8 +375,8 @@ async fn non_positive_options_are_refused() -> TestResult {
 }
 
 /// The in-process pass drains batch after batch until nothing is due, and
-/// a pass that finds the storage maintenance lock held skips with only the
-/// census: the same lock `maintain-storage` takes.
+/// a pass that finds the storage maintenance lease held skips with only the
+/// census: the same lease `maintain-storage` takes.
 #[tokio::test]
 async fn an_object_purge_pass_drains_or_skips_under_the_maintenance_lock() -> TestResult {
     let (db_name, pg) = fresh().await?;
@@ -411,7 +411,7 @@ async fn an_object_purge_pass_drains_or_skips_under_the_maintenance_lock() -> Te
             "a skipped pass reports the census and touches nothing"
         );
         assert_eq!(store.held(), 150);
-        drop(held);
+        held.release().await?;
 
         let pass = pg.run_object_purge_pass(options, 100).await?;
         assert!(!pass.skipped);

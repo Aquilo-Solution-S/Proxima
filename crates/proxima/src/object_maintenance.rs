@@ -3,7 +3,7 @@
 //! The runtime runs [`object_maintenance_pass`] on its own cadence whenever
 //! an object store is configured ([`crate::Feature::ObjectPurge`]), as it
 //! drains embedding jobs. A library host that composes [`PgStorage`] itself
-//! calls the same function. Every pass takes the storage maintenance lock,
+//! calls the same function. Every pass takes the storage maintenance lease,
 //! the one `proxima-mcp maintain-storage` takes, so concurrent passes in
 //! several processes never drain the same queue at once.
 
@@ -14,7 +14,9 @@ use proxima_blob_s3::{CitedBlobStore, UploadExpirySweepOutcome};
 use proxima_core::authz::SystemAuthority;
 use proxima_core::quiesce::Checkpoint;
 use proxima_core::{QuiesceGate, StorageError};
-use proxima_storage_pg::{ColdPurgeRetryOptions, ObjectPurgePassOutcome, PgStorage};
+use proxima_storage_pg::{
+    ColdPurgeRetryOptions, ObjectPurgePassOutcome, PgStorage, StorageMaintenanceLock,
+};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -33,17 +35,17 @@ pub struct ObjectMaintenanceOutcome {
     /// pass was skipped.
     pub sweep: Option<UploadExpirySweepOutcome>,
     /// The purge-debt drain and the queue it left. `purge.skipped` when
-    /// another process held the storage maintenance lock.
+    /// another process held the storage maintenance lease.
     pub purge: ObjectPurgePassOutcome,
 }
 
 /// Sweep expired uploads, then drain due purge debt, under the storage
-/// maintenance lock.
+/// maintenance lease.
 ///
 /// The drain is wired to `blobs`' own object store, whatever cold store
 /// `storage` carries, so it only ever discharges debt owed to that store.
 /// Call it on a cadence no longer than the configured upload TTL. When
-/// another process holds the lock, the pass does nothing and reports
+/// another process holds the lease, the pass does nothing and reports
 /// `purge.skipped` with current queue counts.
 ///
 /// A queue holding debt for another object store refuses the pass: stores
@@ -53,7 +55,7 @@ pub struct ObjectMaintenanceOutcome {
 ///
 /// # Errors
 ///
-/// Returns storage errors from the lock, the sweep, the drain or the
+/// Returns storage errors from the lease, the sweep, the drain or the
 /// census; a constraint violation naming both stores when the queue holds
 /// debt for another store; and a constraint violation when `authority` did
 /// not boot `blobs`.
@@ -71,8 +73,23 @@ pub async fn object_maintenance_pass(
         purge.skipped = true;
         return Ok(ObjectMaintenanceOutcome { sweep: None, purge });
     };
+    let pass = sweep_and_drain(&storage, blobs, authority, &lock, options).await;
+    if let Err(error) = lock.release().await {
+        tracing::debug!(%error, "storage maintenance lease release failed; it expires instead");
+    }
+    pass
+}
+
+async fn sweep_and_drain(
+    storage: &PgStorage,
+    blobs: &CitedBlobStore,
+    authority: &SystemAuthority,
+    lock: &StorageMaintenanceLock,
+    options: ColdPurgeRetryOptions,
+) -> Result<ObjectMaintenanceOutcome, StorageError> {
     let mut sweep = UploadExpirySweepOutcome::default();
     for _ in 0..MAX_SWEEP_BATCHES {
+        lock.renew().await?;
         let batch = blobs.sweep_expired_uploads(authority, SWEEP_BATCH).await?;
         sweep.expired += batch.expired;
         sweep.owed += batch.owed;
@@ -82,7 +99,7 @@ pub async fn object_maintenance_pass(
         }
     }
     let purge = storage
-        .drain_due_object_purge_debt(&lock, options, MAX_PURGE_BATCHES)
+        .drain_due_object_purge_debt(lock, options, MAX_PURGE_BATCHES)
         .await?;
     Ok(ObjectMaintenanceOutcome {
         sweep: Some(sweep),
@@ -240,7 +257,7 @@ pub(crate) fn spawn_object_purge_worker(
 fn log_pass(outcome: &ObjectMaintenanceOutcome) {
     let purge = &outcome.purge;
     if purge.skipped {
-        tracing::debug!("object maintenance pass skipped: another pass holds the lock");
+        tracing::debug!("object maintenance pass skipped: another pass holds the lease");
         return;
     }
     let expired = outcome.sweep.map_or(0, |sweep| sweep.expired);

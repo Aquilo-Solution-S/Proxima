@@ -647,7 +647,7 @@ pub use {
     },
 };
 /// What [`PgStorage`]'s public methods take and return beyond the migration
-/// helpers: the cold store, the owner and scope surfaces, the maintenance locks,
+/// helpers: the cold store, the owner and scope surfaces, the maintenance leases,
 /// change-log pruning and cold-purge retry options and outcomes, and the host
 /// state erase selection [`HostStateEraseReceipt`] carries. Host API only, like
 /// [`PgStorage`].

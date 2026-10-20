@@ -216,8 +216,13 @@ what the previous process left owed. Scans and reports stay commands
 the same sweep (`--sweep-expired-uploads`) and drain
 (`--retry-cold-object-purges`) for a host that runs no server, to list stuck
 debt by key, or to name and drain another store's debt. Every pass, in-process or not, takes one storage
-maintenance advisory lock, so passes on one database never overlap; a pass that
-finds the lock held skips. A pending purge is outstanding work, not completed
+maintenance lease (a row of `proxima_core.maintenance_lease`), so passes on one database never overlap; a pass that
+finds the lease held skips. The holder renews the lease while it runs and
+before each batch, and deletes it when done. A pass whose lease expired
+(it could not renew for a minute) stops at its next batch. A holder that
+crashed blocks other passes until its lease expires, at most a minute. The
+embedding maintenance passes (`maintain-embeddings`) hold their own lease the
+same way. A pending purge is outstanding work, not completed
 deletion. A failed delete backs its debt off, doubling the delay
 per attempt, so it never holds back other debts. The report gives `due`
 (selectable now), `deferred` (backing off) and `stuck` (failed repeatedly; each

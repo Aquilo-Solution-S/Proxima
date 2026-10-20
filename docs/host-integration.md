@@ -62,7 +62,7 @@ object-purge debt itself (`RuntimeBuilder::object_purge_interval`, default 60
 seconds, zero turns it off); a host built on the runtime writes no code for it.
 A library host that composes `PgStorage` and `CitedBlobStore` without the
 runtime calls `proxima::object_maintenance_pass` on a cadence no longer than
-the upload TTL. The pass takes the same storage maintenance lock as the
+the upload TTL. The pass takes the same storage maintenance lease as the
 runtime and `maintain-storage`, and skips when another pass holds it. Both
 the runtime's boot and the pass refuse while the purge queue holds debt for
 another object store; see [operate](operate.md).

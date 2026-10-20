@@ -80,7 +80,7 @@ Environment:
 Maintenance:
   maintain-embeddings      One self-healing pass: orphan sweep, reconcile
                            enqueue, health report.
-                           Cron-safe (skips if another pass holds the lock)
+                           Cron-safe (skips if another pass holds the lease)
   maintain-storage         One storage pass: retry the object-store purge
                            debts committed erases left, and/or rotate the
                            change log on an explicit horizon. Cron-safe
@@ -121,8 +121,8 @@ One embedding self-healing pass, in order: sweep orphaned embedding rows,
 enqueue jobs for memories that need the target space (model at
 PROXIMA_EMBED_DIM, default 1024), then print a health report (backlog,
 orphans, recall canary). The serving process drains the queue.
-Passes are serialized by a Postgres advisory lock; when another pass holds
-it, this run prints a skip notice and exits 0 — safe to fire from cron.
+Passes are serialized by a maintenance lease in Postgres; when another pass
+holds it, this run prints a skip notice and exits 0 — safe to fire from cron.
 
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
@@ -171,10 +171,10 @@ Optional:
 pub const STORAGE_MAINTENANCE_USAGE: &str = "\
 Usage: proxima-mcp maintain-storage [OPTIONS]
 
-One storage-maintenance pass. Passes are serialized by a Postgres advisory
-lock; when another pass holds it, this run prints a skip notice and exits 0
-— safe to fire from cron. A Proxima server with an object store runs the
-same sweep and drain in-process under the same lock
+One storage-maintenance pass. Passes are serialized by a maintenance lease in
+Postgres; when another pass holds it, this run prints a skip notice and exits
+0 — safe to fire from cron. A Proxima server with an object store runs the
+same sweep and drain in-process under the same lease
 (PROXIMA_OBJECT_PURGE_INTERVAL_SECS); this command is for a host that runs
 no server, to name stuck debt, or to name and drain debt owed to another
 store, which a server refuses to start over.
