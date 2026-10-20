@@ -513,13 +513,16 @@ async fn recover_and_cleanup(
     if canonical_debt.is_some() {
         let (runtime_url, platform_url) = split_role_urls(database).await?;
         let platform = proxima_storage_pg::PgPlatformScope::new(
-            sqlx::PgPool::connect(&platform_url).await?,
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(4)
+                .connect(&platform_url)
+                .await?,
             &["proxima_core"],
         )
         .await?;
         let maintenance = PgStorage::connect_with_config(
             &runtime_url,
-            proxima_storage_pg::PgPoolConfig::from_env()?,
+            fixture_pool_config(),
             proxima_storage_pg::PgTuning::from_env()?,
             platform,
             0,
@@ -596,7 +599,8 @@ async fn boot(
         .served_surface(ServedSurface::All)
         // These tests observe debt and expiry, then drive the pass by hand;
         // the runtime's own drain would race them.
-        .object_purge_interval(std::time::Duration::ZERO);
+        .object_purge_interval(std::time::Duration::ZERO)
+        .pg_pool_config(fixture_pool_config());
     if let Some(s3) = s3 {
         app = app.s3(s3);
     }
@@ -629,7 +633,20 @@ async fn corpus_counts(pool: &sqlx::PgPool) -> TestResult<(i64, i64)> {
 }
 
 async fn admin_pool(database: &str) -> TestResult<sqlx::PgPool> {
-    Ok(sqlx::PgPool::connect(&db_url(database)).await?)
+    Ok(sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url(database))
+        .await?)
+}
+
+/// The shipped pool policy sized for one test: a reboot fixture drives one
+/// host at a time, and the server's connections are shared with every
+/// other test process nextest runs at once.
+fn fixture_pool_config() -> proxima_storage_pg::PgPoolConfig {
+    proxima_storage_pg::PgPoolConfig {
+        max_connections: 4,
+        ..proxima_storage_pg::PgPoolConfig::default()
+    }
 }
 
 /// Write bytes straight to the bucket, as the holder's presigned PUT would.

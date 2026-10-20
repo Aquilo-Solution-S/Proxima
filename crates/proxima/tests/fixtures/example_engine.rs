@@ -14,7 +14,40 @@ use proxima::testkit::{HostTemplate, SplitRoleDb, TemplateFamily};
 use proxima_core::{Engine, FlavorRegistry, OwnerId};
 use proxima_example::ExampleFlavor;
 use proxima_storage_pg::{PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
+use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
+
+/// Connections a fixture Engine's runtime and platform pools may open.
+///
+/// A test drives one Engine at a time, so the shipped default of ten only
+/// gave a test room to hold idle connections the server's
+/// `max_connections` is shared out of: nextest runs eight test processes at
+/// once, each with several Engines and probe pools. Four leaves a nested
+/// acquire and a concurrent statement room without queueing.
+pub const ENGINE_POOL_CONNECTIONS: u32 = 4;
+
+/// The pool policy of a fixture Engine: the shipped defaults, sized to
+/// [`ENGINE_POOL_CONNECTIONS`].
+#[must_use]
+pub fn engine_pool_config() -> PgPoolConfig {
+    PgPoolConfig {
+        max_connections: ENGINE_POOL_CONNECTIONS,
+        ..PgPoolConfig::default()
+    }
+}
+
+/// A test's own pool (admin probes, a barrier, a hand-held writer) capped at
+/// `max_connections`. Connected eagerly, so an unreachable server fails here.
+///
+/// # Errors
+///
+/// The connection error.
+pub async fn fixture_pool(url: &str, max_connections: u32) -> Result<sqlx::PgPool, sqlx::Error> {
+    PgPoolOptions::new()
+        .max_connections(max_connections)
+        .connect(url)
+        .await
+}
 
 /// Core and the example flavor, migrated once per server and cloned per test.
 static TEMPLATE: LazyLock<HostTemplate> = LazyLock::new(|| {
@@ -83,7 +116,7 @@ impl ExampleEngine {
         .await
         .expect("store number");
         let engine = compose(db.runtime_url(), db.platform_url(), extra).await;
-        let pool = sqlx::PgPool::connect(&db.admin_url())
+        let pool = fixture_pool(&db.admin_url(), 2)
             .await
             .expect("admin connection");
         Self { pool, engine, db }
@@ -107,7 +140,8 @@ impl ExampleEngine {
 }
 
 /// Compose an Engine over the example flavor plus whatever `extra`
-/// registers, on its own pools to an already migrated database. A suite
+/// registers, on its own pools (sized by [`engine_pool_config`]) to an
+/// already migrated database. A suite
 /// that races two Engines on one database calls this once per task, so a
 /// task blocked on a lock never holds a connection the test's probes need.
 ///
@@ -129,17 +163,23 @@ pub async fn compose(
     let sidecars = sidecars
         .freeze_against(&registry)
         .expect("the example sidecars match the registry");
-    let platform_pool = sqlx::PgPool::connect(platform_url)
+    let platform_pool = fixture_pool(platform_url, ENGINE_POOL_CONNECTIONS)
         .await
         .expect("platform connection");
     let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core", "proxima_example"])
         .await
         .expect("platform validation");
-    let pg = PgStorage::connect(runtime_url, platform_scope, 0)
-        .await
-        .expect("runtime connection")
-        .with_sidecars(sidecars)
-        .with_flavors(&registry);
+    let pg = PgStorage::connect_with_config(
+        runtime_url,
+        engine_pool_config(),
+        PgTuning::default(),
+        platform_scope,
+        0,
+    )
+    .await
+    .expect("runtime connection")
+    .with_sidecars(sidecars)
+    .with_flavors(&registry);
     Engine::new(registry).with_storage_ports(Arc::new(pg).storage_ports())
 }
 

@@ -18,7 +18,7 @@
 #[allow(dead_code, reason = "each suite uses part of the shared fixture")]
 mod example_engine;
 
-use example_engine::{compose, migrated_db};
+use example_engine::{compose, fixture_pool, migrated_db};
 use proxima::flavor::{lock_scope_fence_exclusive_tx, lock_scope_fence_shared_tx};
 use proxima::testkit::SplitRoleDb;
 use proxima_core::test_fixtures::{authenticated_context, owner_scope_for_tests};
@@ -129,7 +129,7 @@ impl Fixture {
         .await
         .expect("store number");
         let engine = compose(db.runtime_url(), db.platform_url(), |_| {}).await;
-        let admin = sqlx::PgPool::connect(&db.admin_url())
+        let admin = fixture_pool(&db.admin_url(), 2)
             .await
             .expect("admin connection");
         Self { admin, engine, db }
@@ -168,7 +168,7 @@ impl Fixture {
         owner: OwnerId,
         notebook_id: Uuid,
     ) -> (sqlx::PgPool, sqlx::Transaction<'static, sqlx::Postgres>) {
-        let pool = sqlx::PgPool::connect(&self.db.admin_url())
+        let pool = fixture_pool(&self.db.admin_url(), 1)
             .await
             .expect("barrier connection");
         let mut barrier = pool.begin().await.expect("barrier transaction");
@@ -184,7 +184,7 @@ impl Fixture {
     /// A fresh connection that takes the notebook fence itself, the way a
     /// writer holds it.
     async fn writer(&self) -> (sqlx::PgPool, sqlx::Transaction<'static, sqlx::Postgres>) {
-        let pool = sqlx::PgPool::connect(&self.db.admin_url())
+        let pool = fixture_pool(&self.db.admin_url(), 1)
             .await
             .expect("writer connection");
         let tx = pool.begin().await.expect("writer transaction");
@@ -273,7 +273,7 @@ impl Fixture {
         notebook_id: Uuid,
     ) -> tokio::task::JoinHandle<Result<NotebookEraseReceipt, String>> {
         let engine = self.task_engine().await;
-        let pool = sqlx::PgPool::connect(self.db.runtime_url())
+        let pool = fixture_pool(self.db.runtime_url(), 1)
             .await
             .expect("erase connection");
         tokio::spawn(async move {

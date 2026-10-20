@@ -124,6 +124,28 @@ proxima::flavor::pg_sidecar! {
     },
 }
 
+/// Serving storage over the fixture's schemas, on fixture-sized pools.
+async fn fixture_storage(
+    db: &proxima::testkit::SplitRoleDb,
+) -> Result<PgStorage, Box<dyn std::error::Error>> {
+    let platform =
+        example_engine::fixture_pool(db.platform_url(), example_engine::ENGINE_POOL_CONNECTIONS)
+            .await?;
+    let platform = PgPlatformScope::new(
+        platform,
+        &["proxima_core", "proxima_example", "heads_fixture"],
+    )
+    .await?;
+    Ok(PgStorage::connect_with_config(
+        db.runtime_url(),
+        example_engine::engine_pool_config(),
+        PgTuning::default(),
+        platform,
+        0,
+    )
+    .await?)
+}
+
 pub async fn assert_tombstone_head() -> TestResult {
     let db = example_engine::migrated_db("sidecar_heads_tombstone").await;
     PgMigrationStorage::connect_with_config(
@@ -143,7 +165,7 @@ pub async fn assert_tombstone_head() -> TestResult {
     ExampleFlavor::register_pg_sidecars(&mut sidecars);
     sidecars.add_fact::<HeadObservation>();
     let sidecars = sidecars.freeze_against(&registry)?;
-    let admin = sqlx::PgPool::connect(&db.admin_url()).await?;
+    let admin = example_engine::fixture_pool(&db.admin_url(), 2).await?;
     sqlx::raw_sql(
         "CREATE SCHEMA heads_fixture;
          CREATE TABLE heads_fixture.observation_v1 (
@@ -167,13 +189,7 @@ pub async fn assert_tombstone_head() -> TestResult {
             .execute(&admin)
             .await?;
     }
-    let platform = sqlx::PgPool::connect(db.platform_url()).await?;
-    let platform = PgPlatformScope::new(
-        platform,
-        &["proxima_core", "proxima_example", "heads_fixture"],
-    )
-    .await?;
-    let storage = PgStorage::connect(db.runtime_url(), platform, 0)
+    let storage = fixture_storage(&db)
         .await?
         .with_sidecars(sidecars)
         .with_flavors(&registry);
