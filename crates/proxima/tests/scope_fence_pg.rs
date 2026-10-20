@@ -191,12 +191,24 @@ impl Fixture {
         (pool, tx)
     }
 
-    /// Poll `probe` until it reports at least `at_least`, or give up. The
-    /// bound is on the TEST: the condition is "the database says a backend
-    /// is blocked", which no amount of waiting makes true if the race did
-    /// not set up, and the assertion then says so.
-    async fn wait_for(&self, probe: Probe, at_least: i64) -> bool {
-        for _ in 0..400 {
+    /// Poll `probe` until it reports at least `at_least` while `task` is
+    /// still running.
+    ///
+    /// The condition is "the database says a backend is blocked", which no
+    /// amount of waiting makes true if the race did not set up. An `Err`
+    /// says which way it did not: the task ended first, and the error
+    /// carries the task's own outcome (its error, or its panic message), or
+    /// the deadline passed with the task still running and nothing blocked.
+    /// A task that failed before it reached the fence is then reported at
+    /// its cause, not as a wait the database never showed.
+    async fn wait_for<T: std::fmt::Debug>(
+        &self,
+        probe: Probe,
+        at_least: i64,
+        task: &mut tokio::task::JoinHandle<T>,
+    ) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+        loop {
             // Two literal statements rather than one statement-shaped
             // argument: the probe SQL stays a constant visible at the call.
             let seen: i64 = match probe {
@@ -213,25 +225,40 @@ impl Fixture {
             }
             .expect("lock-wait probe");
             if seen >= at_least {
-                return true;
+                return Ok(());
+            }
+            if task.is_finished() {
+                return Err(format!(
+                    "the operation ended before it waited: {}",
+                    task_outcome(task.await)
+                ));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "no wait observed within {WAIT_DEADLINE:?}; the operation is still running"
+                ));
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        false
+    }
+
+    /// An Engine on pools of its own, composed BEFORE its task is spawned:
+    /// a boot that fails or stalls does so here, at its cause, and the task
+    /// starts at the operation the test is about.
+    async fn task_engine(&self) -> Engine {
+        compose(self.db.runtime_url(), self.db.platform_url(), |_| {}).await
     }
 
     /// One note written through its own Engine on its own pools, spawned so
     /// it can block.
-    fn spawn_note(
+    async fn spawn_note(
         &self,
         owner: OwnerId,
         notebook_id: Uuid,
         key: &'static str,
     ) -> tokio::task::JoinHandle<Result<MemoryId, String>> {
-        let runtime = self.db.runtime_url().to_owned();
-        let platform = self.db.platform_url().to_owned();
+        let engine = self.task_engine().await;
         tokio::spawn(async move {
-            let engine = compose(&runtime, &platform, |_| {}).await;
             remember_note(&engine, &authz(owner), owner, &note(notebook_id, key))
                 .await
                 .map_err(|err| err.to_string())
@@ -240,22 +267,45 @@ impl Fixture {
 
     /// One notebook erase on its own Engine and pools, spawned so it can
     /// block.
-    fn spawn_erase(
+    async fn spawn_erase(
         &self,
         owner: OwnerId,
         notebook_id: Uuid,
     ) -> tokio::task::JoinHandle<Result<NotebookEraseReceipt, String>> {
-        let runtime = self.db.runtime_url().to_owned();
-        let platform = self.db.platform_url().to_owned();
+        let engine = self.task_engine().await;
+        let pool = sqlx::PgPool::connect(self.db.runtime_url())
+            .await
+            .expect("erase connection");
         tokio::spawn(async move {
-            let engine = compose(&runtime, &platform, |_| {}).await;
-            let pool = sqlx::PgPool::connect(&runtime)
-                .await
-                .map_err(|err| err.to_string())?;
             erase_notebook_with_scope(&engine, &authz(owner), &pool, owner, notebook_id)
                 .await
                 .map_err(|err| err.to_string())
         })
+    }
+}
+
+/// How long [`Fixture::wait_for`] polls. A bound on the TEST, well inside
+/// nextest's slow-timeout, and long enough that a loaded runner reaching
+/// the fence late is not mistaken for one that never reaches it.
+const WAIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A spawned task's outcome as text: its value, or its panic message.
+fn task_outcome<T: std::fmt::Debug>(joined: Result<T, tokio::task::JoinError>) -> String {
+    match joined {
+        Ok(value) => format!("{value:?}"),
+        Err(error) if error.is_panic() => {
+            let payload = error.into_panic();
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    payload
+                        .downcast_ref::<&str>()
+                        .map(|text| (*text).to_owned())
+                })
+                .map_or_else(|| "panicked".to_owned(), |text| format!("panicked: {text}"))
+        }
+        Err(error) => format!("{error}"),
     }
 }
 
@@ -289,20 +339,20 @@ async fn a_same_notebook_write_waits_for_the_erase_and_is_then_refused() {
     assert!(fx.census(notebook_id).await > 0, "the fixture wrote rows");
 
     let (barrier_pool, barrier) = fx.hold_notebook_row(owner, notebook_id).await;
-    let erase = fx.spawn_erase(owner, notebook_id);
-    assert!(
-        fx.wait_for(Probe::AnyLock, 1).await,
-        "the erase never parked on the notebook row; the interleaving did not set up"
-    );
+    let mut erase = fx.spawn_erase(owner, notebook_id).await;
+    if let Err(why) = fx.wait_for(Probe::AnyLock, 1, &mut erase).await {
+        panic!(
+            "the erase never parked on the notebook row; the interleaving did not set up: {why}"
+        );
+    }
 
     // With the erase parked ON THE FENCE IT ALREADY HOLDS, a same-notebook
     // write must wait on the advisory lock: the fence is doing the waiting,
     // not some row it happened to touch.
-    let write = fx.spawn_note(owner, notebook_id, "second");
-    assert!(
-        fx.wait_for(Probe::Advisory, 1).await,
-        "the same-notebook write did not wait on the notebook fence"
-    );
+    let mut write = fx.spawn_note(owner, notebook_id, "second").await;
+    if let Err(why) = fx.wait_for(Probe::Advisory, 1, &mut write).await {
+        panic!("the same-notebook write did not wait on the notebook fence: {why}");
+    }
     assert!(!write.is_finished(), "the write ran past the fence");
 
     barrier.rollback().await.expect("release the barrier");
@@ -345,11 +395,10 @@ async fn an_erase_waits_for_an_in_flight_same_notebook_write_and_sweeps_it() {
         .await
         .expect("the late note");
 
-    let erase = fx.spawn_erase(owner, notebook_id);
-    assert!(
-        fx.wait_for(Probe::Advisory, 1).await,
-        "the erase did not wait on the notebook fence a writer was holding"
-    );
+    let mut erase = fx.spawn_erase(owner, notebook_id).await;
+    if let Err(why) = fx.wait_for(Probe::Advisory, 1, &mut erase).await {
+        panic!("the erase did not wait on the notebook fence a writer was holding: {why}");
+    }
     assert!(!erase.is_finished(), "the erase ran past the fence");
 
     writer.commit().await.expect("the writer commits");
@@ -386,13 +435,13 @@ async fn an_erase_of_one_notebook_does_not_fence_another() {
     let untouched = fx.notebook(owner).await;
 
     let (barrier_pool, barrier) = fx.hold_notebook_row(owner, erased).await;
-    let erase = fx.spawn_erase(owner, erased);
-    assert!(
-        fx.wait_for(Probe::AnyLock, 1).await,
-        "the erase never parked; the interleaving did not set up"
-    );
+    let mut erase = fx.spawn_erase(owner, erased).await;
+    if let Err(why) = fx.wait_for(Probe::AnyLock, 1, &mut erase).await {
+        panic!("the erase never parked; the interleaving did not set up: {why}");
+    }
 
     fx.spawn_note(owner, untouched, "elsewhere")
+        .await
         .await
         .expect("write task")
         .expect("a write into a different notebook must not wait on this erase");
@@ -453,24 +502,21 @@ async fn two_same_notebook_writers_hold_the_fence_at_once_and_the_erase_sweeps_b
     // A bound on the test, not a synchronization step: the second writer
     // either does not wait on the parked one and finishes at once, or waits
     // on a lock nothing will release.
-    let second = tokio::time::timeout(
-        std::time::Duration::from_secs(45),
-        fx.spawn_note(owner, notebook_id, "second"),
-    )
-    .await
-    .expect("the second same-notebook writer blocked on the first one's fence")
-    .expect("write task")
-    .expect("a second writer into a fenced notebook is admitted");
+    let second = fx.spawn_note(owner, notebook_id, "second").await;
+    let second = tokio::time::timeout(std::time::Duration::from_secs(45), second)
+        .await
+        .expect("the second same-notebook writer blocked on the first one's fence")
+        .expect("write task")
+        .expect("a second writer into a fenced notebook is admitted");
     assert!(
         fx.census(notebook_id).await >= 1,
         "the second writer committed while the first still held the fence"
     );
 
-    let erase = fx.spawn_erase(owner, notebook_id);
-    assert!(
-        fx.wait_for(Probe::Advisory, 1).await,
-        "the erase did not queue behind the writer still holding the fence"
-    );
+    let mut erase = fx.spawn_erase(owner, notebook_id).await;
+    if let Err(why) = fx.wait_for(Probe::Advisory, 1, &mut erase).await {
+        panic!("the erase did not queue behind the writer still holding the fence: {why}");
+    }
     assert!(!erase.is_finished(), "the erase ran past a held fence");
 
     parked.commit().await.expect("the parked writer commits");
@@ -531,16 +577,15 @@ async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refuse
     );
 
     let (barrier_pool, barrier) = fx.hold_notebook_row(owner, notebook_id).await;
-    let erase = fx.spawn_erase(owner, notebook_id);
-    assert!(
-        fx.wait_for(Probe::AnyLock, 1).await,
-        "the erase never parked on the notebook row; the interleaving did not set up"
-    );
+    let mut erase = fx.spawn_erase(owner, notebook_id).await;
+    if let Err(why) = fx.wait_for(Probe::AnyLock, 1, &mut erase).await {
+        panic!(
+            "the erase never parked on the notebook row; the interleaving did not set up: {why}"
+        );
+    }
 
-    let runtime = fx.db.runtime_url().to_owned();
-    let platform = fx.db.platform_url().to_owned();
-    let late = tokio::spawn(async move {
-        let engine = compose(&runtime, &platform, |_| {}).await;
+    let engine = fx.task_engine().await;
+    let mut late = tokio::spawn(async move {
         host_write_digest(
             &engine,
             &authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer)),
@@ -552,10 +597,9 @@ async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refuse
         .await
         .map_err(|err| err.to_string())
     });
-    assert!(
-        fx.wait_for(Probe::Advisory, 1).await,
-        "the host's write did not wait on the declared scope fence"
-    );
+    if let Err(why) = fx.wait_for(Probe::Advisory, 1, &mut late).await {
+        panic!("the host's write did not wait on the declared scope fence: {why}");
+    }
     assert!(!late.is_finished(), "the host write ran past the fence");
 
     barrier.rollback().await.expect("release the barrier");
@@ -579,6 +623,46 @@ async fn a_host_write_of_a_scoped_payload_through_the_engine_waits_and_is_refuse
         fx.surviving_memory(vec![early.into_inner()]).await,
         0,
         "and so is the admission behind it"
+    );
+}
+
+/// An operation that ends before it reaches the fence is reported at its
+/// cause, not as a wait the database never showed.
+///
+/// A run whose spawned operations failed in setup used to read as "the
+/// erase never parked" or "did not wait on the notebook fence", which is
+/// what a broken fence also says. The wait now watches the task: a refusal
+/// arrives with the refusal's text, and a panic with the panic's message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_operation_that_ends_before_the_fence_is_reported_at_its_cause() {
+    let fx = Fixture::new("proxima_scope_fence").await;
+    let owner = owner();
+    let unregistered = Uuid::now_v7();
+
+    // Nothing holds this notebook's fence, so nothing can wait on it: the
+    // write is refused for its unregistered scope and the task ends.
+    let mut write = fx.spawn_note(owner, unregistered, "orphan").await;
+    let why = fx
+        .wait_for(Probe::Advisory, 1, &mut write)
+        .await
+        .expect_err("no backend waits on a fence nobody holds");
+    assert!(
+        why.starts_with("the operation ended before it waited"),
+        "the task's end is named: {why}"
+    );
+    assert_scope_refusal(&why, unregistered);
+
+    // A task that fails in its own setup carries the panic's message.
+    let mut setup = tokio::spawn(async {
+        panic!("runtime connection: pool timed out while waiting for an open connection")
+    });
+    let why = fx
+        .wait_for(Probe::AnyLock, 1, &mut setup)
+        .await
+        .expect_err("a panicked task waits on nothing");
+    assert!(
+        why.contains("panicked: runtime connection: pool timed out"),
+        "the panic's message is the reported cause: {why}"
     );
 }
 
