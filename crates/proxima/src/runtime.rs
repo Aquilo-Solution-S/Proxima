@@ -116,6 +116,14 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         self
     }
 
+    /// Migrate (or run the preflight) on this URL instead of the platform
+    /// URL: see [`crate::RuntimeBuilder::migration_database_url`].
+    #[must_use]
+    pub fn migration_database_url(mut self, url: impl Into<String>) -> Self {
+        self.overlay = self.overlay.migration_database_url(url);
+        self
+    }
+
     #[must_use]
     pub fn s3(mut self, s3: S3RuntimeConfig) -> Self {
         self.overlay = self.overlay.s3(s3);

@@ -56,6 +56,7 @@ pub struct RuntimeBuilder {
     database_url: Option<String>,
     store_number: Option<u16>,
     platform_database_url: Option<String>,
+    migration_database_url: Option<String>,
     s3: Option<S3RuntimeConfig>,
     owner: Option<OwnerId>,
     mcp_bind: Option<SocketAddr>,
@@ -118,6 +119,10 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field(
                 "has_platform_database_url",
                 &self.platform_database_url.is_some(),
+            )
+            .field(
+                "has_migration_database_url",
+                &self.migration_database_url.is_some(),
             )
             .field("s3", &self.s3)
             .field("owner", &self.owner)
@@ -185,6 +190,7 @@ impl RuntimeBuilder {
             database_url: self.database_url.or(base.database_url),
             store_number: self.store_number.or(base.store_number),
             platform_database_url: self.platform_database_url.or(base.platform_database_url),
+            migration_database_url: self.migration_database_url.or(base.migration_database_url),
             s3: self.s3.or(base.s3),
             owner: self.owner.or(base.owner),
             mcp_bind: self.mcp_bind.or(base.mcp_bind),
@@ -254,6 +260,21 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn platform_database_url(mut self, url: impl Into<String>) -> Self {
         self.platform_database_url = Some(url.into());
+        self
+    }
+
+    /// Set the connection boot migrates (or, with [`Self::skip_migrations`],
+    /// runs its preflight) on, when it must differ from
+    /// [`Self::platform_database_url`]: the platform URL goes through a
+    /// transaction-mode pooler, this one reaches Postgres directly or
+    /// through a session-mode pool. Migrations hold a session advisory lock
+    /// and session settings for the whole run, which a transaction-mode
+    /// pooler cannot carry. Same role and database as the platform URL.
+    /// Unset: boot migrates on the platform URL. Environment equivalent:
+    /// `PROXIMA_MIGRATION_DATABASE_URL`.
+    #[must_use]
+    pub fn migration_database_url(mut self, url: impl Into<String>) -> Self {
+        self.migration_database_url = Some(url.into());
         self
     }
 
@@ -727,6 +748,9 @@ impl RuntimeBuilder {
         if self.platform_database_url.is_none() {
             self.platform_database_url = lookup("PROXIMA_PLATFORM_DATABASE_URL");
         }
+        if self.migration_database_url.is_none() {
+            self.migration_database_url = lookup("PROXIMA_MIGRATION_DATABASE_URL");
+        }
         if self.s3.is_none() {
             self.s3 = s3_from_lookup(&lookup)?;
         }
@@ -915,6 +939,21 @@ impl RuntimeBuilder {
         Ok(())
     }
 
+    /// The platform URL [`Self::resolve`] requires, and the migration URL
+    /// checked against it.
+    fn take_platform_urls(&mut self) -> Result<(String, Option<String>), ProximaError> {
+        let platform = self.platform_database_url.take().ok_or_else(|| {
+            ProximaError::Config(
+                "PROXIMA_PLATFORM_DATABASE_URL is required for owner-RLS boot".into(),
+            )
+        })?;
+        let migration = self.migration_database_url.take();
+        if let Some(migration) = &migration {
+            check_migration_database_url(migration, &platform)?;
+        }
+        Ok((platform, migration))
+    }
+
     /// The served-path half of [`Self::resolve`]: the environment OIDC
     /// authenticator, the request-header allowlist, the merged host service
     /// bag, and the transport with its one body cap.
@@ -1005,11 +1044,7 @@ impl RuntimeBuilder {
             .take()
             .ok_or_else(|| ProximaError::Config("DATABASE_URL is required".into()))?;
         self.check_platform_authenticator()?;
-        let platform_database_url = self.platform_database_url.take().ok_or_else(|| {
-            ProximaError::Config(
-                "PROXIMA_PLATFORM_DATABASE_URL is required for owner-RLS boot".into(),
-            )
-        })?;
+        let (platform_database_url, migration_database_url) = self.take_platform_urls()?;
         self.register_outbox_http()?;
         let ServedPath {
             late_owner_access,
@@ -1056,6 +1091,7 @@ impl RuntimeBuilder {
                 )
             })?,
             platform_database_url,
+            migration_database_url,
             s3: self.s3,
             owner: self.owner,
             mcp: self.mcp_bind.map(|bind| McpSettings { bind }),
@@ -1116,6 +1152,10 @@ pub struct RuntimeConfig {
     /// Host-assigned immutable store identity, persisted on first boot.
     pub store_number: u16,
     pub platform_database_url: String,
+    /// The connection boot migrates and runs its preflight on
+    /// (`PROXIMA_MIGRATION_DATABASE_URL`); `None` uses
+    /// [`Self::platform_database_url`]. See [`Self::migrations_url`].
+    pub migration_database_url: Option<String>,
     pub s3: Option<S3RuntimeConfig>,
     pub owner: Option<OwnerId>,
     pub mcp: Option<McpSettings>,
@@ -1244,6 +1284,10 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("database_url", &"<redacted>")
             .field("store_number", &self.store_number)
             .field("platform_database_url", &"<redacted>")
+            .field(
+                "migration_database_url",
+                &self.migration_database_url.as_ref().map(|_| "<redacted>"),
+            )
             .field("s3", &self.s3)
             .field("owner", &self.owner)
             .field("mcp", &self.mcp)
@@ -1275,15 +1319,30 @@ impl std::fmt::Debug for RuntimeConfig {
 }
 
 impl RuntimeConfig {
+    /// The URL boot migrates and runs its preflight on:
+    /// [`Self::migration_database_url`] when set, otherwise
+    /// [`Self::platform_database_url`].
+    #[must_use]
+    pub fn migrations_url(&self) -> &str {
+        self.migration_database_url
+            .as_deref()
+            .unwrap_or(&self.platform_database_url)
+    }
+
     /// Validate the fail-closed network/auth matrix.
     ///
     /// # Errors
     ///
-    /// Returns `ProximaError::Security` when transport exposure is unsafe.
+    /// Returns `ProximaError::Security` when transport exposure is unsafe,
+    /// and `ProximaError::Config` for an invalid pool configuration or a
+    /// migration URL that does not name the platform URL's role and database.
     pub fn validate(&self) -> Result<(), ProximaError> {
         self.pg_pool_config
             .validate()
             .map_err(|error| ProximaError::Config(error.to_string()))?;
+        if let Some(migration) = &self.migration_database_url {
+            check_migration_database_url(migration, &self.platform_database_url)?;
+        }
         let Some(mcp) = &self.mcp else {
             return Ok(());
         };
@@ -1468,6 +1527,27 @@ fn parse_allowed_hosts(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Read `PROXIMA_MIGRATION_DATABASE_URL` through `lookup` and check it
+/// against `platform_database_url` the way boot does: same role, same
+/// database. `None` when unset; the caller then migrates on the platform URL.
+/// For entry points that migrate without the facade (a maintenance command
+/// that opens its own migration pool).
+///
+/// # Errors
+///
+/// [`ProximaError::Config`] when either URL does not parse or the migration
+/// URL names another role or database. Neither URL is echoed.
+pub fn migration_database_url_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+    platform_database_url: &str,
+) -> Result<Option<String>, ProximaError> {
+    let Some(migration) = proxima_core::env_value(lookup, "PROXIMA_MIGRATION_DATABASE_URL") else {
+        return Ok(None);
+    };
+    check_migration_database_url(&migration, platform_database_url)?;
+    Ok(Some(migration))
+}
+
 /// Parse an explicitly configured missing-version policy.
 ///
 /// `PROXIMA_MISSING_MIGRATION_POLICY` accepts `reject` or `allow`. An unset
@@ -1597,6 +1677,37 @@ fn embedding_runtime_policy_env_is_set(lookup: &impl Fn(&str) -> Option<String>)
     ]
     .iter()
     .any(|key| proxima_core::env_value(lookup, key).is_some())
+}
+
+/// `PROXIMA_MIGRATION_DATABASE_URL` is another way to reach the platform
+/// scope, not another scope: migrations create objects owned by the role
+/// they run as, and the platform role owns the schema. Refuse a URL that
+/// names another role or database; host, port and connection parameters
+/// may differ. Neither URL is echoed: it could carry a password.
+fn check_migration_database_url(migration: &str, platform: &str) -> Result<(), ProximaError> {
+    use std::str::FromStr as _;
+
+    let parse = |url: &str, variable: &str| {
+        sqlx::postgres::PgConnectOptions::from_str(url)
+            .map_err(|_| ProximaError::Config(format!("{variable} is not a valid Postgres URL")))
+    };
+    let migration = parse(migration, "PROXIMA_MIGRATION_DATABASE_URL")?;
+    let platform = parse(platform, "PROXIMA_PLATFORM_DATABASE_URL")?;
+    if migration.get_username() != platform.get_username() {
+        return Err(ProximaError::Config(
+            "PROXIMA_MIGRATION_DATABASE_URL must connect as the role of \
+             PROXIMA_PLATFORM_DATABASE_URL (the schema owner)"
+                .into(),
+        ));
+    }
+    if migration.get_database() != platform.get_database() {
+        return Err(ProximaError::Config(
+            "PROXIMA_MIGRATION_DATABASE_URL must name the database of \
+             PROXIMA_PLATFORM_DATABASE_URL"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Parse the host-assigned store number at the configuration boundary.
@@ -1765,6 +1876,71 @@ mod tests {
             "{error}"
         );
     }
+    fn with_platform(builder: RuntimeBuilder) -> RuntimeBuilder {
+        builder
+            .database_url("postgres://runtime@db/proxima")
+            .platform_database_url("postgres://platform@pooler:6432/proxima")
+            .store_number(0)
+            .served_surface(ServedSurface::All)
+    }
+
+    #[test]
+    fn migrations_use_the_platform_url_unless_a_migration_url_is_set() {
+        let (config, _) = with_platform(RuntimeBuilder::default())
+            .resolve()
+            .expect("resolves");
+        assert_eq!(config.migration_database_url, None);
+        assert_eq!(
+            config.migrations_url(),
+            "postgres://platform@pooler:6432/proxima"
+        );
+
+        let (config, _) = with_platform(
+            RuntimeBuilder::default()
+                .apply_lookup(lookup(&[(
+                    "PROXIMA_MIGRATION_DATABASE_URL",
+                    "postgres://platform@db:5432/proxima",
+                )]))
+                .expect("env layer"),
+        )
+        .resolve()
+        .expect("a direct URL for the same role and database resolves");
+        assert_eq!(
+            config.migrations_url(),
+            "postgres://platform@db:5432/proxima"
+        );
+        assert_eq!(
+            config.platform_database_url,
+            "postgres://platform@pooler:6432/proxima"
+        );
+        assert!(
+            !format!("{config:?}").contains("db:5432"),
+            "Debug redacts the migration URL"
+        );
+    }
+
+    #[test]
+    fn a_migration_url_must_name_the_platform_role_and_database() {
+        for (url, names) in [
+            ("postgres://admin@db:5432/proxima", "role"),
+            ("postgres://platform@db:5432/other", "database"),
+            ("not a url", "valid Postgres URL"),
+        ] {
+            let error = with_platform(RuntimeBuilder::default().migration_database_url(url))
+                .resolve()
+                .expect_err("refused");
+            let message = error.to_string();
+            assert!(
+                message.contains("PROXIMA_MIGRATION_DATABASE_URL") && message.contains(names),
+                "{url}: {message}"
+            );
+            assert!(
+                !message.contains("db:5432"),
+                "the URL is not echoed: {message}"
+            );
+        }
+    }
+
     use crate::company_owner;
 
     fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
@@ -1982,6 +2158,7 @@ mod tests {
             database_url: "postgres://localhost/proxima".to_string(),
             store_number: 0,
             platform_database_url: "postgres://unused/platform".into(),
+            migration_database_url: None,
             s3: None,
             owner: Some(company_owner(uuid::Uuid::now_v7())),
             mcp: mcp.map(|bind| McpSettings { bind }),

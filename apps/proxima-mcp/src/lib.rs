@@ -261,10 +261,7 @@ async fn run_maintain_blobs(config: MaintainBlobsConfig) -> Result<(), CliError>
             "maintain-blobs needs the host's PROXIMA_S3_* block: {err}"
         ))
     })?;
-    let built = Proxima::<BlobMaintenanceApp>::app()
-        .database_url(config.database_url)
-        .platform_database_url(maintenance_platform_url()?)
-        .s3(s3)
+    let built = blob_maintenance_app(config.database_url, s3, &proxima_core::process_env)?
         .build()
         .await?;
     let outcome = match built.host().blobs() {
@@ -407,13 +404,32 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
     pass
 }
 
+/// The `maintain-blobs` runtime: no listener, the platform URL, and the
+/// migration URL when one is set, so its boot migrates where every other
+/// entry point does.
+fn blob_maintenance_app(
+    database_url: String,
+    s3: S3RuntimeConfig,
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Proxima<BlobMaintenanceApp>, CliError> {
+    let urls = maintenance_urls(lookup)?;
+    let app = Proxima::<BlobMaintenanceApp>::app()
+        .database_url(database_url)
+        .platform_database_url(urls.platform)
+        .s3(s3);
+    Ok(match urls.migration {
+        Some(migration) => app.migration_database_url(migration),
+        None => app,
+    })
+}
+
 async fn maintenance_storage(
     database_url: &str,
     embedding_policy: proxima_core::EmbeddingRuntimePolicy,
 ) -> Result<PgStorage, CliError> {
     let missing_policy =
         missing_migration_policy_from_lookup(&proxima_core::process_env)?.unwrap_or_default();
-    let platform_url = maintenance_platform_url()?;
+    let urls = maintenance_urls(&proxima_core::process_env)?;
     let store_number = proxima::parse_store_number(
         &proxima_core::env_value(&proxima_core::process_env, "PROXIMA_STORE_NUMBER").ok_or_else(
             || ProximaError::Config("PROXIMA_STORE_NUMBER is required for maintenance".into()),
@@ -434,10 +450,17 @@ async fn maintenance_storage(
     let sidecars = sidecars
         .freeze_against(&registry)
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    let migration_pg =
-        proxima_storage_pg::PgMigrationStorage::connect_with_config(&platform_url, config, tuning)
-            .await
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    // Migrations hold a session lock and session settings: they run on
+    // PROXIMA_MIGRATION_DATABASE_URL when the platform URL goes through a
+    // transaction-mode pooler. This one-shot command keeps that connection
+    // as its platform scope too.
+    let migration_pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        urls.migrations(),
+        config,
+        tuning,
+    )
+    .await
+    .map_err(|err| ProximaError::Storage(err.to_string()))?;
     run_core_and_flavor_migrations_with_policy(
         &migration_pg,
         ProximaMcpApp::migrators(),
@@ -466,13 +489,30 @@ async fn maintenance_storage(
     Ok(storage)
 }
 
-fn maintenance_platform_url() -> Result<String, CliError> {
-    proxima_core::env_value(&proxima_core::process_env, "PROXIMA_PLATFORM_DATABASE_URL").ok_or_else(
-        || {
+/// The maintenance commands' platform URL and, when set, their migration
+/// URL, checked as boot checks it (same role and database, no URL echoed).
+struct MaintenanceUrls {
+    platform: String,
+    migration: Option<String>,
+}
+
+impl MaintenanceUrls {
+    /// Where the command migrates.
+    fn migrations(&self) -> &str {
+        self.migration.as_deref().unwrap_or(&self.platform)
+    }
+}
+
+fn maintenance_urls(lookup: &impl Fn(&str) -> Option<String>) -> Result<MaintenanceUrls, CliError> {
+    let platform =
+        proxima_core::env_value(lookup, "PROXIMA_PLATFORM_DATABASE_URL").ok_or_else(|| {
             ProximaError::Config("PROXIMA_PLATFORM_DATABASE_URL is required for maintenance".into())
-                .into()
-        },
-    )
+        })?;
+    let migration = proxima::migration_database_url_from_lookup(lookup, &platform)?;
+    Ok(MaintenanceUrls {
+        platform,
+        migration,
+    })
 }
 
 /// One storage-maintenance pass: the expired-upload sweep, when
@@ -1254,6 +1294,109 @@ mod tests {
             database_url: DEFAULT_DATABASE_URL.to_string(),
             bind: Some(DEFAULT_BIND.parse().expect("valid bind")),
         }
+    }
+
+    fn pairs<'a>(pairs: &'a [(&'a str, String)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| value.clone())
+        }
+    }
+
+    /// The maintenance commands migrate on the platform URL unless
+    /// `PROXIMA_MIGRATION_DATABASE_URL` is set, and refuse one naming
+    /// another role or database without echoing it.
+    #[test]
+    fn maintenance_urls_take_a_checked_migration_url() {
+        let platform = "postgres://platform@pooler:6432/proxima".to_owned();
+        let unset = [("PROXIMA_PLATFORM_DATABASE_URL", platform.clone())];
+        let urls = maintenance_urls(&pairs(&unset)).expect("platform only");
+        assert_eq!(urls.migrations(), platform);
+
+        let direct = [
+            ("PROXIMA_PLATFORM_DATABASE_URL", platform.clone()),
+            (
+                "PROXIMA_MIGRATION_DATABASE_URL",
+                "postgres://platform@db:5432/proxima".to_owned(),
+            ),
+        ];
+        let urls = maintenance_urls(&pairs(&direct)).expect("same role and database");
+        assert_eq!(urls.migrations(), "postgres://platform@db:5432/proxima");
+        assert_eq!(urls.platform, platform);
+
+        for wrong in [
+            "postgres://admin@db:5432/proxima",
+            "postgres://platform@db:5432/other",
+        ] {
+            let env = [
+                ("PROXIMA_PLATFORM_DATABASE_URL", platform.clone()),
+                ("PROXIMA_MIGRATION_DATABASE_URL", wrong.to_owned()),
+            ];
+            let Err(error) = maintenance_urls(&pairs(&env)) else {
+                panic!("{wrong} is refused");
+            };
+            let message = error.to_string();
+            assert!(
+                message.contains("PROXIMA_MIGRATION_DATABASE_URL") && !message.contains("db:5432"),
+                "{message}"
+            );
+        }
+    }
+
+    /// `maintain-blobs` boots through the facade: with the migration URL on
+    /// a port nothing listens on, its boot fails and nothing is migrated,
+    /// though the platform URL works.
+    #[tokio::test]
+    async fn maintain_blobs_migrates_on_the_migration_url() {
+        let database = proxima_pg_testkit::unique_db_name("proxima_mcp_blobs_migration_url");
+        proxima_pg_testkit::create_db(&database)
+            .await
+            .expect("PG required for tests");
+        let (runtime_url, platform_url) = proxima_pg_testkit::split_role_urls(&database)
+            .await
+            .expect("split roles");
+        let mut unreachable = reqwest::Url::parse(&platform_url).expect("fixture URL");
+        unreachable
+            .set_port(Some(1))
+            .expect("a postgres URL takes a port");
+        let env = [
+            ("PROXIMA_PLATFORM_DATABASE_URL", platform_url),
+            ("PROXIMA_MIGRATION_DATABASE_URL", unreachable.to_string()),
+        ];
+        let s3 = S3RuntimeConfig::from_lookup(&pairs(&[
+            ("PROXIMA_S3_BUCKET", "unused".to_owned()),
+            ("PROXIMA_S3_REGION", "us-east-1".to_owned()),
+            ("PROXIMA_S3_ACCESS_KEY_ID", "unused".to_owned()),
+            ("PROXIMA_S3_SECRET_ACCESS_KEY", "unused".to_owned()),
+            ("PROXIMA_S3_ENDPOINT_URL", "http://127.0.0.1:1".to_owned()),
+        ]))
+        .expect("S3 settings parse")
+        .expect("a bucket is set");
+        let booted = blob_maintenance_app(runtime_url, s3, &pairs(&env))
+            .expect("the URLs pass the check")
+            .store_number(0)
+            .build()
+            .await;
+        let admin = sqlx::PgPool::connect(&proxima_pg_testkit::db_url(&database))
+            .await
+            .expect("admin pool");
+        let migrated: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'proxima_core')",
+        )
+        .fetch_one(&admin)
+        .await
+        .expect("catalog read");
+        admin.close().await;
+        if let Ok(built) = booted {
+            built.shutdown().await;
+            panic!("boot must connect its migrations to the migration URL");
+        }
+        proxima_pg_testkit::drop_db(&database)
+            .await
+            .expect("drop db");
+        assert!(!migrated, "nothing migrated over the platform URL");
     }
 
     /// `maintain-blobs` resolves with no environment: its app names the

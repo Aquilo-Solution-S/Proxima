@@ -286,6 +286,11 @@ async fn publication_origin_ports(
 /// Connect the Postgres storage backend and bring its schema to this
 /// binary's expectation.
 ///
+/// The migration pool connects to [`RuntimeConfig::migrations_url`]: the
+/// platform role, reached directly when the serving platform pool goes
+/// through a transaction-mode pooler. Migrations and the preflight hold a
+/// session advisory lock and session settings for the whole run.
+///
 /// `runtime_grants` runs on the migration (platform) pool after migrating
 /// and before the runtime pool connects: that connect already asserts the
 /// runtime role under owner RLS.
@@ -296,7 +301,7 @@ async fn connect_and_migrate(
     runtime_grants: Option<&RuntimeGrants>,
 ) -> Result<PgMigrationStorage, ProximaError> {
     let migration_pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
-        &config.platform_database_url,
+        config.migrations_url(),
         config.pg_pool_config,
         config.pg_tuning,
     )

@@ -440,6 +440,8 @@ jobs:
           cargo nextest run -p proxima-storage-pg --all-features --locked
           -E 'binary(pgbouncer_pg) | binary(maintenance_lease_pg) | binary(host_state_lifecycle)
           | binary(purge_backoff) | binary(owner_export) | binary(owner_erase)'
+      - name: boot through pgbouncer, migrations direct
+        run: cargo nextest run -p proxima --all-features --locked -E 'binary(pooler_boot_pg)'
       - name: every client went through the pooler
         # A lane that silently connected direct would pass and prove nothing.
         run: |
@@ -447,6 +449,9 @@ jobs:
           logins="$(grep -c 'login attempt: db=proxima_test' "$log" || true)"
           echo "pooled logins: $logins"
           test "$logins" -gt 100
+          boot="$(grep -c 'login attempt: db=proxima_pooler_boot' "$log" || true)"
+          echo "pooled boot logins: $boot"
+          test "$boot" -gt 0
       - name: pgbouncer log
         if: ${{ failure() }}
         run: tail -n 200 "$RUNNER_TEMP/pgbouncer/pgbouncer.log"

@@ -29,7 +29,7 @@ pub use crate::runtime_config::RuntimeAuthState;
 pub use crate::runtime_config::{
     McpSettings, PlatformAuthContext, PlatformAuthenticatorFactory, ProximaError, RuntimeBuilder,
     RuntimeConfig, RuntimeParts, embedding_runtime_policy_from_lookup,
-    missing_migration_policy_from_lookup, parse_store_number,
+    migration_database_url_from_lookup, missing_migration_policy_from_lookup, parse_store_number,
 };
 /// The S3-backed cited-blob lane.
 ///

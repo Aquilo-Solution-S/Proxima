@@ -171,6 +171,15 @@ impl McpToolHost {
     /// Connect a runtime role and a separately authorized migration/platform
     /// role. A single DSN cannot serve both purposes once owner RLS is active.
     ///
+    /// Migrates on `platform_url`, under a session advisory lock and session
+    /// settings, before it opens the platform pool on the same URL. So
+    /// `platform_url` must reach Postgres directly or through a session-mode
+    /// pool, never a transaction-mode pooler; `runtime_url` may go through
+    /// one. This constructor does not read `PROXIMA_MIGRATION_DATABASE_URL`:
+    /// to put the platform pool behind a transaction-mode pooler, boot
+    /// through the `proxima` facade with its migration URL
+    /// (docs/operate.md, "Behind a connection pooler").
+    ///
     /// # Errors
     ///
     /// Returns storage, migration, registry, or platform-admission failures.

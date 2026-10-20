@@ -4,7 +4,8 @@
 This page is the canonical inventory of settings read by the shipped source.
 Defaults and validation limits live in the linked Rust reader. `DATABASE_URL`
 is the serving connection; `PROXIMA_PLATFORM_DATABASE_URL` is the required
-migration and maintenance connection. Both roles use owner RLS. A serving host
+migration and maintenance connection (`PROXIMA_MIGRATION_DATABASE_URL`, when
+set, takes over the migrations). Both roles use owner RLS. A serving host
 holds two pools of `PROXIMA_PG_MAX_CONNECTIONS` each (runtime and platform),
 plus a migration pool of the same size during boot; size the server's
 `max_connections` for every host on it plus operator connections
@@ -14,6 +15,7 @@ plus a migration pool of the same size during boot; size the server's
 |---|---|---|---|
 | DATABASE_URL | serving database connection | required for the canonical host | [MCP args](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/args.rs) |
 | PROXIMA_PLATFORM_DATABASE_URL | platform database connection | required for boot and maintenance | [MCP runtime](https://github.com/Aquilo-Solution-S/Proxima/blob/main/apps/proxima-mcp/src/lib.rs) |
+| PROXIMA_MIGRATION_DATABASE_URL | connection boot migrates and runs the migration preflight on; same role and database as `PROXIMA_PLATFORM_DATABASE_URL`, which it defaults to | platform URL behind a transaction-mode pooler ([behind a connection pooler](operate.md#behind-a-connection-pooler)) | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_STORE_NUMBER | immutable host-assigned store number | required on every boot | `RuntimeBuilder::store_number` |
 | PROXIMA_MCP_BIND | MCP listener address | serving MCP | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_EXPOSE_NETWORK | non-loopback exposure gate | public listener | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
