@@ -278,8 +278,7 @@ pub use proxima_core::{
     EngineAuthority, EngineHandle, FlavorRegistryFrozen, FlavorServiceError, FlavorServices,
     ForwarderRole, GroupId, MemoryId, OwnerAccessPort, OwnerId, OwnerIdParseError, OwnerRoles,
     Relation, ResourceKey, Role, SchemaId, ScopeKey, ScopeKeyError, ServedSurface, SourceId,
-    StorageError, ToolName, ToolScope, UserId, canonical_json_bytes, env_value,
-    provider_safe_tool_name,
+    StorageError, ToolName, ToolScope, UserId, env_value, provider_safe_tool_name,
 };
 #[cfg(feature = "openai-compat-embed")]
 pub use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};

@@ -102,7 +102,6 @@ pub use proxima_core::verbs::own_erase::{
 pub use proxima_core::verbs::query::{
     GoalRow, MAX_SIDECAR_HEAD_PAGE_LIMIT, QueryRequest, QueryResponse, SearchMode, SidecarAtom,
     SidecarHead, SidecarHeadsPage, SidecarHeadsRequest, SidecarHeadsScope, SupersessionStatus,
-    hybrid_degraded_to_lexical,
 };
 pub use proxima_core::verbs::schema::PayloadKind;
 /// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
@@ -125,8 +124,7 @@ pub use proxima_core::{
     RequestHeaders, ResourceKey, SchemaId, SchemaVersion, ScopeKey, ScopeKeyError,
     SearchProjectionColumnKind, ServedSurface, SidecarPayload, Tool, ToolCaller, ToolCtx,
     ToolError, ToolId, ToolName, ToolScope, ToolServices, TrustedModelIdError, UserId,
-    WriterAttribution, is_loopback_endpoint, is_loopback_host, proxima_flavor, proxima_schema_id,
-    validate_endpoint_url, validate_endpoint_url_for_hosts,
+    WriterAttribution, proxima_flavor, validate_endpoint_url, validate_endpoint_url_for_hosts,
 };
 /// Query / ingest types a flavor names next to [`crate::Engine`]
 /// (Host API). `Engine` itself stays off this module (`docs/protocol.md`).
@@ -180,16 +178,14 @@ pub use proxima_core::{
 /// a flavor agrees with it in one line. Upper bounds stay the flavor's own
 /// business — clamping those still serves the caller's intent.
 ///
-/// [`validate_search_query`] and [`MAX_QUERY_CHARS`]: three tools carried
-/// a byte-identical copy of the same check with `512` inlined in each.
+/// [`MAX_QUERY_CHARS`]: three tools carried a byte-identical copy of the
+/// same search-query check with `512` inlined in each.
 ///
 /// [`MAX_TEXT_CAP_CHARS`] is the ceiling on a caller-supplied cap over
 /// returned text (`body_max_chars`, `snippet_max_chars`). The *default*
 /// under it is deliberately not shared — how much of a short snippet versus
 /// a memory body is worth returning is a property of the object.
-pub use proxima_core::{
-    MAX_QUERY_CHARS, MAX_TEXT_CAP_CHARS, reject_zero_limit, validate_search_query,
-};
+pub use proxima_core::{MAX_QUERY_CHARS, MAX_TEXT_CAP_CHARS, reject_zero_limit};
 /// The flavor-owned lifecycle scope: the declaration a flavor writes, and
 /// the erase-side fence that declaration makes available.
 ///

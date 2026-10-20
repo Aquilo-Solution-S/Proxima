@@ -173,18 +173,13 @@ fn delegated_worker_surface_is_available_from_both_supported_facades() {
 
 #[test]
 fn flavor_api_reuses_the_shared_endpoint_transport_policy() {
-    use proxima::flavor::{
-        EndpointUrlError, EndpointUrlPolicy, is_loopback_endpoint, is_loopback_host,
-        validate_endpoint_url,
-    };
+    use proxima::flavor::{EndpointUrlError, EndpointUrlPolicy, validate_endpoint_url};
 
     validate_endpoint_url(
         "http://[::1]:11434/v1",
         EndpointUrlPolicy::AllowLoopbackHttp,
     )
     .expect("loopback plaintext is the one supported exception");
-    assert!(is_loopback_host("LOCALHOST"));
-    assert!(is_loopback_endpoint("http://127.0.0.1:9000"));
 
     for deceptive in [
         "http://localhost.evil.example/v1",
@@ -1454,16 +1449,7 @@ fn flavor_sdk_names_query_and_ingest_types() {
     )
     .citation(proxima::flavor::CitationSpec::v1("core/upload-v1", [0; 32]));
     let _: Option<proxima::flavor::UnitOfWork<'_>> = None;
-    assert!(proxima::flavor::hybrid_degraded_to_lexical(
-        proxima::flavor::SearchMode::Hybrid,
-        false,
-        false,
-    ));
-    assert!(!proxima::flavor::hybrid_degraded_to_lexical(
-        proxima::flavor::SearchMode::Lexical,
-        false,
-        false,
-    ));
+    let _ = proxima::flavor::SearchMode::Hybrid;
 
     let _: proxima::flavor::QueryRequest = proxima::flavor::QueryRequest::readable();
     let _: Option<(

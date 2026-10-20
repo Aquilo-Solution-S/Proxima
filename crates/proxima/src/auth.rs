@@ -59,8 +59,8 @@ pub type OidcBundle = (Arc<dyn Authenticator>, ResourceServerMetadata);
 
 /// Low-level OIDC primitives a host authenticator composes, and the two
 /// stock authenticators (`OidcAuthenticator` one route, `OidcBindingSet`
-/// several) with their constructor inputs. `oidc_from_env` stays the
-/// one-audience env path.
+/// several) with their constructor inputs. The runtime builder reads the
+/// one-audience `PROXIMA_OIDC_*` env path.
 ///
 /// A host reading its own claims uses [`OidcTokenValidator::validate_with`]
 /// (typed [`OidcRejection`] reasons) or an [`OidcRoleShape::Host`]
@@ -77,8 +77,8 @@ pub use proxima_auth_oidc::{
 };
 pub use proxima_core::{AccessError, OwnerRoles};
 
-/// Build the OIDC authenticator and resource metadata from the process
-/// environment.
+/// Build the OIDC authenticator and resource metadata from an environment
+/// lookup (the runtime builder's captured environment, or a test's map).
 ///
 /// Returns `Ok(None)` when `PROXIMA_OIDC_ISSUER` is unset — a host with no
 /// issuer is not misconfigured, it simply is not serving authenticated MCP,
@@ -108,20 +108,7 @@ pub use proxima_core::{AccessError, OwnerRoles};
 /// companions, when both JWKS sources are set,
 /// when the subject map or pinned JWKS will not parse, or when the issuer or
 /// JWKS URI is not a secure URL.
-pub fn oidc_from_env(
-    owner_access: Arc<dyn OwnerAccessPort>,
-) -> Result<Option<OidcBundle>, ProximaError> {
-    oidc_from_lookup(&proxima_core::process_env, owner_access)
-}
-
-/// [`oidc_from_env`] against an arbitrary lookup, so a host with its own
-/// configuration source — or a test — does not have to mutate the process
-/// environment to use the same contract.
-///
-/// # Errors
-///
-/// As [`oidc_from_env`].
-pub fn oidc_from_lookup(
+pub(crate) fn oidc_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
     owner_access: Arc<dyn OwnerAccessPort>,
 ) -> Result<Option<OidcBundle>, ProximaError> {
