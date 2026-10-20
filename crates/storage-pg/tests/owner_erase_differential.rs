@@ -672,6 +672,10 @@ pub const DROPPED_TABLES: &[&str] = &[
     // Added after the baseline by 0042: which flavor tables are Follows
     // sidecars, host-written schema metadata about no owner.
     "owner_follows",
+    // Added after the baseline by 0049: coordination relations about no
+    // owner (an always-empty fence and the maintenance leases).
+    "export_erase_fence",
+    "maintenance_lease",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0007 added staged BLAKE3 identity after this frozen baseline;

@@ -680,6 +680,8 @@ pub async fn dump_database(
                 | "memory_external_origin"
                 | "publication_counter"
                 | "owner_follows"
+                | "export_erase_fence"
+                | "maintenance_lease"
         ) {
             continue;
         }

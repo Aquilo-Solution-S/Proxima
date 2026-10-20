@@ -147,8 +147,59 @@ impl PgPlatformScope {
         crate::PgAuthoritySession::new(self, transaction, targets).await
     }
 
-    pub(crate) async fn detached_connection(&self) -> Result<sqlx::PgConnection, StorageError> {
-        Ok(self.pool.acquire().await.map_err(map_err)?.detach())
+    /// Begin the owner-export snapshot: a `REPEATABLE READ READ ONLY`
+    /// platform transaction that holds the export/erase fence in SHARE mode.
+    ///
+    /// The fence is the transaction's first statement. A REPEATABLE READ
+    /// snapshot is taken at the first statement that is not transaction
+    /// control, and `LOCK TABLE` is the one lock that takes none, so the
+    /// snapshot starts only after any erase holding the fence (ROW EXCLUSIVE)
+    /// committed. A lock taken by a `SELECT`, such as an advisory lock
+    /// function, would start the snapshot before its wait and read the state
+    /// the erase replaced. Everything is transaction-scoped, so a rollback,
+    /// a cancellation or a pooler's reuse of the server connection leaves no
+    /// lock behind.
+    ///
+    /// The wait for the fence is bounded by a transaction-local
+    /// `lock_timeout` of 5 s, the bound an erase puts on its own wait for the
+    /// fence. An export queued behind a longer erase returns
+    /// [`StorageError::Retryable`] saying so instead of holding a pooled
+    /// connection for the length of the erase. Once the fence is held,
+    /// `SET LOCAL lock_timeout TO DEFAULT` gives the rest of the export the
+    /// connection's default (the role, database or startup value), so only
+    /// the fence wait is bounded. (`SET LOCAL`, like `LOCK TABLE`, takes no
+    /// snapshot; reading the prior value would.)
+    pub(crate) async fn begin_export_snapshot(
+        &self,
+    ) -> Result<Transaction<'static, Postgres>, StorageError> {
+        let mut transaction = self.pool.begin().await.map_err(map_err)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *transaction)
+            .await
+            .map_err(map_err)?;
+        sqlx::query("SET LOCAL lock_timeout = '5s'")
+            .execute(&mut *transaction)
+            .await
+            .map_err(map_err)?;
+        sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN SHARE MODE")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| match &error {
+                sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03") => {
+                    StorageError::Retryable(
+                        "owner export waited 5 s for the export/erase fence: an owner or \
+                         source erase is running; retry the export after it commits"
+                            .into(),
+                    )
+                }
+                _ => map_err(error),
+            })?;
+        sqlx::query("SET LOCAL lock_timeout TO DEFAULT")
+            .execute(&mut *transaction)
+            .await
+            .map_err(map_err)?;
+        self.bind_transaction(&mut transaction).await?;
+        Ok(transaction)
     }
 
     pub(crate) async fn bind_transaction(
@@ -261,4 +312,48 @@ pub(crate) async fn begin_owner_lifecycle_transaction(
         ));
     }
     begin_platform_transaction(pool, platform).await
+}
+
+#[cfg(test)]
+mod tests {
+    /// The 5 s bound covers the fence wait only: the export's reads run under
+    /// the connection's own `lock_timeout`, and the snapshot is still
+    /// `REPEATABLE READ READ ONLY`.
+    #[tokio::test]
+    async fn the_export_bound_ends_with_the_fence_wait() {
+        let (pg, database) = crate::test_fixtures::fresh_pg("export_lock_timeout_reset").await;
+        let platform = pg.platform_scope_for_host();
+        let mut plain = platform.begin().await.expect("platform transaction");
+        let default: String = sqlx::query_scalar("SHOW lock_timeout")
+            .fetch_one(&mut *plain)
+            .await
+            .expect("default lock_timeout");
+        plain.rollback().await.expect("rollback");
+
+        let mut export = platform
+            .begin_export_snapshot()
+            .await
+            .expect("export snapshot");
+        let (lock_timeout, isolation, read_only): (String, String, String) = sqlx::query_as(
+            "SELECT current_setting('lock_timeout'),
+                    current_setting('transaction_isolation'),
+                    current_setting('transaction_read_only')",
+        )
+        .fetch_one(&mut *export)
+        .await
+        .expect("export settings");
+        export.rollback().await.expect("rollback");
+
+        assert_ne!(
+            lock_timeout, "5s",
+            "the fence bound does not outlive the fence wait"
+        );
+        assert_eq!(lock_timeout, default);
+        assert_eq!(isolation, "repeatable read");
+        assert_eq!(read_only, "on");
+        drop(pg);
+        proxima_pg_testkit::drop_db(&database)
+            .await
+            .expect("drop task database");
+    }
 }

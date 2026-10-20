@@ -1763,7 +1763,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
 }
 
 #[tokio::test]
-async fn export_uses_one_detached_read_only_connection_and_allowlist() {
+async fn export_uses_one_read_only_snapshot_and_allowlist() {
     let (db_name, pg, lifecycle) = fresh_pg(1).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
@@ -1816,7 +1816,53 @@ async fn export_uses_one_detached_read_only_connection_and_allowlist() {
     }
     .await;
     close_pg(&db_name).await;
-    result.expect("detached max-1 export oracle failed");
+    result.expect("max-1 export oracle failed");
+}
+
+#[tokio::test]
+async fn export_behind_a_long_erase_gives_up_with_a_retryable_error() {
+    let (db_name, pg, _lifecycle) = fresh_pg(1).await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let auth = ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner {
+            user_id: owner.as_user(),
+        });
+        // An erase holds the fence for its whole body.
+        let mut erase = pool.begin().await?;
+        sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
+            .execute(&mut *erase)
+            .await?;
+        let started = std::time::Instant::now();
+        let queued = tokio::time::timeout(
+            Duration::from_secs(15),
+            pg.export_owner_bundle(&auth, pg.surfaces()),
+        )
+        .await
+        .expect("the export's wait for the fence is bounded");
+        let waited = started.elapsed();
+        match queued {
+            Err(StorageError::Retryable(message)) => assert!(
+                message.contains("erase is running"),
+                "the error names the erase it waited for: {message}"
+            ),
+            other => panic!("expected a retryable fence timeout, got {other:?}"),
+        }
+        assert!(
+            waited >= Duration::from_secs(4),
+            "the export waited for the fence before giving up ({waited:?})"
+        );
+        assert!(
+            wait_for_no_fence_waiters(pool).await,
+            "the timed-out export left no fence lock behind"
+        );
+        erase.rollback().await?;
+        pg.export_owner_bundle(&auth, pg.surfaces()).await?;
+        Ok(())
+    }
+    .await;
+    close_pg(&db_name).await;
+    result.expect("bounded export fence wait failed");
 }
 
 const ADVISORY_WAITERS_SQL: &str = "\
@@ -1825,6 +1871,58 @@ SELECT count(*)::bigint
  WHERE locktype = 'advisory'
    AND NOT granted
    AND database = (SELECT oid FROM pg_database WHERE datname = current_database())";
+
+const FENCE_LOCKS_SQL: &str = "\
+SELECT count(*) FILTER (WHERE NOT granted)::bigint, count(*)::bigint
+  FROM pg_locks
+ WHERE locktype = 'relation'
+   AND relation = 'proxima_core.export_erase_fence'::regclass
+   AND database = (SELECT oid FROM pg_database WHERE datname = current_database())";
+
+async fn wait_for_fence_waiters(pool: &PgPool, expected: i64) -> bool {
+    for _ in 0..400 {
+        let (waiting, _held): (i64, i64) = sqlx::query_as(FENCE_LOCKS_SQL)
+            .fetch_one(pool)
+            .await
+            .expect("fence waiter probe");
+        if waiting >= expected {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// No session waits for the fence.
+async fn wait_for_no_fence_waiters(pool: &PgPool) -> bool {
+    for _ in 0..400 {
+        let (waiting, _held): (i64, i64) = sqlx::query_as(FENCE_LOCKS_SQL)
+            .fetch_one(pool)
+            .await
+            .expect("fence waiter probe");
+        if waiting == 0 {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// No session holds or waits for the fence. The probe itself takes no lock on
+/// it: `regclass` resolves the name without locking the relation.
+async fn wait_for_no_fence_locks(pool: &PgPool) -> bool {
+    for _ in 0..400 {
+        let (_waiting, held): (i64, i64) = sqlx::query_as(FENCE_LOCKS_SQL)
+            .fetch_one(pool)
+            .await
+            .expect("fence lock probe");
+        if held == 0 {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
 
 async fn wait_for_advisory_waiters(pool: &PgPool, expected: i64) -> bool {
     for _ in 0..400 {
@@ -1857,7 +1955,7 @@ async fn wait_for_no_advisory_waiters(pool: &PgPool) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_closes_session() {
+async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_leaves_no_lock() {
     let (db_name, pg, lifecycle) = fresh_pg(4).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
@@ -1901,7 +1999,7 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_c
                 .await
         });
         assert!(
-            wait_for_advisory_waiters(pool, 2).await,
+            wait_for_fence_waiters(pool, 1).await,
             "export waits behind the erasure fence"
         );
         assert!(
@@ -1923,18 +2021,11 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_c
         let session = writer.await??;
         session.commit().await?;
 
-        // A detached export cancelled while waiting on an owner session lock
-        // must close, not return, the locked backend connection to the pool.
-        let mut owner_lock = pool.acquire().await?;
-        let lock_id = sqlx::query_scalar::<_, i64>(
-            "SELECT hashtextextended('proxima-owner-fence:' || $1::text, 0)",
-        )
-        .bind(user_id.into_inner())
-        .fetch_one(&mut *owner_lock)
-        .await?;
-        sqlx::query("SELECT pg_advisory_lock($1)")
-            .bind(lock_id)
-            .execute(&mut *owner_lock)
+        // An export cancelled while it waits on the fence leaves no lock
+        // behind: its transaction rolls back when its connection returns.
+        let mut fence = pool.begin().await?;
+        sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
+            .execute(&mut *fence)
             .await?;
         let cancel_pg = pg.clone();
         let cancel = tokio::spawn(async move {
@@ -1945,23 +2036,23 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_c
                 .await
         });
         assert!(
-            wait_for_advisory_waiters(pool, 1).await,
-            "export is waiting on owner session fence"
+            wait_for_fence_waiters(pool, 1).await,
+            "export is waiting on the fence"
         );
         cancel.abort();
         let _ = cancel.await;
-        sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(lock_id)
-            .execute(&mut *owner_lock)
-            .await?;
-        drop(owner_lock);
+        fence.rollback().await?;
         let recovered =
             ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id });
         let bundle = pg.export_owner_bundle(&recovered, pg.surfaces()).await?;
         assert_eq!(
             bundle.counts.get(FACTS_TABLE),
             Some(&0),
-            "pool and detached session recover after cancellation"
+            "the pool recovers after cancellation"
+        );
+        assert!(
+            wait_for_no_fence_locks(pool).await,
+            "the cancelled export left no fence lock"
         );
 
         let reverse_source = SourceId::new("writer-before-erase");
@@ -2298,22 +2389,15 @@ async fn cancelling_erase_during_core_delete_after_host_callback_dml_rolls_back_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cancelling_max_one_export_waiting_on_owner_lock_closes_its_detached_connection() {
+async fn cancelling_max_one_export_waiting_on_the_fence_releases_its_connection() {
     let (db_name, pg, _lifecycle) = fresh_pg(1).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let user_id = owner.as_user();
         ingest(&pg, owner, "cancel-source", "cancel-fact").await;
         let barrier_pool = PgPool::connect(&db_url(&db_name)).await?;
-        let mut barrier = barrier_pool.acquire().await?;
-        let lock_id = sqlx::query_scalar::<_, i64>(
-            "SELECT hashtextextended('proxima-owner-fence:' || $1::text, 0)",
-        )
-        .bind(user_id.into_inner())
-        .fetch_one(&mut *barrier)
-        .await?;
-        sqlx::query("SELECT pg_advisory_lock($1)")
-            .bind(lock_id)
+        let mut barrier = barrier_pool.begin().await?;
+        sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
             .execute(&mut *barrier)
             .await?;
 
@@ -2325,22 +2409,74 @@ async fn cancelling_max_one_export_waiting_on_owner_lock_closes_its_detached_con
                 .export_owner_bundle(&auth, export_pg.surfaces())
                 .await
         });
-        assert!(wait_for_advisory_waiters(pg.pool_for_tests(), 1).await);
+        assert!(wait_for_fence_waiters(pg.pool_for_tests(), 1).await);
         export.abort();
         let _ = export.await;
-        sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(lock_id)
-            .execute(&mut *barrier)
-            .await?;
-        drop(barrier);
+        barrier.rollback().await?;
         barrier_pool.close().await;
 
         let auth = ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id });
         let bundle = pg.export_owner_bundle(&auth, pg.surfaces()).await?;
         assert_eq!(bundle.owner, owner);
+        assert!(wait_for_no_fence_locks(pg.pool_for_tests()).await);
         Ok(())
     }
     .await;
     close_pg(&db_name).await;
-    result.expect("cancelled one-slot export must release the detached connection");
+    result.expect("cancelled one-slot export must release its connection and lock");
+}
+
+/// The snapshot starts after the fence is held. An export queued behind a
+/// transaction holding the fence reads what that transaction committed.
+/// Taking the fence with a lock function instead (`SELECT
+/// pg_advisory_xact_lock(..)` as the first statement of the REPEATABLE READ
+/// transaction) starts the snapshot at that statement, before its wait, and
+/// this export would read no row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_export_queued_behind_the_fence_reads_what_its_holder_committed() {
+    let (db_name, pg, _lifecycle) = fresh_pg(4).await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let fact = ingest(&pg, owner, "fence-source", "fence-fact").await;
+        let mut holder = pool.begin().await?;
+        sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
+            .execute(&mut *holder)
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.test_host_lifecycle_facts
+                (fact_id, owner_id, source_id, payload)
+             VALUES ($1, $2, 'fence-source', decode('2a', 'hex'))",
+        )
+        .bind(fact.into_inner())
+        .bind(owner.into_inner())
+        .execute(&mut *holder)
+        .await?;
+
+        let export_pg = pg.clone();
+        let export = tokio::spawn(async move {
+            let auth = ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner {
+                user_id: owner.as_user(),
+            });
+            export_pg
+                .export_owner_bundle(&auth, export_pg.surfaces())
+                .await
+        });
+        assert!(
+            wait_for_fence_waiters(pool, 1).await,
+            "export waits on the fence"
+        );
+        assert!(!export.is_finished());
+        holder.commit().await?;
+        let bundle = export.await??;
+        assert_eq!(
+            bundle.counts.get(FACTS_TABLE),
+            Some(&1),
+            "the snapshot was taken after the fence holder committed"
+        );
+        Ok(())
+    }
+    .await;
+    close_pg(&db_name).await;
+    result.expect("queued export reads its fence holder's commit");
 }

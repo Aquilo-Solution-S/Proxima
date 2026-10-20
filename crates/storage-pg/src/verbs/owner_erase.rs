@@ -79,6 +79,16 @@ async fn begin_bulk_erase_tx(
     // lifecycle callback is registered, so it must take the exclusive fence
     // before owner/source/target locks in every configuration.
     crate::access::owner_columns::lock_host_lifecycle_fence_exclusive_tx(&mut tx).await?;
+    // Owner export holds this fence in SHARE mode for its whole snapshot
+    // (`PgPlatformScope::begin_export_snapshot`). ROW EXCLUSIVE waits for
+    // running exports and makes queued ones wait for this commit, so an
+    // export never overlaps an erase and one queued behind it reads its
+    // result. Erases do not exclude each other here: the mode is
+    // self-compatible.
+    sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
     sqlx::query("SET LOCAL statement_timeout = 0")
         .execute(&mut *tx)
         .await

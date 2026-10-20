@@ -8,7 +8,7 @@ use sqlx::PgPool;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use sqlx::{Connection, Postgres, Transaction};
+use sqlx::{Postgres, Transaction};
 
 /// One owner's bundle: every surface the contract declares exportable, as
 /// table name → rows, plus the pins projected from those rows.
@@ -26,51 +26,22 @@ pub async fn export_owner_bundle(
     let owner = auth.audit().owner();
     let owner_id = owner.into_inner();
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
-    let mut conn = platform.detached_connection().await?;
-    // Session locks survive the following transaction and are released when
-    // this detached connection is dropped. If cancellation/error interrupts
-    // any later await, Drop closes the connection instead of returning a
-    // still-locked session to the pool.
-    crate::access::owner_columns::lock_host_lifecycle_fence_shared_session(&mut conn).await?;
-    crate::access::owner_columns::lock_owner_fence_exclusive_session(&mut conn, &owner).await?;
-    // One REPEATABLE READ READ ONLY snapshot of every table row. A forgotten
-    // memory is a row like any other, marked `forgotten_at` (#488); nothing
-    // is read from an object store.
-    let result = async {
-        let bundle = export_owner_bundle_snapshot(
-            &mut conn,
-            platform,
-            auth,
-            owner,
-            owner_id,
-            surfaces,
-            lifecycle.as_ref(),
-        )
-        .await?;
-        #[cfg(test)]
-        crate::pause_point::reach(crate::pause_point::AFTER_EXPORT_SNAPSHOT, owner_id).await;
-        Ok(bundle)
-    }
-    .await;
-    drop(conn);
-    result
+    // One REPEATABLE READ READ ONLY snapshot of every table row, taken after
+    // the export/erase fence is held: an export queued behind an erase reads
+    // what the erase committed. A forgotten memory is a row like any other,
+    // marked `forgotten_at` (#488); nothing is read from an object store.
+    let tx = platform.begin_export_snapshot().await?;
+    export_owner_bundle_snapshot(tx, auth, owner, owner_id, surfaces, lifecycle.as_ref()).await
 }
 
 async fn export_owner_bundle_snapshot(
-    conn: &mut sqlx::postgres::PgConnection,
-    platform: &crate::PgPlatformScope,
+    mut tx: Transaction<'static, Postgres>,
     auth: &ExportAuthorization,
     owner: proxima_core::OwnerId,
     owner_id: uuid::Uuid,
     surfaces: &OwnerSurfaces,
     lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
 ) -> Result<OwnerExportBundle, StorageError> {
-    let mut tx = conn.begin().await.map_err(map_err)?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-    platform.bind_transaction(tx.as_mut()).await?;
     let mut tables: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for surface in surfaces.generic_surfaces() {
         if !surface.export.carries_rows() {

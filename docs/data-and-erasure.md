@@ -146,6 +146,10 @@ count is derived from the exported rows, not a separately maintained total.
 Typed content, provenance, and forgotten marks follow the export contracts;
 delivery envelopes and rebuildable infrastructure are not independent user
 facts. Export authority does not grant destruction authority.
+An export reads one `REPEATABLE READ` snapshot. Exports and erases exclude
+each other on one fence: an export queued behind an erase reads its result,
+and an erase waits for running exports. Writes to the exported owner are not
+blocked; the snapshot already leaves out any that commit after it.
 
 The executable inverse and lifecycle tests cover owner/source isolation,
 transfer, rollback, object purge, shared blobs, host-state callbacks, and

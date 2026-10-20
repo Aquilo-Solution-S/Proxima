@@ -309,3 +309,11 @@ SELECT proxima_core.owner_rls_apply_class(
     'policies.sql', 'class ownerless', 'proxima_core', 'owner_follows', 'ownerless', NULL);
 
 ALTER POLICY proxima_owner_read ON proxima_core.owner_follows USING (((current_setting('app.proxima_scope'::text, true) = 'owner'::text) AND (cardinality(COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[])) > 0)));
+
+-- export_erase_fence and maintenance_lease: platform coordination state about
+-- no owner. Only the platform scope reaches them.
+SELECT proxima_core.owner_rls_apply_class(
+    'policies.sql', 'class ownerless', 'proxima_core', 'export_erase_fence', 'ownerless', NULL);
+
+SELECT proxima_core.owner_rls_apply_class(
+    'policies.sql', 'class ownerless', 'proxima_core', 'maintenance_lease', 'ownerless', NULL);

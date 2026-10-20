@@ -15,10 +15,6 @@ pub(crate) const AFTER_SERIES_MINT: &str = "after-series-mint";
 /// right before the group-tree lock. Keyed by the group id.
 pub(crate) const BEFORE_GROUP_LOCK: &str = "before-group-lock";
 
-/// In an owner export, after the snapshot transaction committed and before
-/// the bundle is assembled. Keyed by the owner id.
-pub(crate) const AFTER_EXPORT_SNAPSHOT: &str = "after-export-snapshot";
-
 type Armed = (&'static str, Uuid, Arc<Barrier>, Arc<Barrier>);
 
 static ARMED: Mutex<Vec<Armed>> = Mutex::new(Vec::new());

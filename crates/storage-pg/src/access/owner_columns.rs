@@ -58,50 +58,6 @@ pub(crate) async fn lock_host_lifecycle_fence_exclusive_tx(
     Ok(())
 }
 
-pub(crate) async fn lock_host_lifecycle_fence_shared_session(
-    conn: &mut sqlx::postgres::PgConnection,
-) -> Result<(), StorageError> {
-    sqlx::query("SELECT pg_advisory_lock_shared($1)")
-        .bind(HOST_STATE_LIFECYCLE_FENCE_KEY)
-        .execute(&mut *conn)
-        .await
-        .map_err(map_err)?;
-    Ok(())
-}
-
-pub(crate) async fn lock_owner_fence_exclusive_session(
-    conn: &mut sqlx::postgres::PgConnection,
-    owner: &OwnerId,
-) -> Result<(), StorageError> {
-    lock_owner_fences_session(conn, std::slice::from_ref(owner), true).await
-}
-
-async fn lock_owner_fences_session(
-    conn: &mut sqlx::postgres::PgConnection,
-    owners: &[OwnerId],
-    exclusive: bool,
-) -> Result<(), StorageError> {
-    if owners.is_empty() {
-        return Ok(());
-    }
-    let ids = owner_fence_ids(owners);
-    let query = if exclusive {
-        sqlx::query(
-            "SELECT pg_advisory_lock(hashtextextended('proxima-owner-fence:' || i::text, 0)) FROM unnest($1::uuid[]) AS f(i)",
-        )
-    } else {
-        sqlx::query(
-            "SELECT pg_advisory_lock_shared(hashtextextended('proxima-owner-fence:' || i::text, 0)) FROM unnest($1::uuid[]) AS f(i)",
-        )
-    };
-    query
-        .bind(&ids)
-        .execute(&mut *conn)
-        .await
-        .map_err(map_err)?;
-    Ok(())
-}
-
 use crate::error::{map_err, with_bounded_retry};
 use crate::verbs::fact_embeddings::{
     RouteSpaces, enqueue_series_head_in_tx, purge_series_embedding_spaces_in_tx,

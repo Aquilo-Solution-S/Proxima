@@ -12,6 +12,16 @@
 /// owner verb reaches it.
 pub const STORE_WIDE_TABLES: &[(&str, &str)] = &[
     (
+        "proxima_core.export_erase_fence",
+        "Never holds a row. Owner export and erase lock it to exclude each other (0049, #493); \
+         only its table lock is used.",
+    ),
+    (
+        "proxima_core.maintenance_lease",
+        "Which process holds each store-wide maintenance singleton and until when (0049, #493). \
+         Coordination state about no owner.",
+    ),
+    (
         "proxima_core.store_identity",
         "The deployment's immutable numeric routing identity. This singleton is platform \
          configuration shared by every owner, with no owner data to export, transfer or erase.",
