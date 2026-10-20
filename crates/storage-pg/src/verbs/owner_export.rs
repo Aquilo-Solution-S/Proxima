@@ -314,6 +314,14 @@ fn export_statement(
     };
     let table = PgIdent::table(surface.table)?;
     let order = order_by(surface, primary_key)?;
+    // The owner is matched with `=`, never `IS NOT DISTINCT FROM`: the two
+    // agree here, and only `=` is indexable (#490). `$1` is bound from an
+    // `OwnerId`, so it is never NULL, and every owner column the filter
+    // reads is NOT NULL — a surface's declared `owner_column` and the key's
+    // home table's `owner_id` alike (`owner_export_reaches_its_owner_through_an_index`
+    // checks the catalog for every exported surface). `IS NOT DISTINCT FROM` made the
+    // planner read every owner's rows and filter them, so one small
+    // owner's export cost grew with the whole store.
     // SQL-POLICY: PgIdent
     let sql = if let Some(owner_column) = surface.owner_column {
         // `s.{owner}` is the surface's OWN owner column as it declares it.
@@ -324,7 +332,7 @@ fn export_statement(
         format!(
             "SELECT {projection}
                FROM {table} s
-              WHERE s.{owner} IS NOT DISTINCT FROM $1
+              WHERE s.{owner} = $1
               ORDER BY {order}",
             table = table.as_str(),
             owner = owner.as_str(),
@@ -348,7 +356,7 @@ fn export_statement(
                FROM {table} s
                JOIN {base} base
                  ON base.{base_column} = s.{key_column}
-              WHERE base.owner_id IS NOT DISTINCT FROM $1
+              WHERE base.owner_id = $1
               ORDER BY {order}",
             table = table.as_str(),
             base_column = base_column.as_str(),
@@ -356,6 +364,25 @@ fn export_statement(
         )
     };
     Ok(Some(sql))
+}
+
+/// The statement [`export_owner_bundle`] runs for `surface`, given the
+/// table's primary-key columns in index order.
+///
+/// It is [`export_statement`] itself, so a plan test of this text is a plan
+/// test of the export (#490).
+///
+/// # Errors
+///
+/// As the export: an exportable surface that reaches no owner, or one with
+/// no primary key.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+pub fn export_statement_sql_for_tests(
+    surface: &Surface,
+    primary_key: &[String],
+) -> Result<Option<String>, StorageError> {
+    export_statement(surface, primary_key)
 }
 
 /// Row order is part of the bundle's bytes, so it is TOTAL: the declared
@@ -553,10 +580,7 @@ mod tests {
             .expect("generates")
             .expect("the note sidecar is exported");
         assert!(sql.contains("JOIN proxima_core.memory base"), "{sql}");
-        assert!(
-            sql.contains("WHERE base.owner_id IS NOT DISTINCT FROM $1"),
-            "{sql}"
-        );
+        assert!(sql.contains("WHERE base.owner_id = $1"), "{sql}");
         assert!(sql.contains("to_jsonb(s)"), "{sql}");
     }
 
@@ -575,8 +599,28 @@ mod tests {
             flat,
             "SELECT to_jsonb(s) FROM proxima_core.memory_external_origin s \
              JOIN proxima_core.memory base ON base.t = s.t \
-             WHERE base.owner_id IS NOT DISTINCT FROM $1 ORDER BY s.t, s.memory"
+             WHERE base.owner_id = $1 ORDER BY s.t, s.memory"
         );
+    }
+
+    /// `IS NOT DISTINCT FROM` is not indexable, so a generated owner filter
+    /// spelled that way reads every owner's rows (#490).
+    #[test]
+    fn no_export_statement_filters_its_owner_with_is_not_distinct_from() {
+        let mut generated = 0;
+        for declared in FLAVOR_0.all_surfaces() {
+            let Some(sql) = export_statement(&declared, &pk(&["t"])).expect("generates") else {
+                continue;
+            };
+            generated += 1;
+            assert!(
+                !sql.contains("IS NOT DISTINCT FROM"),
+                "{}: {sql}",
+                declared.table
+            );
+            assert!(sql.contains(" = $1"), "{sql}");
+        }
+        assert!(generated > 1, "flavor #0 exports more than one surface");
     }
 
     #[test]

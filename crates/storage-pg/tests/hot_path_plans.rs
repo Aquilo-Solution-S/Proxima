@@ -14,6 +14,7 @@ use proxima_core::verbs::schema::MemorySearchProjection;
 use proxima_core::{EdgeKind, OwnerId, SchemaId, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::export_statement_sql_for_tests;
 use proxima_storage_pg::test_fixtures::create_core_db;
 use proxima_storage_pg::verbs::fact_embeddings::claim_embedding_jobs_sql_for_tests;
 use proxima_storage_pg::verbs::query::{
@@ -745,4 +746,122 @@ async fn hot_path_plans_use_expected_indexes() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("hot-path EXPLAIN failed");
+}
+
+/// The table's primary-key columns in index order, read the way the export
+/// reads them.
+async fn primary_key(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    table: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT a.attname::text
+           FROM pg_index i
+          CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
+           JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+          WHERE i.indrelid = $1::regclass
+            AND i.indisprimary
+          ORDER BY k.ord",
+    )
+    .bind(table)
+    .fetch_all(&mut **tx)
+    .await
+}
+
+/// Owner export narrows on the owner through an index (#490).
+///
+/// `IS NOT DISTINCT FROM` is not an indexable operator, so the export used
+/// to read every owner's `memory` rows and filter them: the cost of one
+/// small owner's export grew with the whole store. Planned as the export
+/// runs it — the platform role in the platform scope, with real statistics
+/// and `enable_seqscan` left on — for a surface carrying its own owner
+/// column (`memory`) and for a keyed sidecar reaching its owner through
+/// `memory` (`agent_note_v1`).
+#[tokio::test]
+async fn owner_export_reaches_its_owner_through_an_index() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        seed_note(pool, owner, "small owner", "one note").await?;
+        let neighbour = OwnerId::from(UserId::new(Uuid::now_v7()));
+        seed_projection_corpus(pool, neighbour, "neighbour").await?;
+        // SQL-POLICY: fixed-fragment
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "ANALYZE proxima_core.memory; ANALYZE proxima_core.agent_note_v1",
+        ))
+        .execute(pool)
+        .await?;
+
+        let mut tx = pg.platform_scope_for_host().begin().await?;
+        for table in ["proxima_core.memory", "proxima_core.agent_note_v1"] {
+            let surface = proxima_core::FLAVOR_0
+                .all_surfaces()
+                .find(|surface| surface.table == table)
+                .unwrap_or_else(|| panic!("flavor #0 declares {table}"));
+            let primary_key = primary_key(&mut tx, table).await?;
+            let sql = export_statement_sql_for_tests(&surface, &primary_key)?
+                .unwrap_or_else(|| panic!("{table} is exported"));
+            let explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {sql}");
+            // SQL-POLICY: PgIdent — production export builder
+            let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain))
+                .bind(owner.into_inner())
+                .fetch_one(&mut *tx)
+                .await?;
+            let rendered = plan.to_string();
+            let memory = scan_of(&plan, "memory").unwrap_or_else(|| {
+                panic!("the {table} export must reach memory; plan:\n{rendered}")
+            });
+            let node = memory
+                .get("Node Type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let cond = memory
+                .get("Index Cond")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            assert!(
+                node != "Seq Scan" && cond.contains("owner_id"),
+                "the {table} export must narrow memory on owner_id by index, not \
+                 walk every owner (node `{node}`, cond `{cond}`, filter `{}`); plan:\n{rendered}",
+                predicates(&memory)
+            );
+        }
+        // `=` and `IS NOT DISTINCT FROM` agree only because neither side is
+        // ever NULL: `$1` is an `OwnerId`, and every column the filter reads
+        // must be NOT NULL in the catalog.
+        for surface in proxima_core::FLAVOR_0.all_surfaces() {
+            if !surface.export.carries_rows() {
+                continue;
+            }
+            let (table, column) = match (surface.owner_column, surface.key.home()) {
+                (Some(column), _) => (surface.table, column),
+                (None, Some((home, _, _))) => (home, "owner_id"),
+                (None, None) => continue,
+            };
+            let not_null: bool = sqlx::query_scalar(
+                "SELECT attnotnull FROM pg_attribute
+                  WHERE attrelid = $1::regclass AND attname = $2 AND NOT attisdropped",
+            )
+            .bind(table)
+            .bind(column)
+            .fetch_one(&mut *tx)
+            .await?;
+            assert!(
+                not_null,
+                "{}: export filters {table}.{column} with `=`, so it must be NOT NULL",
+                surface.table
+            );
+        }
+        tx.rollback().await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("owner export EXPLAIN failed");
 }

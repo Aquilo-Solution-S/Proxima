@@ -108,6 +108,9 @@ pub use sidecars::{
 };
 pub use tuning::{HnswIterativeScan, PgTuning};
 pub use verbs::ingest_receipt::ingest_receipt;
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+pub use verbs::owner_export::export_statement_sql_for_tests;
 
 /// Ledger namespace boundary between sequential core and dated flavor versions.
 pub const CORE_MIGRATION_VERSION_CEILING: i64 = 9999;
