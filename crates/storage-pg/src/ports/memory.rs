@@ -84,19 +84,13 @@ impl MemoryAuthoringPort for PgStorage {
             )
             .await?;
             if !outcome.idempotent_replay {
-                let kind = match req.kind {
-                    proxima_core::EntityKind::Fact => "fact",
-                    proxima_core::EntityKind::Abstraction => "abstraction",
-                    proxima_core::EntityKind::Perspective => "perspective",
-                    proxima_core::EntityKind::Goal => "goal",
-                };
                 verbs::sketch::upsert_sketch(
                     &mut tx,
                     permit.owner().into_inner(),
                     outcome.memory_id.into_inner(),
-                    kind,
+                    req.kind.into(),
                     &verbs::sketch::sketch_line(
-                        kind,
+                        req.kind.into(),
                         Some(req.text.as_str()),
                         std::slice::from_ref(&req.sidecar_payload),
                     ),

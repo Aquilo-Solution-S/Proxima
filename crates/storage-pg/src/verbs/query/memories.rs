@@ -14,6 +14,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::error::map_err;
+use crate::pg_enums::PgMemoryKind;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
@@ -113,11 +114,11 @@ async fn fetch_memory_page_on_connection(
 /// filter contributes a predicate and an argument or neither, and its
 /// placeholder number is its position among the filters that bind.
 /// `Kind` is the one filter that binds nothing: its value is one of three
-/// closed `PageKind` literals written into the SQL, so a generic plan
+/// closed `PgMemoryKind` literals written into the SQL, so a generic plan
 /// can still prove a per-kind partial index predicate (a `$n` cannot).
 enum MemoryFilter {
     Schema(String),
-    Kind(PageKind),
+    Kind(PgMemoryKind),
     Ids(Vec<Uuid>),
     ReferencedGoalHandles(Vec<Uuid>),
     Cursor(Uuid),
@@ -135,7 +136,7 @@ impl MemoryFilter {
         match self {
             Self::Schema(_) => format!(" AND {alias}.schema_id = ${placeholder}"),
             Self::Kind(kind) => {
-                let kind = kind.literal();
+                let kind = kind.label();
                 format!(" AND {alias}.kind = '{kind}'::proxima_core.memory_kind")
             }
             Self::Ids(_) => format!(" AND {alias}.t = ANY(${placeholder}::uuid[])"),
@@ -156,25 +157,6 @@ impl MemoryFilter {
     }
 }
 
-/// The closed set of kinds a memory page may filter on. The type, not a
-/// string check, is what keeps the SQL literal inside these three values.
-#[derive(Clone, Copy)]
-enum PageKind {
-    Fact,
-    Abstraction,
-    Perspective,
-}
-
-impl PageKind {
-    const fn literal(self) -> &'static str {
-        match self {
-            Self::Fact => "fact",
-            Self::Abstraction => "abstraction",
-            Self::Perspective => "perspective",
-        }
-    }
-}
-
 /// Every filter the request asks for, in bind order.
 ///
 /// The single derivation of "what does this request filter on": the page
@@ -185,11 +167,8 @@ fn memory_filters(req: &QueryRequest) -> Vec<MemoryFilter> {
     if let Some(schema_id) = req.schema_id.as_ref() {
         filters.push(MemoryFilter::Schema(schema_id.as_str().to_owned()));
     }
-    match req.entity_kind {
-        Some(EntityKind::Fact) => filters.push(MemoryFilter::Kind(PageKind::Fact)),
-        Some(EntityKind::Abstraction) => filters.push(MemoryFilter::Kind(PageKind::Abstraction)),
-        Some(EntityKind::Perspective) => filters.push(MemoryFilter::Kind(PageKind::Perspective)),
-        Some(EntityKind::Goal) | None => {}
+    if let Some(kind) = req.entity_kind.and_then(PgMemoryKind::of) {
+        filters.push(MemoryFilter::Kind(kind));
     }
     if !req.referenced_goal_handles.is_empty() {
         filters.push(MemoryFilter::ReferencedGoalHandles(
@@ -413,7 +392,7 @@ fn append_memory_filters(sql: &mut String, filters: &[MemoryFilter], heads_only:
         // Every arm of `MemoryFilter::predicate` is a literal; the only
         // interpolations are a column picked between two literals by
         // `heads_only`, this `u32` placeholder index, and a kind from the
-        // closed three-literal `PageKind` set. Caller text only binds.
+        // closed three-literal `PgMemoryKind` set. Caller text only binds.
         // SQL-POLICY: fixed-fragment
         sql.push_str(&filter.predicate(placeholder, heads_only));
         if filter.binds() {
@@ -543,12 +522,13 @@ mod tests {
 
     #[test]
     fn kind_is_a_literal_and_placeholders_are_dense_in_bind_order() {
-        use super::{MemoryFilter, PageKind};
+        use super::MemoryFilter;
+        use crate::pg_enums::PgMemoryKind;
         let id = uuid::Uuid::now_v7();
         for heads_only in [true, false] {
             let filters = [
                 MemoryFilter::Schema("s".to_owned()),
-                MemoryFilter::Kind(PageKind::Perspective),
+                MemoryFilter::Kind(PgMemoryKind::Perspective),
                 MemoryFilter::Ids(vec![id]),
                 MemoryFilter::Cursor(id),
             ];
@@ -573,7 +553,10 @@ mod tests {
         // Kind first: the next binding filter still takes $2.
         let sql = super::memory_page_sql(
             true,
-            &[MemoryFilter::Kind(PageKind::Fact), MemoryFilter::Cursor(id)],
+            &[
+                MemoryFilter::Kind(PgMemoryKind::Fact),
+                MemoryFilter::Cursor(id),
+            ],
             10,
         );
         assert!(sql.contains("h.t < $2") && !sql.contains("$3"), "{sql}");

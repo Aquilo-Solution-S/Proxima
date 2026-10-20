@@ -13,6 +13,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
+use crate::pg_enums::PgMemoryKind;
 use crate::pg_ident::PgIdent;
 use crate::sidecars::PgSidecarRegistryFrozen;
 
@@ -44,7 +45,7 @@ impl ColdObjectStore for MemoryColdStore {
 #[derive(Debug, Clone)]
 pub(crate) struct Reach {
     owner_id: Uuid,
-    kinds: Vec<&'static str>,
+    kinds: Vec<PgMemoryKind>,
 }
 
 impl Reach {
@@ -57,16 +58,16 @@ impl Reach {
 }
 
 /// The stored Memory kinds at or below `limit`.
-pub(crate) fn kinds_within(limit: proxima_core::AccessKind) -> Vec<&'static str> {
+pub(crate) fn kinds_within(limit: proxima_core::AccessKind) -> Vec<PgMemoryKind> {
     use proxima_core::AccessKind;
     [
-        (AccessKind::Fact, "fact"),
-        (AccessKind::Abstraction, "abstraction"),
-        (AccessKind::Perspective, "perspective"),
+        (AccessKind::Fact, PgMemoryKind::Fact),
+        (AccessKind::Abstraction, PgMemoryKind::Abstraction),
+        (AccessKind::Perspective, PgMemoryKind::Perspective),
     ]
     .into_iter()
-    .filter(|(kind, _)| kind.rank() <= limit.rank())
-    .map(|(_, name)| name)
+    .filter(|(access, _)| access.rank() <= limit.rank())
+    .map(|(_, kind)| kind)
     .collect()
 }
 
@@ -762,7 +763,7 @@ async fn probe_memory_handle_for_owner(
 }
 
 /// The owner's row for `t`, locked, when it is live.
-const LOCK_LIVE_OWNED_SQL: &str = "SELECT handle, kind::text FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+const LOCK_LIVE_OWNED_SQL: &str = "SELECT handle, kind FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE t = $1 AND owner_id = $2 AND forgotten_at IS NULL
           FOR UPDATE";
 
@@ -809,7 +810,7 @@ async fn forget_marked(
     surfaces: &OwnerSurfaces,
     t: Uuid,
     expected_owner_id: Uuid,
-    kinds: Option<&[&str]>,
+    kinds: Option<&[PgMemoryKind]>,
 ) -> Result<(), StorageError> {
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
     let result = forget_in_lifecycle(tx, sidecars, surfaces, t, expected_owner_id, kinds).await;
@@ -822,20 +823,20 @@ async fn forget_in_lifecycle(
     surfaces: &OwnerSurfaces,
     t: Uuid,
     expected_owner_id: Uuid,
-    kinds: Option<&[&str]>,
+    kinds: Option<&[PgMemoryKind]>,
 ) -> Result<(), StorageError> {
     let handle = probe_memory_handle_for_owner(tx, t, expected_owner_id)
         .await?
         .ok_or(StorageError::NotFound)?;
     lock_forget_footprint_tx(tx, t, handle).await?;
-    let (locked_handle, kind): (Uuid, String) = sqlx::query_as(LOCK_LIVE_OWNED_SQL)
+    let (locked_handle, kind): (Uuid, PgMemoryKind) = sqlx::query_as(LOCK_LIVE_OWNED_SQL)
         .bind(t)
         .bind(expected_owner_id)
         .fetch_optional(tx.as_mut())
         .await
         .map_err(map_err)?
         .ok_or(StorageError::NotFound)?;
-    if locked_handle != handle || kinds.is_some_and(|kinds| !kinds.contains(&kind.as_str())) {
+    if locked_handle != handle || kinds.is_some_and(|kinds| !kinds.contains(&kind)) {
         return Err(StorageError::NotFound);
     }
     sqlx::query(
@@ -854,7 +855,7 @@ async fn forget_in_lifecycle(
 }
 
 /// The owner's row for `t`, locked, in either state.
-const LOCK_OWNED_FOR_RESTORE_SQL: &str = "SELECT handle, kind::text, schema_id, sidecar_tables,
+const LOCK_OWNED_FOR_RESTORE_SQL: &str = "SELECT handle, kind, schema_id, sidecar_tables,
                 lexical_language::text, forgotten_at IS NOT NULL
            FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE t = $1 AND owner_id = $2
@@ -907,7 +908,7 @@ async fn restore_in_lifecycle(
         .await?
         .ok_or(StorageError::NotFound)?;
     lock_forget_footprint_tx(tx, t, handle).await?;
-    let row: Option<(Uuid, String, String, Vec<String>, String, bool)> =
+    let row: Option<(Uuid, PgMemoryKind, String, Vec<String>, String, bool)> =
         sqlx::query_as(LOCK_OWNED_FOR_RESTORE_SQL)
             .bind(t)
             .bind(reach.owner_id)
@@ -918,7 +919,7 @@ async fn restore_in_lifecycle(
     // pre-#488 stub form with its table).
     let (locked_handle, kind, schema_id, sidecar_tables, language, forgotten) =
         row.ok_or(StorageError::NotFound)?;
-    if locked_handle != handle || !reach.kinds.contains(&kind.as_str()) {
+    if locked_handle != handle || !reach.kinds.contains(&kind) {
         return Err(StorageError::NotFound);
     }
     if forgotten {

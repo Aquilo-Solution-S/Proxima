@@ -918,12 +918,7 @@ fn candidate_authorization(memory_id: &str, head_filter: &str) -> String {
 /// which is why the candidate statements can RENDER this rather than bind it
 /// and still keep their eight-parameter contract.
 fn kind_literal(kind: Option<EntityKind>) -> Option<&'static str> {
-    match kind {
-        Some(EntityKind::Fact) => Some("fact"),
-        Some(EntityKind::Abstraction) => Some("abstraction"),
-        Some(EntityKind::Perspective) => Some("perspective"),
-        Some(EntityKind::Goal) | None => None,
-    }
+    kind.and_then(PgMemoryKind::of).map(PgMemoryKind::label)
 }
 
 /// Every filter admission applies, applied to the CANDIDATE statements too.

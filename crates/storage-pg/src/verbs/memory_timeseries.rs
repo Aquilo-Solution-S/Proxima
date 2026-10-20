@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use crate::access::scope_surfaces::ScopeFenceTarget;
 use crate::error::{internal, map_err};
+use crate::pg_enums::PgMemoryKind;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct MemoryRow {
@@ -96,6 +97,8 @@ pub(crate) struct PreparedMemoryAdmissionNew {
     owner_id: Uuid,
     writer: proxima_core::WriterAttribution,
     draft: FactWriteCommand,
+    /// The kind the draft's text names, validated once in preparation.
+    kind: PgMemoryKind,
     origins: Vec<Uuid>,
     refs: Vec<Uuid>,
     goal_refs: Vec<Uuid>,
@@ -333,7 +336,7 @@ async fn prepare_memory_admission_at(
     let (mut refs, goal_refs) = pin_reference_ids(admission.references);
     // CHECK memory_fact_origins_chk: Facts cannot carry origins. Pins
     // a Fact declares (activation, evidence, prior request) live in refs.
-    if kind == "fact" {
+    if kind == PgMemoryKind::Fact {
         for id in persisted_origins.drain(..) {
             if !refs.contains(&id) {
                 refs.push(id);
@@ -398,7 +401,7 @@ async fn prepare_memory_admission_at(
     };
     #[cfg(test)]
     crate::pause_point::reach(crate::pause_point::AFTER_SERIES_MINT, handle).await;
-    let occurred_at = (kind == "fact").then(|| {
+    let occurred_at = (kind == PgMemoryKind::Fact).then(|| {
         draft
             .occurred_at
             .unwrap_or_else(|| MemoryId::new(t).created_at())
@@ -429,6 +432,7 @@ async fn prepare_memory_admission_at(
             owner_id,
             writer: admission.writer,
             draft,
+            kind,
             origins: persisted_origins,
             refs,
             goal_refs,
@@ -447,28 +451,20 @@ async fn prepare_memory_admission_at(
 /// and an occurrence time; an Abstraction or Perspective that names one is
 /// refused here rather than by the table's CHECKs
 /// (`memory_fact_occurred_at_chk` for the time).
-fn validated_admission_kind(draft: &FactWriteCommand) -> Result<&str, StorageError> {
+fn validated_admission_kind(draft: &FactWriteCommand) -> Result<PgMemoryKind, StorageError> {
     if draft.source_id.is_some() != draft.ingest_key.is_some() {
         return Err(StorageError::ConstraintViolation(
             "source_id and ingest_key must both be set or both be absent".into(),
         ));
     }
-    let kind = if draft.kind.is_empty() {
-        "fact"
-    } else {
-        draft.kind.as_str()
-    };
-    if !matches!(kind, "fact" | "abstraction" | "perspective") {
-        return Err(StorageError::ConstraintViolation(
-            "kind must be fact, abstraction, or perspective".into(),
-        ));
-    }
-    if kind != "fact" && (draft.source_id.is_some() || draft.ingest_key.is_some()) {
+    let kind = PgMemoryKind::from_draft_text(&draft.kind)?;
+    let is_fact = kind == PgMemoryKind::Fact;
+    if !is_fact && (draft.source_id.is_some() || draft.ingest_key.is_some()) {
         return Err(StorageError::ConstraintViolation(
             "A/P cannot carry source_id/ingest_key".into(),
         ));
     }
-    if kind != "fact" && draft.occurred_at.is_some() {
+    if !is_fact && draft.occurred_at.is_some() {
         return Err(StorageError::ConstraintViolation(
             "A/P cannot carry occurred_at".into(),
         ));
@@ -927,11 +923,10 @@ async fn materialize_prepared_memory_admission_after_locks(
     if blob_id.is_some() {
         prepared.draft.blob_id = blob_id;
     }
-    let kind = admission_kind(&prepared);
-    let content_id = resolve_admission_content_id(tx, &prepared, kind, content_id).await?;
-    advance_memory_head(tx, &prepared, kind).await?;
-    insert_memory_revision(tx, &prepared, kind, content_id).await?;
-    refresh_memory_sketch(tx, &prepared, kind).await?;
+    let content_id = resolve_admission_content_id(tx, &prepared, content_id).await?;
+    advance_memory_head(tx, &prepared).await?;
+    insert_memory_revision(tx, &prepared, content_id).await?;
+    refresh_memory_sketch(tx, &prepared).await?;
     Ok(FactIngestOutcome {
         receipt_id: None,
         memory_id: MemoryId::new(prepared.t),
@@ -946,29 +941,18 @@ async fn materialize_prepared_memory_admission_after_locks(
     })
 }
 
-/// The `memory_kind` label an admission stores; a draft that names none is a
-/// Fact.
-fn admission_kind(prepared: &PreparedMemoryAdmissionNew) -> &str {
-    if prepared.draft.kind.is_empty() {
-        "fact"
-    } else {
-        prepared.draft.kind.as_str()
-    }
-}
-
 /// The owner-scoped content row this admission stores, materializing one from
 /// the draft payload when the caller did not already resolve it. Facts carry
 /// their payload inline and need none.
 async fn resolve_admission_content_id(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedMemoryAdmissionNew,
-    kind: &str,
     content_id: Option<Uuid>,
 ) -> Result<Option<Uuid>, StorageError> {
     if let Some(id) = content_id {
         return Ok(Some(id));
     }
-    if kind == "fact" {
+    if prepared.kind == PgMemoryKind::Fact {
         return Ok(None);
     }
     let draft = &prepared.draft;
@@ -980,7 +964,7 @@ async fn resolve_admission_content_id(
         super::content::ensure_text_content(
             tx,
             prepared.owner_id,
-            kind,
+            prepared.kind.label(),
             draft.schema_id.as_str(),
             text,
         )
@@ -993,8 +977,8 @@ async fn resolve_admission_content_id(
 async fn advance_memory_head(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedMemoryAdmissionNew,
-    kind: &str,
 ) -> Result<(), StorageError> {
+    let kind = prepared.kind;
     if prepared.fresh_handle {
         sqlx::query(
             "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t) VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)",
@@ -1052,10 +1036,10 @@ fn stamped_language(draft_language: Option<&str>) -> Option<&str> {
 async fn insert_memory_revision(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedMemoryAdmissionNew,
-    kind: &str,
     content_id: Option<Uuid>,
 ) -> Result<(), StorageError> {
     let draft = &prepared.draft;
+    let kind = prepared.kind;
     sqlx::query(
         "INSERT INTO proxima_core.memory /* FORGET-POLICY: includes-forgotten (a new row is live; the insert reads no other row) */
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
@@ -1092,14 +1076,14 @@ async fn insert_memory_revision(
 async fn refresh_memory_sketch(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedMemoryAdmissionNew,
-    kind: &str,
 ) -> Result<(), StorageError> {
+    let kind = prepared.kind;
     super::sketch::upsert_sketch(
         tx,
         prepared.owner_id,
         prepared.t,
-        kind,
-        &super::sketch::sketch_line(kind, prepared.draft.rendered_text.as_deref(), &[]),
+        kind.into(),
+        &super::sketch::sketch_line(kind.into(), prepared.draft.rendered_text.as_deref(), &[]),
     )
     .await?;
 

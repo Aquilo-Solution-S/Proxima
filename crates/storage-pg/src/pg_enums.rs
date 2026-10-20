@@ -3,7 +3,7 @@
 //! Database labels are decoded at the row boundary. Unknown labels return a
 //! decode error; exhaustive `From` matches cover every admitted Rust variant.
 
-use proxima_core::EntityKind;
+use proxima_core::{EntityKind, StorageError};
 
 /// `proxima_core.memory_kind`. Three labels — `Goal` is not one of them; a
 /// goal is a separate entity, not a memory kind.
@@ -16,12 +16,40 @@ pub(crate) enum PgMemoryKind {
 }
 
 impl PgMemoryKind {
-    /// The database label, for messages that name an admitted kind.
+    /// The database label: what a statement spells and a message names.
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Fact => "fact",
             Self::Abstraction => "abstraction",
             Self::Perspective => "perspective",
+        }
+    }
+
+    /// The labels of `kinds`, to bind as a `text[]` filter.
+    pub(crate) fn labels(kinds: &[Self]) -> Vec<&'static str> {
+        kinds.iter().map(|kind| kind.label()).collect()
+    }
+
+    /// The memory kind of an entity kind; a Goal is not a memory.
+    pub(crate) const fn of(kind: EntityKind) -> Option<Self> {
+        match kind {
+            EntityKind::Fact => Some(Self::Fact),
+            EntityKind::Abstraction => Some(Self::Abstraction),
+            EntityKind::Perspective => Some(Self::Perspective),
+            EntityKind::Goal => None,
+        }
+    }
+
+    /// The kind a write draft's text names, where the draft enters storage.
+    /// A draft that names none is a Fact.
+    pub(crate) fn from_draft_text(text: &str) -> Result<Self, StorageError> {
+        match text {
+            "" | "fact" => Ok(Self::Fact),
+            "abstraction" => Ok(Self::Abstraction),
+            "perspective" => Ok(Self::Perspective),
+            _ => Err(StorageError::ConstraintViolation(
+                "kind must be fact, abstraction, or perspective".into(),
+            )),
         }
     }
 }
@@ -45,6 +73,39 @@ pub(crate) enum PgSketchKind {
     Abstraction,
     Perspective,
     Goal,
+}
+
+impl PgSketchKind {
+    /// The database label, which is also the line a sketch falls back to.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Fact => "fact",
+            Self::Abstraction => "abstraction",
+            Self::Perspective => "perspective",
+            Self::Goal => "goal",
+        }
+    }
+}
+
+impl From<EntityKind> for PgSketchKind {
+    fn from(value: EntityKind) -> Self {
+        match value {
+            EntityKind::Fact => Self::Fact,
+            EntityKind::Abstraction => Self::Abstraction,
+            EntityKind::Perspective => Self::Perspective,
+            EntityKind::Goal => Self::Goal,
+        }
+    }
+}
+
+impl From<PgMemoryKind> for PgSketchKind {
+    fn from(value: PgMemoryKind) -> Self {
+        match value {
+            PgMemoryKind::Fact => Self::Fact,
+            PgMemoryKind::Abstraction => Self::Abstraction,
+            PgMemoryKind::Perspective => Self::Perspective,
+        }
+    }
 }
 
 impl From<PgSketchKind> for EntityKind {
@@ -84,5 +145,40 @@ impl From<PgPinTargetKind> for EntityKind {
             PgPinTargetKind::Perspective => Self::Perspective,
             PgPinTargetKind::Goal => Self::Goal,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draft_text_names_one_memory_kind() {
+        assert_eq!(
+            PgMemoryKind::from_draft_text("").ok(),
+            Some(PgMemoryKind::Fact)
+        );
+        for kind in [
+            PgMemoryKind::Fact,
+            PgMemoryKind::Abstraction,
+            PgMemoryKind::Perspective,
+        ] {
+            assert_eq!(PgMemoryKind::from_draft_text(kind.label()).ok(), Some(kind));
+        }
+        for bad in ["Fact", "goal", "note"] {
+            assert!(
+                matches!(
+                    PgMemoryKind::from_draft_text(bad),
+                    Err(StorageError::ConstraintViolation(_))
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_goal_is_a_sketch_kind_but_not_a_memory_kind() {
+        assert_eq!(PgMemoryKind::of(EntityKind::Goal), None);
+        assert_eq!(PgSketchKind::from(EntityKind::Goal).label(), "goal");
     }
 }

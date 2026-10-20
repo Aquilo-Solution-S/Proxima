@@ -12,7 +12,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
-use crate::pg_enums::PgMemoryKind;
+use crate::pg_enums::{PgMemoryKind, PgSketchKind};
 use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::verbs::memory_timeseries::ingest_unpinned_fact_at;
 
@@ -708,7 +708,7 @@ async fn refresh_goal_sketch(
         tx,
         prepared.owner_id,
         prepared.t,
-        "goal",
+        PgSketchKind::Goal,
         &prepared.command.title,
     )
     .await?;

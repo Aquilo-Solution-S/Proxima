@@ -127,7 +127,7 @@ async fn missing_embedding_ids<'e>(
     limit: i64,
     non_embeddable_schemas: &[String],
     exclude_existing_jobs: bool,
-    kinds: Option<&[&'static str]>,
+    kinds: Option<&[PgMemoryKind]>,
 ) -> Result<Vec<MemoryId>, StorageError> {
     // Chunks are memory rows. A second arm against a flavor chunk sidecar is a subset of
     // this anti-join and duplicates t.
@@ -158,7 +158,7 @@ async fn missing_embedding_ids<'e>(
     .bind(non_embeddable_schemas)
     .bind(exclude_existing_jobs)
     .bind(crate::pgvector::Lane::of(space.dim()).width)
-    .bind(kinds)
+    .bind(kinds.map(PgMemoryKind::labels))
     .fetch_all(pool)
     .await
     .map_err(map_err)?;

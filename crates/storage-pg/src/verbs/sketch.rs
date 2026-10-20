@@ -18,7 +18,11 @@ pub struct SketchRow {
     pub text: String,
 }
 
-pub fn sketch_line(kind: &str, rendered: Option<&str>, payloads: &[SidecarPayload]) -> String {
+pub fn sketch_line(
+    kind: PgSketchKind,
+    rendered: Option<&str>,
+    payloads: &[SidecarPayload],
+) -> String {
     for payload in payloads {
         if let Some(line) = payload_sketch(payload) {
             return truncate_sketch(&line);
@@ -28,7 +32,7 @@ pub fn sketch_line(kind: &str, rendered: Option<&str>, payloads: &[SidecarPayloa
         let first = text.lines().next().unwrap_or(text);
         return truncate_sketch(first);
     }
-    truncate_sketch(kind)
+    truncate_sketch(kind.label())
 }
 
 pub fn payload_sketch(payload: &SidecarPayload) -> Option<String> {
@@ -60,10 +64,9 @@ pub async fn upsert_sketch(
     tx: &mut Transaction<'_, Postgres>,
     owner_id: Uuid,
     t: Uuid,
-    kind: &str,
+    kind: PgSketchKind,
     text: &str,
 ) -> Result<(), StorageError> {
-    let kind = sketch_kind_sql(kind)?;
     let text = truncate_sketch(text);
     sqlx::query(
         "INSERT INTO proxima_core.sketch (t, owner_id, kind, text)
@@ -146,16 +149,4 @@ pub async fn load_sketches_on_connection(
             text,
         })
         .collect())
-}
-
-fn sketch_kind_sql(kind: &str) -> Result<&'static str, StorageError> {
-    match kind {
-        "fact" | "Fact" => Ok("fact"),
-        "abstraction" | "Abstraction" => Ok("abstraction"),
-        "perspective" | "Perspective" => Ok("perspective"),
-        "goal" | "Goal" => Ok("goal"),
-        other => Err(StorageError::ConstraintViolation(format!(
-            "unknown sketch kind {other}"
-        ))),
-    }
 }

@@ -690,11 +690,7 @@ async fn admit_fact(
             crate::verbs::content::ensure_content_from_payloads(
                 tx,
                 owner.into_inner(),
-                if draft.kind.is_empty() {
-                    "fact"
-                } else {
-                    draft.kind.as_str()
-                },
+                crate::pg_enums::PgMemoryKind::from_draft_text(&draft.kind)?.label(),
                 draft.schema_id.as_str(),
                 payloads,
             )

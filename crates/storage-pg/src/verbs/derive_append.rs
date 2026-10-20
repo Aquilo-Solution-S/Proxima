@@ -146,15 +146,9 @@ async fn append_derived_timeseries(
     Ok(outcome)
 }
 
-fn derived_kind(draft: &DerivedDraft<'_>) -> Result<&'static str, StorageError> {
-    match draft.kind {
-        EntityKind::Fact => Ok("fact"),
-        EntityKind::Abstraction => Ok("abstraction"),
-        EntityKind::Perspective => Ok("perspective"),
-        EntityKind::Goal => Err(StorageError::ConstraintViolation(
-            "derived write cannot be a Goal".into(),
-        )),
-    }
+fn derived_kind(draft: &DerivedDraft<'_>) -> Result<PgMemoryKind, StorageError> {
+    PgMemoryKind::of(draft.kind)
+        .ok_or_else(|| StorageError::ConstraintViolation("derived write cannot be a Goal".into()))
 }
 
 async fn admit_derived(
@@ -260,7 +254,7 @@ async fn try_derived_replay(
     tx: &mut Transaction<'_, Postgres>,
     handle: uuid::Uuid,
     draft: &DerivedDraft<'_>,
-    kind: &str,
+    kind: PgMemoryKind,
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
 ) -> Result<Option<DerivedOutcome>, StorageError> {
@@ -276,7 +270,7 @@ async fn derived_replay_in_lifecycle(
     tx: &mut Transaction<'_, Postgres>,
     handle: uuid::Uuid,
     draft: &DerivedDraft<'_>,
-    kind: &str,
+    kind: PgMemoryKind,
     origins: &[EdgeEndpoint],
     references: &[EdgeEndpoint],
 ) -> Result<Option<DerivedOutcome>, StorageError> {
@@ -347,7 +341,7 @@ async fn load_derived_replay_head(
     tx: &mut Transaction<'_, Postgres>,
     handle: uuid::Uuid,
     draft: &DerivedDraft<'_>,
-    kind: &str,
+    kind: PgMemoryKind,
 ) -> Result<Option<(uuid::Uuid, bool)>, StorageError> {
     sqlx::query_as(
         "SELECT h.t, m.forgotten_at IS NOT NULL
@@ -368,7 +362,7 @@ async fn load_derived_replay_head(
 fn derived_memory_command(
     draft: &DerivedDraft<'_>,
     handle: uuid::Uuid,
-    kind: &str,
+    kind: PgMemoryKind,
 ) -> proxima_core::verbs::fact_ingest::FactWriteCommand {
     proxima_core::verbs::fact_ingest::FactWriteCommand {
         schema_id: draft.schema_id.clone(),
@@ -388,7 +382,7 @@ fn derived_memory_command(
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: kind.into(),
+        kind: kind.label().into(),
         request: None,
     }
 }
@@ -410,14 +404,14 @@ async fn enqueue_derived_embedding_jobs(
 async fn resolve_derived_content_id(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
-    kind: &str,
+    kind: PgMemoryKind,
     content_id: Option<uuid::Uuid>,
     content_payloads: Option<&[SidecarPayload]>,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
     if let Some(id) = content_id {
         return Ok(Some(id));
     }
-    if kind == "fact" {
+    if kind == PgMemoryKind::Fact {
         return Ok(None);
     }
     let owner_id =
@@ -426,7 +420,7 @@ async fn resolve_derived_content_id(
         return super::content::ensure_content_from_payloads(
             tx,
             owner_id,
-            kind,
+            kind.label(),
             draft.schema_id.as_str(),
             payloads,
         )
@@ -436,7 +430,7 @@ async fn resolve_derived_content_id(
         super::content::ensure_text_content(
             tx,
             owner_id,
-            kind,
+            kind.label(),
             draft.schema_id.as_str(),
             draft.text.as_bytes(),
         )

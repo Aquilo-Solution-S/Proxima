@@ -17,6 +17,7 @@ use sqlx::{Postgres, Transaction};
 
 use crate::access::owner_columns::PgAccessCeiling;
 use crate::error::internal;
+use crate::pg_enums::PgMemoryKind;
 use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::{PgStorage, verbs};
 
@@ -390,13 +391,14 @@ impl WriteSession for PgWriteSession {
         )
         .await?;
         if !outcome.idempotent_replay {
+            let kind = PgMemoryKind::from_draft_text(&authorized.draft().kind)?;
             verbs::sketch::upsert_sketch(
                 &mut self.tx,
                 authorized.owner_write_permit().owner().into_inner(),
                 outcome.memory_id.into_inner(),
-                authorized.draft().kind.as_str(),
+                kind.into(),
                 &verbs::sketch::sketch_line(
-                    authorized.draft().kind.as_str(),
+                    kind.into(),
                     authorized.draft().rendered_text.as_deref(),
                     sidecar_payloads,
                 ),
@@ -459,19 +461,13 @@ impl WriteSession for PgWriteSession {
         )
         .await?;
         if !outcome.idempotent_replay {
-            let kind = match req.kind {
-                proxima_core::EntityKind::Fact => "fact",
-                proxima_core::EntityKind::Abstraction => "abstraction",
-                proxima_core::EntityKind::Perspective => "perspective",
-                proxima_core::EntityKind::Goal => "goal",
-            };
             verbs::sketch::upsert_sketch(
                 &mut self.tx,
                 permit.owner().into_inner(),
                 outcome.memory_id.into_inner(),
-                kind,
+                req.kind.into(),
                 &verbs::sketch::sketch_line(
-                    kind,
+                    req.kind.into(),
                     Some(req.text.as_str()),
                     std::slice::from_ref(&req.sidecar_payload),
                 ),
@@ -593,7 +589,9 @@ impl WriteSession for PgWriteSession {
         )
         .bind(t)
         .bind(owner_id)
-        .bind(verbs::forget::kinds_within(permit.access_kind()))
+        .bind(PgMemoryKind::labels(&verbs::forget::kinds_within(
+            permit.access_kind(),
+        )))
         .fetch_optional(&mut *self.tx)
         .await
         .map_err(internal)?
