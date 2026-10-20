@@ -5,7 +5,7 @@
 //! owner predicates belong to the request transaction and migration tests.
 
 use proxima_core::StorageError;
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 const REQUIRED_POLICIES: [&str; 3] = [
     "proxima_owner_read",
@@ -96,7 +96,7 @@ struct CandidateRoleRow {
 }
 
 async fn assert_candidate_role(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     schemas: &[String],
     platform: bool,
 ) -> Result<(), StorageError> {
@@ -130,7 +130,7 @@ async fn assert_candidate_role(
            FROM pg_roles r WHERE r.rolname = 'proxima_search'",
     )
     .bind(schemas)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|error| refused(format!("inspect candidate role: {error}")))?;
     let Some(role) = role else {
@@ -159,7 +159,7 @@ fn predicate_is_nontrivial(predicate: Option<&str>) -> bool {
 }
 
 async fn assert_policy_structure(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     relations: &[RelationRow],
     reject_current_user_platform_policy: bool,
 ) -> Result<(), StorageError> {
@@ -190,7 +190,7 @@ async fn assert_policy_structure(
               WHERE p.polrelid::bigint = $1",
         )
         .bind(relation.oid)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|error| refused(format!("inspect policies on {relation_name}: {error}")))?;
         let candidate_policy = policies
@@ -241,7 +241,7 @@ async fn assert_policy_structure(
         }
     }
     if has_candidate_policy {
-        assert_candidate_role(pool, &schemas, !reject_current_user_platform_policy).await?;
+        assert_candidate_role(&mut *conn, &schemas, !reject_current_user_platform_policy).await?;
     }
     Ok(())
 }
@@ -274,7 +274,10 @@ impl RelationRow {
     }
 }
 
-async fn relations(pool: &PgPool, schemas: &[String]) -> Result<Vec<RelationRow>, StorageError> {
+async fn relations(
+    conn: &mut PgConnection,
+    schemas: &[String],
+) -> Result<Vec<RelationRow>, StorageError> {
     sqlx::query_as(
         "SELECT c.oid::bigint AS oid,
                 n.nspname AS schema_name, c.relname AS table_name,
@@ -316,7 +319,7 @@ async fn relations(pool: &PgPool, schemas: &[String]) -> Result<Vec<RelationRow>
           ORDER BY n.nspname, c.relname",
     )
     .bind(schemas)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(|error| refused(format!("enumerate schema relations: {error}")))
 }
@@ -449,7 +452,10 @@ fn assert_definer_path(
     Ok(())
 }
 
-async fn definers(pool: &PgPool, schemas: &[String]) -> Result<Vec<DefinerRow>, StorageError> {
+async fn definers(
+    conn: &mut PgConnection,
+    schemas: &[String],
+) -> Result<Vec<DefinerRow>, StorageError> {
     let vector_names: Vec<_> = proxima_core::EmbeddingDim::ALL
         .into_iter()
         .map(|dim| format!("vector_candidates_d{}", dim.width()))
@@ -527,13 +533,13 @@ async fn definers(pool: &PgPool, schemas: &[String]) -> Result<Vec<DefinerRow>, 
     .bind(schemas)
     .bind(crate::search_candidates::ARGUMENT_TYPES)
     .bind(vector_names)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(|error| refused(format!("enumerate SECURITY DEFINER functions: {error}")))
 }
 
 async fn definer_namespaces(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     functions: &[DefinerRow],
 ) -> Result<Vec<NamespaceRow>, StorageError> {
     let owner_oids: Vec<_> = functions
@@ -578,7 +584,7 @@ async fn definer_namespaces(
            FROM pg_namespace n",
     )
     .bind(&owner_oids)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(|error| refused(format!("inspect definer search_path namespaces: {error}")))
 }
@@ -588,19 +594,19 @@ async fn definer_namespaces(
 /// that authority and login roles that can assume search-path CREATE authority.
 /// The runtime guard also checks the actual effective role.
 async fn assert_definers(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     schemas: &[String],
     platform: bool,
 ) -> Result<(), StorageError> {
-    let functions = definers(pool, schemas).await?;
+    let functions = definers(&mut *conn, schemas).await?;
     if functions.is_empty() {
         return Ok(());
     }
-    let namespaces = definer_namespaces(pool, &functions).await?;
+    let namespaces = definer_namespaces(&mut *conn, &functions).await?;
     if functions.iter().any(|function| {
         function.candidate_kind.is_some() || function.owner_name == "proxima_search"
     }) {
-        assert_candidate_role(pool, schemas, platform).await?;
+        assert_candidate_role(&mut *conn, schemas, platform).await?;
     }
     for function in &functions {
         if function.candidate_kind.is_some() {
@@ -655,7 +661,7 @@ async fn assert_definers(
 /// and definers are required before activation too; base-table policy checks
 /// apply only once the database has entered the owner-RLS epoch.
 pub(crate) async fn assert_platform_catalog(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     schemas: &[&str],
     enforcing: bool,
 ) -> Result<(), StorageError> {
@@ -667,13 +673,13 @@ pub(crate) async fn assert_platform_catalog(
         "SELECT current_user::text, r.rolsuper, r.rolbypassrls
            FROM pg_roles AS r WHERE r.rolname = current_user",
     )
-    .fetch_one(pool)
+    .fetch_one(&mut *conn)
     .await
     .map_err(|error| refused(format!("read platform role: {error}")))?;
     if superuser || bypass {
         return Err(refused("platform role must obey FORCE ROW LEVEL SECURITY"));
     }
-    let relations = relations(pool, &schema_names).await?;
+    let relations = relations(&mut *conn, &schema_names).await?;
     assert_inventory(&relations, &schema_names)?;
     for relation in &relations {
         if !relation.owner_usage {
@@ -683,9 +689,9 @@ pub(crate) async fn assert_platform_catalog(
             )));
         }
     }
-    assert_definers(pool, &schema_names, true).await?;
+    assert_definers(&mut *conn, &schema_names, true).await?;
     if enforcing {
-        assert_policy_structure(pool, &relations, false).await?;
+        assert_policy_structure(&mut *conn, &relations, false).await?;
     }
     Ok(())
 }
@@ -702,9 +708,32 @@ pub(crate) async fn assert_platform_catalog(
 /// Returns [`StorageError::Internal`] when the runtime role or any discovered
 /// relation or definer violates the RLS safety contract, or inspection fails.
 pub async fn assert_runtime_rls(pool: &PgPool, schemas: &[&str]) -> Result<(), StorageError> {
+    // An empty inventory is refused before a connection is acquired, as it
+    // was before the checks moved onto one held connection.
+    assert_schema_inventory_named(schemas)?;
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|error| refused(format!("acquire runtime connection: {error}")))?;
+    assert_runtime_rls_on(&mut conn, schemas).await
+}
+
+/// Refuse an empty inventory, or one naming an empty schema.
+fn assert_schema_inventory_named(schemas: &[&str]) -> Result<(), StorageError> {
     if schemas.is_empty() || schemas.iter().any(|schema| schema.trim().is_empty()) {
         return Err(refused("schema inventory is empty"));
     }
+    Ok(())
+}
+
+/// [`assert_runtime_rls`] on one held connection. Every check runs on it, so
+/// a boot validates on one connection however many tables it inspects,
+/// instead of acquiring per statement and growing the pool.
+pub(crate) async fn assert_runtime_rls_on(
+    conn: &mut PgConnection,
+    schemas: &[&str],
+) -> Result<(), StorageError> {
+    assert_schema_inventory_named(schemas)?;
     let schema_names: Vec<String> = schemas.iter().map(|schema| (*schema).to_owned()).collect();
 
     let (role_name, is_superuser, bypass_rls): (String, bool, bool) = sqlx::query_as(
@@ -712,7 +741,7 @@ pub async fn assert_runtime_rls(pool: &PgPool, schemas: &[&str]) -> Result<(), S
            FROM pg_roles AS r
           WHERE r.rolname = current_user",
     )
-    .fetch_one(pool)
+    .fetch_one(&mut *conn)
     .await
     .map_err(|error| refused(format!("read runtime role: {error}")))?;
 
@@ -723,7 +752,7 @@ pub async fn assert_runtime_rls(pool: &PgPool, schemas: &[&str]) -> Result<(), S
         return Err(refused(format!("runtime role {role_name} has BYPASSRLS")));
     }
 
-    let relations = relations(pool, &schema_names).await?;
+    let relations = relations(&mut *conn, &schema_names).await?;
     assert_inventory(&relations, &schema_names)?;
 
     for relation in &relations {
@@ -749,8 +778,8 @@ pub async fn assert_runtime_rls(pool: &PgPool, schemas: &[&str]) -> Result<(), S
             )));
         }
     }
-    assert_policy_structure(pool, &relations, true).await?;
-    assert_definers(pool, &schema_names, false).await
+    assert_policy_structure(&mut *conn, &relations, true).await?;
+    assert_definers(&mut *conn, &schema_names, false).await
 }
 
 #[cfg(test)]

@@ -58,12 +58,15 @@ impl PgPlatformScope {
         if schemas.is_empty() || schemas.iter().any(|schema| schema.is_empty()) {
             return Err(refused("platform schema inventory is empty"));
         }
+        // One held connection for every check: acquiring per statement
+        // grows the pool during validation (see `assert_runtime_rls_on`).
+        let mut conn = pool.acquire().await.map_err(map_err)?;
         let (database_oid, role_oid, superuser, bypass): (i64, i64, bool, bool) = sqlx::query_as(
             "SELECT d.oid::bigint, r.oid::bigint, r.rolsuper, r.rolbypassrls
                    FROM pg_catalog.pg_database d CROSS JOIN pg_catalog.pg_roles r
                   WHERE d.datname = current_database() AND r.rolname = current_user",
         )
-        .fetch_one(&pool)
+        .fetch_one(&mut *conn)
         .await
         .map_err(map_err)?;
         if superuser || bypass {
@@ -71,7 +74,8 @@ impl PgPlatformScope {
                 "platform data role must obey FORCE ROW LEVEL SECURITY",
             ));
         }
-        crate::rls_guard::assert_platform_catalog(&pool, schemas, true).await?;
+        crate::rls_guard::assert_platform_catalog(&mut conn, schemas, true).await?;
+        drop(conn);
         Ok(Self {
             pool,
             database_oid,
@@ -80,8 +84,10 @@ impl PgPlatformScope {
         })
     }
 
-    /// Union composed schemas with stored flavor surfaces for runtime checks.
-    pub(crate) async fn catalog_schemas(&self) -> Result<Vec<String>, StorageError> {
+    /// Union composed schemas with stored flavor surfaces for runtime
+    /// checks, and the persisted store number, read in one platform
+    /// transaction so a boot takes one platform connection for both.
+    pub(crate) async fn boot_catalog(&self) -> Result<(Vec<String>, Option<i32>), StorageError> {
         let mut transaction = self.begin().await?;
         let mut schemas = self.schemas.to_vec();
         let registered: Vec<String> = sqlx::query_scalar(
@@ -91,11 +97,17 @@ impl PgPlatformScope {
         .fetch_all(&mut *transaction)
         .await
         .map_err(map_err)?;
+        let store_number: Option<i32> = sqlx::query_scalar(
+            "SELECT store_number FROM proxima_core.store_identity WHERE singleton",
+        )
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(map_err)?;
+        transaction.commit().await.map_err(map_err)?;
         schemas.extend(registered);
-        transaction.rollback().await.map_err(map_err)?;
         schemas.sort();
         schemas.dedup();
-        Ok(schemas)
+        Ok((schemas, store_number))
     }
 
     /// Begin a platform transaction under its explicit policy, including on

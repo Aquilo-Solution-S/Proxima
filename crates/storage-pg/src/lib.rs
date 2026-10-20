@@ -415,10 +415,19 @@ async fn ensure_pgvector_runtime_compatible(
     pool: &PgPool,
     tuning: &PgTuning,
 ) -> Result<(), StorageError> {
+    let mut conn = pool.acquire().await.map_err(internal)?;
+    ensure_pgvector_runtime_compatible_on(&mut conn, tuning).await
+}
+
+/// [`ensure_pgvector_runtime_compatible`] on a connection the caller holds.
+async fn ensure_pgvector_runtime_compatible_on(
+    conn: &mut PgConnection,
+    tuning: &PgTuning,
+) -> Result<(), StorageError> {
     let Some(version) = sqlx::query_scalar::<_, String>(
         "SELECT extversion FROM pg_extension WHERE extname = 'vector'",
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(internal)?
     else {
@@ -435,8 +444,7 @@ async fn ensure_pgvector_runtime_compatible(
         )));
     }
 
-    let mut tx = pool
-        .begin()
+    let mut tx = sqlx::Connection::begin(&mut *conn)
         .await
         .map_err(|err| StorageError::Unavailable(format!("begin pgvector preflight: {err}")))?;
     // SQL-POLICY: fixed-fragment — the settings statement interpolates
@@ -984,14 +992,22 @@ impl PgStorage {
         // (`run_migrations` runs on a detached timeout-free connection; the erase
         // transaction issues `SET LOCAL statement_timeout = 0`).
         let connect_options = pool_config.connect_options(url)?;
+        // Lazy, then one explicit acquire: boot validates on that one held
+        // connection. An eager connect hands its first connection back in a
+        // spawned task, and an acquire racing that return opens a second.
+        // Acquiring per statement grew the pool toward its maximum during
+        // validation, and on a server near `max_connections` each refused
+        // connect was retried until the acquire timeout failed the boot.
         let pool = pool_config
             .pool_options()
-            .connect_with(connect_options)
+            .connect_lazy_with(connect_options);
+        let mut conn = pool
+            .acquire()
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
         sqlx::query("SELECT 1")
-            .execute(&pool)
+            .execute(&mut *conn)
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
@@ -999,20 +1015,12 @@ impl PgStorage {
         // composed and stored-flavor schemas and a pgvector that accepts this
         // deployment's search settings. The platform authority reads the
         // existing surface catalog; no caller supplies a second inventory.
-        let schemas = platform_scope.catalog_schemas().await?;
+        let (schemas, persisted) = platform_scope.boot_catalog().await?;
         let schema_refs: Vec<_> = schemas.iter().map(String::as_str).collect();
-        assert_runtime_rls(&pool, &schema_refs).await?;
-        ensure_pgvector_runtime_compatible(&pool, &tuning).await?;
-
-        let mut identity_tx = platform_scope.begin().await?;
-        let persisted: Option<i32> = sqlx::query_scalar(
-            "SELECT store_number FROM proxima_core.store_identity WHERE singleton",
-        )
-        .fetch_optional(identity_tx.as_mut())
-        .await
-        .map_err(error::map_err)?;
+        rls_guard::assert_runtime_rls_on(&mut conn, &schema_refs).await?;
+        ensure_pgvector_runtime_compatible_on(&mut conn, &tuning).await?;
+        drop(conn);
         validate_store_number(persisted, store_number)?;
-        identity_tx.commit().await.map_err(error::map_err)?;
 
         Ok(Self {
             store_number,
