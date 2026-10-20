@@ -102,6 +102,18 @@ preflight checks the generated marks and owner indexes without changing them.
 Normal boot supplies this registry automatically. See
 [sidecar owner modes](build-a-flavor.md#2-persist-the-typed-payload).
 
+When a host first runs this runner on an existing database, three
+things change. A Follows table gets the host rule (its `owner_id` AND its
+memory) whatever class the flavor's SQL gave it, so owner reads stop
+returning rows of forgotten memories. A Follows table without an index
+leading with `owner_id` gets `<table>_owner_follows_idx`, built inside the
+migration transaction with a plain (non-concurrent) `CREATE INDEX`, which
+blocks writes to that table while it builds. Skip-migration boot and
+`preflight_without_migrations` refuse with `MigrationError::SidecarOwnerRls`
+until one migration run with the composition's frozen sidecars has written
+the marks and indexes. Standalone migration jobs must pass that registry,
+not `PgSidecarRegistryFrozen::default()`.
+
 ## Authentication and owner scope
 
 Provide an `Authenticator` through `RuntimeBuilder::authenticator`, or use the

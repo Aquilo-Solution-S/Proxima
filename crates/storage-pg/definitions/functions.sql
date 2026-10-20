@@ -932,7 +932,7 @@ BEGIN
 END
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[]) FROM PUBLIC;
-COMMENT ON FUNCTION proxima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[]) IS 'Owner-RLS policies for one flavor schema from its table classification; refuses an unclassified table. A table in proxima_core.owner_follows gets the host follows rule whatever class it is listed in, and may be left out (docs/09 §Owner RLS).';
+COMMENT ON FUNCTION proxima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[]) IS 'Owner-RLS policies for one flavor schema from its table classification; refuses an unclassified table. A table in proxima_core.owner_follows gets the host follows rule whatever class it is listed in, and may be left out (docs/build-a-flavor.md §2, docs/host-integration.md §Boot a composed host).';
 
 CREATE OR REPLACE FUNCTION proxima_core.install_owner_rls_table(target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text DEFAULT 'owner_id'::text)
  RETURNS void
@@ -1046,7 +1046,7 @@ BEGIN
 END
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.install_owner_rls_table(target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) FROM PUBLIC;
-COMMENT ON FUNCTION proxima_core.install_owner_rls_table(target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) IS 'Owner-RLS policies for one table of a flavor or host schema; the per-table form of install_owner_rls. A table in proxima_core.owner_follows gets the host follows rule instead of class owner_id or memory_owner (docs/09 §Owner RLS).';
+COMMENT ON FUNCTION proxima_core.install_owner_rls_table(target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) IS 'Owner-RLS policies for one table of a flavor or host schema; the per-table form of install_owner_rls. A table in proxima_core.owner_follows gets the host follows rule instead of class owner_id or memory_owner (docs/build-a-flavor.md §2, docs/host-integration.md §Boot a composed host).';
 
 -- Host only: record the Follows tables of the schemas this binary composes
 -- and install their owner RLS. The host calls it from its Rust registry

@@ -685,7 +685,7 @@ mod tests {
     }
 
     /// A consumer lane's row in the shared ledger: timestamp-shaped, in the
-    /// downstream-host suffix lane (docs/09 §Version lanes).
+    /// downstream-host suffix lane (lane ordering: crates/proxima/src/migrations.rs; see docs/host-integration.md).
     const CONSUMER_LANE_VERSION: i64 = 20_260_924_000_060;
 
     /// What a consumer lane embedding Proxima builds on `proxima_core`: an FK

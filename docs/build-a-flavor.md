@@ -110,6 +110,10 @@ restore and erase still reach it. Skip-migration boot validates the generated
 marks and indexes without DDL. An existing table adopted as Follows must already
 have its UUID `owner_id` and memory FK when this host first runs; new tables may
 be created by their flavor lane.
+On an existing database the first such run supersedes the class your
+migration chose for a Follows table and may build its owner index under a
+write lock; see [host integration](host-integration.md#boot-a-composed-host)
+for the upgrade effects.
 Standalone migration jobs and test templates must supply the same frozen
 sidecars; see [host integration](host-integration.md#boot-a-composed-host).
 
