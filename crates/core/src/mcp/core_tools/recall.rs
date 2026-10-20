@@ -446,8 +446,10 @@ async fn collect_unassigned_goals(
 }
 
 struct Entry {
+    handle: Uuid,
+    kind: EntityKind,
     reason: RecallReason,
-    sketch: RecallSketch,
+    sketch: String,
     owner: Option<crate::OwnerId>,
     is_head: bool,
 }
@@ -482,13 +484,10 @@ impl Packet {
         self.by_id.insert(
             key,
             Entry {
+                handle: key,
+                kind,
                 reason,
-                sketch: RecallSketch {
-                    handle: id.into_inner().to_string(),
-                    kind: kind.as_str().to_string(),
-                    sketch: truncate_sketch(sketch),
-                    reason: reason.as_str().to_string(),
-                },
+                sketch: truncate_sketch(sketch),
                 owner: None,
                 is_head: false,
             },
@@ -516,13 +515,10 @@ impl Packet {
         self.by_id.insert(
             key,
             Entry {
+                handle: key,
+                kind: EntityKind::Goal,
                 reason,
-                sketch: RecallSketch {
-                    handle: id.into_inner().to_string(),
-                    kind: EntityKind::Goal.as_str().to_string(),
-                    sketch: truncate_sketch(title),
-                    reason: reason.as_str().to_string(),
-                },
+                sketch: truncate_sketch(title),
                 owner: None,
                 is_head: true,
             },
@@ -532,16 +528,14 @@ impl Packet {
     fn unverified_perspective_ids(&self) -> Vec<MemoryId> {
         self.by_id
             .iter()
-            .filter(|(_, entry)| {
-                entry.sketch.kind == EntityKind::Perspective.as_str() && !entry.is_head
-            })
+            .filter(|(_, entry)| entry.kind == EntityKind::Perspective && !entry.is_head)
             .map(|(id, _)| MemoryId::new(*id))
             .collect()
     }
 
     fn mark_heads(&mut self, heads: &std::collections::HashSet<Uuid>) {
         for (id, entry) in &mut self.by_id {
-            if entry.sketch.kind == EntityKind::Perspective.as_str() && heads.contains(id) {
+            if entry.kind == EntityKind::Perspective && heads.contains(id) {
                 entry.is_head = true;
             }
         }
@@ -551,9 +545,7 @@ impl Packet {
         self.by_id
             .iter()
             .filter(|(_, entry)| {
-                entry.sketch.kind == EntityKind::Perspective.as_str()
-                    && entry.is_head
-                    && entry.owner == Some(owner)
+                entry.kind == EntityKind::Perspective && entry.is_head && entry.owner == Some(owner)
             })
             .map(|(id, _)| MemoryId::new(*id))
             .collect()
@@ -562,29 +554,33 @@ impl Packet {
     fn finish(self, filter: Option<RecallKind>, limit: u32) -> Vec<RecallSketch> {
         let mut rows: Vec<Entry> = self.by_id.into_values().collect();
         if let Some(filter) = filter {
-            rows.retain(|entry| kind_matches(filter, &entry.sketch.kind, entry.is_head));
+            rows.retain(|entry| kind_matches(filter, entry.kind, entry.is_head));
         }
         rows.sort_by(|a, b| {
             a.reason
                 .cmp(&b.reason)
-                .then_with(|| a.sketch.handle.cmp(&b.sketch.handle))
+                .then_with(|| a.handle.cmp(&b.handle))
         });
         rows.into_iter()
             .take(limit as usize)
-            .map(|entry| entry.sketch)
+            .map(|entry| RecallSketch {
+                handle: entry.handle.to_string(),
+                kind: entry.kind.as_str().to_string(),
+                sketch: entry.sketch,
+                reason: entry.reason.as_str().to_string(),
+            })
             .collect()
     }
 }
 
-fn kind_matches(filter: RecallKind, kind: &str, is_head: bool) -> bool {
+fn kind_matches(filter: RecallKind, kind: EntityKind, is_head: bool) -> bool {
     match filter {
-        RecallKind::Fact => kind == EntityKind::Fact.as_str(),
-        RecallKind::Abstraction => kind == EntityKind::Abstraction.as_str(),
+        RecallKind::Fact => kind == EntityKind::Fact,
+        RecallKind::Abstraction => kind == EntityKind::Abstraction,
         RecallKind::Perspective => {
-            (kind == EntityKind::Perspective.as_str() && is_head)
-                || kind == EntityKind::Goal.as_str()
+            (kind == EntityKind::Perspective && is_head) || kind == EntityKind::Goal
         }
-        RecallKind::Goal => kind == EntityKind::Goal.as_str(),
+        RecallKind::Goal => kind == EntityKind::Goal,
     }
 }
 
