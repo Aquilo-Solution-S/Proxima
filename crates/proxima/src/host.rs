@@ -13,11 +13,11 @@ pub use crate::features::{BootReport, Feature, FeatureDecision, FeatureState};
 pub use crate::health::{HEALTHZ_PATH, READYZ_PATH};
 pub use crate::mcp_edge::{McpEdge, layered_router_mcp_only};
 pub use crate::migrations::{
-    CoreAdoption, LedgerConflict, MigrationError, MigrationRunReport, MissingMigrationPolicy,
-    NamedMigrator, PendingMigration, flavor_ledger_table, is_flavor_ledger_id, pending_migrations,
-    pending_migrations_with_policy, preflight_without_migrations,
-    preflight_without_migrations_with_policy, run_core_and_flavor_migrations,
-    run_core_and_flavor_migrations_with_policy,
+    CoreAdoption, LedgerConflict, MigrationError, MigrationRunReport, MigrationStorage,
+    MissingMigrationPolicy, NamedMigrator, PendingMigration, flavor_ledger_table,
+    is_flavor_ledger_id, pending_migrations, pending_migrations_with_policy,
+    preflight_without_migrations, preflight_without_migrations_with_policy,
+    run_core_and_flavor_migrations, run_core_and_flavor_migrations_with_policy,
 };
 pub use crate::owner_access::{ForwarderPolicy, OwnerRegistry};
 pub use crate::proxima_host::ProximaHost;
@@ -83,6 +83,10 @@ pub use proxima_core::error::{ErrorCode, ProtocolError};
 /// and that variant cannot be built without this one, so it is exported to both
 /// tiers; it is a `Copy` contract enum and carries no authority.
 pub use proxima_core::flavor::HostStateEraseDisposition;
+/// Core's renderer bands for projections declaring [`BandComparability::CoreBands`].
+pub use proxima_core::flavor0::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING};
+/// Explicitly select the deployment's lexical configuration for a memory write.
+pub use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
 pub use proxima_core::llm;
 /// [`EmbedCaps`] is the second parameter of
 /// [`OpenAiCompatEmbeddingClient::new`], so without it on the facade that
@@ -582,6 +586,9 @@ pub use proxima_storage_pg::PgHostStateEraseContext;
 /// [`preflight_without_migrations`] take. Host API only: the Flavor SDK has
 /// no storage handle.
 pub use proxima_storage_pg::PgStorage;
+/// Trusted host owner registration on its platform transaction. This performs
+/// no authorization or transaction control; the host vouches for the write.
+pub use proxima_storage_pg::access::owner_columns::ensure_owner_row;
 /// Begin a transaction under the caller's [`OwnerScope`], with the pool
 /// [`ProximaHost::clone_pool_for_host`] hands out.
 ///
@@ -591,10 +598,25 @@ pub use proxima_storage_pg::PgStorage;
 /// pool; Fact and state writes go through [`UnitOfWork`] and
 /// [`UnitOfWork::apply_host_state`]. It is not a Flavor SDK name.
 pub use proxima_storage_pg::begin_owner_transaction;
+/// Compare the stored core definitions with this binary, optionally under the
+/// host's [`MissingMigrationPolicy`]. These inspect the caller's connection.
+pub use proxima_storage_pg::definitions::{
+    current_matches as core_definitions_match,
+    current_matches_with_policy as core_definitions_match_with_policy,
+};
+/// Generate a projection migration and its inverses from the flavor contract.
+/// Also available through the Flavor SDK for migration authors.
+pub use proxima_storage_pg::projection::{Artifact, ProjectionArtifacts, projection_artifacts};
+/// Migration-only storage and core schema operations for a host's schema lane.
+/// [`MigrationStorage`] is the shared bound of the facade migration runners.
+pub use proxima_storage_pg::{
+    PgMigrationStorage, begin_migration_transaction, core_migrator, ensure_core_schema_current,
+    run_core_schema,
+};
 /// Owner-RLS boot: the runtime-role guard, the platform scope
 /// [`ProximaHost::platform_scope_for_host`] returns, and the sqlx →
 /// [`StorageError`] classifier for host-state SQL.
-pub use proxima_storage_pg::{PgPlatformScope, map_err};
+pub use proxima_storage_pg::{PgPlatformScope, assert_runtime_rls, is_transient_conflict, map_err};
 /// The registry, contract and hook vocabulary a host composes and reads back:
 /// [`Engine::try_compose`], [`ProximaError`], [`FlavorApp`],
 /// [`FlavorRegistryFrozen`]'s accessors, [`ProximaHost::pg_sidecars_for_host`],
@@ -619,10 +641,9 @@ pub use {
     proxima_storage_pg::{
         PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, integrity::IntegrityFinding,
         integrity::IntegrityReport, integrity::IntegrityViolation, integrity::ProjectedSchema,
-        projection::Artifact, sidecars::PgGoalSidecar, sidecars::PgMemoryPayload,
-        sidecars::PgMemoryPayloadBatchFuture, sidecars::PgMemoryPayloadFuture,
-        sidecars::PgMemorySidecar, sidecars::PgSidecarFuture, sidecars::PgSidecarReadCtx,
-        sidecars::SidecarInsertPermit, sidecars::SidecarOwnerMode,
+        sidecars::PgGoalSidecar, sidecars::PgMemoryPayload, sidecars::PgMemoryPayloadBatchFuture,
+        sidecars::PgMemoryPayloadFuture, sidecars::PgMemorySidecar, sidecars::PgSidecarFuture,
+        sidecars::PgSidecarReadCtx, sidecars::SidecarInsertPermit, sidecars::SidecarOwnerMode,
     },
 };
 /// What [`PgStorage`]'s public methods take and return beyond the migration

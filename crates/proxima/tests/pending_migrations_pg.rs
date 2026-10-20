@@ -161,9 +161,13 @@ impl Db {
     }
 
     async fn run(&self, sources: Vec<NamedMigrator>) {
-        run_core_and_flavor_migrations(&self.pg, sources)
-            .await
-            .expect("the migration run");
+        run_core_and_flavor_migrations(
+            &self.pg,
+            sources,
+            &proxima::PgSidecarRegistryFrozen::default(),
+        )
+        .await
+        .expect("the migration run");
     }
 
     async fn plan(
@@ -318,9 +322,13 @@ impl Db {
             (tables, before),
             "a refusing plan wrote nothing"
         );
-        let ran = run_core_and_flavor_migrations(&self.pg, sources())
-            .await
-            .expect_err("the run refuses");
+        let ran = run_core_and_flavor_migrations(
+            &self.pg,
+            sources(),
+            &proxima::PgSidecarRegistryFrozen::default(),
+        )
+        .await
+        .expect_err("the run refuses");
         assert_eq!(
             format!("{refused:?}"),
             format!("{ran:?}"),
@@ -754,13 +762,23 @@ async fn a_changed_definitions_record_is_planned_and_reapplied() {
             Some(catalog_before),
             "plan wrote no definitions catalog"
         );
-        let preflight = preflight_without_migrations_with_policy(&db.pg, Vec::new(), policy)
-            .await
-            .expect_err("checksum drift is refused by preflight");
+        let preflight = preflight_without_migrations_with_policy(
+            &db.pg,
+            Vec::new(),
+            &proxima::PgSidecarRegistryFrozen::default(),
+            policy,
+        )
+        .await
+        .expect_err("checksum drift is refused by preflight");
         assert!(matches!(preflight, MigrationError::CorePreflight(_)));
-        run_core_and_flavor_migrations_with_policy(&db.pg, Vec::new(), policy)
-            .await
-            .expect("both policies reapply same-or-older definitions drift");
+        run_core_and_flavor_migrations_with_policy(
+            &db.pg,
+            Vec::new(),
+            &proxima::PgSidecarRegistryFrozen::default(),
+            policy,
+        )
+        .await
+        .expect("both policies reapply same-or-older definitions drift");
         let (applied_checksum, applied_release, _) = db
             .definitions_catalog()
             .await
@@ -820,12 +838,20 @@ async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
     let planned = pending_migrations(&db.platform, &[])
         .await
         .expect_err("reject policy refuses newer definitions in plan");
-    let preflight = preflight_without_migrations(&db.pg, Vec::new())
-        .await
-        .expect_err("reject policy refuses newer definitions in preflight");
-    let ran = run_core_and_flavor_migrations(&db.pg, Vec::new())
-        .await
-        .expect_err("reject policy refuses newer definitions in run");
+    let preflight = preflight_without_migrations(
+        &db.pg,
+        Vec::new(),
+        &proxima::PgSidecarRegistryFrozen::default(),
+    )
+    .await
+    .expect_err("reject policy refuses newer definitions in preflight");
+    let ran = run_core_and_flavor_migrations(
+        &db.pg,
+        Vec::new(),
+        &proxima::PgSidecarRegistryFrozen::default(),
+    )
+    .await
+    .expect_err("reject policy refuses newer definitions in run");
     for refused in [&planned, &preflight, &ran] {
         assert!(
             format!("{refused:?}").contains("newer release 99.0.0"),
@@ -847,12 +873,22 @@ async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
             .all(|pending| !matches!(pending, PendingMigration::CoreDefinitions { .. })),
         "allow policy must not reapply older definitions: {plan:?}"
     );
-    preflight_without_migrations_with_policy(&db.pg, Vec::new(), MissingMigrationPolicy::Allow)
-        .await
-        .expect("allow policy accepts newer definitions in preflight");
-    run_core_and_flavor_migrations_with_policy(&db.pg, Vec::new(), MissingMigrationPolicy::Allow)
-        .await
-        .expect("allow policy leaves newer definitions in place");
+    preflight_without_migrations_with_policy(
+        &db.pg,
+        Vec::new(),
+        &proxima::PgSidecarRegistryFrozen::default(),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("allow policy accepts newer definitions in preflight");
+    run_core_and_flavor_migrations_with_policy(
+        &db.pg,
+        Vec::new(),
+        &proxima::PgSidecarRegistryFrozen::default(),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("allow policy leaves newer definitions in place");
     assert_eq!(db.definitions_catalog().await, Some(before));
     let after_function: String = sqlx::query_scalar(
         "SELECT pg_get_functiondef('proxima_core.memory_head_t_only()'::regprocedure)",
@@ -1018,7 +1054,8 @@ async fn a_plan_waits_for_a_run_mid_source_and_reports_the_state_after_it() {
         )
         .await
         .expect("storage");
-        run_core_and_flavor_migrations(&pg, sources()).await
+        run_core_and_flavor_migrations(&pg, sources(), &proxima::PgSidecarRegistryFrozen::default())
+            .await
     });
     wait_for_waiters(&mut blocker, BLOCK_KEY).await;
 
@@ -1220,7 +1257,11 @@ async fn a_run_dropped_mid_source_does_not_return_its_connection_to_the_pool() {
     // The second migration blocks on this session's lock, mid-source.
     let dropped = tokio::time::timeout(
         Duration::from_secs(2),
-        run_core_and_flavor_migrations(&pg, vec![forge(&[F1, BLOCKED])]),
+        run_core_and_flavor_migrations(
+            &pg,
+            vec![forge(&[F1, BLOCKED])],
+            &proxima::PgSidecarRegistryFrozen::default(),
+        ),
     )
     .await;
     assert!(

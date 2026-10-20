@@ -22,6 +22,7 @@ static SPLIT_CORE: LazyLock<HostTemplate> = LazyLock::new(|| {
         TemplateFamily::new("proxima_split_core_").expect("a valid template family"),
         "core lane only",
         Vec::new(),
+        proxima::PgSidecarRegistryFrozen::default(),
     )
     .expect("the core lane alone is a lineup the runner accepts")
 });

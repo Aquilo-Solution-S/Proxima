@@ -13,7 +13,7 @@
 //! [`MissingMigrationPolicy::Allow`]. [`LedgerConflict`] also refuses a lane
 //! that would repeat or reorder a different release's work.
 //!
-//! [`pending_migrations`] answers what a run would apply without applying it.
+//! [`pending_migrations`] lists pending embedded SQL, core adoption and core definitions.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -21,7 +21,7 @@ use std::time::Duration;
 use proxima_core::StorageError;
 pub use proxima_storage_pg::{CoreAdoption, MissingMigrationPolicy};
 use proxima_storage_pg::{
-    PgMigrationStorage, PgStorage, core_migrator,
+    PgMigrationStorage, PgSidecarRegistryFrozen, PgStorage, core_migrator,
     ensure_core_ledger_compatible_on_connection_with_policy, ensure_core_schema_current,
 };
 use sqlx::migrate::{MigrateError, Migration, Migrator};
@@ -177,6 +177,8 @@ pub enum MigrationError {
     ResetSearchPath(#[source] sqlx::Error),
     #[error("core migration preflight failed: {0}")]
     CorePreflight(#[source] StorageError),
+    #[error("sidecar owner RLS deployment failed: {0}")]
+    SidecarOwnerRls(#[source] StorageError),
     #[error("core migrations failed: {0}")]
     Core(#[source] MigrateError),
     #[error("flavor migrations failed for {source}: {err}")]
@@ -258,6 +260,10 @@ pub enum LedgerConflict {
 
 /// Run core migrations followed by the provided flavor/host migrators.
 ///
+/// `sidecars` is frozen against the same composition being migrated. The
+/// runner derives Follows owner RLS from it before and after the flavor lanes,
+/// under the migration lock; an empty SQL plan still reconciles that state.
+///
 /// # Errors
 ///
 /// Returns `MigrationError::DuplicateVersion` before any database write
@@ -271,8 +277,15 @@ pub enum LedgerConflict {
 pub async fn run_core_and_flavor_migrations<P: MigrationStorage>(
     pg: &P,
     flavors: impl IntoIterator<Item = NamedMigrator>,
+    sidecars: &PgSidecarRegistryFrozen,
 ) -> Result<MigrationRunReport, MigrationError> {
-    run_core_and_flavor_migrations_with_policy(pg, flavors, MissingMigrationPolicy::Reject).await
+    run_core_and_flavor_migrations_with_policy(
+        pg,
+        flavors,
+        sidecars,
+        MissingMigrationPolicy::Reject,
+    )
+    .await
 }
 
 /// [`run_core_and_flavor_migrations`] with an explicit missing-version policy.
@@ -289,9 +302,10 @@ pub async fn run_core_and_flavor_migrations<P: MigrationStorage>(
 pub async fn run_core_and_flavor_migrations_with_policy<P: MigrationStorage>(
     pg: &P,
     flavors: impl IntoIterator<Item = NamedMigrator>,
+    sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
 ) -> Result<MigrationRunReport, MigrationError> {
-    run_lineup_with_policy(pg, &lineup(flavors), policy).await
+    run_lineup_with_policy(pg, &lineup(flavors), sidecars, policy).await
 }
 
 /// [`run_core_and_flavor_migrations`] over a [`lineup`] the caller keeps: the
@@ -301,22 +315,25 @@ pub async fn run_core_and_flavor_migrations_with_policy<P: MigrationStorage>(
 pub(crate) async fn run_lineup<P: MigrationStorage>(
     pg: &P,
     sources: &[NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
 ) -> Result<MigrationRunReport, MigrationError> {
-    run_lineup_with_policy(pg, sources, MissingMigrationPolicy::Reject).await
+    run_lineup_with_policy(pg, sources, sidecars, MissingMigrationPolicy::Reject).await
 }
 
 async fn run_lineup_with_policy<P: MigrationStorage>(
     pg: &P,
     sources: &[NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
 ) -> Result<MigrationRunReport, MigrationError> {
     check_lineup(sources)?;
-    run_lineup_with_pool(pg.clone_migration_pool(), sources, policy).await
+    run_lineup_with_pool(pg.clone_migration_pool(), sources, sidecars, policy).await
 }
 
 async fn run_lineup_with_pool(
     pool: PgPool,
     sources: &[NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
 ) -> Result<MigrationRunReport, MigrationError> {
     let report = MigrationRunReport::from_sources(sources);
@@ -327,7 +344,7 @@ async fn run_lineup_with_pool(
         .await
         .map_err(MigrationError::PinSearchPath)?;
 
-    let migration_result = run_locked_sources(&mut conn, sources, policy).await;
+    let migration_result = run_locked_sources(&mut conn, sources, sidecars, policy).await;
     let reset_result = reset_migration_search_path(&mut conn).await;
 
     match (migration_result, reset_result) {
@@ -347,12 +364,13 @@ async fn run_lineup_with_pool(
 async fn run_locked_sources(
     conn: &mut PgConnection,
     sources: &[NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
 ) -> Result<(), MigrationError> {
     let lock = SessionLock::acquire(conn).await.map_err(execute_error)?;
     let result = async {
         validate_ledgers(lock.conn, &sources.iter().collect::<Vec<_>>(), policy).await?;
-        run_sources_on_connection(lock.conn, sources).await
+        run_sources_on_connection(lock.conn, sources, sidecars).await
     }
     .await;
     let released = lock.release().await;
@@ -401,8 +419,10 @@ async fn acquire_session_connection(
 pub async fn preflight_without_migrations<P: MigrationStorage>(
     pg: &P,
     flavors: impl IntoIterator<Item = NamedMigrator>,
+    sidecars: &PgSidecarRegistryFrozen,
 ) -> Result<MigrationRunReport, MigrationError> {
-    preflight_without_migrations_with_policy(pg, flavors, MissingMigrationPolicy::Reject).await
+    preflight_without_migrations_with_policy(pg, flavors, sidecars, MissingMigrationPolicy::Reject)
+        .await
 }
 
 /// [`preflight_without_migrations`] with an explicit missing-version policy.
@@ -414,6 +434,7 @@ pub async fn preflight_without_migrations<P: MigrationStorage>(
 pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
     pg: &P,
     flavors: impl IntoIterator<Item = NamedMigrator>,
+    sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
 ) -> Result<MigrationRunReport, MigrationError> {
     let sources = prepare_sources(flavors)?;
@@ -443,7 +464,14 @@ pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
                 return Err(source.ledger_error(conflict));
             }
         }
-        Ok(())
+        sqlx::query("SELECT set_config('app.proxima_scope', 'platform', true)")
+            .execute(&mut *snapshot)
+            .await
+            .map_err(execute_error)?;
+        sidecars
+            .ensure_owner_follows(&mut snapshot)
+            .await
+            .map_err(MigrationError::SidecarOwnerRls)
     }
     .await;
     let ended = snapshot.rollback().await;
@@ -458,7 +486,7 @@ pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
     Ok(report)
 }
 
-/// One operation a migration run on the same database would apply.
+/// One pending embedded SQL, core adoption or core-definitions operation.
 ///
 /// Only [`pending_migrations`] constructs an operation read from the database.
 ///
@@ -494,8 +522,7 @@ pub enum PendingMigration {
     CoreDefinitions { checksum: Vec<u8>, release: String },
 }
 
-/// What a migration run on this database would apply right now, applying
-/// nothing.
+/// Pending embedded SQL, core adoption and core definitions, applying nothing.
 ///
 /// `sources` is what `flavors` is to [`run_core_and_flavor_migrations`]; core
 /// is always first. The list holds core's pending migrations, then each
@@ -507,6 +534,11 @@ pub enum PendingMigration {
 ///   ledger as empty. Nothing is created.
 /// - A flavor still recording on core's ledger is read there.
 /// - Down migrations are not listed.
+///
+/// Registry-derived Follows marks, policies and indexes are reconciled on
+/// every run, including when this list is empty. Use
+/// [`preflight_without_migrations`] with the frozen sidecar registry to
+/// validate that generated deployment state.
 ///
 /// The plan runs under the migration lock a run holds through every source (the
 /// `proxmigr` advisory key) and reads every ledger in one
@@ -774,18 +806,43 @@ async fn reset_migration_search_path(conn: &mut PgConnection) -> Result<(), sqlx
 async fn run_sources_on_connection(
     conn: &mut PgConnection,
     sources: &[NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
 ) -> Result<(), MigrationError> {
     for source in sources {
         if source.source == CORE_SOURCE {
             run_source_with_contention_retry(conn, source).await?;
             prepare_ledger(conn, source).await?;
+            sync_owner_follows(conn, sidecars)
+                .await?
+                .commit()
+                .await
+                .map_err(execute_error)?;
         } else {
             prepare_ledger(conn, source).await?;
             run_source_with_contention_retry(conn, source).await?;
         }
     }
 
-    Ok(())
+    let mut transaction = sync_owner_follows(conn, sidecars).await?;
+    sidecars
+        .ensure_owner_follows(&mut transaction)
+        .await
+        .map_err(MigrationError::SidecarOwnerRls)?;
+    transaction.commit().await.map_err(execute_error)
+}
+
+async fn sync_owner_follows<'c>(
+    conn: &'c mut PgConnection,
+    sidecars: &PgSidecarRegistryFrozen,
+) -> Result<Transaction<'c, Postgres>, MigrationError> {
+    let mut transaction = proxima_storage_pg::begin_migration_transaction(conn)
+        .await
+        .map_err(MigrationError::SidecarOwnerRls)?;
+    sidecars
+        .sync_owner_follows(&mut transaction)
+        .await
+        .map_err(MigrationError::SidecarOwnerRls)?;
+    Ok(transaction)
 }
 
 /// Total attempts for one source when shared-catalog contention is the only

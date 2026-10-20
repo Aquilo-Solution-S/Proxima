@@ -8,6 +8,8 @@ pub use crate::migrations::{NamedMigrator, flavor_ledger_table, is_flavor_ledger
 /// runtime handles a spawning flavor receives and the named join handle
 /// it returns.
 pub use crate::workers::{FlavorWorker, FlavorWorkerContext};
+/// The generator and sidecar adapters return this storage refusal type.
+pub use proxima_core::StorageError;
 /// The typed artefact inside [`CitedBlobStaged`], and the outcome of
 /// [`proxima_core::Engine::complete_upload_as_fact`].
 ///
@@ -46,6 +48,11 @@ pub use proxima_core::flavor::{
     TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract,
     TransferLeg, TransferRule, WEIGHT_UNIFORM, WeightedField,
 };
+/// Core's renderer bands, reused by a projection declaring
+/// [`BandComparability::CoreBands`].
+pub use proxima_core::flavor0::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING};
+/// Explicitly select the deployment's lexical configuration for a memory write.
+pub use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
 /// Transport-neutral tool metadata.
 /// Implement [`Tool`] with [`ToolCtx`] / [`ToolError`]; MCP and REST adapt it.
 /// Declare what the tool does once, as a [`ToolEffect`]: `Tool::EFFECT` on a
@@ -208,6 +215,9 @@ pub use proxima_storage_pg::access::owner_columns::{
     lock_scope_fence_exclusive_tx, lock_scope_fence_shared_tx,
 };
 pub use proxima_storage_pg::pg_sidecar;
+/// Generate a projection migration and its inverses from the flavor contract.
+/// The generator returns [`ProjectionArtifacts`], whose fields are [`Artifact`]s.
+pub use proxima_storage_pg::projection::{Artifact, ProjectionArtifacts, projection_artifacts};
 pub use proxima_storage_pg::search_candidates::candidate_artifacts as search_candidate_artifacts;
 pub use proxima_storage_pg::sidecars::{
     PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,

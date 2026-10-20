@@ -270,9 +270,17 @@ async fn exercise_full_registry_erase(
         proxima_storage_pg::PgTuning::from_env()?,
     )
     .await?;
+    let mut registry = proxima::FlavorRegistry::new();
+    FullRegistryApp::register(&mut registry)?;
+    let registry = registry.try_freeze()?;
+    let mut sidecars = proxima::PgSidecarRegistry::new();
+    proxima::flavor::register_core_pg_sidecars(&mut sidecars);
+    FullRegistryApp::register_pg_sidecars(&mut sidecars);
+    let sidecars = sidecars.freeze_against(&registry)?;
     proxima::run_core_and_flavor_migrations(
         &migration_storage,
         <FullRegistryApp as FlavorBundle>::migrators(),
+        &sidecars,
     )
     .await?;
     let platform_pool = sqlx::PgPool::connect(&platform_url).await?;

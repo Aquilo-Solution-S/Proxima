@@ -13,7 +13,9 @@ pub use proxima_pg_testkit::*;
 pub use proxima_core::test_fixtures::owner_scope_for_tests;
 
 use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerId, Role, UserId};
-use proxima_storage_pg::{PgPoolConfig, PgSidecarRegistry, PgTuning, register_core_pg_sidecars};
+use proxima_storage_pg::{
+    PgPoolConfig, PgSidecarRegistry, PgSidecarRegistryFrozen, PgTuning, register_core_pg_sidecars,
+};
 use sqlx::PgPool;
 
 use crate::bundle::FlavorBundle;
@@ -33,21 +35,22 @@ use crate::migrations::{MigrationError, NamedMigrator, check_lineup, lineup, run
 /// The template's name is a [`TemplateFamily`] prefix and 16 hex digits of a
 /// hash of everything the migrators contribute: for core and each migrator,
 /// its source id, its ledger and every `(version, checksum)` it applies, in
-/// order, and `fingerprint`. A changed migration is a different template, and
+/// order, the frozen sidecars' schema/Follows table sets, and `fingerprint`.
+/// A changed migration or Follows composition is a different template, and
 /// the old one is dropped once nothing is connected to it. `fingerprint`
 /// carries only what the migrators cannot show, such as seed SQL a host
 /// applies on top.
 ///
 /// ```compile_fail,E0308
 /// // The family is a validated `TemplateFamily`; a host never passes a raw name.
-/// let _ = proxima::testkit::HostTemplate::new("host_", "seed-v1", Vec::new());
+/// let _ = proxima::testkit::HostTemplate::new("host_", "seed-v1", Vec::new(), proxima::PgSidecarRegistryFrozen::default());
 /// ```
 ///
 /// A lineup the runner refuses has no template, so none is ever looked up:
 ///
 /// ```compile_fail,E0599
 /// fn name(family: proxima::testkit::TemplateFamily) -> String {
-///     proxima::testkit::HostTemplate::new(family, "seed-v1", Vec::new()).template_name()
+///     proxima::testkit::HostTemplate::new(family, "seed-v1", Vec::new(), proxima::PgSidecarRegistryFrozen::default()).template_name()
 /// }
 /// ```
 #[derive(Debug)]
@@ -57,6 +60,7 @@ pub struct HostTemplate {
     /// Core first, then the host's migrators: what a build runs and the hash
     /// covers.
     sources: Vec<NamedMigrator>,
+    sidecars: PgSidecarRegistryFrozen,
 }
 
 impl HostTemplate {
@@ -66,6 +70,8 @@ impl HostTemplate {
     /// `migrators` are the flavors' and the host's own, as the host's
     /// `FlavorBundle::migrators` returns them; a host passes the same list to
     /// its boot, so what the template holds is what the boot expects.
+    /// `sidecars` is the same frozen core/flavor composition as that boot;
+    /// it supplies the Follows owner-RLS installation and template identity.
     ///
     /// # Errors
     ///
@@ -78,13 +84,15 @@ impl HostTemplate {
         family: TemplateFamily,
         fingerprint: &str,
         migrators: Vec<NamedMigrator>,
+        sidecars: PgSidecarRegistryFrozen,
     ) -> Result<Self, MigrationError> {
         let sources = lineup(migrators);
         check_lineup(&sources)?;
         Ok(Self {
-            hash: fingerprint_hash(fingerprint, &sources),
+            hash: fingerprint_hash(fingerprint, &sources, &sidecars),
             family,
             sources,
+            sidecars,
         })
     }
 
@@ -146,7 +154,7 @@ impl HostTemplate {
         )
         .await
         .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
-        let migrated = run_lineup(&pg, &self.sources).await;
+        let migrated = run_lineup(&pg, &self.sources, &self.sidecars).await;
         pg.clone_pool_for_backend().close().await;
         migrated
             .map(|_| ())
@@ -156,9 +164,14 @@ impl HostTemplate {
 
 /// The template hash: `fingerprint`, then each source's id, ledger and
 /// `(version, checksum)` pairs in run order, from the enumeration the ledger
-/// checks and the migration plan use ([`NamedMigrator::lane`]). Every field
-/// is length-prefixed, so two different inputs cannot spell the same bytes.
-fn fingerprint_hash(fingerprint: &str, sources: &[NamedMigrator]) -> u64 {
+/// checks and the migration plan use ([`NamedMigrator::lane`]), followed by
+/// sorted flavor schema and Follows table sets. Every field is length-prefixed
+/// and each list has a count, so different inputs cannot spell the same bytes.
+fn fingerprint_hash(
+    fingerprint: &str,
+    sources: &[NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
+) -> u64 {
     fn feed(hash: u64, bytes: &[u8]) -> u64 {
         fnv1a64_extend(
             fnv1a64_extend(hash, &(bytes.len() as u64).to_be_bytes()),
@@ -176,6 +189,16 @@ fn fingerprint_hash(fingerprint: &str, sources: &[NamedMigrator]) -> u64 {
         for migration in lane {
             hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
             hash = feed(hash, migration.checksum.as_ref());
+        }
+    }
+    let mut schemas = sidecars.flavor_schema_names().to_vec();
+    schemas.sort_unstable();
+    let mut follows = sidecars.owner_follows_memory_sidecar_tables();
+    follows.sort_unstable();
+    for names in [schemas, follows] {
+        hash = feed(hash, &(names.len() as u64).to_be_bytes());
+        for name in names {
+            hash = feed(hash, name.as_bytes());
         }
     }
     hash

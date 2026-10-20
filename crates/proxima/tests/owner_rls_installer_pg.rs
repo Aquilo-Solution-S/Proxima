@@ -13,7 +13,7 @@ use proxima_core::{
     test_fixtures::{authenticated_context, owner_scope_for_tests},
 };
 use proxima_example::StampV1;
-use sqlx::{Connection, PgConnection};
+use sqlx::{Connection, PgConnection, SqlSafeStr};
 use uuid::Uuid;
 
 /// The example schema's classification, as the example migrator states it
@@ -476,6 +476,26 @@ async fn sync_gives_a_follows_table_the_combined_rule_and_an_owner_index() {
         .expect("platform connection");
     let mut tx = conn.begin().await.expect("sync transaction");
     platform_scope(&mut tx).await;
+    // The shared template now installs Follows state automatically. Recreate
+    // the pre-sync state here so this SQL test still proves installation.
+    sqlx::query("DELETE FROM proxima_core.owner_follows WHERE table_name = $1")
+        .bind(FOLLOWS_TABLE)
+        .execute(&mut *tx)
+        .await
+        .expect("remove the template's mark");
+    sqlx::query("DROP INDEX proxima_example.stamp_v1_owner_follows_idx")
+        .execute(&mut *tx)
+        .await
+        .expect("remove the template's generated owner index");
+    install(
+        &mut tx,
+        OWNER_ID_TABLES,
+        FK_PARENT_TABLES,
+        OWNERLESS_TABLES,
+        MEMORY_OWNER_TABLES,
+    )
+    .await
+    .expect("install the flavor's pre-sync memory-owner policy");
     sqlx::query(
         "INSERT INTO proxima_core.owner_follows (table_name) VALUES ('proxima_other.thing_v1')",
     )
@@ -742,4 +762,161 @@ async fn refuses_sync_outside_composed_schemas() {
         .to_string();
     assert!(message.contains("runs in platform scope only"), "{message}");
     conn.close().await.expect("close");
+}
+
+#[path = "fixtures/split_core_db.rs"]
+mod split_core_db;
+
+#[tokio::test]
+async fn automatic_follows_installation_precedes_flavor_lanes_and_serves_skip_boot() {
+    use std::borrow::Cow;
+
+    use proxima::flavor::FlavorBundle;
+    use proxima::{NamedMigrator, PgMigrationStorage, PgPoolConfig, PgTuning, Proxima};
+    use proxima_example::ExampleFlavor;
+    use sqlx::migrate::{Migration, MigrationType, Migrator};
+
+    let db = split_core_db::clone_split_core_db("proxima_follows_order")
+        .await
+        .expect("owned test database");
+    let pg = PgMigrationStorage::connect_with_config(
+        db.platform_url(),
+        PgPoolConfig::default(),
+        PgTuning::default(),
+    )
+    .await
+    .expect("migration storage");
+    let sidecars = example_engine::frozen_sidecars();
+    let probe = Migration::new(
+        474,
+        Cow::Borrowed("Follows registration precedes table creation"),
+        MigrationType::Simple,
+        "DO $$ BEGIN
+             IF NOT EXISTS (SELECT 1 FROM proxima_core.owner_follows
+                            WHERE table_name = 'proxima_example.stamp_v1') THEN
+                 RAISE EXCEPTION 'Follows registration must precede flavor migrations';
+             END IF;
+         END $$"
+            .into_sql_str(),
+        false,
+    );
+    let mut sources = vec![NamedMigrator::flavor(
+        "follows-order",
+        Migrator {
+            migrations: Cow::Owned(vec![probe]),
+            ..Migrator::DEFAULT
+        },
+    )];
+    sources.extend(ExampleFlavor::migrators());
+    proxima::run_core_and_flavor_migrations(&pg, sources, &sidecars)
+        .await
+        .expect("runner registers Follows before flavor lanes and installs it afterwards");
+    let pool = pg.clone_pool_for_backend();
+    let mut connection = pool.acquire().await.expect("connection");
+    let mut transaction = proxima::begin_migration_transaction(&mut connection)
+        .await
+        .expect("platform transaction");
+    sidecars
+        .ensure_owner_follows(&mut transaction)
+        .await
+        .expect("post-lane owner index and marks exist");
+    transaction.rollback().await.expect("rollback");
+    drop(connection);
+    pg.clone_pool_for_backend().close().await;
+
+    let owner = proxima::OwnerId::from(proxima::UserId::new(uuid::Uuid::now_v7()));
+    let built = Proxima::<ExampleFlavor>::app()
+        .database_url(db.runtime_url())
+        .platform_database_url(db.platform_url())
+        .store_number(0)
+        .owner(owner)
+        .allow_insecure_single_owner()
+        .served_surface(proxima::ServedSurface::All)
+        .skip_migrations()
+        .build()
+        .await
+        .expect("skip boot validates generated Follows state without installing it");
+    built.shutdown().await;
+}
+
+#[tokio::test]
+async fn preflight_refuses_missing_follows_state_and_empty_sql_run_repairs_it() {
+    use proxima::flavor::FlavorBundle;
+    use proxima::{MigrationError, PgMigrationStorage, PgPoolConfig, PgTuning};
+    use proxima_example::ExampleFlavor;
+
+    let db = example_engine::migrated_db("proxima_follows_preflight").await;
+    let pg = PgMigrationStorage::connect_with_config(
+        db.platform_url(),
+        PgPoolConfig::default(),
+        PgTuning::default(),
+    )
+    .await
+    .expect("migration storage");
+    let sidecars = example_engine::frozen_sidecars();
+    for mutation in [
+        sqlx::query(
+            "DELETE FROM proxima_core.owner_follows WHERE table_name = 'proxima_example.stamp_v1'",
+        ),
+        sqlx::query("INSERT INTO proxima_core.owner_follows VALUES ('proxima_example.extra_v1')"),
+        sqlx::query("DROP INDEX proxima_example.stamp_v1_owner_follows_idx"),
+    ] {
+        let pool = pg.clone_pool_for_backend();
+        let mut connection = pool.acquire().await.expect("connection");
+        let mut transaction = proxima::begin_migration_transaction(&mut connection)
+            .await
+            .expect("platform transaction");
+        mutation
+            .execute(&mut *transaction)
+            .await
+            .expect("change deployed Follows state");
+        transaction.commit().await.expect("commit");
+        drop(connection);
+        let refused =
+            proxima::preflight_without_migrations(&pg, ExampleFlavor::migrators(), &sidecars).await;
+        assert!(
+            matches!(refused, Err(MigrationError::SidecarOwnerRls(_))),
+            "preflight refuses mismatched deployment: {refused:?}"
+        );
+        let pending =
+            proxima::pending_migrations(&pg.clone_pool_for_backend(), &ExampleFlavor::migrators())
+                .await
+                .expect("SQL migration plan");
+        assert!(
+            pending.is_empty(),
+            "registry state is separate from the SQL ledger"
+        );
+        proxima::run_core_and_flavor_migrations(&pg, ExampleFlavor::migrators(), &sidecars)
+            .await
+            .expect("an empty SQL run restores generated state");
+        proxima::preflight_without_migrations(&pg, ExampleFlavor::migrators(), &sidecars)
+            .await
+            .expect("read-only preflight sees platform-owned Follows marks");
+    }
+    pg.clone_pool_for_backend().close().await;
+}
+
+#[tokio::test]
+async fn a_registered_follows_table_missing_after_migrations_refuses_the_run() {
+    let db = split_core_db::clone_split_core_db("proxima_follows_missing")
+        .await
+        .expect("owned test database");
+    let pg = proxima::PgMigrationStorage::connect_with_config(
+        db.platform_url(),
+        proxima::PgPoolConfig::default(),
+        proxima::PgTuning::default(),
+    )
+    .await
+    .expect("migration storage");
+    let refused = proxima::run_core_and_flavor_migrations(
+        &pg,
+        Vec::new(),
+        &example_engine::frozen_sidecars(),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(proxima::MigrationError::SidecarOwnerRls(_))),
+        "registered sidecars must exist when all migration lanes finish: {refused:?}"
+    );
+    pg.clone_pool_for_backend().close().await;
 }

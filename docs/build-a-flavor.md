@@ -101,10 +101,17 @@ insert and stays with that owner on transfer (`RetainAtSource`). Use
 `owner: follows` when the row stamps `owner_id` at insert (for RLS) but must
 move with the memory on transfer (`TransferRule::Follow` with
 `Surface.owner_column` set); freeze refuses Follows with RetainAtSource or Keep.
-Classify a Follows table in `install_owner_rls`'s `memory_owner_tables`, as the
-example's `stamp_v1` is: its policies read through `proxima_core.memory`, so a
-row is visible exactly when its memory is, and a forgotten memory hides it from
-owner reads while restore and erase still reach it.
+The host derives Follows tables from the frozen PG sidecar registry and installs
+their owner RLS and leading `owner_id` indexes around the flavor migration lanes.
+A flavor need not classify them in `install_owner_rls`: the host's marks preserve
+the Follows policy when that installer runs. The policy checks both the sidecar's
+owner and its memory; a forgotten memory hides the row from owner reads while
+restore and erase still reach it. Skip-migration boot validates the generated
+marks and indexes without DDL. An existing table adopted as Follows must already
+have its UUID `owner_id` and memory FK when this host first runs; new tables may
+be created by their flavor lane.
+Standalone migration jobs and test templates must supply the same frozen
+sidecars; see [host integration](host-integration.md#boot-a-composed-host).
 
 Use `PgMemorySidecar` directly for computed or multi-row sidecars. Authorized
 helpers and private permits bind reads/writes to admitted rows; do not query
@@ -122,6 +129,11 @@ Core search includes every declared projection with comparable score bands and
 a supported projection renderer, both unscoped and when selected by schema.
 Tags narrow those results; they are not needed to reach a flavor's projection.
 A tag-filtered query requires the projection to declare its tag column.
+Migration authors can obtain the canonical projection DDL and its inverses
+through `proxima::flavor::projection_artifacts(contract)`. Reuse
+`BAND_EXACT`, `BAND_RESCUE`, and `BAND_SUBSTRING` from the SDK when declaring
+core-comparable bands; `LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT` explicitly selects
+the deployment's lexical configuration on a memory write.
 Carry the output of `proxima::flavor::search_candidate_artifacts(contract)` in
 the projection's migration, alongside its owner/text and owner/tag GIN indexes.
 These generated functions return only candidates authorized by memory RLS;

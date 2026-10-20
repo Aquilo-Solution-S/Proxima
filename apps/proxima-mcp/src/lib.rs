@@ -416,6 +416,17 @@ async fn maintenance_storage(
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
     let tuning = proxima_storage_pg::PgTuning::from_env()
         .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    let mut registry = FlavorRegistry::new();
+    ProximaMcpApp::register(&mut registry).map_err(ProximaError::from)?;
+    let registry = registry.try_freeze().map_err(ProximaError::from)?;
+    let schemas = proxima::composed_schema_names(&registry);
+    let schema_refs: Vec<&str> = schemas.iter().map(String::as_str).collect();
+    let mut sidecars = proxima::flavor::PgSidecarRegistry::new();
+    proxima::flavor::register_core_pg_sidecars(&mut sidecars);
+    ProximaMcpApp::register_pg_sidecars(&mut sidecars);
+    let sidecars = sidecars
+        .freeze_against(&registry)
+        .map_err(|err| ProximaError::Storage(err.to_string()))?;
     let migration_pg =
         proxima_storage_pg::PgMigrationStorage::connect_with_config(&platform_url, config, tuning)
             .await
@@ -423,15 +434,17 @@ async fn maintenance_storage(
     run_core_and_flavor_migrations_with_policy(
         &migration_pg,
         ProximaMcpApp::migrators(),
+        &sidecars,
         missing_policy,
     )
     .await
     .map_err(|err| ProximaError::Storage(err.to_string()))?;
-    let schemas = ["proxima_core"];
-    let platform_scope =
-        proxima_storage_pg::PgPlatformScope::new(migration_pg.clone_pool_for_backend(), &schemas)
-            .await
-            .map_err(|err| ProximaError::Storage(err.to_string()))?;
+    let platform_scope = proxima_storage_pg::PgPlatformScope::new(
+        migration_pg.clone_pool_for_backend(),
+        &schema_refs,
+    )
+    .await
+    .map_err(|err| ProximaError::Storage(err.to_string()))?;
     migration_pg
         .initialize_store_number(store_number)
         .await
@@ -441,6 +454,7 @@ async fn maintenance_storage(
         PgStorage::connect_with_config(database_url, config, tuning, platform_scope, store_number)
             .await
             .map_err(|err| ProximaError::Storage(err.to_string()))?
+            .with_sidecars(sidecars)
             .with_embedding_runtime_policy(embedding_policy);
     Ok(storage)
 }

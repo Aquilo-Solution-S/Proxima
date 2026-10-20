@@ -22,9 +22,23 @@ static TEMPLATE: LazyLock<HostTemplate> = LazyLock::new(|| {
         TemplateFamily::new("proxima_example_engine_").expect("a valid template family"),
         "example engine",
         ExampleFlavor::migrators(),
+        frozen_sidecars(),
     )
     .expect("core plus the example flavor is a lineup the runner accepts")
 });
+
+/// The same frozen sidecar composition boot uses before migrations.
+pub fn frozen_sidecars() -> proxima::flavor::PgSidecarRegistryFrozen {
+    let mut registry = FlavorRegistry::new();
+    ExampleFlavor::register(&mut registry).expect("example registration");
+    let registry = registry.try_freeze().expect("example registry");
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    ExampleFlavor::register_pg_sidecars(&mut sidecars);
+    sidecars
+        .freeze_against(&registry)
+        .expect("example sidecars")
+}
 
 /// A split-role clone of the template: core and the example flavor
 /// migrated, nothing else composed. For suites that talk to Postgres

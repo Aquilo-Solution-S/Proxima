@@ -102,6 +102,7 @@ async fn a_migration_run_refuses_a_lane_that_does_not_continue_its_ledger() {
     run_core_and_flavor_migrations_with_policy(
         &pg,
         lane(&[ROOT, SECOND]),
+        &proxima::PgSidecarRegistryFrozen::default(),
         MissingMigrationPolicy::Allow,
     )
     .await
@@ -110,6 +111,7 @@ async fn a_migration_run_refuses_a_lane_that_does_not_continue_its_ledger() {
     let replaced = run_core_and_flavor_migrations_with_policy(
         &pg,
         lane(&[BASELINE]),
+        &proxima::PgSidecarRegistryFrozen::default(),
         MissingMigrationPolicy::Allow,
     )
     .await;
@@ -134,6 +136,7 @@ async fn a_migration_run_refuses_a_lane_that_does_not_continue_its_ledger() {
     run_core_and_flavor_migrations_with_policy(
         &pg,
         lane(&[ROOT, SECOND, NEWER]),
+        &proxima::PgSidecarRegistryFrozen::default(),
         MissingMigrationPolicy::Allow,
     )
     .await
@@ -141,6 +144,7 @@ async fn a_migration_run_refuses_a_lane_that_does_not_continue_its_ledger() {
     run_core_and_flavor_migrations_with_policy(
         &pg,
         lane(&[ROOT, SECOND]),
+        &proxima::PgSidecarRegistryFrozen::default(),
         MissingMigrationPolicy::Allow,
     )
     .await
@@ -148,6 +152,7 @@ async fn a_migration_run_refuses_a_lane_that_does_not_continue_its_ledger() {
     run_core_and_flavor_migrations_with_policy(
         &pg,
         lane(&[SECOND, NEWER]),
+        &proxima::PgSidecarRegistryFrozen::default(),
         MissingMigrationPolicy::Allow,
     )
     .await
@@ -158,6 +163,7 @@ async fn a_migration_run_refuses_a_lane_that_does_not_continue_its_ledger() {
             run_core_and_flavor_migrations_with_policy(
                 &pg,
                 lane(&[ROOT, SECOND, SQUASHED_AWAY]),
+                &proxima::PgSidecarRegistryFrozen::default(),
                 MissingMigrationPolicy::Allow
             )
             .await
@@ -184,14 +190,20 @@ async fn a_boot_that_skips_migrations_refuses_a_ledger_it_cannot_serve() {
     .await
     .expect("platform storage");
 
-    run_core_and_flavor_migrations_with_policy(&pg, Vec::new(), MissingMigrationPolicy::Allow)
-        .await
-        .expect("core migrates without the flavor");
+    run_core_and_flavor_migrations_with_policy(
+        &pg,
+        Vec::new(),
+        &proxima::PgSidecarRegistryFrozen::default(),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("core migrates without the flavor");
     assert_eq!(
         conflict(
             preflight_without_migrations_with_policy(
                 &pg,
                 lane(&[ROOT]),
+                &proxima::PgSidecarRegistryFrozen::default(),
                 MissingMigrationPolicy::Allow
             )
             .await
@@ -205,6 +217,7 @@ async fn a_boot_that_skips_migrations_refuses_a_ledger_it_cannot_serve() {
     run_core_and_flavor_migrations_with_policy(
         &pg,
         lane(&[ROOT, SECOND]),
+        &proxima::PgSidecarRegistryFrozen::default(),
         MissingMigrationPolicy::Allow,
     )
     .await
@@ -212,18 +225,25 @@ async fn a_boot_that_skips_migrations_refuses_a_ledger_it_cannot_serve() {
     preflight_without_migrations_with_policy(
         &pg,
         lane(&[ROOT, SECOND]),
+        &proxima::PgSidecarRegistryFrozen::default(),
         MissingMigrationPolicy::Allow,
     )
     .await
     .expect("a migrated lane boots");
-    preflight_without_migrations_with_policy(&pg, lane(&[ROOT]), MissingMigrationPolicy::Allow)
-        .await
-        .expect("so does an older release's");
+    preflight_without_migrations_with_policy(
+        &pg,
+        lane(&[ROOT]),
+        &proxima::PgSidecarRegistryFrozen::default(),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("so does an older release's");
     assert_eq!(
         conflict(
             preflight_without_migrations_with_policy(
                 &pg,
                 lane(&[ROOT, SECOND, NEWER]),
+                &proxima::PgSidecarRegistryFrozen::default(),
                 MissingMigrationPolicy::Allow
             )
             .await
@@ -237,6 +257,7 @@ async fn a_boot_that_skips_migrations_refuses_a_ledger_it_cannot_serve() {
             preflight_without_migrations_with_policy(
                 &pg,
                 lane(&[BASELINE]),
+                &proxima::PgSidecarRegistryFrozen::default(),
                 MissingMigrationPolicy::Allow
             )
             .await

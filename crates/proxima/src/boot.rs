@@ -100,6 +100,7 @@ pub(crate) async fn boot<A: FlavorBundle>(
 ) -> Result<Booted, ProximaError> {
     let migrators = A::migrators();
     let registry = compose_registry::<A>(config)?;
+    let pg_sidecars = compose_pg_sidecars::<A>(&registry)?;
     let grants = config
         .runtime_grants
         .then(|| {
@@ -114,14 +115,14 @@ pub(crate) async fn boot<A: FlavorBundle>(
     let embedding_router =
         embedding_router_for(parts.embed_client.clone(), parts.embedding_router.clone())?;
 
-    drop(connect_and_migrate(config, migrators, grants.as_ref()).await?);
+    drop(connect_and_migrate(config, migrators, &pg_sidecars, grants.as_ref()).await?);
     let pg = connect_serving_storage(config, &registry).await?;
     let pg = if let Some(participant) = parts.host_state_participant.clone() {
         pg.with_host_state_participant(participant)
     } else {
         pg
     };
-    let pg_sidecars = compose_pg_sidecars::<A>(&pg, &registry).await?;
+    ensure_pg_sidecars(&pg, &registry, &pg_sidecars).await?;
     let pg = pg
         .with_sidecars(pg_sidecars.as_ref().clone())
         .try_with_flavors(&registry)
@@ -290,6 +291,7 @@ async fn publication_origin_ports(
 async fn connect_and_migrate(
     config: &RuntimeConfig,
     migrators: Vec<NamedMigrator>,
+    pg_sidecars: &PgSidecarRegistryFrozen,
     runtime_grants: Option<&RuntimeGrants>,
 ) -> Result<PgMigrationStorage, ProximaError> {
     let migration_pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
@@ -305,6 +307,7 @@ async fn connect_and_migrate(
         preflight_without_migrations_with_policy(
             &migration_pg,
             migrators,
+            pg_sidecars,
             config.missing_migration_policy,
         )
         .await
@@ -313,6 +316,7 @@ async fn connect_and_migrate(
         run_core_and_flavor_migrations_with_policy(
             &migration_pg,
             migrators,
+            pg_sidecars,
             config.missing_migration_policy,
         )
         .await
@@ -346,10 +350,8 @@ fn compose_registry<A: FlavorBundle>(
     Ok(registry.try_freeze()?)
 }
 
-/// Freeze the PG sidecar registry against the composed contracts, then
-/// verify the deployed schema agrees with it.
-async fn compose_pg_sidecars<A: FlavorBundle>(
-    pg: &PgStorage,
+/// Freeze the PG sidecar registry before connecting or applying migrations.
+fn compose_pg_sidecars<A: FlavorBundle>(
     registry: &proxima_core::FlavorRegistryFrozen,
 ) -> Result<Arc<PgSidecarRegistryFrozen>, ProximaError> {
     let mut pg_sidecars = PgSidecarRegistry::new();
@@ -358,7 +360,15 @@ async fn compose_pg_sidecars<A: FlavorBundle>(
     let pg_sidecars = pg_sidecars
         .freeze_against(registry)
         .map_err(storage_error)?;
-    let pg_sidecars = Arc::new(pg_sidecars);
+    Ok(Arc::new(pg_sidecars))
+}
+
+/// Verify the deployed schema against the same registry used by migrations.
+async fn ensure_pg_sidecars(
+    pg: &PgStorage,
+    registry: &proxima_core::FlavorRegistryFrozen,
+    pg_sidecars: &PgSidecarRegistryFrozen,
+) -> Result<(), ProximaError> {
     // The backend accessor, not `pool_for_tests`. This is a production boot
     // path on every embed; a `#[doc(hidden)]` handle whose name says "tests"
     // is not the contract it was reaching through.
@@ -377,10 +387,10 @@ async fn compose_pg_sidecars<A: FlavorBundle>(
     // and export is installed on it. Both read the catalog and issue no
     // DDL, so both hold under `PROXIMA_SKIP_MIGRATIONS` in a split-role
     // deploy, where this process's role cannot create a trigger at all.
-    proxima_storage_pg::integrity::ensure_declaration_triggers(&pool, pg_sidecars.as_ref())
+    proxima_storage_pg::integrity::ensure_declaration_triggers(&pool, pg_sidecars)
         .await
         .map_err(storage_error)?;
-    Ok(pg_sidecars)
+    Ok(())
 }
 
 /// Wire the purge store over S3 when it is configured. A database-only host

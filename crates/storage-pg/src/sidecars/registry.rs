@@ -262,6 +262,11 @@ impl PgSidecarRegistry {
 
         Ok(PgSidecarRegistryFrozen {
             entries: Arc::new(self.entries),
+            flavor_schema_names: proxima_core::composed_schema_names(registry)
+                .into_iter()
+                .filter(|schema| schema != "proxima_core")
+                .collect::<Vec<_>>()
+                .into(),
         })
     }
 
@@ -583,7 +588,7 @@ mod memory_key_agreement_tests {
 
 #[cfg(test)]
 mod owner_mode_agreement_tests {
-    use super::{PgSidecarEntry, PgSidecarKey, PgSidecarRegistry};
+    use super::{PgSidecarEntry, PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen};
     use crate::sidecars::SidecarOwnerMode;
     use proxima_core::flavor::{
         CounterRule, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape,
@@ -659,7 +664,7 @@ mod owner_mode_agreement_tests {
             owner,
             memory_key_column: Some("t"),
             memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
-            memory_load: None,
+            memory_load: Some(|_, _| Box::pin(async { Ok(None) })),
             memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
             goal_insert: None,
             goal_copy: None,
@@ -670,6 +675,35 @@ mod owner_mode_agreement_tests {
         PgSidecarRegistry {
             entries: HashMap::from([(key, entry)]),
         }
+    }
+
+    #[test]
+    fn follows_tables_omit_other_owner_modes_and_are_distinct_in_name_order() {
+        let mut entries = HashMap::new();
+        for (version, owner, table) in [
+            (1, SidecarOwnerMode::Follows, "test_owner_mode.zeta_v1"),
+            (2, SidecarOwnerMode::Pinned, "test_owner_mode.pinned_v1"),
+            (3, SidecarOwnerMode::None, "test_owner_mode.plain_v1"),
+            (4, SidecarOwnerMode::Follows, "test_owner_mode.alpha_v1"),
+            (5, SidecarOwnerMode::Follows, "test_owner_mode.zeta_v1"),
+        ] {
+            let mut entry = pg_registry_with(owner)
+                .entries
+                .into_values()
+                .next()
+                .expect("one fixture registration");
+            entry.key.schema_version = SchemaVersion::new(version);
+            entry.sidecar_table = table.to_owned();
+            entries.insert(entry.key.clone(), entry);
+        }
+        let frozen = PgSidecarRegistryFrozen {
+            entries: std::sync::Arc::new(entries),
+            ..PgSidecarRegistryFrozen::default()
+        };
+        assert_eq!(
+            frozen.owner_follows_memory_sidecar_tables(),
+            ["test_owner_mode.alpha_v1", "test_owner_mode.zeta_v1"]
+        );
     }
 
     fn freeze_contract(contract: &'static FlavorContract) -> proxima_core::FlavorRegistryFrozen {
@@ -702,7 +736,9 @@ mod owner_mode_agreement_tests {
                     TransferRule::RetainAtSource {
                         why: "fixture: retain so Follows must disagree",
                     },
-                    ForgetRule::DumpThenDelete,
+                    ForgetRule::Keep {
+                        why: "a retained sidecar stays with its source owner",
+                    },
                     Some("owner_id"),
                 )],
                 natural_key_columns: &[],
@@ -728,6 +764,18 @@ mod owner_mode_agreement_tests {
         for named in ["OWNER=Follows", "RetainAtSource", TABLE] {
             assert!(message.contains(named), "refusal names {named}: {message}");
         }
+
+        let mut reg = pg_registry_with(SidecarOwnerMode::Pinned);
+        crate::sidecars::register_core_pg_sidecars(&mut reg);
+        let frozen = reg
+            .freeze_against(&frozen)
+            .expect("the matching pinned registration freezes");
+        assert!(frozen.owner_follows_memory_sidecar_tables().is_empty());
+        assert_eq!(
+            frozen.flavor_schema_names(),
+            ["test_owner_mode"],
+            "a composition with no Follows must still clear its stale marks"
+        );
     }
 
     #[test]
@@ -806,7 +854,20 @@ mod owner_mode_agreement_tests {
                 )],
                 natural_key_columns: &[],
             }],
-            state_surfaces: &[],
+            state_surfaces: &[Surface {
+                table: "test_owner_state.jobs",
+                key: KeyShape::Custom(&["id"]),
+                erase: EraseRule::ByOwner,
+                ..surface(
+                    TransferRule::RetainAtSource {
+                        why: "state stays with its owner",
+                    },
+                    ForgetRule::Keep {
+                        why: "state is independent of memory",
+                    },
+                    Some("owner_id"),
+                )
+            }],
             scopes: &[],
             kernel_surfaces: &[],
             tools: &[],
@@ -818,11 +879,23 @@ mod owner_mode_agreement_tests {
             bespoke_transfer_legs: &[],
         };
         let frozen = freeze_contract(&CONTRACT);
-        let reg = pg_registry_with(SidecarOwnerMode::Follows);
+        let mut reg = pg_registry_with(SidecarOwnerMode::Follows);
         reg.check_owner_pinned_against_contracts(&frozen)
             .expect("Follows matches");
         reg.check_keep_is_owner_pinned(&frozen)
             .expect("DumpThenDelete admits Follows");
+        crate::sidecars::register_core_pg_sidecars(&mut reg);
+        let frozen = reg
+            .freeze_against(&frozen)
+            .expect("complete fixture coverage");
+        assert_eq!(frozen.owner_follows_memory_sidecar_tables(), [TABLE]);
+        assert_eq!(
+            frozen.flavor_schema_names(),
+            ["test_owner_mode", "test_owner_state"]
+        );
+        let amended =
+            frozen.with_unusable_memory_table("test-owner-mode/unusable-v1", "unusable.sidecar_v1");
+        assert_eq!(amended.flavor_schema_names(), frozen.flavor_schema_names());
     }
 
     /// `Follows` needs somewhere to stamp the owner. A `Follow` surface with

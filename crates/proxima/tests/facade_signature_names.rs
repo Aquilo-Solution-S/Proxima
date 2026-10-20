@@ -302,6 +302,18 @@ facade_names! {
         both_tiers: [],
     }
 
+    // Needed by hosts connecting a migration-only lane and managing the core schema.
+    host_schema_maintenance {
+        host_only: [MigrationStorage, PgMigrationStorage, assert_runtime_rls, is_transient_conflict, begin_migration_transaction, run_core_schema, core_migrator, ensure_core_schema_current, ensure_owner_row, core_definitions_match, core_definitions_match_with_policy],
+        both_tiers: [],
+    }
+
+    // Needed by flavor-authored projection migrations and comparable search declarations.
+    projection_migrations {
+        host_only: [],
+        both_tiers: [Artifact, ProjectionArtifacts, StorageError, projection_artifacts, BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING, LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT],
+    }
+
     // Needed by host API only on purpose: it runs under the caller's `OwnerScope`, never on
     // `proxima_core.*`.
     begin_owner_transaction {
@@ -312,7 +324,7 @@ facade_names! {
     // Needed by `Engine::try_compose`, `ProximaError`, `FlavorApp`, `FlavorRegistryFrozen`,
     // `ProximaHost::pg_sidecars_for_host`.
     registry_and_contracts {
-        host_only: [Artifact, CapabilityTag, CapabilityTagError, IntegrityFinding, IntegrityReport, IntegrityViolation, MemoryEmbedUnit, MemorySearchProjection, MemorySearchProjectionField, PgMemoryPayloadBatchFuture, PgSidecarKey, ProjectedSchema, ProtocolPayload, RenderBands, SchemaInfo, SchemaTombstone],
+        host_only: [CapabilityTag, CapabilityTagError, IntegrityFinding, IntegrityReport, IntegrityViolation, MemoryEmbedUnit, MemorySearchProjection, MemorySearchProjectionField, PgMemoryPayloadBatchFuture, PgSidecarKey, ProjectedSchema, ProtocolPayload, RenderBands, SchemaInfo, SchemaTombstone],
         both_tiers: [AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, Band, BandComparability, CounterRule, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, EmbeddingSlot, Enforcement, EraseLeg, EraseRule, ExportRule, FlavorBundle, FlavorContract, FlavorDescriptor, FlavorProvenance, FlavorRegistry, FlavorRegistryError, FlavorWorker, FlavorWorkerContext, ForgetLeg, ForgetRule, KeyShape, LanguagePolicy, MembershipChange, OwnerResolver, PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry, PgSidecarRegistryFrozen, ProjectionDecl, ProjectionSpec, Provenance, RankSource, ResolvedEmbedUnit, ResourceContract, SchemaContract, SchemaRef, ScopeDecl, ScopeKind, SearchProjectionDecl, SidecarInsertPermit, SidecarOwnerMode, SubstringArm, Surface, Tool, ToolContract, TransferLeg, TransferRule, WeightedField],
     }
 
@@ -329,6 +341,34 @@ facade_names! {
         host_only: [MAX_HOST_INSTRUCTIONS_CHARS],
         both_tiers: [ToolContent, ToolDescriptorView, ToolReply, ToolSource],
     }
+}
+
+#[test]
+fn projection_generator_and_artifact_fields_are_usable_through_the_sdk() {
+    use proxima::flavor::{
+        Artifact, FlavorContract, ProjectionArtifacts, StorageError, projection_artifacts,
+    };
+
+    fn generate(contract: &FlavorContract) -> Result<Option<ProjectionArtifacts>, StorageError> {
+        Ok(projection_artifacts(contract)?.map(
+            |ProjectionArtifacts {
+                 table,
+                 index,
+                 tag_index,
+                 language_trigger,
+             }| {
+                let Artifact { forward, inverse } = table;
+                ProjectionArtifacts {
+                    table: Artifact { forward, inverse },
+                    index,
+                    tag_index,
+                    language_trigger,
+                }
+            },
+        ))
+    }
+
+    std::hint::black_box(generate);
 }
 
 /// The identifiers a Rust source file uses outside comments.

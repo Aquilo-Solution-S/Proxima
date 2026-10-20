@@ -291,6 +291,11 @@ async fn per_table_calls_rebuild_the_example_schemas_policies() {
         EXAMPLE_OWNERLESS,
         EXAMPLE_MEMORY_OWNER,
     ];
+    let caller_scope: String =
+        sqlx::query_scalar("SELECT COALESCE(current_setting('app.proxima_scope', true), '')")
+            .fetch_one(&mut *tx)
+            .await
+            .expect("caller scope");
     let current = policies(&mut tx, "proxima_example").await;
     assert_eq!(
         current.len(),
@@ -320,6 +325,15 @@ async fn per_table_calls_rebuild_the_example_schemas_policies() {
         policies(&mut tx, "proxima_example").await,
         current,
         "one call per example table builds what the schema installer builds"
+    );
+    let restored_scope: String =
+        sqlx::query_scalar("SELECT COALESCE(current_setting('app.proxima_scope', true), '')")
+            .fetch_one(&mut *tx)
+            .await
+            .expect("scope after both installers");
+    assert_eq!(
+        restored_scope, caller_scope,
+        "installers restore caller scope"
     );
     tx.rollback().await.expect("rollback");
 }

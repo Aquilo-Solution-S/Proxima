@@ -11,9 +11,9 @@
 ///   (same SQL as Pinned) and keeps it equal to the memory's owner: transfer
 ///   rehomes it (`TransferRule::Follow` + `Surface.owner_column`);
 ///   forget/erase/export walk it with the memory, and hydrate uses the
-///   ordinary batch select. Its RLS policies still read through
-///   `proxima_core.memory` (`install_owner_rls`'s `memory_owner_tables`), so
-///   the row is visible exactly when its memory is.
+///   ordinary batch select. The host derives its owner RLS from the frozen
+///   registry: both the sidecar's owner and `proxima_core.memory` govern
+///   visibility, so a forgotten memory hides its row from owner reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidecarOwnerMode {
     None,

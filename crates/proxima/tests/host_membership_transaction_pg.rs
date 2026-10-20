@@ -42,6 +42,7 @@ static TEMPLATE: LazyLock<HostTemplate> = LazyLock::new(|| {
         TemplateFamily::new("proxima_host_membership_tx_").expect("template family"),
         "host-membership-transaction-v1",
         vec![host_migrator()],
+        proxima::PgSidecarRegistryFrozen::default(),
     )
     .expect("host migrator lineup")
 });

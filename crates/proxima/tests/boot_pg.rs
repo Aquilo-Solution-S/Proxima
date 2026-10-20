@@ -205,9 +205,13 @@ async fn unknown_pre_reset_ledger_fails_closed_in_migration_facade() {
         .execute(&pg.clone_pool_for_backend())
         .await?;
 
-        let err = run_core_and_flavor_migrations(&pg, Vec::<NamedMigrator>::new())
-            .await
-            .expect_err("stale ledger must fail closed through facade");
+        let err = run_core_and_flavor_migrations(
+            &pg,
+            Vec::<NamedMigrator>::new(),
+            &proxima::PgSidecarRegistryFrozen::default(),
+        )
+        .await
+        .expect_err("stale ledger must fail closed through facade");
         let msg = err.to_string();
         assert!(
             msg.contains("reset"),
@@ -692,7 +696,7 @@ async fn assert_role_ddl_contention_retries_to_green(
         .await?;
         let migrator = role_ddl_migrator(&role_name);
         let run = tokio::spawn(async move {
-            run_core_and_flavor_migrations(&pg, [NamedMigrator::new("role-ddl-flavor", migrator)])
+            run_core_and_flavor_migrations(&pg, [NamedMigrator::new("role-ddl-flavor", migrator)], &proxima::PgSidecarRegistryFrozen::default())
                 .await
         });
 

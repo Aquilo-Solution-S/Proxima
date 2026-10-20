@@ -64,12 +64,20 @@ async fn the_facade_adopts_the_complete_pre_reset_main_ledger() {
             .any(|pending| matches!(pending, PendingMigration::CoreAdoption { .. }))
     );
 
-    run_core_and_flavor_migrations(&pg, Vec::new())
-        .await
-        .expect("complete pre-reset history is adopted");
-    preflight_without_migrations(&pg, Vec::new())
-        .await
-        .expect("adopted history passes facade preflight");
+    run_core_and_flavor_migrations(
+        &pg,
+        Vec::new(),
+        &proxima::PgSidecarRegistryFrozen::default(),
+    )
+    .await
+    .expect("complete pre-reset history is adopted");
+    preflight_without_migrations(
+        &pg,
+        Vec::new(),
+        &proxima::PgSidecarRegistryFrozen::default(),
+    )
+    .await
+    .expect("adopted history passes facade preflight");
 
     let pool = pg.clone_pool_for_backend();
     let expected: Vec<i64> = PRE_RESET
@@ -173,9 +181,13 @@ async fn an_unknown_version_on_a_later_ledger_prevents_every_schema_change() {
     let planned = pending_migrations(&admin, &sources())
         .await
         .expect_err("unknown ledger version must refuse a plan");
-    let ran = run_core_and_flavor_migrations(&pg, sources())
-        .await
-        .expect_err("unknown ledger version must refuse a run");
+    let ran = run_core_and_flavor_migrations(
+        &pg,
+        sources(),
+        &proxima::PgSidecarRegistryFrozen::default(),
+    )
+    .await
+    .expect_err("unknown ledger version must refuse a run");
     assert!(
         matches!(
             planned,
@@ -210,10 +222,10 @@ async fn a_shared_ledger_recognizes_every_composed_source() {
             source("second", FIRST + 1, true),
         ]
     };
-    run_core_and_flavor_migrations(&pg, sources())
+    run_core_and_flavor_migrations(&pg, sources(), &proxima::PgSidecarRegistryFrozen::default())
         .await
         .expect("initial composition");
-    run_core_and_flavor_migrations(&pg, sources())
+    run_core_and_flavor_migrations(&pg, sources(), &proxima::PgSidecarRegistryFrozen::default())
         .await
         .expect("all shared sources recognized");
     let pool = pg.clone_pool_for_backend();
@@ -223,9 +235,13 @@ async fn a_shared_ledger_recognizes_every_composed_source() {
             .expect("current composition")
             .is_empty()
     );
-    let omitted = run_core_and_flavor_migrations(&pg, vec![source("first", FIRST, true)])
-        .await
-        .expect_err("omitting a shared source is not silently forgiven");
+    let omitted = run_core_and_flavor_migrations(
+        &pg,
+        vec![source("first", FIRST, true)],
+        &proxima::PgSidecarRegistryFrozen::default(),
+    )
+    .await
+    .expect_err("omitting a shared source is not silently forgiven");
     assert!(
         matches!(
             omitted,
@@ -247,31 +263,47 @@ async fn missing_versions_need_an_explicit_policy_for_run_plan_and_preflight() {
         .expect("owned PG required");
     let pg = storage(&db).await;
     let pool = pg.clone_pool_for_backend();
-    run_core_and_flavor_migrations(&pg, vec![source("first", FIRST, true)])
-        .await
-        .expect("initial host migration");
+    run_core_and_flavor_migrations(
+        &pg,
+        vec![source("first", FIRST, true)],
+        &proxima::PgSidecarRegistryFrozen::default(),
+    )
+    .await
+    .expect("initial host migration");
     // A second release also applied a core-namespace version. Both ledger
     // ranges must use the host's explicit policy, not a hidden core exception.
     sqlx::query("INSERT INTO public._sqlx_migrations (version, description, success, checksum, execution_time) VALUES (9000, 'other release', true, ''::bytea, 0)")
         .execute(&pool).await.expect("unknown core version");
     assert!(matches!(
-        run_core_and_flavor_migrations(&pg, vec![]).await,
+        run_core_and_flavor_migrations(&pg, vec![], &proxima::PgSidecarRegistryFrozen::default())
+            .await,
         Err(MigrationError::Core(MigrateError::VersionMissing(9000)))
     ));
     assert!(matches!(
-        preflight_without_migrations(&pg, vec![]).await,
+        preflight_without_migrations(&pg, vec![], &proxima::PgSidecarRegistryFrozen::default())
+            .await,
         Err(MigrationError::Core(MigrateError::VersionMissing(9000)))
     ));
     assert!(matches!(
         pending_migrations(&pool, &[]).await,
         Err(MigrationError::Core(MigrateError::VersionMissing(9000)))
     ));
-    run_core_and_flavor_migrations_with_policy(&pg, vec![], MissingMigrationPolicy::Allow)
-        .await
-        .expect("host explicitly tolerates other releases");
-    preflight_without_migrations_with_policy(&pg, vec![], MissingMigrationPolicy::Allow)
-        .await
-        .expect("read-only boot uses same policy");
+    run_core_and_flavor_migrations_with_policy(
+        &pg,
+        vec![],
+        &proxima::PgSidecarRegistryFrozen::default(),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("host explicitly tolerates other releases");
+    preflight_without_migrations_with_policy(
+        &pg,
+        vec![],
+        &proxima::PgSidecarRegistryFrozen::default(),
+        MissingMigrationPolicy::Allow,
+    )
+    .await
+    .expect("read-only boot uses same policy");
     assert!(
         pending_migrations_with_policy(&pool, &[], MissingMigrationPolicy::Allow)
             .await
@@ -289,8 +321,13 @@ async fn missing_versions_need_an_explicit_policy_for_run_plan_and_preflight() {
     assert_eq!(amended.rows_affected(), 1, "baseline row exists to corrupt");
     assert!(
         matches!(
-            run_core_and_flavor_migrations_with_policy(&pg, vec![], MissingMigrationPolicy::Allow)
-                .await,
+            run_core_and_flavor_migrations_with_policy(
+                &pg,
+                vec![],
+                &proxima::PgSidecarRegistryFrozen::default(),
+                MissingMigrationPolicy::Allow
+            )
+            .await,
             Err(MigrationError::CorePreflight(_))
         ),
         "allowing missing versions must still refuse a changed core checksum"
@@ -304,10 +341,10 @@ async fn shared_sources_in_the_core_number_range_are_recognized_by_the_union() {
         .expect("owned PG required");
     let pg = storage(&db).await;
     let sources = || vec![source("host", 9000, true)];
-    run_core_and_flavor_migrations(&pg, sources())
+    run_core_and_flavor_migrations(&pg, sources(), &proxima::PgSidecarRegistryFrozen::default())
         .await
         .expect("host version on core ledger");
-    run_core_and_flavor_migrations(&pg, sources())
+    run_core_and_flavor_migrations(&pg, sources(), &proxima::PgSidecarRegistryFrozen::default())
         .await
         .expect("union recognizes the host version");
     assert!(
@@ -349,7 +386,7 @@ async fn the_runtime_passes_its_explicit_policy_to_migrating_and_read_only_boot(
         .await
         .expect("owned PG required");
     let pg = storage(&db).await;
-    run_core_and_flavor_migrations(&pg, vec![])
+    run_core_and_flavor_migrations(&pg, vec![], &proxima::PgSidecarRegistryFrozen::default())
         .await
         .expect("migrated core");
     sqlx::query("INSERT INTO public._sqlx_migrations (version, description, success, checksum, execution_time) VALUES (9000, 'other release', true, ''::bytea, 0)")

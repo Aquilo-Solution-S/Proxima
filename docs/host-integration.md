@@ -80,6 +80,22 @@ validate between source commits. They fail after a five-second lock wait.
 Complete the out-of-band migration job before starting pods that skip
 migrations; allowing missing versions does not bypass this serialization.
 
+Standalone migration and preflight callers freeze the same core/flavor PG
+sidecars as boot. Register core sidecars and the bundle's sidecars in a
+`PgSidecarRegistry`, then call `freeze_against(&registry)` with the frozen
+flavor registry. Pass `&sidecars` as the third argument to
+`run_core_and_flavor_migrations` and `preflight_without_migrations`; their
+`_with_policy` forms take it before the policy. `HostTemplate::new` takes the
+owned frozen sidecars as its fourth argument and includes the composition in
+its template identity. These types and migration operations are available
+through `proxima`; test templates use `proxima::testkit`.
+
+The runner derives Follows owner RLS from this registry before and after the
+flavor migration lanes, including runs with no pending SQL. Skip-migration
+preflight checks the generated marks and owner indexes without changing them.
+Normal boot supplies this registry automatically. See
+[sidecar owner modes](build-a-flavor.md#2-persist-the-typed-payload).
+
 ## Authentication and owner scope
 
 Provide an `Authenticator` through `RuntimeBuilder::authenticator`, or use the

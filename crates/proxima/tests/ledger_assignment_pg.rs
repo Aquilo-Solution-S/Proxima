@@ -69,9 +69,13 @@ async fn changing_a_baselines_ledger_is_refused_before_any_replay_under_both_pol
     .await
     .expect("migration storage");
     let admin = PgPool::connect(&db.admin_url()).await.expect("admin pool");
-    run_core_and_flavor_migrations(&pg, vec![source(true)])
-        .await
-        .expect("baseline records on the shared ledger");
+    run_core_and_flavor_migrations(
+        &pg,
+        vec![source(true)],
+        &proxima::PgSidecarRegistryFrozen::default(),
+    )
+    .await
+    .expect("baseline records on the shared ledger");
     sqlx::query("INSERT INTO public.assignment_fixture (id) VALUES (7)")
         .execute(&admin)
         .await
@@ -109,13 +113,22 @@ async fn changing_a_baselines_ledger_is_refused_before_any_replay_under_both_pol
             let planned = pending_migrations_with_policy(&admin, &[source(false)], policy)
                 .await
                 .expect_err("a plan refuses the changed ledger assignment");
-            let preflight =
-                preflight_without_migrations_with_policy(&pg, vec![source(false)], policy)
-                    .await
-                    .expect_err("read-only boot refuses the changed ledger assignment");
-            let ran = run_core_and_flavor_migrations_with_policy(&pg, vec![source(false)], policy)
-                .await
-                .expect_err("a run refuses the changed ledger assignment");
+            let preflight = preflight_without_migrations_with_policy(
+                &pg,
+                vec![source(false)],
+                &proxima::PgSidecarRegistryFrozen::default(),
+                policy,
+            )
+            .await
+            .expect_err("read-only boot refuses the changed ledger assignment");
+            let ran = run_core_and_flavor_migrations_with_policy(
+                &pg,
+                vec![source(false)],
+                &proxima::PgSidecarRegistryFrozen::default(),
+                policy,
+            )
+            .await
+            .expect_err("a run refuses the changed ledger assignment");
             assert_assignment_refusal(&planned);
             assert_assignment_refusal(&preflight);
             assert_assignment_refusal(&ran);

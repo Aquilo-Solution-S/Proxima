@@ -738,6 +738,7 @@ DECLARE
     classes integer;
     installed integer := 0;
     follows text[];
+    previous_scope text := current_setting('app.proxima_scope', true);
 BEGIN
     IF target_schema IS NULL OR target_schema IN ('proxima_core', 'public', 'information_schema')
        OR target_schema LIKE 'pg\_%' THEN
@@ -749,10 +750,12 @@ BEGIN
     -- The host's Follows tables of this schema (sync_owner_follows): each
     -- gets the follows rule whatever class it is listed in, and needs no
     -- listing at all.
+    PERFORM set_config('app.proxima_scope', 'platform', true);
     SELECT COALESCE(array_agg(substr(f.table_name, length(target_schema) + 2)), '{}')
       INTO follows
       FROM proxima_core.owner_follows AS f
      WHERE split_part(f.table_name, '.', 1) = target_schema;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
     FOREACH listed IN ARRAY classified LOOP
         classes := (listed = ANY(COALESCE(owner_id_tables, '{}')))::integer
             + (listed = ANY(COALESCE(fk_parent_tables, '{}')))::integer
@@ -873,6 +876,8 @@ DECLARE
     hop jsonb;
     next_table text;
     visited text[];
+    follows boolean;
+    previous_scope text := current_setting('app.proxima_scope', true);
 BEGIN
     IF target_schema IS NULL OR target_schema IN ('proxima_core', 'public', 'information_schema')
        OR target_schema LIKE 'pg\_%' THEN
@@ -907,10 +912,13 @@ BEGIN
         RAISE EXCEPTION 'install_owner_rls_table: %.% has an owner_id column but is class %; a table with owner_id is class owner_id or memory_owner',
             target_schema, target_table, class;
     END IF;
-    IF EXISTS (
+    PERFORM set_config('app.proxima_scope', 'platform', true);
+    SELECT EXISTS (
         SELECT 1 FROM proxima_core.owner_follows AS f
          WHERE f.table_name = target_schema || '.' || target_table
-    ) THEN
+    ) INTO follows;
+    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    IF follows THEN
         RAISE NOTICE 'install_owner_rls_table: %.% is a Follows table; the host installs Follows owner RLS, so its class % is superseded',
             target_schema, target_table, class;
         PERFORM proxima_core.owner_rls_apply_follows('install_owner_rls_table', target_schema, target_table);

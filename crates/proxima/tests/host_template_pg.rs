@@ -123,6 +123,16 @@ fn migrators() -> Vec<NamedMigrator> {
     all
 }
 
+fn frozen_sidecars() -> proxima::PgSidecarRegistryFrozen {
+    let mut registry = FlavorRegistry::new();
+    HostApp::register(&mut registry).expect("host registration");
+    let registry = registry.try_freeze().expect("host contracts");
+    let mut sidecars = proxima::PgSidecarRegistry::new();
+    proxima::flavor::register_core_pg_sidecars(&mut sidecars);
+    HostApp::register_pg_sidecars(&mut sidecars);
+    sidecars.freeze_against(&registry).expect("host sidecars")
+}
+
 struct HostApp;
 
 impl FlavorBundle for HostApp {
@@ -155,7 +165,13 @@ fn family(prefix: &str) -> TemplateFamily {
 
 /// The template most tests clone, built once per server and fingerprint.
 static SUITE: LazyLock<HostTemplate> = LazyLock::new(|| {
-    HostTemplate::new(family("hosttpl_suite_"), "suite-v1", migrators()).expect("suite lineup")
+    HostTemplate::new(
+        family("hosttpl_suite_"),
+        "suite-v1",
+        migrators(),
+        frozen_sidecars(),
+    )
+    .expect("suite lineup")
 });
 
 async fn clone() -> SplitRoleDb {
@@ -238,6 +254,11 @@ async fn a_clone_holds_every_migration_and_a_boot_applies_none() {
     assert_eq!(seeded, "seeded by the host migration");
 
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    // Validate the fresh clone before an ordinary boot could reconcile it.
+    let skipped = boot(&db, owner, true).await;
+    skipped.shutdown().await;
+    assert_eq!(ledger_rows(&admin).await, before);
+
     let booted = boot(&db, owner, false).await;
     booted.shutdown().await;
     assert_eq!(
@@ -245,12 +266,6 @@ async fn a_clone_holds_every_migration_and_a_boot_applies_none() {
         before,
         "a boot over a clone migrates nothing"
     );
-
-    // `skip_migrations` issues no DDL and refuses a lane with an unapplied
-    // migration, so it boots only if the clone is complete.
-    let skipped = boot(&db, owner, true).await;
-    skipped.shutdown().await;
-    assert_eq!(ledger_rows(&admin).await, before);
     admin.close().await;
 }
 
@@ -371,6 +386,7 @@ async fn sixteen_concurrent_clones_are_distinct_and_complete() {
             )),
             "conc-v1",
             migrators(),
+            frozen_sidecars(),
         )
         .expect("lineup"),
     );
@@ -413,8 +429,9 @@ async fn a_changed_migration_is_a_new_template_and_the_old_one_is_collected() {
         "hosttpl_gc{}_",
         &Uuid::now_v7().simple().to_string()[20..]
     ));
-    let first = HostTemplate::new(family.clone(), "v1", migrators()).expect("lineup");
-    let second = HostTemplate::new(family, "v2", migrators()).expect("lineup");
+    let first =
+        HostTemplate::new(family.clone(), "v1", migrators(), frozen_sidecars()).expect("lineup");
+    let second = HostTemplate::new(family, "v2", migrators(), frozen_sidecars()).expect("lineup");
     assert_ne!(first.template_name(), second.template_name());
 
     let one = first
@@ -450,6 +467,7 @@ async fn a_migration_error_is_a_protocol_error_and_leaves_no_template() {
         )),
         "err-v1",
         single("hostone", "INSERT INTO public.hosttpl_missing VALUES (1)"),
+        proxima::PgSidecarRegistryFrozen::default(),
     )
     .expect("a lineup the runner accepts");
     let error = template
@@ -483,7 +501,12 @@ fn a_lineup_the_runner_refuses_gets_no_template() {
         ]),
     )];
     for (case, migrators) in [("two sources", clashing), ("one source", repeated)] {
-        let refused = HostTemplate::new(family("hosttpl_dup_"), "dup-v1", migrators);
+        let refused = HostTemplate::new(
+            family("hosttpl_dup_"),
+            "dup-v1",
+            migrators,
+            proxima::PgSidecarRegistryFrozen::default(),
+        );
         assert!(
             matches!(refused, Err(MigrationError::DuplicateVersion { version, .. }) if version == NOTES),
             "{case}: {refused:?}"
@@ -500,9 +523,14 @@ fn single(source: &'static str, sql: &str) -> Vec<NamedMigrator> {
 }
 
 fn named(fingerprint: &str, migrators: Vec<NamedMigrator>) -> String {
-    HostTemplate::new(family("hosttpl_names_"), fingerprint, migrators)
-        .expect("lineup")
-        .template_name()
+    HostTemplate::new(
+        family("hosttpl_names_"),
+        fingerprint,
+        migrators,
+        proxima::PgSidecarRegistryFrozen::default(),
+    )
+    .expect("lineup")
+    .template_name()
 }
 
 #[test]
@@ -523,6 +551,7 @@ fn the_template_name_is_the_family_prefix_and_sixteen_hex_digits() {
         family("hosttpl_other_"),
         "fp",
         single("hostone", "SELECT 1"),
+        proxima::PgSidecarRegistryFrozen::default(),
     )
     .expect("lineup");
     assert_eq!(
@@ -573,5 +602,32 @@ fn the_hash_frames_its_fields() {
     assert_ne!(
         named("a", single("bc", "SELECT 1")),
         named("ab", single("c", "SELECT 1"))
+    );
+}
+
+#[test]
+fn a_changed_follows_composition_names_a_different_template() {
+    let make = |sidecars| {
+        HostTemplate::new(
+            family("hosttpl_composition_"),
+            "same-input",
+            migrators(),
+            sidecars,
+        )
+        .expect("valid lineup")
+        .template_name()
+    };
+    let mut registry = FlavorRegistry::new();
+    proxima_example::ExampleFlavor::register(&mut registry).expect("example registration");
+    let registry = registry.try_freeze().expect("example contracts");
+    let mut sidecars = proxima::PgSidecarRegistry::new();
+    proxima::flavor::register_core_pg_sidecars(&mut sidecars);
+    proxima_example::ExampleFlavor::register_pg_sidecars(&mut sidecars);
+    let sidecars = sidecars
+        .freeze_against(&registry)
+        .expect("example sidecars");
+    assert_ne!(
+        make(proxima::PgSidecarRegistryFrozen::default()),
+        make(sidecars)
     );
 }

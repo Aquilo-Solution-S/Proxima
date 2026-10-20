@@ -24,9 +24,16 @@ mod owner_transfer_differential_pg_tests;
 #[derive(Debug, Clone, Default)]
 pub struct PgSidecarRegistryFrozen {
     pub(super) entries: Arc<HashMap<PgSidecarKey, PgSidecarEntry>>,
+    pub(super) flavor_schema_names: Arc<[String]>,
 }
 
 impl PgSidecarRegistryFrozen {
+    /// Composed flavor schemas, in name order, excluding `proxima_core`.
+    #[must_use]
+    pub fn flavor_schema_names(&self) -> &[String] {
+        &self.flavor_schema_names
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -168,6 +175,7 @@ impl PgSidecarRegistryFrozen {
         );
         Self {
             entries: Arc::new(entries),
+            flavor_schema_names: self.flavor_schema_names.clone(),
         }
     }
 
@@ -200,6 +208,25 @@ impl PgSidecarRegistryFrozen {
             .values()
             .filter(|entry| {
                 entry.owner.is_pinned()
+                    && (entry.memory_insert.is_some() || entry.memory_load_batch.is_some())
+            })
+            .map(|entry| entry.sidecar_table.clone())
+            .collect();
+        tables.sort_unstable();
+        tables.dedup();
+        tables
+    }
+
+    /// Memory sidecar tables whose own `owner_id` follows their memory.
+    ///
+    /// Derived from the registered inserters and loaders, in name order.
+    #[must_use]
+    pub fn owner_follows_memory_sidecar_tables(&self) -> Vec<String> {
+        let mut tables: Vec<String> = self
+            .entries
+            .values()
+            .filter(|entry| {
+                entry.owner == super::SidecarOwnerMode::Follows
                     && (entry.memory_insert.is_some() || entry.memory_load_batch.is_some())
             })
             .map(|entry| entry.sidecar_table.clone())
