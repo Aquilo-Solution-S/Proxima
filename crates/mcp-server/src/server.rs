@@ -323,13 +323,13 @@ impl McpToolHost {
     /// host tool may answer content blocks or a failure, which a JSON-only
     /// surface cannot carry.
     ///
-    /// Resolves `name` once: a registry tool without listing the host
-    /// source, any other name with one [`Self::host_tools_for`].
+    /// Resolves `name` once: a registry tool without asking the host
+    /// source, any other name with one [`McpHostTools::resolve`].
     ///
     /// # Errors
     ///
-    /// As [`Self::call_tool_in_request`], and the host source's list error
-    /// for a name the registry does not serve. A [`ToolReply::Structured`]
+    /// As [`Self::call_tool_in_request`], and the host source's resolve
+    /// error for a name the registry does not serve. A [`ToolReply::Structured`]
     /// that is not an object, or a [`ToolReply::Content`] or
     /// [`ToolReply::StructuredFailure`] from a tool that declared an output
     /// schema, is an internal error.
@@ -348,7 +348,9 @@ impl McpToolHost {
     }
 
     /// The tool `name` calls for `auth`: the registry's, else the host
-    /// source's, listing it once.
+    /// source's, resolving that one name. A name [`Self::host_tools_for`]
+    /// would not serve is not asked for, and an entry of another name is
+    /// not served.
     pub(crate) async fn resolve_tool(
         &self,
         auth: &McpAuthContext,
@@ -362,15 +364,21 @@ impl McpToolHost {
         {
             return Ok(ToolTarget::Registry(descriptor));
         }
-        if let Some(tool) = self
-            .host_tools_for(auth)
-            .await?
-            .into_iter()
-            .find(|tool| tool_name_matches(&tool.name, name))
-        {
-            return Ok(ToolTarget::Host(Box::new(tool)));
+        let not_found = || ToolInvocationError::ToolNotFound(name.to_string());
+        let Some(source) = &self.host_tools else {
+            return Err(not_found());
+        };
+        if host_tool_name_refusal(&self.registry, name, &[]).is_some() {
+            return Err(not_found());
         }
-        Err(ToolInvocationError::ToolNotFound(name.to_string()))
+        match source.resolve(auth, name).await? {
+            Some(tool) if tool.name == name => Ok(ToolTarget::Host(Box::new(tool))),
+            Some(tool) => {
+                tracing::warn!(tool = %tool.name, asked = %name, "host resolved another name");
+                Err(not_found())
+            }
+            None => Err(not_found()),
+        }
     }
 
     /// Run a [`Self::resolve_tool`] result through the request behaviors. A
@@ -1648,6 +1656,66 @@ mod tests {
             )
             .await;
         assert_eq!(lists(&counter), 1, "a registry call reads no catalog");
+    }
+
+    /// A host source that answers one name: it counts its listings and
+    /// resolves, and resolves every name to the entry `answer` names.
+    #[derive(Debug)]
+    struct ResolvingHostTools {
+        lists: std::sync::atomic::AtomicUsize,
+        resolves: std::sync::atomic::AtomicUsize,
+        answer: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl McpHostTools for ResolvingHostTools {
+        async fn list(&self, _: &McpAuthContext) -> Result<Vec<McpHostTool>, McpToolError> {
+            self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![host_tool(self.answer, READ)])
+        }
+
+        async fn resolve(
+            &self,
+            _: &McpAuthContext,
+            _: &str,
+        ) -> Result<Option<McpHostTool>, McpToolError> {
+            self.resolves
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(host_tool(self.answer, READ)))
+        }
+
+        async fn call(&self, _: ToolCall) -> Result<ToolReply, McpToolError> {
+            Ok(ToolReply::Structured(serde_json::json!({"ok": true})))
+        }
+    }
+
+    /// A call costs what it calls: a host that resolves one name serves the
+    /// call without listing its catalog. An entry of another name is not
+    /// served, and a name no host tool may carry is never asked for.
+    #[tokio::test]
+    async fn a_resolving_host_serves_a_call_without_listing() {
+        let source = Arc::new(ResolvingHostTools {
+            lists: std::sync::atomic::AtomicUsize::new(0),
+            resolves: std::sync::atomic::AtomicUsize::new(0),
+            answer: "host_echo",
+        });
+        let server = make_server().with_host_tools(source.clone());
+        let auth = owner_auth();
+        let call = |name: &'static str| {
+            server.call_tool(name, serde_json::json!({}), author(), Some(auth.clone()))
+        };
+
+        call("host_echo").await.expect("the host tool answers");
+        assert!(matches!(
+            call("host_other").await,
+            Err(ToolInvocationError::ToolNotFound(name)) if name == "host_other"
+        ));
+        assert!(matches!(
+            call("host:echo").await,
+            Err(ToolInvocationError::ToolNotFound(_))
+        ));
+        assert_eq!(lists(&source.resolves), 2, "one resolve per valid name");
+        assert_eq!(lists(&source.lists), 0, "no call lists the catalog");
     }
 
     /// A catalog that cannot be read is an error, never an empty list: the

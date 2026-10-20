@@ -129,15 +129,15 @@ impl McpHostTool {
 /// `visible`, like every registry tool. `tools/call` runs a listed tool
 /// through the registry's request behaviors (scope gate first) with
 /// [`Self::call`] as the terminal; the call's services carry an
-/// [`McpHostToolCall`](proxima_core::McpHostToolCall) and the listed entry's
-/// [`services`](McpHostTool::services). Each request lists once.
+/// [`McpHostToolCall`](proxima_core::McpHostToolCall) and the resolved entry's
+/// [`services`](McpHostTool::services). Each call resolves its name once.
 ///
 /// [`McpToolHost::with_host_tools`]: crate::McpToolHost::with_host_tools
 #[async_trait]
 pub trait McpHostTools: Send + Sync + std::fmt::Debug {
-    /// The tools `auth` may see. Called once per `tools/list` and once per
-    /// `tools/call` of a name the registry does not serve; a tool it does
-    /// not return for this caller is not callable by them.
+    /// The tools `auth` may see. Called once per `tools/list`, and by the
+    /// default [`Self::resolve`]; a tool it does not return for this caller
+    /// is not callable by them.
     ///
     /// # Errors
     ///
@@ -146,6 +146,28 @@ pub trait McpHostTools: Send + Sync + std::fmt::Debug {
     /// would map to. Proxima never degrades to an empty list: a host that
     /// wants one on a failed read returns `Ok(Vec::new())`.
     async fn list(&self, auth: &McpAuthContext) -> Result<Vec<McpHostTool>, McpToolError>;
+
+    /// The tool named `name` that [`Self::list`] returns for `auth`, if any.
+    /// Called once per `tools/call` of a name the registry does not serve. A
+    /// host whose listing reads per-tool state answers the one name here, so
+    /// a call costs what it calls. Default: [`Self::list`], then its entry
+    /// of that name.
+    ///
+    /// # Errors
+    ///
+    /// Any [`McpToolError`]; it fails the `tools/call`, as a failed
+    /// [`Self::list`] does.
+    async fn resolve(
+        &self,
+        auth: &McpAuthContext,
+        name: &str,
+    ) -> Result<Option<McpHostTool>, McpToolError> {
+        Ok(self
+            .list(auth)
+            .await?
+            .into_iter()
+            .find(|tool| tool.name == name))
+    }
 
     /// Run one listed tool. `call.name` is the canonical name; `call.ctx`
     /// is the caller's tool context (owner, authorization, services,
