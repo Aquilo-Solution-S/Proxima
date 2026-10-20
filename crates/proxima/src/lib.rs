@@ -170,42 +170,6 @@ pub fn company_owner(id: uuid::Uuid) -> OwnerId {
     OwnerId::from(GroupId::new(id))
 }
 
-/// Load one owner-scoped opaque source cursor through an embedded engine.
-///
-/// Cursor state is projector write-state; the engine gates this read through
-/// owner `Ingest` authorization before touching storage.
-///
-/// # Errors
-///
-/// Returns `Forbidden` when `authz` cannot write `owner` with `Ingest`, or
-/// `Internal` on storage failure.
-pub async fn load_source_cursor(
-    engine: &Engine,
-    authz: &AuthzContext,
-    owner: &OwnerId,
-    source: &str,
-) -> Result<Option<Cursor>, ProtocolError> {
-    engine.load_source_cursor(authz, owner, source).await
-}
-
-/// Store one owner-scoped opaque source cursor through an embedded engine.
-///
-/// # Errors
-///
-/// Returns `Forbidden` when `authz` cannot write `owner` with `Ingest`, or
-/// `Internal` on storage failure.
-pub async fn store_source_cursor(
-    engine: &Engine,
-    authz: &AuthzContext,
-    owner: &OwnerId,
-    source: &str,
-    cursor: &Cursor,
-) -> Result<(), ProtocolError> {
-    engine
-        .store_source_cursor(authz, owner, source, cursor)
-        .await
-}
-
 #[cfg(test)]
 mod tests {
     use proxima_core::OwnerId;

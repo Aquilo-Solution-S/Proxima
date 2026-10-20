@@ -10,7 +10,6 @@ pub use crate::app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use crate::core_mcp::{CoreMcpError, CoreMcpErrorKind, CoreMcpTools, CoreToolInfo};
 pub use crate::features::FeatureControl;
 pub use crate::features::{BootReport, Feature, FeatureDecision, FeatureState};
-pub use crate::health::{HEALTHZ_PATH, READYZ_PATH};
 pub use crate::mcp_edge::{McpEdge, layered_router_mcp_only};
 pub use crate::migrations::{
     CoreAdoption, LedgerConflict, MigrationError, MigrationRunReport, MigrationStorage,
@@ -260,7 +259,7 @@ pub use proxima_core::storage_ports::publication::{
 /// beside the boot authorities, not on [`ProximaHost`]: retiring a consumer
 /// cancels every delivery it was still owed.
 pub use proxima_core::storage_ports::publication::{PublicationConsumerPort, RetireOutcome};
-pub use proxima_core::text_bounds::{TrimmedLenViolation, check_trimmed_len};
+pub use proxima_core::text_bounds::TrimmedLenViolation;
 pub use proxima_core::verbs::query::{
     DEFAULT_HYBRID_SEMANTIC_WEIGHT, EdgeExistsRequest, EdgeExistsResponse, EdgeFilter,
     EdgeReadCursor, EdgeReadRequest, EdgeReadResponse, EntityKind, FactCitationReadback,
@@ -321,22 +320,6 @@ pub use rmcp;
 /// Cancellation token type of [`crate::flavor::FlavorWorkerContext::cancel`].
 pub use tokio_util::sync::CancellationToken;
 
-/// Build the complete REST `OpenAPI` document from a frozen registry.
-///
-/// This offline projection contains every registered tool and core resource.
-/// The served `/v1/openapi.json` route uses the same generator with its
-/// caller-scoped authorization context. Core resources are included
-/// automatically; callers never assemble transport-internal descriptor
-/// slices or depend on `proxima-mcp-server` directly.
-#[cfg(feature = "rest")]
-#[must_use]
-pub fn build_openapi_document(
-    registry: &FlavorRegistryFrozen,
-    public_url: Option<&str>,
-) -> serde_json::Value {
-    proxima_mcp_server::rest::openapi::document_from_registry(registry, public_url, None)
-}
-
 /// Derive a deployment served surface from the frozen registry, excluding every id
 /// in `exclude`. Action-scoped tools expand to `tool:action` granularity
 /// (Proxima's scope gate authorizes them at that granularity), so excluding a
@@ -369,10 +352,8 @@ pub use proxima_blob_s3::{
     CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareOutcomeTs,
     CitedBlobUploadPrepareTs, PresignedHeaderTs, S3ColdStore, UploadExpirySweepOutcome,
 };
-/// Host-served MCP tools ([`RuntimeBuilder::host_tools`]), the per-call
-/// marker behaviors see, and the handler helpers a host transport reuses
-/// instead of copying: auth/peer extraction, author reconciliation, the
-/// reserved-argument strip, the NUL guard and the JSON-RPC error mapping.
+/// The per-call marker behaviors see for host-served MCP tools
+/// ([`RuntimeBuilder::host_tools`]).
 pub use proxima_core::McpHostToolCall;
 /// Stream revalidation cadence: the type of [`McpEdge::revalidation`] and of
 /// [`RuntimeConfig::stream_revalidation`], and the parameter of
@@ -559,8 +540,7 @@ pub use proxima_mcp_server::DynamicHandler;
 pub use proxima_mcp_server::McpServerError;
 /// Which protected-resource document [`ResourceServerMetadata`] renders.
 pub use proxima_mcp_server::ProtectedResource;
-/// What [`McpToolHost`]'s dispatch methods return on failure, and what the
-/// exported [`tool_invocation_error_to_error_data`] takes.
+/// What [`McpToolHost`]'s dispatch methods return on failure.
 pub use proxima_mcp_server::ToolInvocationError;
 /// The state [`McpAuthLayer`] authenticates against.
 pub use proxima_mcp_server::security::McpAuthLayerState;
@@ -577,9 +557,7 @@ pub use proxima_mcp_server::{
 };
 pub use proxima_mcp_server::{
     MAX_HOST_INSTRUCTIONS_CHARS, McpHostTool, McpHostTools, McpStreamableService, McpToolHost,
-    ToolListNotifier, auth_context, author_from_args, mcp_tool_error_to_error_data,
-    peer_implementation, reject_nul_in_args, strip_call_context_args,
-    tool_invocation_error_to_error_data,
+    ToolListNotifier, auth_context, mcp_tool_error_to_error_data,
 };
 /// MCP edge wiring [`layered_router`] takes, and the listener CORS layer.
 pub use proxima_mcp_server::{McpEdgeAuth, OriginAllowlist, cors_layer};

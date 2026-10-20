@@ -62,8 +62,6 @@ fn host_api_imports_from_root() {
     let _cursor: proxima::Cursor = proxima::Cursor::empty();
     let _host_allowlist = proxima::HostAllowlist::new(["proxima.example.com"]);
     let _cancel = proxima::CancellationToken::new();
-    std::hint::black_box(proxima::load_source_cursor);
-    std::hint::black_box(proxima::store_source_cursor);
     let _outcome = proxima::OwnerEraseOutcome::Refused {
         operation_id: uuid::Uuid::nil(),
         reason: proxima::OwnerEraseRefusal::OwnerNotAbandoned,

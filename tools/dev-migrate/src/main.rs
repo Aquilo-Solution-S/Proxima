@@ -21,7 +21,7 @@
 //!
 //! - `--reset`: destructive drop-and-recreate of every `proxima_*` schema
 //!   (see [`reset_local_dev_database`]) — the same namespace
-//!   `ensure_core_ledger_compatible` calls Proxima's, so a schema left by a
+//!   the core ledger preflight calls Proxima's, so a schema left by a
 //!   flavor no longer compiled in cannot make boot demand a reset the reset
 //!   cannot deliver. Requires `PROXIMA_RESET_CONFIRM` and refuses non-local
 //!   hosts and protected database names as a second, independent guard
@@ -353,7 +353,7 @@ async fn reset_local_dev_database_confirmed(
     // used to REFUSE the reset. That was the right guard while the reset
     // dropped a hardcoded two names — it said "I will not destroy what I
     // cannot recreate" — but it is now a deadlock, because
-    // `ensure_core_ledger_compatible` treats EVERY `proxima\_%` schema as
+    // The core ledger preflight treats EVERY `proxima\_%` schema as
     // Proxima's when the baseline marker is missing. Boot demanded a reset
     // that the reset then refused, with nothing in between to break the
     // tie. The two predicates have to agree on what the namespace is, so
@@ -391,7 +391,7 @@ async fn reset_local_dev_database_confirmed(
     }
 
     // Every `proxima_*` schema, not the two this binary happens to know
-    // about. `ensure_core_ledger_compatible` decides a database needs a
+    // about. The core ledger preflight decides a database needs a
     // reset by probing `table_schema LIKE 'proxima\_%'`, so a schema left
     // by a flavor that is no longer compiled in makes boot demand a reset
     // that a two-name DROP list can never satisfy — the reset "succeeds",

@@ -7,6 +7,12 @@ is the host boundary. A flavor receives typed services; it does not receive
 raw core tables or resolve owners itself. See [concepts](concepts.md) for the
 boundary and [configuration](configuration.md) for the settings inventory.
 
+Read and write projector cursors through `Engine::load_source_cursor` and
+`Engine::store_source_cursor`, using the request's `AuthzContext`. Goal display
+fields are validated by `GoalPayloadWrite::from_payload`; its
+`GoalWriteBuildError` carries the typed refusal. HTTP routes are listed in
+[protocol](protocol.md).
+
 ## Boot a composed host
 
 Implement `FlavorApp` for the application bundle. Defaults are applied first;

@@ -19,10 +19,10 @@ use tokio_util::sync::CancellationToken;
 use crate::object_maintenance::ObjectPurgeHealth;
 
 /// Process liveness.
-pub const HEALTHZ_PATH: &str = "/healthz";
+pub(crate) const HEALTHZ_PATH: &str = "/healthz";
 /// Readiness: database available and runtime active. A paused embedding client
 /// retains HTTP 200 with a sanitized degraded status.
-pub const READYZ_PATH: &str = "/readyz";
+pub(crate) const READYZ_PATH: &str = "/readyz";
 
 /// Longest a readiness probe waits on the database. Below the usual probe
 /// timeout, so a stalled pool reads as "not ready", not as a hung probe.

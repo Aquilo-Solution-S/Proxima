@@ -145,6 +145,15 @@ facade_names! {
         both_tiers: [Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, GoalRow],
     }
 
+    // The existing typed reads and replay result in the consumer inventory:
+    // Engine::{get_memory, get_memories, load_source_cursor, store_source_cursor},
+    // Engine::query and UnitOfWork::ingest_fact. Cursor operations use Engine
+    // directly; the duplicate root functions are retired.
+    inventory_reads {
+        host_only: [Cursor, GetMemoryReadRequest, GetMemoryReadResponse, GetMemoriesReadRequest, GetMemoriesReadResponse, MemoryRow, MemorySnapshot],
+        both_tiers: [FactIngestOutcome, QueryRequest, QueryResponse, UnitOfWork],
+    }
+
     // Needed by `StoragePortsBuilder`'s setters, `Engine::with_storage_ports`, the `*Port` traits
     // behind the handles.
     storage_ports {
@@ -215,7 +224,7 @@ facade_names! {
         both_tiers: [],
     }
 
-    // Needed by `McpToolHost`'s dispatch methods, `tool_invocation_error_to_error_data`.
+    // Needed by `McpToolHost`'s dispatch methods.
     tool_invocation_error {
         host_only: [ToolInvocationError],
         both_tiers: [],

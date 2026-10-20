@@ -313,51 +313,7 @@ pub async fn run_core_schema(
     definitions::apply(connection, policy).await
 }
 
-/// Check core ledger compatibility without applying any schema changes.
-///
-/// # Errors
-///
-/// Refuses unsupported pre-reset ledgers, untracked schemas, unknown current
-/// versions and changed migration checksums.
-pub async fn ensure_core_ledger_compatible(pool: &PgPool) -> Result<(), StorageError> {
-    ensure_core_ledger_compatible_with_policy(pool, MissingMigrationPolicy::Reject).await
-}
-
-/// [`ensure_core_ledger_compatible`] with an explicit missing-version policy.
-///
-/// Known checksums and the core baseline remain mandatory under both policies.
-///
-/// The `policy` argument is `Allow` from the facade after composed host-ledger
-/// and definitions validation, and `Reject` for direct storage runs.
-///
-/// # Errors
-///
-/// The errors of [`ensure_core_ledger_compatible`], except that
-/// [`MissingMigrationPolicy::Allow`] permits unknown versions.
-pub async fn ensure_core_ledger_compatible_with_policy(
-    pool: &PgPool,
-    policy: MissingMigrationPolicy,
-) -> Result<(), StorageError> {
-    let mut connection = pool.acquire().await.map_err(internal)?;
-    ensure_core_ledger_compatible_on_connection_with_policy(&mut connection, policy).await
-}
-
-/// The compatibility check on a connection or snapshot the caller holds.
-///
-/// # Errors
-///
-/// The errors of [`ensure_core_ledger_compatible`].
-pub async fn ensure_core_ledger_compatible_on_connection(
-    connection: &mut PgConnection,
-) -> Result<(), StorageError> {
-    ensure_core_ledger_compatible_on_connection_with_policy(
-        connection,
-        MissingMigrationPolicy::Reject,
-    )
-    .await
-}
-
-/// [`ensure_core_ledger_compatible_with_policy`] on the caller's connection.
+/// Check core ledger compatibility on the caller's connection and policy.
 ///
 /// Issues only `SELECT`s, including inside a caller's read-only snapshot.
 ///
@@ -366,7 +322,10 @@ pub async fn ensure_core_ledger_compatible_on_connection(
 ///
 /// # Errors
 ///
-/// The errors of [`ensure_core_ledger_compatible_with_policy`].
+/// Refuses unsupported pre-reset ledgers, untracked schemas and changed
+/// migration checksums. [`MissingMigrationPolicy::Reject`] also refuses
+/// unknown current versions; the baseline and known checksums are mandatory
+/// under both policies.
 pub async fn ensure_core_ledger_compatible_on_connection_with_policy(
     connection: &mut PgConnection,
     policy: MissingMigrationPolicy,
