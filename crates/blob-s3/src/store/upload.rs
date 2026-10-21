@@ -106,7 +106,7 @@ async fn read_hashed_object(
     bucket: &str,
     key: &str,
     expected: LengthExpectation,
-    max_blob_bytes: Option<u64>,
+    max_blob_bytes: u64,
     retain: Retain,
 ) -> Result<(super::digest::StreamedObject, Option<String>), ObjectReadError> {
     let object = client
@@ -208,7 +208,7 @@ async fn publish_canonical(
     canonical_key: &str,
     candidate: &super::digest::StreamedObject,
     body: Vec<u8>,
-    max_blob_bytes: Option<u64>,
+    max_blob_bytes: u64,
 ) -> Result<(String, Option<String>), BlobError> {
     let result = client
         .put_object()
@@ -308,7 +308,7 @@ impl CitedBlobStore {
             &row.bucket,
             &row.object_key,
             LengthExpectation::Declared(row.expected_byte_len),
-            self.config.max_blob_bytes,
+            self.max_blob_bytes,
             retain_for(&row.object_key, &pending_object_key(upload_id)),
         )
         .await
@@ -362,7 +362,7 @@ impl CitedBlobStore {
         ctx: &AuthzContext,
         req: CitedBlobUploadPrepareTs,
     ) -> Result<CitedBlobUploadPrepareOutcomeTs, BlobError> {
-        validate_prepare(&req, self.config.max_blob_bytes)?;
+        validate_prepare(&req, self.max_blob_bytes)?;
         let owner = req.owner();
         ensure_owner_write_access(ctx, &owner)?;
         let upload_id = Uuid::now_v7();
@@ -543,7 +543,7 @@ impl CitedBlobStore {
                 &canonical_key,
                 &streamed,
                 body,
-                self.config.max_blob_bytes,
+                self.max_blob_bytes,
             )
             .await?
         } else {

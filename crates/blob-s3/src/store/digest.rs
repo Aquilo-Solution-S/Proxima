@@ -56,7 +56,7 @@ impl StreamedObject {
 
 /// Reserve toward the declared length so the common case does not repeatedly
 /// realloc, but never let a declaration size the first allocation on its own:
-/// with no cap configured a forged `expected_byte_len` would otherwise ask the
+/// with a generous cap a forged `expected_byte_len` would otherwise ask the
 /// allocator for that much up front. The in-loop length check bounds how far
 /// the buffer can actually grow, so starting small costs a few reallocations
 /// at worst.
@@ -65,7 +65,7 @@ const INITIAL_RESERVE_CEILING: usize = 8 * 1024 * 1024;
 pub(super) async fn hash_uploaded_object(
     body: aws_sdk_s3::primitives::ByteStream,
     expected: LengthExpectation,
-    max_blob_bytes: Option<u64>,
+    max_blob_bytes: u64,
     retain: Retain,
 ) -> Result<StreamedObject, BlobError> {
     let mut reader = body.into_async_read();
@@ -80,9 +80,7 @@ pub(super) async fn hash_uploaded_object(
         && retain == Retain::Bytes
     {
         let capacity = usize::try_from(declared).unwrap_or(usize::MAX);
-        let capacity = max_blob_bytes.map_or(capacity, |max| {
-            capacity.min(usize::try_from(max).unwrap_or(usize::MAX))
-        });
+        let capacity = capacity.min(usize::try_from(max_blob_bytes).unwrap_or(usize::MAX));
         bytes
             .try_reserve(capacity.min(INITIAL_RESERVE_CEILING))
             .map_err(|error| BlobError::State(format!("reserve upload buffer failed: {error}")))?;
@@ -93,12 +91,7 @@ pub(super) async fn hash_uploaded_object(
         // Read at most the remaining acceptable bytes plus one sentinel byte.
         // A forged or changed length therefore cannot make this bounded
         // verifier consume an unbounded response before rejecting it.
-        let ceiling = match (declared, max_blob_bytes) {
-            (Some(declared), Some(max)) => declared.min(max),
-            (Some(declared), None) => declared,
-            (None, Some(max)) => max,
-            (None, None) => u64::MAX,
-        };
+        let ceiling = declared.map_or(max_blob_bytes, |declared| declared.min(max_blob_bytes));
         let read_limit = usize::try_from(ceiling.saturating_sub(byte_len).saturating_add(1))
             .unwrap_or(usize::MAX)
             .min(buf.len());
@@ -118,11 +111,9 @@ pub(super) async fn hash_uploaded_object(
         // Abort as soon as the streamed length crosses the cap so a client that
         // under-declared `byte_len` cannot force us to buffer/hash an oversized
         // object.
-        if let Some(max) = max_blob_bytes
-            && byte_len > max
-        {
+        if byte_len > max_blob_bytes {
             return Err(BlobError::State(format!(
-                "uploaded object exceeds max blob size {max}"
+                "uploaded object exceeds max blob size {max_blob_bytes}"
             )));
         }
         if let LengthExpectation::Declared(expected_byte_len) = expected
@@ -162,7 +153,7 @@ mod tests {
         let error = hash_uploaded_object(
             aws_sdk_s3::primitives::ByteStream::from_static(b"far too long"),
             LengthExpectation::Declared(3),
-            Some(1024),
+            1024,
             Retain::Bytes,
         )
         .await
@@ -183,7 +174,7 @@ mod tests {
         let streamed = hash_uploaded_object(
             aws_sdk_s3::primitives::ByteStream::from_static(input),
             LengthExpectation::CapOnly,
-            Some(1024),
+            1024,
             Retain::Bytes,
         )
         .await
@@ -198,7 +189,7 @@ mod tests {
         let error = hash_uploaded_object(
             aws_sdk_s3::primitives::ByteStream::from_static(b"larger than the cap"),
             LengthExpectation::CapOnly,
-            Some(4),
+            4,
             Retain::Bytes,
         )
         .await
@@ -214,7 +205,7 @@ mod tests {
         let error = hash_uploaded_object(
             aws_sdk_s3::primitives::ByteStream::from_static(input),
             LengthExpectation::Declared(i64::MAX),
-            None,
+            u64::MAX,
             Retain::Bytes,
         )
         .await
@@ -236,7 +227,7 @@ mod tests {
         let kept = hash_uploaded_object(
             aws_sdk_s3::primitives::ByteStream::from_static(input),
             LengthExpectation::CapOnly,
-            Some(1024),
+            1024,
             Retain::Bytes,
         )
         .await
@@ -244,7 +235,7 @@ mod tests {
         let compared = hash_uploaded_object(
             aws_sdk_s3::primitives::ByteStream::from_static(input),
             LengthExpectation::CapOnly,
-            Some(1024),
+            1024,
             Retain::DigestsOnly,
         )
         .await

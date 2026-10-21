@@ -59,6 +59,8 @@ use proxima_storage_pg::PgPlatformScope;
 pub struct CitedBlobStore {
     pool: sqlx::PgPool,
     config: S3RuntimeConfig,
+    /// The cap on one blob's size, resolved once from `config.max_blob_bytes` and the default.
+    max_blob_bytes: u64,
     /// S3 client built from the configured static key pair and target,
     /// memoized once per store.
     client: std::sync::OnceLock<aws_sdk_s3::Client>,
@@ -89,7 +91,7 @@ impl CitedBlobStore {
     /// valid identity ([`S3RuntimeConfig::object_store_id`]).
     pub fn new(
         pool: sqlx::PgPool,
-        mut config: S3RuntimeConfig,
+        config: S3RuntimeConfig,
         platform_scope: PgPlatformScope,
     ) -> Result<Self, BlobError> {
         if let Some(endpoint_url) = &config.endpoint_url {
@@ -111,13 +113,14 @@ impl CitedBlobStore {
         // fail here rather than panic inside a request.
         validate_presign_ttl("PROXIMA_S3_UPLOAD_TTL_SECONDS", config.upload_ttl_seconds)?;
         validate_presign_ttl("PROXIMA_S3_READ_TTL_SECONDS", config.read_ttl_seconds)?;
-        config.max_blob_bytes.get_or_insert(DEFAULT_MAX_BLOB_BYTES);
+        let max_blob_bytes = config.max_blob_bytes.unwrap_or(DEFAULT_MAX_BLOB_BYTES);
         let store_id = config.object_store_id()?;
 
         Ok(Self {
             store_id,
             pool,
             config,
+            max_blob_bytes,
             client: std::sync::OnceLock::new(),
             presigning_client: std::sync::OnceLock::new(),
             system_authority: std::sync::Arc::new(std::sync::OnceLock::new()),
@@ -358,10 +361,10 @@ mod tests {
         )
         .expect("default-capped store builds");
 
-        assert_eq!(store.config.max_blob_bytes, Some(DEFAULT_MAX_BLOB_BYTES));
+        assert_eq!(store.max_blob_bytes, DEFAULT_MAX_BLOB_BYTES);
         let error = validate_prepare(
             &prepare_req(DEFAULT_MAX_BLOB_BYTES + 1),
-            store.config.max_blob_bytes,
+            store.max_blob_bytes,
         )
         .expect_err("default cap rejects an oversized prepare request");
         assert!(error.to_string().contains("exceeds max blob size"));

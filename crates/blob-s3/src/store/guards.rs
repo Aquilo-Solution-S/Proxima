@@ -22,7 +22,7 @@ pub(super) fn presign_config(ttl_seconds: u64) -> Result<PresigningConfig, BlobE
 
 pub(super) fn validate_prepare(
     req: &CitedBlobUploadPrepareTs,
-    max_blob_bytes: Option<u64>,
+    max_blob_bytes: u64,
 ) -> Result<(), BlobError> {
     if req.filename.trim().is_empty() {
         return Err(BlobError::State("filename is required".into()));
@@ -39,11 +39,9 @@ pub(super) fn validate_prepare(
     if req.byte_len > i64::MAX as u64 {
         return Err(BlobError::State("byte_len exceeds Postgres bigint".into()));
     }
-    if let Some(max) = max_blob_bytes
-        && req.byte_len > max
-    {
+    if req.byte_len > max_blob_bytes {
         return Err(BlobError::State(format!(
-            "byte_len {} exceeds max blob size {max}",
+            "byte_len {} exceeds max blob size {max_blob_bytes}",
             req.byte_len
         )));
     }
@@ -105,9 +103,9 @@ mod tests {
     fn validate_prepare_bounds_filename_bytes() {
         let mut req = prepare_req(1);
         req.filename = format!("{}x", "é".repeat(127));
-        validate_prepare(&req, None).expect("255-byte filename accepted");
+        validate_prepare(&req, u64::MAX).expect("255-byte filename accepted");
         req.filename.push('x');
-        let err = validate_prepare(&req, None).expect_err("256-byte filename refused");
+        let err = validate_prepare(&req, u64::MAX).expect_err("256-byte filename refused");
         assert!(matches!(err, BlobError::State(_)));
         assert!(err.to_string().contains("filename exceeds 255 bytes"));
     }
@@ -116,24 +114,23 @@ mod tests {
     fn validate_prepare_bounds_media_type_bytes() {
         let mut req = prepare_req(1);
         req.mime = format!("{}x", "é".repeat(63));
-        validate_prepare(&req, None).expect("127-byte media type accepted");
+        validate_prepare(&req, u64::MAX).expect("127-byte media type accepted");
         req.mime.push('x');
-        let err = validate_prepare(&req, None).expect_err("128-byte media type refused");
+        let err = validate_prepare(&req, u64::MAX).expect_err("128-byte media type refused");
         assert!(matches!(err, BlobError::State(_)));
         assert!(err.to_string().contains("mime exceeds 127 bytes"));
     }
 
     #[test]
     fn validate_prepare_rejects_byte_len_over_cap() {
-        let err = validate_prepare(&prepare_req(1_025), Some(1_024))
-            .expect_err("over-cap byte_len rejected");
+        let err =
+            validate_prepare(&prepare_req(1_025), 1_024).expect_err("over-cap byte_len rejected");
         assert!(err.to_string().contains("exceeds max blob size"));
     }
 
     #[test]
-    fn validate_prepare_allows_within_cap_and_when_uncapped() {
-        validate_prepare(&prepare_req(1_024), Some(1_024)).expect("at-cap accepted");
-        validate_prepare(&prepare_req(u64::from(u32::MAX)), None).expect("uncapped accepted");
+    fn validate_prepare_allows_up_to_the_cap() {
+        validate_prepare(&prepare_req(1_024), 1_024).expect("at-cap accepted");
     }
 
     #[test]

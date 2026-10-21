@@ -142,7 +142,7 @@ async fn publish_after_conflict(
     let candidate = hash_uploaded_object(
         ByteStream::from_static(BODY),
         LengthExpectation::CapOnly,
-        Some(1024),
+        1024,
         Retain::DigestsOnly,
     )
     .await
@@ -155,7 +155,7 @@ async fn publish_after_conflict(
             KEY,
             &candidate,
             BODY.to_vec(),
-            Some(1024),
+            1024,
         ),
     )
     .await
