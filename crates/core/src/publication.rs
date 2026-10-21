@@ -893,6 +893,8 @@ pub enum PublicationError {
     #[error("publication envelope is {bytes} bytes, over the {max}-byte limit")]
     PayloadTooLarge { bytes: usize, max: usize },
     #[error("publication outbox is at capacity ({pending} pending, limit {max})")]
+    /// `pending` is the depth the refusal proved: at least `max`, not a count
+    /// of the whole backlog.
     CapacityExhausted { pending: u64, max: u64 },
     #[error("publication export failed: {0}")]
     ExportFailed(String),

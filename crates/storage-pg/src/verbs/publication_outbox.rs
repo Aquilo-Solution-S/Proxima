@@ -251,8 +251,8 @@ pub fn fresh_backlog_estimate_sql_for_tests() -> &'static str {
 /// second writer on one row in the path of every listenable write, which
 /// trades a bounded scan for a serialization point.
 ///
-/// The exact count is only taken on the refusal path, where an operator is
-/// about to be told how far behind the publisher is.
+/// A refusal reports the ceiling as the depth: the probe proves the backlog
+/// has at least that many records and does not count the rest.
 ///
 /// **The bound is SOFT under concurrent writers.** The probe takes no lock
 /// and runs at READ COMMITTED, so N transactions can each see
@@ -303,14 +303,11 @@ async fn refuse_when_full(
     if over.is_none() {
         return Ok(());
     }
-    let pending: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM proxima_core.publication_outbox WHERE state <> 'published'",
-    )
-    .fetch_one(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    // The probe proved the ceiling is reached; counting past it would walk the
+    // whole backlog once per refused write, which is the quadratic the probe
+    // exists to avoid. The depth reported is therefore "at least the ceiling".
     Err(StorageError::from(PublicationError::CapacityExhausted {
-        pending: pending.try_into().unwrap_or(u64::MAX),
+        pending: limits.max_pending,
         max: limits.max_pending,
     }))
 }

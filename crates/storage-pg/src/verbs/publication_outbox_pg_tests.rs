@@ -754,6 +754,43 @@ async fn an_exhausted_outbox_refuses_the_next_listenable_write() {
     let _ = drop_db(&db).await;
 }
 
+/// A refusal reports the depth it proved, not the depth of a backlog it never
+/// walked: five pending records under a ceiling of two refuse with
+/// `pending: 2`.
+#[tokio::test]
+async fn a_refusal_names_the_ceiling_not_the_whole_backlog() {
+    let (pg, db) = fresh_pg("pub_capture_refusal_depth").await;
+    let pool = pg.pool_for_tests().clone();
+    let owner = owner_fixture();
+    register_owner(&pool, &owner).await;
+    for n in 0..5 {
+        ingest_listenable(&pg, &owner, &probe(&format!("deep-{n}")), None)
+            .await
+            .expect("under the default bound");
+    }
+    let limits = PublicationLimits {
+        max_pending: 2,
+        max_payload_bytes: proxima_core::publication::DEFAULT_MAX_PAYLOAD_BYTES,
+    };
+    let err = ingest_listenable_under(&pg, &owner, &probe("refused"), None, limits)
+        .await
+        .expect_err("the backlog is over the bound");
+    assert!(
+        matches!(
+            err,
+            StorageError::PublicationRefused(
+                proxima_core::publication::PublicationError::CapacityExhausted {
+                    pending: 2,
+                    max: 2
+                }
+            )
+        ),
+        "{err}"
+    );
+    drop(pg);
+    let _ = drop_db(&db).await;
+}
+
 /// What the capacity check does with the publisher's estimate (#491): a fresh
 /// one under the ceiling admits a write without the probe, and anything else
 /// goes to the exact probe, so a refusal never rests on an estimate.
