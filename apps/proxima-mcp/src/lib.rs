@@ -188,7 +188,7 @@ fn cli_error(usage: &'static str) -> impl Fn(ArgsError) -> CliError {
 
 /// # Errors
 ///
-/// Returns argument, facade boot, or MCP transport failures.
+/// Returns argument, facade boot, or runtime failures (including the MCP transport).
 pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError> {
     let mut args: Vec<String> = args.into_iter().collect();
     if args.first().is_some_and(|arg| arg == "maintain-embeddings") {
@@ -1108,8 +1108,6 @@ pub enum CliError {
     Args(#[from] ArgsError),
     #[error(transparent)]
     Runtime(#[from] ProximaError),
-    #[error("transport: {0}")]
-    Transport(String),
 }
 
 impl CliError {
@@ -1118,7 +1116,7 @@ impl CliError {
         match self {
             Self::Help(_) => true,
             Self::Args(args) => args.is_help(),
-            Self::Runtime(_) | Self::Transport(_) => false,
+            Self::Runtime(_) => false,
         }
     }
 
@@ -1127,7 +1125,7 @@ impl CliError {
         match self {
             Self::Help(usage) => Some(usage),
             Self::Args(args) if args.is_help() => Some(USAGE),
-            Self::Args(_) | Self::Runtime(_) | Self::Transport(_) => None,
+            Self::Args(_) | Self::Runtime(_) => None,
         }
     }
 }
