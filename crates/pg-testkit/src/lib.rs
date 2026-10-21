@@ -694,24 +694,19 @@ async fn split_roles(
                 .execute(&mut target)
                 .await?;
         }
-        let attrs: (bool, bool, bool, bool, bool) = sqlx::query_as(
-            "SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolinherit
-               FROM pg_roles WHERE rolname = $1",
-        )
-        .bind(SPLIT_PLATFORM_ROLE)
-        .fetch_one(&mut target)
-        .await?;
-        let runtime_attrs: (bool, bool, bool, bool, bool) = sqlx::query_as(
-            "SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolinherit
-               FROM pg_roles WHERE rolname = $1",
-        )
-        .bind(SPLIT_RUNTIME_ROLE)
-        .fetch_one(&mut target)
-        .await?;
-        if attrs != (false, false, false, false, false)
-            || runtime_attrs != (false, false, false, false, false)
-        {
-            return Err(sqlx::Error::Protocol("split-role fixture attributes are unsafe".into()));
+        for role in [SPLIT_PLATFORM_ROLE, SPLIT_RUNTIME_ROLE] {
+            let attributes: (bool, bool, bool, bool, bool) = sqlx::query_as(
+                "SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolinherit
+                   FROM pg_roles WHERE rolname = $1",
+            )
+            .bind(role)
+            .fetch_one(&mut target)
+            .await?;
+            if attributes != (false, false, false, false, false) {
+                return Err(sqlx::Error::Protocol(format!(
+                    "split-role fixture role {role} has unsafe attributes"
+                )));
+            }
         }
         sqlx::raw_sql(AssertSqlSafe(
             "CREATE SCHEMA IF NOT EXISTS _proxima_test;
