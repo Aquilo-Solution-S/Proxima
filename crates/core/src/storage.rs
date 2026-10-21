@@ -152,19 +152,30 @@ pub struct SidecarPayload {
     pub schema_version: SchemaVersion,
     type_id: TypeId,
     value: Arc<dyn Any + Send + Sync>,
-    protocol_json: fn(&dyn Any) -> Result<serde_json::Value, String>,
-    /// Schema-declared reference fields, read back through the erased
-    /// value. Ingest needs them without knowing the concrete payload
-    /// type, and a per-kind function pointer is how the typed
-    /// declaration survives the erasure.
-    references: fn(&dyn Any) -> Vec<PayloadReference>,
-    /// The flavor-owned lifecycle scope this payload declares, read back
-    /// through the erased value. Same mechanism as `references`, and for
-    /// the same reason: the admission fences the scope without knowing
-    /// which concrete payload type it is writing. `None` for the payload
-    /// kinds that are not memories (cited objects) and
-    /// for every schema that declares no `SCOPE_KIND`.
-    scope: fn(&dyn Any) -> Option<ScopeRef>,
+    protocol_json: Reader<Result<serde_json::Value, String>>,
+    /// Schema-declared reference fields. Ingest needs them without knowing
+    /// the concrete payload type, so the constructor captures the typed
+    /// value in a reader and the declaration survives the erasure without
+    /// a downcast.
+    references: Reader<Vec<PayloadReference>>,
+    /// The flavor-owned lifecycle scope this payload declares. Same
+    /// mechanism as `references`, and for the same reason: the admission
+    /// fences the scope without knowing which concrete payload type it is
+    /// writing. `None` for the payload kinds that are not memories (cited
+    /// objects) and for every schema that declares no `SCOPE_KIND`.
+    scope: Reader<Option<ScopeRef>>,
+}
+
+/// A read of one typed payload, closed over the value it reads.
+type Reader<R> = Arc<dyn Fn() -> R + Send + Sync>;
+
+fn reader<T, R>(value: &Arc<T>, read: fn(&T) -> R) -> Reader<R>
+where
+    T: Send + Sync + 'static,
+    R: 'static,
+{
+    let value = Arc::clone(value);
+    Arc::new(move || read(&value))
 }
 
 impl PartialEq for SidecarPayload {
@@ -195,21 +206,24 @@ impl SidecarPayload {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
         value: T,
-        references: fn(&dyn Any) -> Vec<PayloadReference>,
-        scope: fn(&dyn Any) -> Option<ScopeRef>,
+        references: fn(&T) -> Vec<PayloadReference>,
+        scope: fn(&T) -> Option<ScopeRef>,
     ) -> Self
     where
         T: serde::Serialize + Send + Sync + 'static,
     {
+        let value = Arc::new(value);
         Self {
             kind,
             schema_id,
             schema_version,
             type_id: TypeId::of::<T>(),
-            value: Arc::new(value),
-            protocol_json: encode_protocol_json::<T>,
-            references,
-            scope,
+            protocol_json: reader(&value, |typed| {
+                serde_json::to_value(typed).map_err(|err| err.to_string())
+            }),
+            references: reader(&value, references),
+            scope: reader(&value, scope),
+            value,
         }
     }
 
@@ -223,8 +237,8 @@ impl SidecarPayload {
             T::schema_id(),
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
-            fact_references::<T>,
-            fact_scope::<T>,
+            T::references,
+            T::scope,
         )
     }
 
@@ -238,8 +252,8 @@ impl SidecarPayload {
             T::schema_id(),
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
-            abstraction_references::<T>,
-            abstraction_scope::<T>,
+            T::references,
+            T::scope,
         )
     }
 
@@ -253,8 +267,8 @@ impl SidecarPayload {
             T::schema_id(),
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
-            perspective_references::<T>,
-            perspective_scope::<T>,
+            T::references,
+            T::scope,
         )
     }
 
@@ -268,8 +282,8 @@ impl SidecarPayload {
             T::schema_id(),
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
-            goal_references::<T>,
-            no_scope,
+            T::references,
+            |_| None,
         )
     }
 
@@ -283,8 +297,8 @@ impl SidecarPayload {
             T::schema_id(),
             SchemaVersion::new(T::SCHEMA_VERSION),
             value,
-            no_references,
-            no_scope,
+            |_| Vec::new(),
+            |_| None,
         )
     }
 
@@ -300,7 +314,7 @@ impl SidecarPayload {
     /// Empty for payload kinds that cannot reference nodes.
     #[must_use]
     pub fn references(&self) -> Vec<PayloadReference> {
-        (self.references)(self.value.as_ref())
+        (self.references)()
     }
 
     /// The flavor-owned lifecycle scope this payload declares
@@ -313,81 +327,17 @@ impl SidecarPayload {
     /// declaration travels with the value rather than with the caller.
     #[must_use]
     pub fn scope(&self) -> Option<ScopeRef> {
-        (self.scope)(self.value.as_ref())
+        (self.scope)()
     }
 
     /// Render this typed payload as JSON for protocol output.
     ///
     /// # Errors
     ///
-    /// Returns an error when the erased value does not match its encoder or
-    /// the typed serializer fails.
+    /// Returns an error when the typed serializer fails.
     pub fn to_protocol_json(&self) -> Result<serde_json::Value, String> {
-        (self.protocol_json)(self.value.as_ref())
+        (self.protocol_json)()
     }
-}
-
-fn encode_protocol_json<T>(value: &dyn Any) -> Result<serde_json::Value, String>
-where
-    T: serde::Serialize + Send + Sync + 'static,
-{
-    let typed = value
-        .downcast_ref::<T>()
-        .ok_or_else(|| "sidecar payload type mismatch".to_string())?;
-    serde_json::to_value(typed).map_err(|err| err.to_string())
-}
-
-fn fact_references<T: FactPayload>(value: &dyn Any) -> Vec<PayloadReference> {
-    value
-        .downcast_ref::<T>()
-        .map(T::references)
-        .unwrap_or_default()
-}
-
-fn abstraction_references<T: AbstractionPayload>(value: &dyn Any) -> Vec<PayloadReference> {
-    value
-        .downcast_ref::<T>()
-        .map(T::references)
-        .unwrap_or_default()
-}
-
-fn perspective_references<T: PerspectivePayload>(value: &dyn Any) -> Vec<PayloadReference> {
-    value
-        .downcast_ref::<T>()
-        .map(T::references)
-        .unwrap_or_default()
-}
-
-fn goal_references<T: GoalPayload>(value: &dyn Any) -> Vec<PayloadReference> {
-    value
-        .downcast_ref::<T>()
-        .map(T::references)
-        .unwrap_or_default()
-}
-
-/// Cited objects are not nodes in the F/A/P graph, so they have no
-/// reference fields to declare.
-fn no_references(_value: &dyn Any) -> Vec<PayloadReference> {
-    Vec::new()
-}
-
-fn fact_scope<T: FactPayload>(value: &dyn Any) -> Option<ScopeRef> {
-    value.downcast_ref::<T>().and_then(T::scope)
-}
-
-fn abstraction_scope<T: AbstractionPayload>(value: &dyn Any) -> Option<ScopeRef> {
-    value.downcast_ref::<T>().and_then(T::scope)
-}
-
-fn perspective_scope<T: PerspectivePayload>(value: &dyn Any) -> Option<ScopeRef> {
-    value.downcast_ref::<T>().and_then(T::scope)
-}
-
-/// A Goal is its own spine and a citation is blob-side; neither is an
-/// admission the scope fence covers. `docs/build-a-flavor.md` keeps the scope declaration
-/// on the three memory layers for that reason.
-fn no_scope(_value: &dyn Any) -> Option<ScopeRef> {
-    None
 }
 
 #[derive(Debug)]
