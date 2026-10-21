@@ -123,18 +123,29 @@ fn compiled_pg_sidecars()
     Ok(sidecars.freeze_against(&registry)?)
 }
 
+/// The one predicate for "a Proxima schema": every `proxima_*` namespace, the same set the core
+/// ledger preflight probes when it decides a database needs a reset. A macro, so each statement
+/// below stays one fixed string literal (`concat!`) instead of a dynamic SQL site.
+macro_rules! is_proxima_schema {
+    ($column:literal) => {
+        concat!($column, r" LIKE 'proxima\_%' ESCAPE '\'")
+    };
+}
+
 /// Every `proxima_*` schema outside `owned`, sorted.
 async fn unowned_proxima_schemas(
     pool: &sqlx::PgPool,
     owned: &[String],
 ) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
+    sqlx::query_scalar(concat!(
         "SELECT schema_name::text
            FROM information_schema.schemata
-          WHERE schema_name LIKE 'proxima\\_%' ESCAPE '\\'
+          WHERE ",
+        is_proxima_schema!("schema_name"),
+        "
             AND NOT (schema_name = ANY($1::text[]))
-          ORDER BY schema_name",
-    )
+          ORDER BY schema_name"
+    ))
     .bind(owned)
     .fetch_all(pool)
     .await
@@ -230,9 +241,12 @@ enum DependentLanes {
 /// in `pg_toast` is part of its table, not a dependent lane. Not detectable:
 /// a consumer object on a Proxima table that references only Proxima or
 /// built-in objects — the catalog cannot tell it from Proxima's own.
-const FOREIGN_DEPENDENTS: &str = r"
+const FOREIGN_DEPENDENTS: &str = concat!(
+    r"
 WITH proxima AS (
-    SELECT oid FROM pg_catalog.pg_namespace WHERE nspname LIKE 'proxima\_%' ESCAPE '\'
+    SELECT oid FROM pg_catalog.pg_namespace WHERE ",
+    is_proxima_schema!("nspname"),
+    r"
 ), holder (classid, objid, nsp) AS (
     SELECT 'pg_catalog.pg_class'::regclass::oid, c.oid, c.relnamespace FROM pg_catalog.pg_class c
     UNION ALL SELECT 'pg_catalog.pg_proc'::regclass::oid, p.oid, p.pronamespace FROM pg_catalog.pg_proc p
@@ -277,7 +291,8 @@ SELECT DISTINCT
         AND NOT EXISTS (
             SELECT 1 FROM pg_catalog.pg_depend m
              WHERE m.classid = e.refclassid AND m.objid = e.refobjid AND m.deptype = 'e'))
- ORDER BY 1, 2";
+ ORDER BY 1, 2"
+);
 
 async fn reset_local_dev_database(
     pg: &PgMigrationStorage,
@@ -384,16 +399,10 @@ async fn reset_local_dev_database_confirmed(
     let pool = pg.clone_pool_for_backend();
     census_foreign_dependents(&pool, dependent_lanes).await?;
 
-    // A `proxima_*` schema this binary's compiled flavors did not create
-    // used to REFUSE the reset. That was the right guard while the reset
-    // dropped a hardcoded two names — it said "I will not destroy what I
-    // cannot recreate" — but it is now a deadlock, because
-    // The core ledger preflight treats EVERY `proxima\_%` schema as
-    // Proxima's when the baseline marker is missing. Boot demanded a reset
-    // that the reset then refused, with nothing in between to break the
-    // tie. The two predicates have to agree on what the namespace is, so
-    // the guard becomes a report: the schema goes with the rest, and the
-    // operator sees it named before it does.
+    // A schema this binary's compiled flavors did not create is reported and then dropped with
+    // the rest, not refused: the core ledger preflight counts every `proxima_*` schema as
+    // Proxima's, so a reset that refused one would leave boot demanding a reset it cannot get.
+    // The report names it before it goes.
     let unowned_schemas = unowned_proxima_schemas(&pool, &compiled_schema_names()?).await?;
     if !unowned_schemas.is_empty() {
         eprintln!(
@@ -425,18 +434,13 @@ async fn reset_local_dev_database_confirmed(
         }
     }
 
-    // Every `proxima_*` schema, not the two this binary happens to know
-    // about. The core ledger preflight decides a database needs a
-    // reset by probing `table_schema LIKE 'proxima\_%'`, so a schema left
-    // by a flavor that is no longer compiled in makes boot demand a reset
-    // that a two-name DROP list can never satisfy — the reset "succeeds",
-    // the schema stays, and boot demands the reset again, forever. The two
-    // predicates have to be the same predicate.
-    let schemas: Vec<String> = sqlx::query_scalar(
-        "SELECT nspname::text FROM pg_namespace
-          WHERE nspname LIKE 'proxima\\_%'
-          ORDER BY nspname",
-    )
+    // Every `proxima_*` schema, by the one predicate the preflight uses, not a list of the names
+    // this binary happens to know.
+    let schemas: Vec<String> = sqlx::query_scalar(concat!(
+        "SELECT nspname::text FROM pg_namespace WHERE ",
+        is_proxima_schema!("nspname"),
+        " ORDER BY nspname"
+    ))
     .fetch_all(&pool)
     .await?;
     eprintln!("resetting schemas: {}", schemas.join(", "));
@@ -444,17 +448,19 @@ async fn reset_local_dev_database_confirmed(
     // name never becomes a Rust format argument: `format('%I')` is
     // PostgreSQL's own identifier quoting, and this stays one fixed string
     // literal instead of a dynamic SQL site needing a proof.
-    sqlx::raw_sql(
+    sqlx::raw_sql(concat!(
         "DO $$
          DECLARE schema_name text;
          BEGIN
              FOR schema_name IN
-                 SELECT nspname FROM pg_namespace WHERE nspname LIKE 'proxima\\_%'
+                 SELECT nspname FROM pg_namespace WHERE ",
+        is_proxima_schema!("nspname"),
+        "
              LOOP
                  EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', schema_name);
              END LOOP;
-         END $$;",
-    )
+         END $$;"
+    ))
     .execute(&pool)
     .await?;
     for table in flavor_ledger_tables {
