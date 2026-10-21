@@ -10,7 +10,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort, ToolScope,
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort, OwnerId,
+    ToolScope, UserId, WriterAttribution,
 };
 
 use crate::{
@@ -132,10 +133,83 @@ fn narrowed_by_host(
         .with_served_surface(resolved.served_surface().clone()))
 }
 
+/// Attach the subject map's trusted model id, if it declares one.
+///
+/// The map validated the value at parse time, so a rejection here means the
+/// two bounds disagree — a deployment fault, not a caller fault. Failing the
+/// authentication is the fail-closed answer: a context that silently lost
+/// its provenance would write under the caller's own label.
+fn bind_trusted_model_id(
+    ctx: AuthzContext,
+    trusted_model_id: Option<String>,
+) -> Result<AuthzContext, AuthError> {
+    let Some(trusted_model_id) = trusted_model_id else {
+        return Ok(ctx);
+    };
+    ctx.with_trusted_model_id(trusted_model_id).map_err(|err| {
+        tracing::error!(error = %err, "oidc auth: configured trusted_model_id is unusable");
+        AuthError::InvalidCredentials
+    })
+}
+
+fn signed_uuid_claim(value: &serde_json::Value) -> Result<uuid::Uuid, AuthError> {
+    value
+        .as_str()
+        .and_then(|raw| raw.parse::<OwnerId>().ok())
+        .map(OwnerId::into_inner)
+        .ok_or(AuthError::InvalidCredentials)
+}
+
+/// Resolve ordinary memberships, or carry a forwarder's verified owner to
+/// the edge without resolving that owner before header agreement.
+async fn context_for_verified_token(
+    owner_access: &dyn OwnerAccessPort,
+    subject: UserId,
+    token: &ValidatedOidcToken<OidcClaimMap>,
+) -> Result<AuthzContext, AuthError> {
+    let is_forwarder = owner_access.is_forwarder(subject).map_err(|err| {
+        tracing::warn!(error = %err, "oidc auth: forwarding policy resolution failed");
+        AuthError::InvalidCredentials
+    })?;
+    let context = if is_forwarder {
+        let owner = OwnerId::new(signed_uuid_claim(
+            token
+                .custom
+                .get("owner")
+                .ok_or(AuthError::InvalidCredentials)?,
+        )?);
+        let by = signed_uuid_claim(
+            token
+                .custom
+                .get("by")
+                .ok_or(AuthError::InvalidCredentials)?,
+        )?;
+        let via = match token
+            .custom
+            .get("via")
+            .ok_or(AuthError::InvalidCredentials)?
+        {
+            serde_json::Value::Null => None,
+            value => Some(signed_uuid_claim(value)?),
+        };
+        AuthzContext::from_verified_forwarded_owner(subject, owner, WriterAttribution { by, via })
+    } else {
+        let roles = owner_access
+            .resolve_roles_for_subject(subject)
+            .await
+            .map_err(|err| {
+                tracing::warn!(error = %err, "oidc auth: owner-access resolution failed");
+                AuthError::InvalidCredentials
+            })?;
+        AuthzContext::server_resolved(roles, AuthPath::HostBearer)
+    };
+    Ok(context.with_expires_at(Some(token.claims.expires_at)))
+}
+
 /// One OIDC route: validator, identity map, owner-role resolver, authz shape.
 pub struct OidcBinding {
     route: OidcBindingRoute,
-    validator: OidcTokenValidator,
+    pub(crate) validator: OidcTokenValidator,
     allowed_subjects: Option<HashSet<String>>,
     subject_map: OidcSubjectMap,
     owner_access: Arc<dyn OwnerAccessPort>,
@@ -205,6 +279,13 @@ impl OidcBinding {
         &self.route
     }
 
+    /// Require the RFC 9068 access-token media type in the JWT header.
+    #[must_use]
+    pub(crate) fn require_access_token_typ(mut self) -> Self {
+        self.validator = self.validator.require_access_token_typ();
+        self
+    }
+
     /// Refuse tokens whose authorized party (`azp`) this binding's route does
     /// not allow. The policy belongs to this one `(issuer, audience)` route:
     /// two bindings on one issuer each enforce their own. Without the call no
@@ -216,7 +297,7 @@ impl OidcBinding {
         self
     }
 
-    async fn authz_for_token(
+    pub(crate) async fn authz_for_token(
         &self,
         token: ValidatedOidcToken<OidcClaimMap>,
     ) -> Result<AuthzContext, AuthError> {
@@ -235,20 +316,16 @@ impl OidcBinding {
                 sub = %claims.subject,
                 iss = %claims.issuer,
                 aud = %claims.audience,
-                "oidc binding set: token subject not in subject map"
+                "oidc auth: token subject not in subject map"
             );
             return Err(AuthError::InvalidCredentials);
         };
-        let ctx = crate::authenticator::bind_trusted_model_id(
-            crate::authenticator::context_for_verified_token(
-                self.owner_access.as_ref(),
-                binding.user_id,
-                &token,
-            )
-            .await?,
+        let ctx = bind_trusted_model_id(
+            context_for_verified_token(self.owner_access.as_ref(), binding.user_id, &token).await?,
             binding.trusted_model_id,
         )?;
         let ctx = self.role_shape.apply(ctx, &token)?;
+        tracing::debug!(sub = %claims.subject, "oidc token accepted (host-resolved)");
         Ok(ctx.with_verified_claims(token.custom))
     }
 }

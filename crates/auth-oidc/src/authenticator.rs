@@ -15,21 +15,17 @@
 //! forwarder instead carries its verified owner and writer claims without a
 //! role until request owner agreement is checked at the edge.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, AlgorithmFamily, Validation, decode, decode_header};
-use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort, OwnerId,
-    UserId, WriterAttribution,
-};
+use proxima_core::{AuthError, Authenticator, AuthzContext, Credentials, OwnerAccessPort};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::OidcClaimMap;
 use crate::authorized_party::AuthorizedPartyPolicy;
+use crate::binding_set::OidcBinding;
 use crate::config::{OidcAuthConfig, OidcConfigError};
 use crate::keys::KeyResolver;
 use crate::subject_map::OidcSubjectMap;
@@ -300,18 +296,17 @@ impl OidcTokenValidator {
     }
 }
 
-/// Validates Zitadel/OIDC bearer JWTs and shapes an [`AuthzContext`].
+/// Validates Zitadel/OIDC bearer JWTs and shapes an [`AuthzContext`]: one
+/// [`OidcBinding`] with server-resolved roles, so the post-validation pipeline
+/// is written once, there.
 pub struct OidcAuthenticator {
-    validator: OidcTokenValidator,
-    allowed_subjects: Option<HashSet<String>>,
-    subject_map: OidcSubjectMap,
-    owner_access: Arc<dyn OwnerAccessPort>,
+    binding: OidcBinding,
 }
 
 impl std::fmt::Debug for OidcAuthenticator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OidcAuthenticator")
-            .field("validator", &self.validator)
+            .field("route", self.binding.route())
             .finish_non_exhaustive()
     }
 }
@@ -327,18 +322,13 @@ impl OidcAuthenticator {
     /// Returns an error when the issuer contains a query or fragment, or the
     /// issuer/JWKS URL violates the HTTPS/loopback transport policy.
     pub fn new(
-        mut config: OidcAuthConfig,
+        config: OidcAuthConfig,
         keys: Arc<dyn KeyResolver>,
         subject_map: OidcSubjectMap,
         owner_access: Arc<dyn OwnerAccessPort>,
     ) -> Result<Self, OidcConfigError> {
-        let allowed_subjects = std::mem::take(&mut config.allowed_subjects);
-        let validator = OidcTokenValidator::new(config, keys)?;
         Ok(Self {
-            validator,
-            allowed_subjects,
-            subject_map,
-            owner_access,
+            binding: OidcBinding::new(config, keys, subject_map, owner_access)?,
         })
     }
 
@@ -348,120 +338,24 @@ impl OidcAuthenticator {
     /// rule.
     #[must_use]
     pub fn with_authorized_party_policy(mut self, policy: AuthorizedPartyPolicy) -> Self {
-        self.validator = self.validator.with_authorized_party_policy(policy);
+        self.binding = self.binding.with_authorized_party_policy(policy);
         self
     }
 
     /// Require the RFC 9068 access-token media type in the JWT header.
     #[must_use]
     pub fn require_access_token_typ(mut self) -> Self {
-        self.validator = self.validator.require_access_token_typ();
+        self.binding = self.binding.require_access_token_typ();
         self
     }
-}
-
-/// Attach the subject map's trusted model id, if it declares one.
-///
-/// The map validated the value at parse time, so a rejection here means the
-/// two bounds disagree — a deployment fault, not a caller fault. Failing the
-/// authentication is the fail-closed answer: a context that silently lost
-/// its provenance would write under the caller's own label.
-pub(crate) fn bind_trusted_model_id(
-    ctx: AuthzContext,
-    trusted_model_id: Option<String>,
-) -> Result<AuthzContext, AuthError> {
-    let Some(trusted_model_id) = trusted_model_id else {
-        return Ok(ctx);
-    };
-    ctx.with_trusted_model_id(trusted_model_id).map_err(|err| {
-        tracing::error!(error = %err, "oidc auth: configured trusted_model_id is unusable");
-        AuthError::InvalidCredentials
-    })
-}
-
-fn signed_uuid_claim(value: &serde_json::Value) -> Result<uuid::Uuid, AuthError> {
-    value
-        .as_str()
-        .and_then(|raw| raw.parse::<OwnerId>().ok())
-        .map(OwnerId::into_inner)
-        .ok_or(AuthError::InvalidCredentials)
-}
-
-/// Resolve ordinary memberships, or carry a forwarder's verified owner to
-/// the edge without resolving that owner before header agreement.
-pub(crate) async fn context_for_verified_token(
-    owner_access: &dyn OwnerAccessPort,
-    subject: UserId,
-    token: &ValidatedOidcToken<OidcClaimMap>,
-) -> Result<AuthzContext, AuthError> {
-    let is_forwarder = owner_access.is_forwarder(subject).map_err(|err| {
-        tracing::warn!(error = %err, "oidc auth: forwarding policy resolution failed");
-        AuthError::InvalidCredentials
-    })?;
-    let context = if is_forwarder {
-        let owner = OwnerId::new(signed_uuid_claim(
-            token
-                .custom
-                .get("owner")
-                .ok_or(AuthError::InvalidCredentials)?,
-        )?);
-        let by = signed_uuid_claim(
-            token
-                .custom
-                .get("by")
-                .ok_or(AuthError::InvalidCredentials)?,
-        )?;
-        let via = match token
-            .custom
-            .get("via")
-            .ok_or(AuthError::InvalidCredentials)?
-        {
-            serde_json::Value::Null => None,
-            value => Some(signed_uuid_claim(value)?),
-        };
-        AuthzContext::from_verified_forwarded_owner(subject, owner, WriterAttribution { by, via })
-    } else {
-        let roles = owner_access
-            .resolve_roles_for_subject(subject)
-            .await
-            .map_err(|err| {
-                tracing::warn!(error = %err, "oidc auth: owner-access resolution failed");
-                AuthError::InvalidCredentials
-            })?;
-        AuthzContext::server_resolved(roles, AuthPath::HostBearer)
-    };
-    Ok(context.with_expires_at(Some(token.claims.expires_at)))
 }
 
 #[async_trait]
 impl Authenticator for OidcAuthenticator {
     async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
         let Credentials::Bearer(token) = creds;
-        let token = self.validator.validate_with::<OidcClaimMap>(token).await?;
-        let claims = &token.claims;
-
-        if let Some(allow) = &self.allowed_subjects
-            && !allow.contains(&claims.subject)
-        {
-            return Err(AuthError::InvalidCredentials);
-        }
-
-        let Some(binding) = self
-            .subject_map
-            .resolve_binding(&claims.issuer, &claims.subject)
-        else {
-            tracing::debug!(
-                sub = %claims.subject,
-                iss = %claims.issuer,
-                "oidc auth: token subject not in subject map"
-            );
-            return Err(AuthError::InvalidCredentials);
-        };
-        let ctx =
-            context_for_verified_token(self.owner_access.as_ref(), binding.user_id, &token).await?;
-        tracing::debug!(sub = %claims.subject, "oidc token accepted (host-resolved)");
-        let ctx = bind_trusted_model_id(ctx, binding.trusted_model_id)?;
-        Ok(ctx.with_verified_claims(token.custom))
+        let token = self.binding.validator.validate_with(token).await?;
+        self.binding.authz_for_token(token).await
     }
 }
 
@@ -475,7 +369,7 @@ mod tests {
     use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use jsonwebtoken::DecodingKey;
-    use proxima_core::{AccessError, GroupId, OwnerId, OwnerRoles, Role, UserId};
+    use proxima_core::{AccessError, AuthPath, GroupId, OwnerId, OwnerRoles, Role, UserId};
     use serde::Serialize;
     use uuid::Uuid;
 
