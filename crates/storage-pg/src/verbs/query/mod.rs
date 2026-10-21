@@ -33,8 +33,10 @@ pub(crate) use lineage::{
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use memories::memory_page_sql_for_tests;
 pub(crate) use memories::query_memories_on_connection;
-pub(crate) use search::projection_candidate_statements;
 pub(crate) use search::search_memories_on_connection;
+pub(crate) use search::{
+    SubstringCandidates, projection_candidate_statements, projection_substring_candidates,
+};
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use search::{
     ranked_projection_sql_for_tests, search_admit_sql_for_tests,

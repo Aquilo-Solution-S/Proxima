@@ -2454,7 +2454,9 @@ IF candidate_limit IS NULL OR candidate_limit < 1 OR candidate_limit > 1000 THEN
 RAISE EXCEPTION 'candidate limit must be between 1 and 1000' USING ERRCODE = '22023';
 END IF;
 IF recency THEN
-RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
+DECLARE legs text[] := ARRAY[]::text[];
+BEGIN
+IF requested_schemas && ARRAY['core/agent-derivation-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
            FROM proxima_core.agent_derivation_v1 c
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
@@ -2467,7 +2469,8 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) <= $5)
-            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+            AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
+IF requested_schemas && ARRAY['core/agent-note-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
            FROM proxima_core.agent_note_v1 c
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
@@ -2480,7 +2483,8 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) <= $5)
-            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+            AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
+IF requested_schemas && ARRAY['core/interpretation-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
            FROM proxima_core.interpretation_v1 c
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
@@ -2493,7 +2497,8 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) <= $5)
-            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+            AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
+IF requested_schemas && ARRAY['core/utterance-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
            FROM proxima_core.utterance_v1 c
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
@@ -2506,9 +2511,14 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) <= $5)
-            AND ($6::uuid IS NULL OR c.t < $6)) s ORDER BY s.t DESC LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
+            AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
+IF cardinality(legs) = 0 THEN RETURN; END IF;
+RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (' || array_to_string(legs, ' UNION ALL ') || ') s ORDER BY s.t DESC LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
+END;
 ELSE
-RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
+DECLARE legs text[] := ARRAY[]::text[];
+BEGIN
+IF requested_schemas && ARRAY['core/agent-derivation-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
            FROM proxima_core.agent_derivation_v1 c
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
@@ -2521,7 +2531,8 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) <= $5)
-            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+            AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
+IF requested_schemas && ARRAY['core/agent-note-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
            FROM proxima_core.agent_note_v1 c
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
@@ -2534,7 +2545,8 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) <= $5)
-            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+            AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
+IF requested_schemas && ARRAY['core/interpretation-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
            FROM proxima_core.interpretation_v1 c
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
@@ -2547,7 +2559,8 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) <= $5)
-            AND ($6::uuid IS NULL OR c.t < $6) UNION ALL SELECT c.t AS t,
+            AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
+IF requested_schemas && ARRAY['core/utterance-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
            FROM proxima_core.utterance_v1 c
            JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
@@ -2560,7 +2573,10 @@ RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (SELECT c.t AS t,
                  OR proxima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
                  OR proxima_core.memory_created_at(c.t) <= $5)
-            AND ($6::uuid IS NULL OR c.t < $6)) s ORDER BY s.lexical_score DESC, s.t DESC LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
+            AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
+IF cardinality(legs) = 0 THEN RETURN; END IF;
+RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (' || array_to_string(legs, ' UNION ALL ') || ') s ORDER BY s.lexical_score DESC, s.t DESC LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
+END;
 END IF;
 END
 $candidate_function$;$generated_function$;

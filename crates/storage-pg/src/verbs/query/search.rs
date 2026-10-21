@@ -807,7 +807,32 @@ pub(crate) fn projection_candidate_statements(
     substring: bool,
     recency: bool,
 ) -> Result<Option<String>, StorageError> {
-    let Some(flavor) = FlavorScan::new(
+    if substring {
+        return Ok(projection_substring_candidates(projections, recency)?
+            .map(|candidates| candidates.statement(candidates.legs.iter())));
+    }
+    let Some(flavor) = core_band_scan(projections) else {
+        return Ok(None);
+    };
+    let admit = candidate_authorization("p.memory_id", "");
+    ranked_projection_sql_parts(
+        &flavor,
+        true,
+        &format!(
+            " AND p.owner_id = ANY(proxima_core.search_owner_ids()){}",
+            candidate_tags("p.tag")
+        ),
+        &admit,
+        candidate_order_of(recency),
+        Some("$9::boolean"),
+    )
+    .map(Some)
+}
+
+/// The participating schemas the candidate functions render: those on core
+/// bands, which the merge can compare.
+fn core_band_scan(projections: &[MemorySearchProjection]) -> Option<FlavorScan<'_>> {
+    FlavorScan::new(
         projections
             .iter()
             .filter(|projection| {
@@ -815,29 +840,67 @@ pub(crate) fn projection_candidate_statements(
                     && projection.render_bands.is_some()
             })
             .collect(),
-    ) else {
-        return Ok(None);
-    };
-    let order = if recency {
+    )
+}
+
+const fn candidate_order_of(recency: bool) -> SearchOrder {
+    if recency {
         SearchOrder::Recency
     } else {
         SearchOrder::Relevance
-    };
-    if !substring {
-        let admit = candidate_authorization("p.memory_id", "");
-        return ranked_projection_sql_parts(
-            &flavor,
-            true,
-            &format!(
-                " AND p.owner_id = ANY(proxima_core.search_owner_ids()){}",
-                candidate_tags("p.tag")
-            ),
-            &admit,
-            order,
-            Some("$9::boolean"),
-        )
-        .map(Some);
     }
+}
+
+/// One sidecar's leg of the substring candidate statement and the schemas it
+/// reads. A leg whose schemas the request does not name matches no row, so
+/// the function leaves it out of the statement it plans.
+pub(crate) struct CandidateLeg {
+    pub(crate) schemas: Vec<String>,
+    pub(crate) sql: String,
+}
+
+/// The substring candidate statement as its legs and the ordering that
+/// merges them: ONE author of both the whole statement the plan guards read
+/// and the per-request statement the migrated function assembles.
+pub(crate) struct SubstringCandidates {
+    pub(crate) legs: Vec<CandidateLeg>,
+    order_by: &'static str,
+}
+
+impl SubstringCandidates {
+    /// The text a statement over some of the legs is made of: what comes
+    /// before the legs, between them and after them. The whole statement the
+    /// plan guards read and the one the migrated function assembles per
+    /// request are both this frame around their legs.
+    pub(crate) fn frame(&self) -> (&'static str, &'static str, String) {
+        (
+            "SELECT s.t, s.lexical_score FROM (",
+            " UNION ALL ",
+            format!(") s ORDER BY {} LIMIT $2", self.order_by),
+        )
+    }
+
+    fn statement<'a>(&self, legs: impl Iterator<Item = &'a CandidateLeg>) -> String {
+        let (open, between, close) = self.frame();
+        let legs = legs.map(|leg| leg.sql.as_str()).collect::<Vec<_>>();
+        format!("{open}{}{close}", legs.join(between))
+    }
+}
+
+pub(crate) fn projection_substring_candidates(
+    projections: &[MemorySearchProjection],
+    recency: bool,
+) -> Result<Option<SubstringCandidates>, StorageError> {
+    let Some(flavor) = core_band_scan(projections) else {
+        return Ok(None);
+    };
+    substring_candidate_legs(&flavor, candidate_order_of(recency))
+}
+
+fn substring_candidate_legs(
+    flavor: &FlavorScan<'_>,
+    order: SearchOrder,
+) -> Result<Option<SubstringCandidates>, StorageError> {
     let legs = sidecar_legs(
         flavor
             .schemas
@@ -861,12 +924,20 @@ pub(crate) fn projection_candidate_statements(
             " AND authorized_head.schema_id = ANY(ARRAY[{}]::text[])",
             leg.schema_literals()
         );
-        substring_leg_sql_parts(
+        let sql = substring_leg_sql_parts(
             leg,
             flavor.bands,
             &tags,
             &candidate_authorization("m.t", &heads_of_leg),
-        )
+        )?;
+        Ok(CandidateLeg {
+            schemas: leg
+                .schema_ids
+                .iter()
+                .map(|schema| (*schema).to_owned())
+                .collect(),
+            sql,
+        })
     })
     .collect::<Result<Vec<_>, StorageError>>()?;
     if legs.is_empty() {
@@ -876,10 +947,7 @@ pub(crate) fn projection_candidate_statements(
         SearchOrder::Relevance => "s.lexical_score DESC, s.t DESC",
         SearchOrder::Recency => "s.t DESC",
     };
-    Ok(Some(format!(
-        "SELECT s.t, s.lexical_score FROM ({}) s ORDER BY {order_by} LIMIT $2",
-        legs.join(" UNION ALL ")
-    )))
+    Ok(Some(SubstringCandidates { legs, order_by }))
 }
 
 fn candidate_tags(column: &str) -> String {

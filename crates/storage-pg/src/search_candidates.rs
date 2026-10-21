@@ -9,6 +9,7 @@ use proxima_core::flavor::FlavorContract;
 
 use crate::pg_ident::PgIdent;
 use crate::projection::Artifact;
+use crate::verbs::query::SubstringCandidates;
 
 /// The fixed `PostgreSQL` identity arguments of both candidate functions.
 pub const ARGUMENT_TYPES: &str = "text, bigint, text[], timestamp with time zone, timestamp with time zone, uuid, uuid[], text[], boolean, boolean, boolean, text, boolean";
@@ -90,32 +91,34 @@ fn candidate_artifacts_for_projection(
 ) -> Result<Vec<Artifact>, StorageError> {
     let mut artifacts = Vec::new();
     for substring in [false, true] {
-        let Some(relevance_sql) =
-            crate::verbs::query::projection_candidate_statements(projections, substring, false)?
-        else {
-            continue;
+        let (relevance, recency) = if substring {
+            let Some(relevance) =
+                crate::verbs::query::projection_substring_candidates(projections, false)?
+            else {
+                continue;
+            };
+            let recency = crate::verbs::query::projection_substring_candidates(projections, true)?
+                .ok_or_else(missing_recency)?;
+            (
+                substring_execution(&relevance),
+                substring_execution(&recency),
+            )
+        } else {
+            let Some(relevance) =
+                crate::verbs::query::projection_candidate_statements(projections, false, false)?
+            else {
+                continue;
+            };
+            let recency =
+                crate::verbs::query::projection_candidate_statements(projections, false, true)?
+                    .ok_or_else(missing_recency)?;
+            (execution(&relevance), execution(&recency))
         };
-        let recency_sql =
-            crate::verbs::query::projection_candidate_statements(projections, substring, true)?
-                .ok_or_else(|| {
-                    StorageError::Internal("candidate arm has no recency statement".into())
-                })?;
         let name = function_name(table, substring)?;
         let returns = if substring {
             "t uuid, lexical_score real"
         } else {
             "t uuid, schema_id text, lexical_score real"
-        };
-        // EXECUTE plans each search using its actual values. A generic plan
-        // cannot hide the tag/text condition behind optional-filter switches.
-        let execution = |sql: &str| {
-            format!(
-                "RETURN QUERY EXECUTE '{}' USING query_text, candidate_limit, \
-                 requested_tags, since_time, until_time, before_id, \
-                 requested_owners, requested_schemas, rescue, heads_only, \
-                 requested_kind, tag_all;",
-                sql.replace('\'', "''")
-            )
         };
         // SQL-POLICY: PgIdent — name and all body identifiers are checked by the renderer.
         let forward = format!(
@@ -136,8 +139,6 @@ fn candidate_artifacts_for_projection(
                  END IF;\n\
              END\n\
              $candidate_function$;",
-            recency = execution(&recency_sql),
-            relevance = execution(&relevance_sql),
         );
         let signature = format!("{name}({ARGUMENT_TYPES})");
         let mut read_tables = vec![
@@ -166,6 +167,60 @@ fn candidate_artifacts_for_projection(
         });
     }
     Ok(artifacts)
+}
+
+fn missing_recency() -> StorageError {
+    StorageError::Internal("candidate arm has no recency statement".into())
+}
+
+const USING_ARGUMENTS: &str = "USING query_text, candidate_limit, requested_tags, since_time, \
+     until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, \
+     requested_kind, tag_all;";
+
+fn quoted(sql: &str) -> String {
+    sql.replace('\'', "''")
+}
+
+/// EXECUTE plans each search using its actual values. A generic plan cannot
+/// hide the tag/text condition behind optional-filter switches.
+fn execution(sql: &str) -> String {
+    format!("RETURN QUERY EXECUTE '{}' {USING_ARGUMENTS}", quoted(sql))
+}
+
+/// The substring arm plans one statement per request over only the legs whose
+/// schemas the request names: each leg is `m.schema_id = ANY($8)` and
+/// `= ANY(<its own schemas>)`, so a leg the request does not name matches no
+/// row, and planning it (about 2 ms of row-security expansion) buys nothing.
+fn substring_execution(candidates: &SubstringCandidates) -> String {
+    let (open, between, close) = candidates.frame();
+    let legs = candidates
+        .legs
+        .iter()
+        .map(|leg| {
+            let schemas = leg
+                .schemas
+                .iter()
+                .map(|schema| format!("'{}'", schema.replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "IF requested_schemas && ARRAY[{schemas}]::text[] THEN \
+                 legs := legs || '{}'::text; END IF;",
+                quoted(&leg.sql)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "DECLARE legs text[] := ARRAY[]::text[];\n\
+         BEGIN\n{legs}\n\
+         IF cardinality(legs) = 0 THEN RETURN; END IF;\n\
+         RETURN QUERY EXECUTE '{}' || array_to_string(legs, '{}') || '{}' {USING_ARGUMENTS}\n\
+         END;",
+        quoted(open),
+        quoted(between),
+        quoted(&close),
+    )
 }
 
 /// Install only generated functions while assuming the non-inheritable owner.

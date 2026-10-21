@@ -290,3 +290,43 @@ async fn stale_accelerator_owners_never_leak_candidate_ids_scores_or_counts() ->
     }
     Ok(())
 }
+
+/// The substring function plans only the sidecars a request names; the rows
+/// it returns are those of the named schemas whatever the ordering, and a
+/// request naming none of them (or no schema at all) returns nothing.
+#[tokio::test]
+async fn substring_candidates_answer_for_the_requested_schemas_only() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.pg.clone_pool_for_backend();
+    let scope = fixture.scope();
+    let owners = [fixture.owner.into_inner()];
+    let note = "core/agent-note-v1".to_owned();
+    let utterance = "core/utterance-v1".to_owned();
+    let cases: [(Option<Vec<String>>, usize); 5] = [
+        (Some(vec![note.clone()]), 1),
+        (Some(vec![utterance.clone(), note.clone()]), 1),
+        (Some(vec![utterance]), 0),
+        (Some(Vec::new()), 0),
+        (None, 0),
+    ];
+    for recency in [false, true] {
+        for (schemas, expected) in &cases {
+            let mut tx = begin_owner_transaction(&runtime, &scope).await?;
+            let rows: Vec<(Uuid, f32)> = sqlx::query_as(
+                "SELECT t, lexical_score FROM proxima_core.search_substring_candidates(
+                     '%needle%', 8, NULL, NULL, NULL, NULL, $1, $2, true, $3, true, 'fact', false)",
+            )
+            .bind(&owners[..])
+            .bind(schemas.as_deref())
+            .bind(recency)
+            .fetch_all(tx.as_mut())
+            .await?;
+            assert_eq!(rows.len(), *expected, "{schemas:?} recency={recency}");
+            if *expected == 1 {
+                assert_eq!(rows[0].0, fixture.ours);
+            }
+            tx.commit().await?;
+        }
+    }
+    Ok(())
+}
