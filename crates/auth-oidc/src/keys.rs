@@ -29,6 +29,10 @@ const JWKS_MAX_AGE: Duration = Duration::from_hours(1);
 /// both discovery and JWKS requests.
 pub const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Largest discovery or JWKS response body read. A real key set is a few
+/// kilobytes; the cap bounds what an issuer can make the host buffer.
+const MAX_RESPONSE_BYTES: usize = 1 << 20;
+
 /// Largest complete-request timeout accepted by [`HttpJwksResolver`].
 pub const MAX_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
 
@@ -87,9 +91,10 @@ impl StaticJwksResolver {
     ///
     /// # Errors
     ///
-    /// [`KeyError::Parse`] when the document is not a JWKS or an RSA key's
-    /// `n`/`e` do not decode. [`KeyError::Config`] when the set is empty, or an
-    /// entry has no `kid`, repeats one, has another `kty`, lacks `n`/`e` (RSA),
+    /// [`KeyError::Parse`] when the document is not a JWKS.
+    /// [`KeyError::Config`] when the set is empty, or an
+    /// entry has no `kid`, repeats one, has another `kty`, lacks `n`/`e` (RSA)
+    /// or has ones that do not decode,
     /// `crv`/`x`/`y` (EC) or `crv`/`x` (OKP), names another curve, has a
     /// coordinate that is not 32 bytes of base64url, names an `alg` that does
     /// not belong to its `kty` or a `use` other than `sig`, or carries the
@@ -108,24 +113,14 @@ impl StaticJwksResolver {
             let Some(kid) = jwk.kid.clone().filter(|kid| !kid.trim().is_empty()) else {
                 return Err(KeyError::Config(format!("key {index} has no kid")));
             };
-            let refuse = |reason: &str| Err(KeyError::Config(format!("key {kid:?} {reason}")));
-            let key = if jwk.kty == "RSA" {
-                if let Err(reason) = jwk.check_public_signing_key(AlgorithmFamily::Rsa) {
-                    return refuse(&reason);
-                }
-                let (Some(n), Some(e)) = (&jwk.n, &jwk.e) else {
-                    return refuse("lacks n or e");
-                };
-                DecodingKey::from_rsa_components(n, e)
-                    .map_err(|err| KeyError::Parse(format!("key {kid:?}: {err}")))?
-            } else {
-                match jwk.ec_or_okp_key() {
-                    Ok(key) => key,
-                    Err(reason) => return refuse(&reason),
+            let key = match jwk.verification_key() {
+                Ok(key) => key,
+                Err(reason) => {
+                    return Err(KeyError::Config(format!("key {kid:?} {reason}")));
                 }
             };
             if keys.contains_key(&kid) {
-                return refuse("appears twice");
+                return Err(KeyError::Config(format!("key {kid:?} appears twice")));
             }
             keys.insert(kid, Arc::new(key));
         }
@@ -207,10 +202,19 @@ impl Jwk {
         Ok(())
     }
 
-    /// A P-256 (`kty: EC`) or Ed25519 (`kty: OKP`) public key, or the reason
-    /// this entry is none. The key's family comes from `kty` alone.
-    fn ec_or_okp_key(&self) -> Result<DecodingKey, String> {
+    /// The verification key this entry is, or the reason it is none: RSA
+    /// (`n`, `e`), P-256 (`kty: EC`) or Ed25519 (`kty: OKP`). The key's family
+    /// comes from `kty` alone. Both resolvers build keys here, so what counts
+    /// as a usable entry is written once; each decides what a refusal costs.
+    fn verification_key(&self) -> Result<DecodingKey, String> {
         let key = match self.kty.as_str() {
+            "RSA" => {
+                self.check_public_signing_key(AlgorithmFamily::Rsa)?;
+                let (Some(n), Some(e)) = (&self.n, &self.e) else {
+                    return Err("lacks n or e".into());
+                };
+                DecodingKey::from_rsa_components(n, e)
+            }
             "EC" => {
                 self.check_public_signing_key(AlgorithmFamily::Ec)?;
                 self.check_curve("P-256")?;
@@ -232,6 +236,18 @@ impl Jwk {
         key.map_err(|err| format!("has an unusable key: {err}"))
     }
 
+    /// An entry of a fetched set, read as tolerantly as the HTTP resolver
+    /// always has: `kty` in any case, and RSA when `kty` is missing but `n`
+    /// and `e` are published. A pinned set is the operator's and stays exact.
+    fn tolerant(mut self) -> Self {
+        if self.kty.eq_ignore_ascii_case("RSA")
+            || (self.kty.is_empty() && self.n.is_some() && self.e.is_some())
+        {
+            self.kty = "RSA".into();
+        }
+        self
+    }
+
     fn check_curve(&self, supported: &str) -> Result<(), String> {
         match self.crv.as_deref() {
             Some(crv) if crv == supported => Ok(()),
@@ -241,26 +257,6 @@ impl Jwk {
             )),
             None => Err("lacks crv".into()),
         }
-    }
-}
-
-/// The members a fetched entry is first read by, before anything else is
-/// asked of it: all an RSA key needs, and what the HTTP resolver has always
-/// read. Other members, wrong-typed ones included, are ignored here.
-#[derive(serde::Deserialize)]
-struct FetchedJwk {
-    kid: Option<String>,
-    #[serde(default)]
-    kty: String,
-    n: Option<String>,
-    e: Option<String>,
-}
-
-impl FetchedJwk {
-    /// True when the entry should be materialized as RSA.
-    fn is_rsa(&self) -> bool {
-        self.kty.eq_ignore_ascii_case("RSA")
-            || (self.kty.is_empty() && self.n.is_some() && self.e.is_some())
     }
 }
 
@@ -393,18 +389,7 @@ impl HttpJwksResolver {
             "{}/.well-known/openid-configuration",
             self.issuer.trim_end_matches('/')
         );
-        let cfg: OpenIdConfig = self
-            .http
-            .get(url)
-            .timeout(self.request_timeout)
-            .send()
-            .await
-            .map_err(|e| KeyError::Fetch(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| KeyError::Fetch(e.to_string()))?
-            .json()
-            .await
-            .map_err(|e| KeyError::Parse(e.to_string()))?;
+        let cfg: OpenIdConfig = self.fetch_json(url).await?;
         if cfg.issuer != self.issuer {
             return Err(KeyError::Config(
                 "discovered issuer does not match configured issuer".into(),
@@ -417,64 +402,32 @@ impl HttpJwksResolver {
 
     async fn refresh(&self) -> Result<(), KeyError> {
         let endpoint = self.jwks_endpoint().await?;
-        let set: JwkSet = self
-            .http
-            .get(endpoint)
-            .timeout(self.request_timeout)
-            .send()
-            .await
-            .map_err(|e| KeyError::Fetch(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| KeyError::Fetch(e.to_string()))?
-            .json()
-            .await
-            .map_err(|e| KeyError::Parse(e.to_string()))?;
+        let set: JwkSet = self.fetch_json(endpoint).await?;
         let mut next = HashMap::new();
         for (index, entry) in set.keys.into_iter().enumerate() {
             // Tolerant parse: an unnamed, unsupported or malformed entry (a
-            // wrong-typed member included) is skipped, so one such key in the
-            // issuer's set doesn't fail the others. RSA entries are checked
-            // for signing use and family-compatible algorithms before their
-            // modulus and exponent are materialized. The other key types are
-            // P-256 EC and Ed25519 OKP; such an
-            // entry with any fault (another curve, a coordinate that is not 32
-            // bytes, an `alg` that contradicts its `kty`, a `use` other than
-            // `sig`, private material) is skipped, never half-trusted.
-            // Providers that omit `kty` but publish `n`/`e` are treated as RSA.
-            let Ok(fetched) = FetchedJwk::deserialize(&entry) else {
-                tracing::debug!(index, "jwks entry is not a well-formed JWK; skipped");
-                continue;
-            };
-            let Some(kid) = fetched.kid.clone() else {
-                continue;
-            };
-            let key = if fetched.is_rsa() {
-                let Ok(jwk) = Jwk::deserialize(&entry) else {
-                    tracing::debug!(%kid, "jwks RSA entry is not a well-formed JWK; skipped");
-                    continue;
-                };
-                if let Err(reason) = jwk.check_public_signing_key(AlgorithmFamily::Rsa) {
-                    tracing::debug!(%kid, %reason, "jwks RSA entry is not a usable signing key; skipped");
+            // wrong-typed member, an undecodable modulus, another curve, a
+            // contradicting `alg`, a `use` other than `sig`, private material
+            // included) is skipped, never half-trusted, so one such key in the
+            // issuer's set doesn't fail the others.
+            let jwk = match Jwk::deserialize(&entry) {
+                Ok(jwk) => jwk.tolerant(),
+                Err(err) => {
+                    tracing::debug!(index, %err, "jwks entry is not a well-formed JWK; skipped");
                     continue;
                 }
-                let (Some(n), Some(e)) = (&jwk.n, &jwk.e) else {
-                    continue;
-                };
-                DecodingKey::from_rsa_components(n, e)
-                    .map_err(|e| KeyError::Parse(e.to_string()))?
-            } else {
-                match Jwk::deserialize(&entry)
-                    .map_err(|err| err.to_string())
-                    .and_then(|jwk| jwk.ec_or_okp_key())
-                {
-                    Ok(key) => key,
-                    Err(reason) => {
-                        tracing::debug!(%kid, %reason, "jwks entry is not a usable verification key; skipped");
-                        continue;
-                    }
-                }
             };
-            next.insert(kid, Arc::new(key));
+            let Some(kid) = jwk.kid.clone() else {
+                continue;
+            };
+            match jwk.verification_key() {
+                Ok(key) => {
+                    next.insert(kid, Arc::new(key));
+                }
+                Err(reason) => {
+                    tracing::debug!(%kid, %reason, "jwks entry is not a usable verification key; skipped");
+                }
+            }
         }
         if next.is_empty() {
             return Err(KeyError::Parse(
@@ -483,6 +436,40 @@ impl HttpJwksResolver {
         }
         *self.cache.write().await = next;
         Ok(())
+    }
+
+    /// GET `url` and parse the body as JSON. Discovery and key-set requests
+    /// share the timeout and the [`MAX_RESPONSE_BYTES`] cap, so an issuer
+    /// cannot make either buffer an unbounded body.
+    async fn fetch_json<T: serde::de::DeserializeOwned>(&self, url: String) -> Result<T, KeyError> {
+        let mut response = self
+            .http
+            .get(url)
+            .timeout(self.request_timeout)
+            .send()
+            .await
+            .map_err(|e| KeyError::Fetch(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| KeyError::Fetch(e.to_string()))?;
+        let too_large = || KeyError::Fetch(format!("response exceeds {MAX_RESPONSE_BYTES} bytes"));
+        if response
+            .content_length()
+            .is_some_and(|len| len > MAX_RESPONSE_BYTES as u64)
+        {
+            return Err(too_large());
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| KeyError::Parse(e.to_string()))?
+        {
+            if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                return Err(too_large());
+            }
+            body.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&body).map_err(|e| KeyError::Parse(e.to_string()))
     }
 
     /// Whether an optional clock is unset or at least `min_age` old.
@@ -729,7 +716,7 @@ mod http_tests {
 
     use super::{
         DEFAULT_HTTP_REQUEST_TIMEOUT, HttpJwksResolver, JWKS_MAX_AGE, JWKS_REFRESH_COOLDOWN,
-        KeyError, KeyResolver, MAX_HTTP_REQUEST_TIMEOUT, build_http_client,
+        KeyError, KeyResolver, MAX_HTTP_REQUEST_TIMEOUT, MAX_RESPONSE_BYTES, build_http_client,
     };
 
     // Static 2048-bit RSA public key as JWK n/e (base64url). Baked so this
@@ -1407,6 +1394,42 @@ mod http_tests {
         server.abort();
     }
 
+    /// An RSA entry whose modulus does not decode is skipped like any other
+    /// unusable entry; the keys beside it still resolve.
+    #[tokio::test]
+    async fn a_fetched_rsa_entry_with_an_undecodable_modulus_is_skipped() {
+        let jwks = serde_json::json!({
+            "keys": [
+                { "kid": "bad", "kty": "RSA", "n": "!!not base64url!!", "e": TEST_JWK_E },
+                { "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }
+            ]
+        })
+        .to_string();
+        let (issuer, _fetches, server) = spawn_mock_idp(jwks).await;
+        let resolver = HttpJwksResolver::new(issuer, None).expect("loopback issuer");
+
+        assert!(resolver.key_for("k1").await.is_ok());
+        assert_eq!(resolver.cache.read().await.len(), 1, "only the good key");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_response_body_past_the_byte_cap_is_refused() {
+        let jwks = serde_json::json!({
+            "keys": [{ "kid": "k1", "kty": "RSA", "n": TEST_JWK_N, "e": TEST_JWK_E }],
+            "padding": "a".repeat(MAX_RESPONSE_BYTES),
+        })
+        .to_string();
+        let (issuer, _fetches, server) = spawn_mock_idp(jwks).await;
+        let resolver = HttpJwksResolver::new(issuer, None).expect("loopback issuer");
+
+        assert!(matches!(
+            resolver.key_for("k1").await,
+            Err(KeyError::Fetch(_))
+        ));
+        server.abort();
+    }
+
     /// RSA entries with incompatible signing metadata are skipped, while a
     /// valid RSA key beside them still resolves.
     #[tokio::test]
@@ -1880,9 +1903,13 @@ mod pinned_jwks_tests {
                 "{raw:?} must be a parse error"
             );
         }
+    }
+
+    #[test]
+    fn an_undecodable_modulus_is_a_config_error() {
         assert!(matches!(
             parse(&[with(rsa_key("k1"), "n", json!("!!not base64url!!"))]),
-            Err(KeyError::Parse(_))
+            Err(KeyError::Config(_))
         ));
     }
 }
