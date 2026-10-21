@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
 use super::keys::{
-    CANONICAL_OBJECT_PREFIX, PENDING_OBJECT_PREFIX, canonical_object_key, locator_was_minted_here,
+    CANONICAL_OBJECT_PREFIX, PENDING_OBJECT_PREFIX, canonical_object_key, minting_upload_id,
     pending_object_key,
 };
 use super::live_upload::with_live_blob_upload;
@@ -174,14 +174,13 @@ impl CitedBlobStore {
                 // row is allowed to name is the one derived from its own
                 // `upload_id`, and nothing else in the canonical prefix
                 // counts as this row's object.
-                if row.object_store != self.store_id.as_str()
-                    || row.bucket != self.config.bucket
-                    || !locator_was_minted_here(
-                        &row.object_key,
-                        row.upload_id,
-                        row.mounted_from_upload_id,
-                    )
-                {
+                if !self.mints_locator(
+                    &row.object_store,
+                    &row.bucket,
+                    &row.object_key,
+                    row.upload_id,
+                    row.mounted_from_upload_id,
+                ) {
                     outcome.foreign_locators = outcome.foreign_locators.saturating_add(1);
                     if outcome.foreign_sample.len() < MAX_RECONCILE_SAMPLE {
                         outcome
@@ -273,14 +272,13 @@ impl CitedBlobStore {
                 // The same provenance rule the read gate applies: a locator
                 // this store did not mint is a foreign locator, not a
                 // missing object.
-                if row.object_store != self.store_id.as_str()
-                    || row.bucket != self.config.bucket
-                    || !locator_was_minted_here(
-                        &row.object_key,
-                        row.upload_id,
-                        row.mounted_from_upload_id,
-                    )
-                {
+                if !self.mints_locator(
+                    &row.object_store,
+                    &row.bucket,
+                    &row.object_key,
+                    row.upload_id,
+                    row.mounted_from_upload_id,
+                ) {
                     outcome.foreign_locators = outcome.foreign_locators.saturating_add(1);
                     continue;
                 }
@@ -355,7 +353,7 @@ impl CitedBlobStore {
 
             for row in &page {
                 after = Some(row.upload_id);
-                let implied = row.mounted_from_upload_id.unwrap_or(row.upload_id);
+                let implied = minting_upload_id(row.upload_id, row.mounted_from_upload_id);
                 let canonical = canonical_object_key(implied);
                 if row.live {
                     ended.remove(&canonical);

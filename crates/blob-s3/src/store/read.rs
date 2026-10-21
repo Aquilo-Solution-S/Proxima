@@ -6,7 +6,6 @@ use time::OffsetDateTime;
 use super::CitedBlobStore;
 use super::dto::{CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs};
 use super::guards::{ensure_owner_access, format_time, parse_opaque_identifier, presign_config};
-use super::keys::locator_was_minted_here;
 use super::rows::{find_held_blobs_on_connection, load_blob_location_on_connection};
 use crate::error::BlobError;
 use proxima_core::storage_ports::{CitedBlobHeld, MAX_HELD_BLOB_DIGESTS};
@@ -89,10 +88,13 @@ impl CitedBlobStore {
         // Presign only locators this store itself minted, and answer
         // anything else exactly like a missing row so a probe cannot learn
         // whether such a row exists.
-        if row.object_store != self.store_id.as_str()
-            || row.bucket != self.config.bucket
-            || !locator_was_minted_here(&row.object_key, row.upload_id, row.mounted_from_upload_id)
-        {
+        if !self.mints_locator(
+            &row.object_store,
+            &row.bucket,
+            &row.object_key,
+            row.upload_id,
+            row.mounted_from_upload_id,
+        ) {
             return Err(BlobError::State("cited object not found for Owner".into()));
         }
         let client = self.presigning_client();

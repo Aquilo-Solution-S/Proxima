@@ -12,7 +12,6 @@ use uuid::Uuid;
 
 use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
-use super::keys::locator_was_minted_here;
 use super::rows::{BlobReadRecord, load_blob_read_record_on_connection};
 use proxima_storage_pg::begin_owner_transaction;
 
@@ -27,15 +26,19 @@ fn within_ceiling(byte_len: u64, max_bytes: NonZeroU64) -> Result<(), CitedBlobR
     }
 }
 
-/// Byte-exact locator provenance, the same rule `read_url` applies.
+/// Byte-exact locator provenance, [`CitedBlobStore::mints_locator`].
 ///
 /// The key derives from the row's own columns — its `upload_id`, or the
 /// upload row it mounts — so a row can only ever vouch for the object it
 /// was given, and never for one it names by assertion.
 fn canonical_for_store(store: &CitedBlobStore, row: &BlobReadRecord) -> bool {
-    row.object_store == store.store_id.as_str()
-        && row.bucket == store.config.bucket
-        && locator_was_minted_here(&row.object_key, row.upload_id, row.mounted_from_upload_id)
+    store.mints_locator(
+        &row.object_store,
+        &row.bucket,
+        &row.object_key,
+        row.upload_id,
+        row.mounted_from_upload_id,
+    )
 }
 
 async fn verify_body(

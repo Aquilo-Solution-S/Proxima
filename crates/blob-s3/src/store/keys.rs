@@ -18,6 +18,8 @@
 
 use uuid::Uuid;
 
+use super::CitedBlobStore;
+
 /// Bucket-wide prefix for completed cited blobs.
 pub(super) const CANONICAL_OBJECT_PREFIX: &str = "objects/";
 
@@ -49,9 +51,9 @@ pub(super) fn minting_upload_id(upload_id: Uuid, mounted_from_upload_id: Option<
 
 /// Is `object_key` the locator this store minted for this upload row?
 ///
-/// ONE rule, shared by every surface that trusts a stored locator
-/// (`read_url`, the verified read, and reconcile's foreign-locator count),
-/// because they must agree on what "ours" means. `owner` is not consulted:
+/// The key half of the one rule [`CitedBlobStore::mints_locator`] applies,
+/// because every surface that trusts a stored locator must agree on what
+/// "ours" means. `owner` is not consulted:
 /// the row's own columns decide, and the owner predicates in the SQL decide
 /// who may reach the row at all.
 ///
@@ -62,12 +64,34 @@ pub(super) fn minting_upload_id(upload_id: Uuid, mounted_from_upload_id: Option<
 /// wearing a security bug's clothes. It stays a derivation from the row's
 /// own columns, which is the property the exact-equality test protects:
 /// nothing here is a stored locator taken on trust.
-pub(super) fn locator_was_minted_here(
+fn locator_was_minted_here(
     object_key: &str,
     upload_id: Uuid,
     mounted_from_upload_id: Option<Uuid>,
 ) -> bool {
     object_key == canonical_object_key(minting_upload_id(upload_id, mounted_from_upload_id))
+}
+
+impl CitedBlobStore {
+    /// Did this store mint the locator a row names: its object store, its
+    /// bucket, and the key derived from the row's own columns?
+    ///
+    /// The ONE rule shared by `read_url`, the verified read and both of
+    /// reconcile's foreign-locator counts. A locator that fails it is not
+    /// this store's to presign, read or repair, and is answered like a
+    /// missing row.
+    pub(super) fn mints_locator(
+        &self,
+        object_store: &str,
+        bucket: &str,
+        object_key: &str,
+        upload_id: Uuid,
+        mounted_from_upload_id: Option<Uuid>,
+    ) -> bool {
+        object_store == self.store_id.as_str()
+            && bucket == self.config.bucket
+            && locator_was_minted_here(object_key, upload_id, mounted_from_upload_id)
+    }
 }
 
 #[cfg(test)]
