@@ -177,6 +177,14 @@ impl FlavorApp for BlobMaintenanceApp {
     }
 }
 
+/// The frozen registry of this build: the substrate and the flavors
+/// [`ProximaMcpApp`] links.
+fn build_frozen_registry() -> Result<proxima_core::FlavorRegistryFrozen, ProximaError> {
+    let mut registry = FlavorRegistry::new();
+    <ProximaMcpApp as FlavorBundle>::register(&mut registry)?;
+    Ok(registry.try_freeze()?)
+}
+
 /// The [`CliError`] of a subcommand's argument failure: a request for help
 /// is answered with that subcommand's `usage`.
 fn cli_error(usage: &'static str) -> impl Fn(ArgsError) -> CliError {
@@ -336,16 +344,13 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
             sweep.embeddings_deleted, sweep.heads_deleted, sweep.jobs_deleted
         );
 
-        // This pass runs against a bare `PgStorage` with no flavor app booted,
-        // so the only declarations it can see are core's own, which is where
-        // `core/upload-v1` lives. A host whose FLAVORS declare non-embeddable
-        // schemas must reconcile through its own binary, where the full
-        // registry exists; this pass would re-enqueue those. Printed below, so
-        // the scope of the pass is visible in its own output.
-        let core_registry = proxima_core::FlavorRegistry::new()
-            .try_freeze()
-            .map_err(|err| ProximaError::Storage(err.into()))?;
-        let non_embeddable = core_registry.non_embeddable_schema_ids();
+        // The non-embeddable schemas are those this build declares: core's
+        // own (`core/upload-v1`) and the flavors it links. A host that links
+        // other flavors must reconcile through its own binary, or this pass
+        // would re-enqueue theirs. Printed below, so the scope of the pass is
+        // visible in its own output.
+        let registry = build_frozen_registry()?;
+        let non_embeddable = registry.non_embeddable_schema_ids();
         let outcome = storage
             .reconcile_embeddings(EmbeddingReconcileOptions {
                 space: &space,
@@ -437,9 +442,7 @@ async fn maintenance_storage(
         .map_err(|err| ProximaError::Storage(err.into()))?;
     let tuning = proxima_storage_pg::PgTuning::from_env()
         .map_err(|err| ProximaError::Storage(err.into()))?;
-    let mut registry = FlavorRegistry::new();
-    ProximaMcpApp::register(&mut registry).map_err(ProximaError::from)?;
-    let registry = registry.try_freeze().map_err(ProximaError::from)?;
+    let registry = build_frozen_registry()?;
     let schemas = proxima::composed_schema_names(&registry);
     let schema_refs: Vec<&str> = schemas.iter().map(String::as_str).collect();
     let mut sidecars = proxima::flavor::PgSidecarRegistry::new();
@@ -538,15 +541,7 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
     .await?;
 
     let (storage, sweeper) = if let Some(s3) = s3 {
-        let mut registry = FlavorRegistry::new();
-        <ProximaMcpApp as FlavorBundle>::register(&mut registry).map_err(ProximaError::from)?;
-        let registry = registry.try_freeze().map_err(ProximaError::from)?;
-        let mut sidecars = proxima::flavor::PgSidecarRegistry::new();
-        proxima::flavor::register_core_pg_sidecars(&mut sidecars);
-        <ProximaMcpApp as FlavorBundle>::register_pg_sidecars(&mut sidecars);
-        let sidecars = sidecars
-            .freeze_against(&registry)
-            .map_err(|err| ProximaError::Storage(err.into()))?;
+        let registry = build_frozen_registry()?;
         let blobs = CitedBlobStore::new(
             storage.clone_pool_for_backend(),
             s3,
@@ -559,9 +554,7 @@ async fn run_maintain_storage(config: StorageMaintenanceConfig) -> Result<(), Cl
         blobs
             .bind_system_authority(&authority)
             .map_err(|err| ProximaError::Config(err.to_string()))?;
-        let storage = storage
-            .with_sidecars(sidecars)
-            .with_cold(Arc::new(blobs.cold_store()));
+        let storage = storage.with_cold(Arc::new(blobs.cold_store()));
         (storage, Some((blobs, authority)))
     } else {
         (storage, None)
@@ -791,12 +784,7 @@ enum ToolProfile {
 /// `PROXIMA_TOOL_PROFILE=full` grant it leaf by leaf, exactly as it does for
 /// a substrate dispatcher.
 fn registered_tool_ids() -> Result<RegisteredKeys, CliError> {
-    let mut registry = FlavorRegistry::new();
-    <ProximaMcpApp as FlavorBundle>::register(&mut registry)
-        .map_err(|err| CliError::Runtime(ProximaError::Registry(err)))?;
-    let frozen = registry
-        .try_freeze()
-        .map_err(|err| CliError::Runtime(ProximaError::Registry(err)))?;
+    let frozen = build_frozen_registry()?;
     Ok(RegisteredKeys {
         all: proxima_core::canonical_scope_keys(&frozen),
         served_reads: proxima_core::canonical_served_read_keys(&frozen),
@@ -1208,9 +1196,7 @@ mod tests {
 
     /// The registry `registered_tool_ids` reads: this build's.
     fn frozen_registry() -> proxima_core::FlavorRegistryFrozen {
-        let mut registry = FlavorRegistry::new();
-        <ProximaMcpApp as FlavorBundle>::register(&mut registry).expect("register");
-        registry.try_freeze().expect("freeze")
+        build_frozen_registry().expect("register and freeze")
     }
 
     /// Every registered key served to an unrestricted caller, judged by the
