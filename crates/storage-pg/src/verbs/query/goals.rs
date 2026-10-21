@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use proxima_core::StorageError;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{
-    EntityKind, GoalRow, QueryCursor, QueryRequest, SupersessionStatus,
+    EntityKind, GoalAssignmentFilter, GoalRow, QueryCursor, QueryRequest, SupersessionStatus,
 };
 use sqlx::PgConnection;
 
@@ -30,6 +30,7 @@ pub(super) async fn query_goals_on_connection(
             GoalFilter::Schema(value) => q.bind(value),
             GoalFilter::States(value) => q.bind(value),
             GoalFilter::Evidence(value) => q.bind(value),
+            GoalFilter::Unassigned => q,
             GoalFilter::Assignments(value)
             | GoalFilter::Ids(value)
             | GoalFilter::Handles(value) => q.bind(value),
@@ -108,9 +109,19 @@ fn goal_page_sql(req: &QueryRequest, filters: &[GoalFilter]) -> String {
     sql
 }
 
+/// The statement [`query_goals_on_connection`] runs for `req`: `$1` is the
+/// owner list and the filter binds follow in [`goal_filters`] order.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn goal_page_sql_for_tests(req: &QueryRequest) -> String {
+    goal_page_sql(req, &goal_filters(req))
+}
+
 enum GoalFilter {
     Schema(String),
     States(Vec<GoalState>),
+    Unassigned,
     Assignments(Vec<uuid::Uuid>),
     Evidence(uuid::Uuid),
     Ids(Vec<uuid::Uuid>),
@@ -122,6 +133,7 @@ impl GoalFilter {
     fn bind_count(&self) -> u32 {
         match self {
             Self::Cursor(..) => 2,
+            Self::Unassigned => 0,
             Self::Schema(_)
             | Self::States(_)
             | Self::Assignments(_)
@@ -137,6 +149,7 @@ impl GoalFilter {
             Self::States(_) => {
                 format!(" AND g.state = ANY(${placeholder}::proxima_core.goal_state[])")
             }
+            Self::Unassigned => " AND g.assignment_t IS NULL".to_owned(),
             Self::Assignments(_) => format!(" AND g.assignment_t = ANY(${placeholder}::uuid[])"),
             Self::Evidence(_) => format!(" AND ${placeholder} = ANY(g.evidence_t)"),
             Self::Ids(_) => format!(" AND g.t = ANY(${placeholder}::uuid[])"),
@@ -162,10 +175,12 @@ fn goal_filters(req: &QueryRequest) -> Vec<GoalFilter> {
             req.goal_states.iter().copied().collect(),
         ));
     }
-    if !req.assignments.is_empty() {
-        filters.push(GoalFilter::Assignments(
-            req.assignments.iter().map(|id| id.into_inner()).collect(),
-        ));
+    match &req.assignment {
+        GoalAssignmentFilter::Any => {}
+        GoalAssignmentFilter::Unassigned => filters.push(GoalFilter::Unassigned),
+        GoalAssignmentFilter::AssignedTo(perspectives) => filters.push(GoalFilter::Assignments(
+            perspectives.iter().map(|id| id.into_inner()).collect(),
+        )),
     }
     if let Some(evidence) = req.evidence_contains {
         filters.push(GoalFilter::Evidence(evidence.into_inner()));

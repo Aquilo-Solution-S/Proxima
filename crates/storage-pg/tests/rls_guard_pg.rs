@@ -53,6 +53,9 @@ mod search_candidates;
 #[path = "rls_guard_pg/substring_work.rs"]
 mod substring_work;
 
+#[path = "rls_guard_pg/goal_assignment_work.rs"]
+mod goal_assignment_work;
+
 #[async_trait]
 impl Authenticator for SyntheticVerifier {
     async fn authenticate(

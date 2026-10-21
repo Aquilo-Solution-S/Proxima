@@ -14,8 +14,8 @@ use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
 use crate::verbs::goal_write::GoalState;
 use crate::verbs::query::{
-    EntityKind, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus,
-    TagMatch,
+    EntityKind, GoalAssignmentFilter, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder,
+    SupersessionStatus, TagMatch,
 };
 use uuid::Uuid;
 
@@ -370,7 +370,7 @@ async fn collect_assigned_goals(
     let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_states.insert(GoalState::Active);
-    req.assignments = perspectives;
+    req.assignment = GoalAssignmentFilter::AssignedTo(perspectives);
     req.include_payloads = false;
     req.limit = limit;
     let page = engine.query(&ctx.authz, &req).await?;
@@ -406,6 +406,7 @@ async fn collect_unassigned_goals(
     let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_states.insert(GoalState::Active);
+    req.assignment = GoalAssignmentFilter::Unassigned;
     req.include_payloads = false;
     req.limit = limit;
     let mut collected = 0;
@@ -414,7 +415,6 @@ async fn collect_unassigned_goals(
         let goal_ids: Vec<MemoryId> = page
             .goals
             .into_iter()
-            .filter(|goal| goal.assignment.is_none())
             .map(|goal| MemoryId::new(goal.id.into_inner()))
             .filter(|id| !packet.contains(*id))
             .collect();

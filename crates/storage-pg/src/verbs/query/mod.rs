@@ -23,6 +23,8 @@ pub(crate) use edges::{
     load_visible_goal_ids_on_connection,
 };
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use goals::goal_page_sql_for_tests;
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use lineage::{ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests};
 pub(crate) use lineage::{
     external_edges_on_connection, forgotten_nodes_on_connection, lineage_nodes_on_connection,

@@ -346,6 +346,18 @@ pub enum SupersessionStatus {
     IncludeSuperseded,
 }
 
+/// Which goals a goal-stream query keeps by assignment (`goal.assignment_t`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum GoalAssignmentFilter {
+    /// Every goal, assigned or not.
+    #[default]
+    Any,
+    /// Goals with no assigned Perspective.
+    Unassigned,
+    /// Goals assigned to any of these Perspectives; none when the list is empty.
+    AssignedTo(Vec<MemoryId>),
+}
+
 fn default_include_payloads() -> bool {
     true
 }
@@ -391,11 +403,10 @@ pub struct QueryRequest {
     /// unless `entity_kind` is `Fact`.
     #[serde(default)]
     pub referenced_goal_handles: Vec<Uuid>,
-    /// Goal-stream assignment filter (`goal.assignment_t`): goals assigned to
-    /// any of these Perspectives. Empty applies no filter. Only meaningful
-    /// with `entity_kind == Some(EntityKind::Goal)`.
+    /// Goal-stream assignment filter. Only meaningful with
+    /// `entity_kind == Some(EntityKind::Goal)`.
     #[serde(default)]
-    pub assignments: Vec<MemoryId>,
+    pub assignment: GoalAssignmentFilter,
     /// Goal-stream evidence filter (`$id = ANY(goal.evidence_t)`). Only
     /// meaningful with `entity_kind == Some(EntityKind::Goal)`.
     #[serde(default)]
@@ -426,7 +437,7 @@ impl QueryRequest {
             goal_states: BTreeSet::new(),
             goal_handles: Vec::new(),
             referenced_goal_handles: Vec::new(),
-            assignments: Vec::new(),
+            assignment: GoalAssignmentFilter::Any,
             evidence_contains: None,
             limit: 100,
             page: QueryPage::default(),

@@ -12,7 +12,7 @@ use proxima_core::storage_ports::{MemoryReadPort, OwnerWritePermit};
 use proxima_core::test_fixtures::owner_scope_for_tests;
 use proxima_core::verbs::fact_ingest::FactWriteCommand;
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::query::{EntityKind, QueryRequest};
+use proxima_core::verbs::query::{EntityKind, GoalAssignmentFilter, QueryRequest};
 use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
 use proxima_pg_testkit::{db_url, drop_db};
 use proxima_storage_pg::PgStorage;
@@ -282,7 +282,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let mut by_assignment = QueryRequest::readable();
         by_assignment.entity_kind = Some(EntityKind::Goal);
         by_assignment.goal_states = BTreeSet::from([GoalState::Active]);
-        by_assignment.assignments = vec![assignment.memory_id];
+        by_assignment.assignment = GoalAssignmentFilter::AssignedTo(vec![assignment.memory_id]);
         let assigned = pg
             .query_memories(
                 Some(&owner_scope_for_tests(&[owner])),
@@ -348,7 +348,8 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         tx.commit().await?;
         let mut by_either = QueryRequest::readable();
         by_either.entity_kind = Some(EntityKind::Goal);
-        by_either.assignments = vec![assignment.memory_id, second.memory_id];
+        by_either.assignment =
+            GoalAssignmentFilter::AssignedTo(vec![assignment.memory_id, second.memory_id]);
         let either = pg
             .query_memories(
                 Some(&owner_scope_for_tests(&[owner])),
@@ -365,11 +366,64 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
 
         let mut miss = QueryRequest::readable();
         miss.entity_kind = Some(EntityKind::Goal);
-        miss.assignments = vec![MemoryId::new(Uuid::now_v7())];
+        miss.assignment = GoalAssignmentFilter::AssignedTo(vec![MemoryId::new(Uuid::now_v7())]);
         let empty = pg
             .query_memories(Some(&owner_scope_for_tests(&[owner])), &[owner], &miss, &[])
             .await?;
         assert!(empty.goals.is_empty());
+
+        // A goal with no assignment is what `Unassigned` keeps; an empty
+        // `AssignedTo` keeps none, and `Any` keeps all.
+        let mut tx = pool.begin().await?;
+        let loose = write_goal(
+            &mut tx,
+            &owner,
+            proxima_storage_pg::test_fixtures::writer(),
+            &GoalWriteCommand {
+                handle: None,
+                schema_id: "core/task-v1".into(),
+                title: "unassigned".into(),
+                text: None,
+                state: GoalState::Active,
+                request_id: "req-unassigned".into(),
+                close_fact_t: None,
+                assignment_t: None,
+                dependency_t: vec![],
+                evidence_t: vec![],
+                mint_write_act: false,
+                write_act_t: None,
+                parent_handle: None,
+            },
+            1,
+        )
+        .await?;
+        tx.commit().await?;
+        let goals_under = |filter: GoalAssignmentFilter| {
+            let mut req = QueryRequest::readable();
+            req.entity_kind = Some(EntityKind::Goal);
+            req.assignment = filter;
+            let pg = &pg;
+            async move {
+                let page = pg
+                    .query_memories(Some(&owner_scope_for_tests(&[owner])), &[owner], &req, &[])
+                    .await?;
+                let mut ids: Vec<Uuid> = page.goals.iter().map(|g| g.id.into_inner()).collect();
+                ids.sort_unstable();
+                Ok::<_, proxima_core::StorageError>(ids)
+            }
+        };
+        assert_eq!(
+            goals_under(GoalAssignmentFilter::Unassigned).await?,
+            [loose.t]
+        );
+        assert!(
+            goals_under(GoalAssignmentFilter::AssignedTo(Vec::new()))
+                .await?
+                .is_empty()
+        );
+        let mut all = vec![created.t, second_goal.t, loose.t];
+        all.sort_unstable();
+        assert_eq!(goals_under(GoalAssignmentFilter::Any).await?, all);
         Ok(())
     }
     .await;
