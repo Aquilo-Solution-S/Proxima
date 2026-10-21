@@ -51,7 +51,7 @@ const RESET_CONFIRM_VALUE: &str = "reset-my-dev-db";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args = parse_args(std::env::args().skip(1))?;
     let missing_policy =
         missing_migration_policy_from_lookup(&|key| std::env::var(key).ok())?.unwrap_or_default();
     let url = resolve_database_url(&args)?;
@@ -67,17 +67,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PgTuning::from_env()?,
     )
     .await?
-    .with_vector_storage(if args.iter().any(|arg| arg == HOST_VECTOR_INDEX_FLAG) {
+    .with_vector_storage(if args.host_vector_index {
         VectorStorage::HostIndex
     } else {
         VectorStorage::Local
     });
-    let dependent_lanes = if args.iter().any(|arg| arg == RESET_DEPENDENT_LANES_FLAG) {
+    let dependent_lanes = if args.reset_dependent_lanes {
         DependentLanes::Reset
     } else {
         DependentLanes::Refuse
     };
-    if args.iter().any(|arg| arg == RESET_FLAG) {
+    if args.reset {
         reset_local_dev_database(&pg, &url, dependent_lanes).await?;
     } else if dependent_lanes == DependentLanes::Reset {
         return Err(format!("{RESET_DEPENDENT_LANES_FLAG} only qualifies {RESET_FLAG}").into());
@@ -140,20 +140,47 @@ async fn unowned_proxima_schemas(
     .await
 }
 
+/// What the command line asked for.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Args {
+    database_url: Option<String>,
+    host_vector_index: bool,
+    reset: bool,
+    reset_dependent_lanes: bool,
+}
+
+/// Read the command line once. An argument this tool does not know is refused: a misspelled
+/// `--reset` must not run as a plain migration. `--database-url` takes `<URL>` or `=<URL>`,
+/// and the value may not be another flag.
+fn parse_args(command_line: impl IntoIterator<Item = String>) -> Result<Args, String> {
+    let mut args = Args::default();
+    let mut rest = command_line.into_iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            HOST_VECTOR_INDEX_FLAG => args.host_vector_index = true,
+            RESET_FLAG => args.reset = true,
+            RESET_DEPENDENT_LANES_FLAG => args.reset_dependent_lanes = true,
+            DATABASE_URL_FLAG => {
+                let value = rest.next().filter(|value| !value.starts_with("--"));
+                args.database_url = Some(value.ok_or(concat!(
+                    "--database-url requires a value, e.g. ",
+                    "--database-url postgres://proxima:proxima@localhost/proxima"
+                ))?);
+            }
+            other => match other.strip_prefix("--database-url=") {
+                Some(value) => args.database_url = Some(value.to_string()),
+                None => return Err(format!("unknown argument {other}")),
+            },
+        }
+    }
+    Ok(args)
+}
+
 /// Resolve the target database URL: `--database-url <URL>` (or
 /// `--database-url=<URL>`) first, then the `DATABASE_URL` env var.
-fn resolve_database_url(args: &[String]) -> Result<String, Box<dyn std::error::Error>> {
-    if let Some(pos) = args.iter().position(|arg| arg == DATABASE_URL_FLAG) {
-        let value = args.get(pos + 1).ok_or(concat!(
-            "--database-url requires a value, e.g. ",
-            "--database-url postgres://proxima:proxima@localhost/proxima"
-        ))?;
-        return Ok(value.clone());
-    }
-    for arg in args {
-        if let Some(value) = arg.strip_prefix("--database-url=") {
-            return Ok(value.to_string());
-        }
+fn resolve_database_url(args: &Args) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(url) = &args.database_url {
+        return Ok(url.clone());
     }
     std::env::var("DATABASE_URL").map_err(|_| {
         "database URL required: pass --database-url <URL> or set DATABASE_URL, \
@@ -528,6 +555,35 @@ mod tests {
     use proxima::run_core_and_flavor_migrations;
     use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
     use sqlx::migrate::MigrateError;
+
+    fn parsed(argv: &[&str]) -> Result<Args, String> {
+        parse_args(argv.iter().map(|arg| (*arg).to_string()))
+    }
+
+    #[test]
+    fn the_command_line_is_read_once_and_a_stranger_is_refused() {
+        assert_eq!(parsed(&[]).expect("no arguments"), Args::default());
+        let all = parsed(&[
+            "--reset",
+            "--reset-dependent-lanes",
+            "--host-vector-index",
+            "--database-url",
+            "postgres://u@h/d",
+        ])
+        .expect("every flag");
+        assert!(all.reset && all.reset_dependent_lanes && all.host_vector_index);
+        assert_eq!(all.database_url.as_deref(), Some("postgres://u@h/d"));
+        let joined = parsed(&["--database-url=postgres://u@h/d"]).expect("the = spelling");
+        assert_eq!(joined.database_url.as_deref(), Some("postgres://u@h/d"));
+
+        // A misspelled flag must not run as the plain migration.
+        let error = parsed(&["--rset"]).expect_err("unknown flag");
+        assert!(error.contains("unknown argument --rset"), "{error}");
+        assert!(parsed(&["--reset", "extra"]).is_err());
+        // The value of --database-url is a value, never the next flag.
+        assert!(parsed(&["--database-url"]).is_err());
+        assert!(parsed(&["--database-url", "--reset"]).is_err());
+    }
 
     async fn run_compiled_migrations(
         pg: &PgMigrationStorage,
