@@ -12,12 +12,49 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
+use super::CitedBlobStore;
 use super::dto::CitedBlobUploadPrepareTs;
 use crate::error::BlobError;
 
 pub(super) fn presign_config(ttl_seconds: u64) -> Result<PresigningConfig, BlobError> {
     PresigningConfig::expires_in(Duration::from_secs(ttl_seconds))
         .map_err(|e| BlobError::Config(format!("invalid presign TTL: {e}")))
+}
+
+impl CitedBlobStore {
+    /// A transaction scoped to the caller's owners. A caller without an owner scope is refused
+    /// before any query; a database failure keeps the class the storage layer gave it.
+    pub(super) async fn begin_owner_tx(
+        &self,
+        scope: Option<&proxima_core::OwnerScope>,
+    ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, BlobError> {
+        let scope = scope.ok_or_else(|| BlobError::State("owner scope required".into()))?;
+        Ok(proxima_storage_pg::begin_owner_transaction(&self.pool, scope).await?)
+    }
+}
+
+/// The owner's shared admission fence, which an upload transition holds so that transfer and
+/// erase serialize with it.
+pub(super) async fn lock_owner_fence(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &OwnerId,
+) -> Result<(), BlobError> {
+    proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(tx, owner)
+        .await
+        .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))
+}
+
+/// The fence, then the object keys, in the global fence -> key -> row order: the row is read or
+/// written only after this returns.
+pub(super) async fn lock_fence_and_keys(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &OwnerId,
+    keys: &[String],
+) -> Result<(), BlobError> {
+    lock_owner_fence(tx, owner).await?;
+    proxima_storage_pg::access::owner_columns::lock_object_keys_tx(tx, keys)
+        .await
+        .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))
 }
 
 pub(super) fn validate_prepare(

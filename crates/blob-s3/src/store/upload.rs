@@ -10,7 +10,6 @@ use aws_sdk_s3::primitives::ByteStream;
 use proxima_core::citations::UploadedBlobPayload;
 use proxima_core::storage_ports::CitedBlobStaged;
 use proxima_core::{AuthzContext, OwnerId};
-use proxima_storage_pg::begin_owner_transaction;
 use proxima_storage_pg::verbs::forget::ColdPurgeEntry;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -22,8 +21,8 @@ use super::dto::{
     CitedBlobUploadPrepareOutcomeTs, CitedBlobUploadPrepareTs, PresignedHeaderTs,
 };
 use super::guards::{
-    ensure_owner_write_access, format_time, parse_opaque_identifier, presign_config,
-    validate_prepare,
+    ensure_owner_write_access, format_time, lock_fence_and_keys, lock_owner_fence,
+    parse_opaque_identifier, presign_config, validate_prepare,
 };
 use super::keys::{canonical_object_key, pending_object_key};
 use super::rows::{
@@ -320,15 +319,19 @@ impl CitedBlobStore {
         owner: &OwnerId,
         upload_id: Uuid,
     ) -> Result<super::rows::UploadRow, BlobError> {
-        let mut tx = begin_owner_transaction(
-            &self.pool,
-            scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
-        )
-        .await
-        .map_err(|err| BlobError::State(err.to_string()))?;
-        let row = load_upload_optional_on_connection(tx.as_mut(), owner, upload_id)
+        self.load_upload_scoped_optional(scope, owner, upload_id)
             .await?
-            .ok_or_else(|| BlobError::State("upload not found for Owner".into()))?;
+            .ok_or_else(|| BlobError::State("upload not found for Owner".into()))
+    }
+
+    async fn load_upload_scoped_optional(
+        &self,
+        scope: Option<&proxima_core::OwnerScope>,
+        owner: &OwnerId,
+        upload_id: Uuid,
+    ) -> Result<Option<super::rows::UploadRow>, BlobError> {
+        let mut tx = self.begin_owner_tx(scope).await?;
+        let row = load_upload_optional_on_connection(tx.as_mut(), owner, upload_id).await?;
         tx.commit().await.map_err(BlobError::Db)?;
         Ok(row)
     }
@@ -340,12 +343,7 @@ impl CitedBlobStore {
         upload_id: Uuid,
         blob_id: Uuid,
     ) -> Result<CitedBlobStaged, BlobError> {
-        let mut tx = begin_owner_transaction(
-            &self.pool,
-            scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
-        )
-        .await
-        .map_err(|err| BlobError::State(err.to_string()))?;
+        let mut tx = self.begin_owner_tx(scope).await?;
         let result =
             load_staged_payload_on_connection(tx.as_mut(), owner, upload_id, blob_id).await?;
         tx.commit().await.map_err(BlobError::Db)?;
@@ -389,16 +387,8 @@ impl CitedBlobStore {
         // with transfer's exclusive source fence so the transfer cannot
         // pass its unresolved-publication check and then observe a row that
         // appeared concurrently.
-        let mut tx = begin_owner_transaction(
-            &self.pool,
-            ctx.owner_scope()
-                .ok_or_else(|| BlobError::State("owner scope required".into()))?,
-        )
-        .await
-        .map_err(|err| BlobError::State(err.to_string()))?;
-        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, &owner)
-            .await
-            .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
+        let mut tx = self.begin_owner_tx(ctx.owner_scope()).await?;
+        lock_owner_fence(&mut tx, &owner).await?;
         let owner_id =
             proxima_storage_pg::access::owner_columns::ensure_owner_row(tx.as_mut(), &owner)
                 .await
@@ -583,12 +573,7 @@ impl CitedBlobStore {
             // Finish or abort may have won since this snapshot. Use the
             // status observed under the expiry helper's row lock.
             {
-                let mut tx = begin_owner_transaction(
-                    &self.pool,
-                    owner_scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
-                )
-                .await
-                .map_err(|err| BlobError::State(err.to_string()))?;
+                let mut tx = self.begin_owner_tx(owner_scope).await?;
                 let (status, owed) =
                     mark_upload_expired_on_connection(&mut tx, &self.store_id, owner, upload_id)
                         .await?;
@@ -705,25 +690,12 @@ impl CitedBlobStore {
         staged: &UploadedBlobPayload,
     ) -> Result<StageLocatorDecision, BlobError> {
         let canonical_key = &staged.object_key;
-        let mut tx = begin_owner_transaction(
-            &self.pool,
-            owner_scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
-        )
-        .await
-        .map_err(|err| BlobError::State(err.to_string()))?;
-        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
-            .await
-            .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
+        let mut tx = self.begin_owner_tx(owner_scope).await?;
         // The canonical key is about to gain (or has just lost) its only row
         // reference. An owner erase decides "no surviving row names this key"
         // under the same lock, so holding it here is what keeps the two
         // answers from being taken against different snapshots.
-        proxima_storage_pg::access::owner_columns::lock_object_keys_tx(
-            &mut tx,
-            std::slice::from_ref(canonical_key),
-        )
-        .await
-        .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))?;
+        lock_fence_and_keys(&mut tx, owner, std::slice::from_ref(canonical_key)).await?;
         let rows_affected = sqlx::query(
             "UPDATE proxima_core.blob_uploads \
                 SET object_key = $1, content_hash = $2, sha256 = $3, etag = $4 \
@@ -865,8 +837,9 @@ impl CitedBlobStore {
         upload_id: Uuid,
         pending_key: &str,
     ) -> Result<Option<StageSource>, BlobError> {
-        let Some(reloaded) =
-            super::rows::load_upload_optional(&self.pool, owner_scope, owner, upload_id).await?
+        let Some(reloaded) = self
+            .load_upload_scoped_optional(owner_scope, owner, upload_id)
+            .await?
         else {
             return Ok(None);
         };
@@ -1020,12 +993,7 @@ impl CitedBlobStore {
         upload_id: Uuid,
         blob_id: Uuid,
     ) -> Result<String, BlobError> {
-        let mut tx = begin_owner_transaction(
-            &self.pool,
-            owner_scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
-        )
-        .await
-        .map_err(BlobError::from)?;
+        let mut tx = self.begin_owner_tx(owner_scope).await?;
         let bucket = proxima_storage_pg::access::owner_columns::complete_upload_in_tx(
             &mut tx, owner, upload_id, blob_id,
         )
@@ -1096,26 +1064,13 @@ impl CitedBlobStore {
         // The row lock is the exact status revalidation: an earlier pool read
         // must never authorize a pending->aborted write after another
         // transition published the upload.
-        let mut tx = begin_owner_transaction(
-            &self.pool,
-            owner_scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
-        )
-        .await
-        .map_err(|err| BlobError::State(err.to_string()))?;
-        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
-            .await
-            .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
+        let mut tx = self.begin_owner_tx(owner_scope).await?;
         // Before the row lock, in the global fence → key → row order. An abort
         // retires the only row that keeps this upload's canonical object
         // reachable, which is the same question an erase's retain anti-join
         // asks; the derived key is used rather than the row's, because the
         // fence has to be held before the row is read.
-        proxima_storage_pg::access::owner_columns::lock_object_keys_tx(
-            &mut tx,
-            std::slice::from_ref(&canonical_object_key(upload_id)),
-        )
-        .await
-        .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))?;
+        lock_fence_and_keys(&mut tx, owner, &[canonical_object_key(upload_id)]).await?;
         let row = load_upload_for_update(&mut tx, owner, upload_id).await?;
         match row.status {
             UploadStatus::Completed => {

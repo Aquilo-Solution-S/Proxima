@@ -9,7 +9,6 @@ use super::guards::{ensure_owner_access, format_time, parse_opaque_identifier, p
 use super::rows::{find_held_blobs_on_connection, load_blob_location_on_connection};
 use crate::error::BlobError;
 use proxima_core::storage_ports::{CitedBlobHeld, MAX_HELD_BLOB_DIGESTS};
-use proxima_storage_pg::begin_owner_transaction;
 
 impl CitedBlobStore {
     /// Which of `content_hashes` this owner already holds.
@@ -48,13 +47,7 @@ impl CitedBlobStore {
         if content_hashes.is_empty() {
             return Ok(Vec::new());
         }
-        let mut tx = begin_owner_transaction(
-            &self.pool,
-            ctx.owner_scope()
-                .ok_or_else(|| BlobError::State("owner scope required".into()))?,
-        )
-        .await
-        .map_err(|err| BlobError::State(err.to_string()))?;
+        let mut tx = self.begin_owner_tx(ctx.owner_scope()).await?;
         let result = find_held_blobs_on_connection(tx.as_mut(), &owner, content_hashes).await?;
         tx.commit().await.map_err(BlobError::Db)?;
         Ok(result)
@@ -72,13 +65,7 @@ impl CitedBlobStore {
         let owner = req.owner();
         ensure_owner_access(ctx, &owner)?;
         let cited_object_id = parse_opaque_identifier(&req.cited_object_id)?;
-        let mut tx = begin_owner_transaction(
-            &self.pool,
-            ctx.owner_scope()
-                .ok_or_else(|| BlobError::State("owner scope required".into()))?,
-        )
-        .await
-        .map_err(|err| BlobError::State(err.to_string()))?;
+        let mut tx = self.begin_owner_tx(ctx.owner_scope()).await?;
         let row = load_blob_location_on_connection(tx.as_mut(), &owner, cited_object_id).await?;
         tx.commit().await.map_err(BlobError::Db)?;
         // Only the upload lane writes locator rows, but SigV4 presigning is

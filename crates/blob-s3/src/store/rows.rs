@@ -13,8 +13,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::error::BlobError;
-use proxima_storage_pg::begin_owner_transaction;
 
+use super::guards::lock_fence_and_keys;
 use super::live_upload::with_live_blob_upload;
 
 #[derive(Debug, Clone)]
@@ -96,25 +96,6 @@ pub(super) struct BlobReadRecord {
     pub(super) byte_len: u64,
     pub(super) mime: String,
     pub(super) filename: String,
-}
-
-pub(super) async fn load_upload_optional(
-    pool: &sqlx::PgPool,
-    owner_scope: Option<&proxima_core::OwnerScope>,
-    owner: &OwnerId,
-    upload_id: Uuid,
-) -> Result<Option<UploadRow>, BlobError> {
-    let mut tx = begin_owner_transaction(
-        pool,
-        owner_scope.ok_or_else(|| BlobError::State("owner scope required".into()))?,
-    )
-    .await
-    .map_err(|err| BlobError::State(err.to_string()))?;
-    let result = load_upload_optional_on_connection(tx.as_mut(), owner, upload_id).await;
-    if result.is_ok() {
-        tx.commit().await.map_err(BlobError::Db)?;
-    }
-    result
 }
 
 pub(super) async fn load_upload_optional_on_connection(
@@ -199,17 +180,9 @@ pub(super) async fn mark_upload_expired_on_connection(
     owner: &OwnerId,
     upload_id: Uuid,
 ) -> Result<(UploadStatus, Vec<ColdPurgeEntry>), BlobError> {
-    proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(tx, owner)
-        .await
-        .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))?;
     // Fence → key → row, as abort and the stage locator write take them: a
     // stage that is about to record its canonical locator holds this key.
-    proxima_storage_pg::access::owner_columns::lock_object_keys_tx(
-        tx,
-        std::slice::from_ref(&super::keys::canonical_object_key(upload_id)),
-    )
-    .await
-    .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))?;
+    lock_fence_and_keys(tx, owner, &[super::keys::canonical_object_key(upload_id)]).await?;
     let row = load_upload_optional_for_update(tx, owner, upload_id)
         .await?
         .ok_or_else(|| BlobError::State("upload not found for Owner".into()))?;
