@@ -75,8 +75,10 @@ const RESERVED_PREFIXES: [&str; 3] = [
     BUILTIN_FAMILIES[1],
     "proxima_tmpl_build_",
 ];
+/// The starting state of a 64-bit FNV-1a hash: the `hash` to begin
+/// [`fnv1a64_extend`] with.
 pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-pub const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 static PROCESS_START: OnceLock<OffsetDateTime> = OnceLock::new();
 static SWEEP_DONE: AtomicBool = AtomicBool::new(false);
@@ -352,11 +354,15 @@ fn redacted_db_url(name: &str) -> String {
     }
 }
 
+/// `<prefix>_<uuid v7>`: a database name no other call returns, whose time
+/// the sweep reads to tell a leftover from a clone in flight.
 #[must_use]
 pub fn unique_db_name(prefix: &str) -> String {
     format!("{}_{}", prefix, Uuid::now_v7().simple())
 }
 
+/// Feed `bytes` into the 64-bit FNV-1a state `hash`, starting from
+/// [`FNV_OFFSET_BASIS`]. A template's fingerprint is built this way.
 #[must_use]
 pub fn fnv1a64_extend(mut hash: u64, bytes: &[u8]) -> u64 {
     for byte in bytes {
@@ -367,7 +373,7 @@ pub fn fnv1a64_extend(mut hash: u64, bytes: &[u8]) -> u64 {
 }
 
 #[must_use]
-pub fn fnv1a64(bytes: &[u8]) -> u64 {
+fn fnv1a64(bytes: &[u8]) -> u64 {
     fnv1a64_extend(FNV_OFFSET_BASIS, bytes)
 }
 
