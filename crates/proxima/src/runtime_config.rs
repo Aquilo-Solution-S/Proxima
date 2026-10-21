@@ -1031,8 +1031,6 @@ impl RuntimeBuilder {
         Ok(())
     }
 
-    /// Resolve the builder into pure config plus host-provided runtime parts.
-    ///
     /// One floor, both doors. The environment path refuses a sub-minute
     /// horizon while parsing; a host that set it programmatically would
     /// otherwise get a prune loop that runs every minute over a horizon
@@ -1052,6 +1050,8 @@ impl RuntimeBuilder {
         Ok(())
     }
 
+    /// Resolve the builder into pure config plus host-provided runtime parts.
+    ///
     /// # Errors
     ///
     /// Returns `ProximaError::Config` for missing required config and
