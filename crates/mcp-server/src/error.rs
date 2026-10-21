@@ -16,6 +16,8 @@ pub enum McpServerError {
     Axum(String),
     #[error("invalid origin: {0}")]
     InvalidOrigin(String),
+    #[error("invalid host: {0}")]
+    InvalidHost(String),
     #[error("invalid request-header allowlist entry {0}")]
     InvalidRequestHeader(String),
 }

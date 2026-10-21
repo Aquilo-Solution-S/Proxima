@@ -70,7 +70,7 @@ fn router_with_hosts(auth: Arc<McpEdgeAuth>, _owner: OwnerId, allowed_hosts: &[S
     );
     let cancel = CancellationToken::new();
     let allowlist = default_allowlist();
-    let host_allowlist = HostAllowlist::new(allowed_hosts);
+    let host_allowlist = HostAllowlist::parse(allowed_hosts).unwrap();
     let service = streamable_http_service(host, &allowlist, &host_allowlist, &cancel);
     let app_router = Router::new().route("/app/ping", get(ping));
     layered_router(service, app_router, auth, allowlist, host_allowlist)
@@ -131,7 +131,7 @@ async fn mcp_only_router_leaves_host_routes_to_the_host() {
     );
     let cancel = CancellationToken::new();
     let allowlist = default_allowlist();
-    let host_allowlist = HostAllowlist::new(&[] as &[String]);
+    let host_allowlist = HostAllowlist::default();
     let service = streamable_http_service(host, &allowlist, &host_allowlist, &cancel);
     let app = proxima::layered_router_mcp_only(
         service,

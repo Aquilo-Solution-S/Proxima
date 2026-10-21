@@ -531,9 +531,9 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     /// happen: resolve configuration, resolve the origin allowlist, then
     /// touch storage.
     ///
-    /// That order is the point of having one copy. `resolve_allowlist`
+    /// That order is the point of having one copy. `ListenerAllowlists::resolve`
     /// runs before `boot_app`, so a deployment naming an unparseable
-    /// origin is refused before a connection is opened. The
+    /// origin or host is refused before a connection is opened. The
     /// `build_refuses_*_before_storage` tests do not reach this: they pin
     /// refusals `resolve` itself raises, which precede storage whatever
     /// this function does. `run_refuses_an_unparseable_origin_before_storage`
@@ -541,7 +541,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     async fn boot_common(self) -> Result<BootedRuntime, ProximaError> {
         let (config, mut parts) = self.resolve()?;
         let allowlist = if config.mcp.is_some() {
-            Some(resolve_allowlist(&config)?)
+            Some(ListenerAllowlists::resolve(&config)?)
         } else {
             None
         };
@@ -1072,8 +1072,8 @@ struct BootedRuntime {
     config: crate::RuntimeConfig,
     parts: crate::RuntimeParts,
     /// `Some` exactly when MCP is configured — the two are resolved
-    /// together so a tail can never serve MCP without an allowlist.
-    allowlist: Option<OriginAllowlist>,
+    /// together so a tail can never serve MCP without its allowlists.
+    allowlist: Option<ListenerAllowlists>,
     booted: Booted,
     cancel: CancellationToken,
     /// Its host carries the composed service set.
@@ -1187,7 +1187,7 @@ fn resolve_mcp_edge(
     app_ctx: &AppContext,
     parts: &crate::RuntimeParts,
     owner_access: Arc<dyn OwnerAccessPort>,
-    allowlist: OriginAllowlist,
+    allowlist: ListenerAllowlists,
     cancel: &CancellationToken,
     config: &crate::RuntimeConfig,
 ) -> crate::McpEdge {
@@ -1212,8 +1212,8 @@ fn resolve_mcp_edge(
     crate::McpEdge {
         tool_host,
         edge_auth: Arc::new(edge_auth),
-        origin_allowlist: allowlist,
-        host_allowlist: resolve_host_allowlist(config),
+        origin_allowlist: allowlist.origins,
+        host_allowlist: allowlist.hosts,
         revalidation: config.stream_revalidation,
         resource_metadata: config.resource_metadata.clone(),
         transport: config.mcp_transport,
@@ -1306,23 +1306,33 @@ fn rest_router(host: &McpToolHost, config: &crate::RuntimeConfig) -> Router {
     Router::new()
 }
 
-fn resolve_allowlist(config: &crate::RuntimeConfig) -> Result<OriginAllowlist, ProximaError> {
-    if config.allowed_origins.is_empty() {
-        return Ok(default_allowlist());
-    }
-    OriginAllowlist::parse(&config.allowed_origins)
-        .map_err(|err| ProximaError::Security(err.to_string()))
+/// What the listener admits: the browser origins and the inbound `Host`
+/// values, resolved together so a bad entry in either refuses boot.
+struct ListenerAllowlists {
+    origins: OriginAllowlist,
+    /// Shared by the whole listener and rmcp.
+    ///
+    /// [`HostAllowlist`] always adds loopback (gateway rewrites and
+    /// port-forwards keep working). Configured or derived public hosts are
+    /// honored independently of bind address so a loopback listener behind a
+    /// reverse proxy can preserve its public `Host`. Network exposure
+    /// separately requires that public set to be non-empty in
+    /// `RuntimeConfig::validate`.
+    hosts: HostAllowlist,
 }
 
-/// Inbound `Host` allowlist shared by the whole listener and rmcp.
-///
-/// [`HostAllowlist`] always adds loopback (gateway rewrites and port-forwards
-/// keep working). Configured or derived public hosts are honored independently
-/// of bind address so a loopback listener behind a reverse proxy can preserve
-/// its public `Host`. Network exposure separately requires that public set to
-/// be non-empty in `RuntimeConfig::validate`.
-fn resolve_host_allowlist(config: &crate::RuntimeConfig) -> HostAllowlist {
-    HostAllowlist::new(config.public_allowed_hosts())
+impl ListenerAllowlists {
+    fn resolve(config: &crate::RuntimeConfig) -> Result<Self, ProximaError> {
+        let origins = if config.allowed_origins.is_empty() {
+            default_allowlist()
+        } else {
+            OriginAllowlist::parse(&config.allowed_origins)
+                .map_err(|err| ProximaError::Security(err.to_string()))?
+        };
+        let hosts = HostAllowlist::parse(config.public_allowed_hosts())
+            .map_err(|err| ProximaError::Security(err.to_string()))?;
+        Ok(Self { origins, hosts })
+    }
 }
 
 #[cfg(test)]
@@ -1554,7 +1564,7 @@ mod tests {
     // sees the policy.
 
     #[test]
-    fn resolve_host_allowlist_is_exactly_loopback_for_loopback_bind() {
+    fn listener_hosts_is_exactly_loopback_for_loopback_bind() {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
@@ -1569,13 +1579,13 @@ mod tests {
 
         assert!(!config.expose_network);
         assert_eq!(
-            resolve_host_allowlist(&config).hosts(),
+            ListenerAllowlists::resolve(&config).unwrap().hosts.hosts(),
             ["localhost", "127.0.0.1", "::1"]
         );
     }
 
     #[test]
-    fn resolve_host_allowlist_honors_explicit_host_on_loopback_bind() {
+    fn listener_hosts_honors_explicit_host_on_loopback_bind() {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
@@ -1591,7 +1601,9 @@ mod tests {
 
         assert!(!config.expose_network);
         assert!(
-            resolve_host_allowlist(&config)
+            ListenerAllowlists::resolve(&config)
+                .unwrap()
+                .hosts
                 .hosts()
                 .iter()
                 .any(|host| host == "proxy.example.com:8443")
@@ -1599,7 +1611,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_host_allowlist_derives_public_hosts_on_loopback_bind() {
+    fn listener_hosts_derives_public_hosts_on_loopback_bind() {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
@@ -1618,7 +1630,7 @@ mod tests {
             .unwrap();
 
         assert!(!config.expose_network);
-        let allowlist = resolve_host_allowlist(&config);
+        let allowlist = ListenerAllowlists::resolve(&config).unwrap().hosts;
         assert!(
             allowlist
                 .hosts()
@@ -1634,7 +1646,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_host_allowlist_exposed_is_loopback_plus_public_and_never_empty() {
+    fn listener_hosts_exposed_is_loopback_plus_public_and_never_empty() {
         let owner = owner();
         let (config, _) = RuntimeBuilder::default()
             .database_url("postgres://unused/db")
@@ -1649,7 +1661,7 @@ mod tests {
             .resolve()
             .unwrap();
 
-        let allowlist = resolve_host_allowlist(&config);
+        let allowlist = ListenerAllowlists::resolve(&config).unwrap().hosts;
         let hosts = allowlist.hosts();
         // Loopback stays (gateway Host-rewrite + port-forward keep working)…
         assert!(hosts.iter().any(|host| host == "localhost"));
@@ -1663,7 +1675,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_host_allowlist_includes_public_url_host_distinct_from_origins() {
+    fn listener_hosts_includes_public_url_host_distinct_from_origins() {
         // Split deployment: browser app origin differs from the MCP host.
         // Deriving from origins alone would miss the real Host; the
         // public_url host must be in the allowlist.
@@ -1685,7 +1697,7 @@ mod tests {
             .resolve()
             .unwrap();
 
-        let allowlist = resolve_host_allowlist(&config);
+        let allowlist = ListenerAllowlists::resolve(&config).unwrap().hosts;
         let hosts = allowlist.hosts();
         assert!(hosts.iter().any(|host| host == "proxima.example.com"));
         assert!(hosts.iter().any(|host| host == "app.example.com"));
@@ -1810,6 +1822,30 @@ mod tests {
         assert!(
             matches!(err, ProximaError::Security(_)),
             "a wildcard origin must be refused before storage is touched, got {err:?}"
+        );
+    }
+
+    /// The Host allowlist is resolved with the origin one: an entry that
+    /// could never match refuses boot before storage is touched.
+    #[tokio::test]
+    async fn run_refuses_an_unmatchable_host_before_storage() {
+        let owner = owner();
+        let err = Proxima::<AlphaApp>::app()
+            .database_url("postgres://unused:5432/unused")
+            .store_number(0)
+            .platform_database_url("postgres://unused/platform")
+            .owner(owner)
+            .served_surface(ServedSurface::All)
+            .mcp_bind("127.0.0.1:31415".parse().unwrap())
+            .allowed_hosts(vec!["https://proxy.example.com".to_string()])
+            .authenticator(Arc::new(StubAuth { owner }))
+            .run()
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&err, ProximaError::Security(message) if message.contains("https://proxy.example.com")),
+            "a URL in the host allowlist must be refused by name before storage, got {err:?}"
         );
     }
 

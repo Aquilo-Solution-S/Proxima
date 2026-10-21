@@ -131,39 +131,51 @@ pub struct HostAllowlist {
 }
 
 impl HostAllowlist {
+    /// # Panics
+    ///
+    /// Panics when a static entry is not a host or `host:port`.
+    #[must_use]
+    pub fn new(additional_hosts: impl IntoIterator<Item = &'static str>) -> Self {
+        Self::parse(additional_hosts).expect("static host entry must parse")
+    }
+
     /// Build the listener allowlist from deployment-specific hosts.
     ///
     /// Loopback is added unconditionally and duplicate normalized authorities
     /// are removed. Empty/blank additional entries add nothing; the resulting
     /// allowlist is therefore never empty and can never enter rmcp's
     /// allow-all-on-empty state.
-    #[must_use]
-    pub fn new<I, S>(additional_hosts: I) -> Self
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidHost` naming an entry that is not a hostname, an IP
+    /// address or `host:port`: one with a scheme, a path or userinfo, or a
+    /// port that is not a number. Such an entry could never match a `Host`
+    /// header, so it is refused instead of left to surface as a 403.
+    pub fn parse<I, S>(additional_hosts: I) -> Result<Self, McpServerError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut hosts = Vec::new();
-        let mut authorities = Vec::new();
-        for raw in LOOPBACK_HOSTS.into_iter().map(str::to_string).chain(
-            additional_hosts
+        let mut allowlist = Self {
+            hosts: LOOPBACK_HOSTS.into_iter().map(str::to_string).collect(),
+            authorities: LOOPBACK_HOSTS
                 .into_iter()
-                .map(|host| host.as_ref().trim().to_ascii_lowercase()),
-        ) {
-            let raw = raw.trim();
+                .map(|host| normalize_authority(host, None))
+                .collect(),
+        };
+        for raw in additional_hosts {
+            let raw = raw.as_ref().trim().to_ascii_lowercase();
             if raw.is_empty() {
                 continue;
             }
-            let Some(authority) = parse_allowed_authority(raw) else {
-                continue;
-            };
-            if authorities.contains(&authority) {
-                continue;
+            let authority = parse_allowed_authority(&raw)?;
+            if !allowlist.authorities.contains(&authority) {
+                allowlist.hosts.push(raw);
+                allowlist.authorities.push(authority);
             }
-            hosts.push(raw.to_ascii_lowercase());
-            authorities.push(authority);
         }
-        Self { hosts, authorities }
+        Ok(allowlist)
     }
 
     /// Raw authority entries passed to rmcp's inner `/mcp` guard.
@@ -199,7 +211,7 @@ impl HostAllowlist {
 
 impl Default for HostAllowlist {
     fn default() -> Self {
-        Self::new(std::iter::empty::<&str>())
+        Self::new([])
     }
 }
 
@@ -222,15 +234,27 @@ fn normalize_authority(host: &str, port: Option<u16>) -> NormalizedAuthority {
     }
 }
 
-fn parse_allowed_authority(allowed: &str) -> Option<NormalizedAuthority> {
-    let allowed = allowed.trim();
-    if allowed.is_empty() {
-        return None;
+/// A non-blank allowlist entry as the authority it matches. A bare IPv6
+/// address (no brackets, so no port) is a host; anything else must be a
+/// `host[:port]` authority without userinfo.
+fn parse_allowed_authority(allowed: &str) -> Result<NormalizedAuthority, McpServerError> {
+    if allowed.parse::<std::net::Ipv6Addr>().is_ok() {
+        return Ok(normalize_authority(allowed, None));
     }
-    if let Ok(authority) = http::uri::Authority::try_from(allowed) {
-        return Some(normalize_authority(authority.host(), authority.port_u16()));
+    // `Authority` also accepts userinfo and a port that is not a number
+    // (its `port_u16` is then `None`), so both are refused here.
+    match http::uri::Authority::try_from(allowed) {
+        Ok(authority)
+            if !authority.as_str().contains('@')
+                && (authority.port_u16().is_some()
+                    || authority.as_str().len() == authority.host().len()) =>
+        {
+            Ok(normalize_authority(authority.host(), authority.port_u16()))
+        }
+        _ => Err(McpServerError::InvalidHost(format!(
+            "allowlist entry {allowed:?} is not a host or host:port"
+        ))),
     }
-    Some(normalize_authority(allowed, None))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -880,6 +904,9 @@ struct ParsedOrigin {
 
 fn parse_origin(value: &str) -> Option<ParsedOrigin> {
     let (scheme, rest) = value.split_once("://")?;
+    if rest.contains(['/', '?', '#', '@']) {
+        return None;
+    }
     let (host, port) = if let Some(rest) = rest.strip_prefix('[') {
         let (host, after) = rest.split_once(']')?;
         let port = if let Some(port) = after.strip_prefix(':') {
@@ -1950,7 +1977,9 @@ mod tests {
     fn host_guard_app(additional_hosts: &[&str]) -> Router {
         Router::new()
             .route("/ok", any(|| async { StatusCode::OK }))
-            .layer(host_guard_layer(HostAllowlist::new(additional_hosts)))
+            .layer(host_guard_layer(
+                HostAllowlist::parse(additional_hosts).unwrap(),
+            ))
     }
 
     fn request_with_host(uri: &str, host: &str) -> Request<Body> {
@@ -2279,6 +2308,73 @@ mod tests {
     #[test]
     fn parse_rejects_empty_entry() {
         assert_invalid_origin("  ");
+    }
+
+    #[test]
+    fn parse_rejects_an_origin_with_anything_after_the_authority() {
+        for pattern in [
+            "http://localhost/",
+            "https://app.example.com/path",
+            "https://app.example.com?x=1",
+            "https://app.example.com#top",
+            "https://user@app.example.com",
+        ] {
+            assert_invalid_origin(pattern);
+        }
+    }
+
+    #[test]
+    fn an_origin_header_with_a_path_matches_no_pattern() {
+        let allowlist = OriginAllowlist::parse(["http://localhost"]).unwrap();
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::ORIGIN,
+            http::HeaderValue::from_static("http://localhost/"),
+        );
+
+        assert!(!allowlist.allows(&headers));
+    }
+
+    #[test]
+    fn host_parse_refuses_an_entry_that_could_never_match() {
+        for entry in [
+            "https://app.example.com",
+            "app.example.com/path",
+            "host:abc",
+            "user@app.example.com",
+            "app example.com",
+        ] {
+            let err = HostAllowlist::parse(["ok.example.com", entry]).unwrap_err();
+            let McpServerError::InvalidHost(message) = err else {
+                panic!("expected invalid host for {entry:?}");
+            };
+            assert!(message.contains(entry), "{message}");
+        }
+    }
+
+    #[test]
+    fn host_parse_accepts_hosts_ports_ip_literals_and_skips_blanks() {
+        let allowlist = HostAllowlist::parse([
+            " App.Example.com ",
+            "",
+            "  ",
+            "api.example.com:8443",
+            "[2001:db8::1]:443",
+            "2001:db8::2",
+            "10.0.0.7",
+        ])
+        .unwrap();
+
+        for allowed in [
+            "app.example.com",
+            "api.example.com:8443",
+            "[2001:db8::1]:443",
+            "[2001:db8::2]",
+            "10.0.0.7:80",
+        ] {
+            assert!(allowlist.allows(allowed), "{allowed}");
+        }
+        assert!(!allowlist.allows("api.example.com:9"));
     }
 
     #[test]
