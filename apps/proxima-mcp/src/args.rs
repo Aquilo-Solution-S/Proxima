@@ -21,6 +21,7 @@ Usage:
   proxima-mcp [serve] [OPTIONS]
   proxima-mcp maintain-embeddings [OPTIONS]
   proxima-mcp maintain-storage [OPTIONS]
+  proxima-mcp maintain-blobs [OPTIONS]
 
 Proxima Streamable HTTP MCP server.
 
@@ -550,6 +551,20 @@ mod tests {
             "{error}"
         );
         assert!(parse_args(unknown(&["--bind"])).is_err());
+    }
+
+    /// The top-level usage lists every subcommand whose own usage exists.
+    #[test]
+    fn the_top_usage_lists_each_subcommand_with_its_own_usage() {
+        for usage in [
+            MAINTAIN_USAGE,
+            MAINTAIN_BLOBS_USAGE,
+            STORAGE_MAINTENANCE_USAGE,
+        ] {
+            let line = usage.lines().next().expect("a usage line");
+            let command = line.strip_prefix("Usage: ").expect("a Usage: line");
+            assert!(USAGE.contains(&format!("  {command}\n")), "{command}");
+        }
     }
 
     #[test]
