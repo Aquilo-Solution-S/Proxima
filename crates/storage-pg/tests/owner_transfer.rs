@@ -2469,6 +2469,93 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
     result.expect("mid-transfer head loss rollback failed");
 }
 
+/// The home owner of a list of entities comes back in the list's order, one
+/// answer per entry: a readable memory and goal, an absent id, a memory of an
+/// owner outside the read set, and the same memory twice.
+#[tokio::test]
+async fn visible_home_owners_answer_each_entity_in_order() {
+    use proxima_core::storage_ports::OwnerAccessReadPort;
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let (reader, other) = (
+            OwnerId::from(UserId::new(Uuid::now_v7())),
+            OwnerId::from(UserId::new(Uuid::now_v7())),
+        );
+        let held = pg
+            .ingest_fact_atomic(
+                &OwnerWritePermit::new_for_tests(reader, AccessKind::Fact),
+                &draft(),
+                None,
+            )
+            .await?;
+        let foreign = pg
+            .ingest_fact_atomic(
+                &OwnerWritePermit::new_for_tests(other, AccessKind::Fact),
+                &draft(),
+                None,
+            )
+            .await?;
+        let mut tx = pg.pool_for_tests().begin().await?;
+        let goal = write_goal(
+            &mut tx,
+            &reader,
+            proxima_storage_pg::test_fixtures::writer(),
+            &GoalWriteCommand {
+                handle: None,
+                schema_id: "core/task-goal-v1".into(),
+                title: "home owner".into(),
+                text: None,
+                state: GoalState::Active,
+                request_id: "home-owner-goal".into(),
+                close_fact_t: None,
+                assignment_t: None,
+                dependency_t: vec![],
+                evidence_t: vec![],
+                mint_write_act: false,
+                write_act_t: None,
+                parent_handle: None,
+            },
+            1,
+        )
+        .await?;
+        tx.commit().await?;
+
+        let entities = [
+            EntityId::Memory(held.memory_id),
+            EntityId::Memory(proxima_core::MemoryId::new(Uuid::now_v7())),
+            EntityId::Goal(GoalId::new(goal.t)),
+            EntityId::Memory(foreign.memory_id),
+            EntityId::Memory(held.memory_id),
+        ];
+        let scope = owner_scope_for_tests(&[reader, other]);
+        let homes =
+            OwnerAccessReadPort::visible_home_owners(&pg, Some(&scope), &entities, &[reader])
+                .await?;
+        assert_eq!(
+            homes,
+            vec![
+                Some((reader, AccessKind::Fact)),
+                None,
+                Some((reader, AccessKind::Goal)),
+                None,
+                Some((reader, AccessKind::Fact)),
+            ]
+        );
+        for (entity, home) in entities.iter().zip(&homes) {
+            assert_eq!(
+                &OwnerAccessReadPort::visible_home_owner(&pg, Some(&scope), *entity, &[reader])
+                    .await?,
+                home,
+                "the single lookup answers as the batch does"
+            );
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("batch home owner lookup failed");
+}
+
 #[tokio::test]
 async fn transfer_refuses_goal_entities() {
     let (db_name, pg) = fresh_pg().await;

@@ -395,10 +395,11 @@ impl Engine {
         }
         self.validate_goal_topology_authorized(authz, permit.owner(), &req.topology)
             .await?;
-        for child in &atomic.children {
-            self.validate_child_goal_draft_authorized(authz, child)
-                .await?;
-        }
+        self.validate_goal_evidence_authorized(
+            authz,
+            atomic.children.iter().flat_map(|child| &child.evidence),
+        )
+        .await?;
         self.author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
         self.storage()
@@ -513,13 +514,13 @@ impl Engine {
             self.target_perspective_authorized(authz, goal_owner, assignment)
                 .await?;
         }
-        for item in topology.evidence() {
-            if item.remote_origin().is_some() || written.contains(&item.memory_id()) {
-                continue;
-            }
-            self.authorize_entry_read(authz, crate::access::EntityId::Memory(item.memory_id()))
-                .await?;
-        }
+        let held: Vec<EntityId> = topology
+            .evidence()
+            .iter()
+            .filter(|item| item.remote_origin().is_none() && !written.contains(&item.memory_id()))
+            .map(|item| EntityId::Memory(item.memory_id()))
+            .collect();
+        self.authorize_entry_reads(authz, &held).await?;
         Ok(())
     }
 
@@ -532,16 +533,6 @@ impl Engine {
             evidence: child.evidence.clone(),
             request_id: child.request_id.clone(),
         })
-    }
-
-    async fn validate_child_goal_draft_authorized(
-        &self,
-        authz: &AuthzContext,
-        child: &ChildGoalDraft,
-    ) -> Result<(), ProtocolError> {
-        self.validate_goal_evidence_authorized(authz, &child.evidence)
-            .await?;
-        Ok(())
     }
 
     async fn target_perspective_authorized(
@@ -599,18 +590,17 @@ impl Engine {
     /// may see it. Kind ∈ {F, A} is the in-tx TOCTOU
     /// (`validate_evidence_in_owner`); a second pre-tx kind load here is the
     /// overlapping walk.
-    async fn validate_goal_evidence_authorized(
+    async fn validate_goal_evidence_authorized<'a>(
         &self,
         authz: &AuthzContext,
-        evidence: &[GoalEvidenceRef],
+        evidence: impl IntoIterator<Item = &'a GoalEvidenceRef>,
     ) -> Result<(), ProtocolError> {
-        for item in evidence
-            .iter()
+        let held: Vec<EntityId> = evidence
+            .into_iter()
             .filter(|item| item.remote_origin().is_none())
-        {
-            self.authorize_entry_read(authz, EntityId::Memory(item.memory_id()))
-                .await?;
-        }
+            .map(|item| EntityId::Memory(item.memory_id()))
+            .collect();
+        self.authorize_entry_reads(authz, &held).await?;
         Ok(())
     }
 

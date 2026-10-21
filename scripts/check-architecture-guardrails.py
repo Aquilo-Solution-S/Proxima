@@ -896,7 +896,7 @@ LIFECYCLE_GUC_MODULE = "crates/storage-pg/src/lifecycle_scope.rs"
 # under owner scope: add it here in the change that reviews it.
 LIFECYCLE_SCOPE_ENTER = re.compile(r"\bPgLifecycleScope::(?:enter|begin)\(")
 EXPECTED_LIFECYCLE_ENTER_SITES = {
-    ("crates/storage-pg/src/ports/owners.rs", "visible_home_owner"): 1,
+    ("crates/storage-pg/src/ports/owners.rs", "visible_home_owners"): 1,
     ("crates/storage-pg/src/verbs/derive_append.rs", "try_derived_replay"): 1,
     ("crates/storage-pg/src/verbs/derive_append.rs", "assert_derived_index_rows"): 1,
     ("crates/storage-pg/src/verbs/derive_append.rs", "record_external_edges"): 1,

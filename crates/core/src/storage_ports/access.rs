@@ -19,6 +19,25 @@ pub trait OwnerAccessReadPort: Send + Sync {
         read_owners: &[OwnerId],
     ) -> Result<Option<(OwnerId, crate::AccessKind)>, StorageError>;
 
+    /// [`Self::visible_home_owner`] of every entity in `entities`, in order.
+    /// A store that can answer them together overrides this: the default asks
+    /// one at a time.
+    async fn visible_home_owners(
+        &self,
+        owner_scope: Option<&crate::OwnerScope>,
+        entities: &[EntityId],
+        read_owners: &[OwnerId],
+    ) -> Result<Vec<Option<(OwnerId, crate::AccessKind)>>, StorageError> {
+        let mut homes = Vec::with_capacity(entities.len());
+        for entity in entities {
+            homes.push(
+                self.visible_home_owner(owner_scope, *entity, read_owners)
+                    .await?,
+            );
+        }
+        Ok(homes)
+    }
+
     async fn home_owner(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,

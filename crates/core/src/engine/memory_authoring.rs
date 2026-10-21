@@ -510,23 +510,22 @@ impl Engine {
         A: EngineAuthority + ?Sized,
     {
         let mut seen = std::collections::HashSet::with_capacity(ids.len());
-        let mut kinds = Vec::with_capacity(ids.len());
-        for id in ids {
-            if !seen.insert(*id) {
-                continue;
-            }
-            let permit = self
-                .authorize_entry_read(authority, EntityId::Memory(*id))
-                .await?;
-            let kind = match permit.kind() {
-                crate::AccessKind::Fact => EntityKind::Fact,
-                crate::AccessKind::Abstraction => EntityKind::Abstraction,
-                crate::AccessKind::Perspective => EntityKind::Perspective,
-                crate::AccessKind::Goal => EntityKind::Goal,
-            };
-            kinds.push((*id, kind));
-        }
-        Ok(kinds)
+        let unique: Vec<MemoryId> = ids.iter().copied().filter(|id| seen.insert(*id)).collect();
+        let entities: Vec<EntityId> = unique.iter().copied().map(EntityId::Memory).collect();
+        let permits = self.authorize_entry_reads(authority, &entities).await?;
+        Ok(unique
+            .into_iter()
+            .zip(permits)
+            .map(|(id, permit)| {
+                let kind = match permit.kind() {
+                    crate::AccessKind::Fact => EntityKind::Fact,
+                    crate::AccessKind::Abstraction => EntityKind::Abstraction,
+                    crate::AccessKind::Perspective => EntityKind::Perspective,
+                    crate::AccessKind::Goal => EntityKind::Goal,
+                };
+                (id, kind)
+            })
+            .collect())
     }
 
     /// Resolve actual kinds after entry-read authorization; one kind read per home owner.
@@ -542,6 +541,7 @@ impl Engine {
         let mut resolved = std::collections::HashMap::new();
         let mut groups: Vec<(OwnerId, Vec<MemoryId>)> = Vec::new();
         let mut unique = Vec::new();
+        let mut unwritten = Vec::new();
         for id in ids {
             if unique.contains(id) {
                 continue;
@@ -551,15 +551,17 @@ impl Engine {
             // of their actual kind (Role enforces write ceiling <= read ceiling).
             if let Some((_, kind)) = session_kinds.iter().find(|(seen, _)| seen == id) {
                 resolved.insert(*id, *kind);
-                continue;
-            }
-            let permit = self
-                .authorize_entry_read(authority, EntityId::Memory(*id))
-                .await?;
-            if let Some((_, group)) = groups.iter_mut().find(|(owner, _)| owner == permit.owner()) {
-                group.push(*id);
             } else {
-                groups.push((*permit.owner(), vec![*id]));
+                unwritten.push(*id);
+            }
+        }
+        let entities: Vec<EntityId> = unwritten.iter().copied().map(EntityId::Memory).collect();
+        let permits = self.authorize_entry_reads(authority, &entities).await?;
+        for (id, permit) in unwritten.into_iter().zip(permits) {
+            if let Some((_, group)) = groups.iter_mut().find(|(owner, _)| owner == permit.owner()) {
+                group.push(id);
+            } else {
+                groups.push((*permit.owner(), vec![id]));
             }
         }
         for (owner, group) in groups {

@@ -391,21 +391,46 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
+        let mut permits = self.authorize_entry_reads(authority, &[entity]).await?;
+        Ok(permits.remove(0))
+    }
+
+    /// [`Self::authorize_entry_read`] for each of `entities`, in order, with
+    /// one storage lookup for all of them. Each entry gets its own decision;
+    /// the first refused entry is the error and the entries after it are not
+    /// decided.
+    pub(in crate::engine) async fn authorize_entry_reads<A>(
+        &self,
+        authority: &A,
+        entities: &[EntityId],
+    ) -> Result<Vec<EntryReadPermit>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        if entities.is_empty() {
+            return Ok(Vec::new());
+        }
         let operation = self.operation_authority(authority)?;
         let authz = operation.authz();
         let read = self.readable_set(authz)?;
-        let (owner, kind) = self
+        let homes = self
             .storage()
             .pipeline
             .owner_access_read
-            .visible_home_owner(authz.owner_scope(), entity, &read)
+            .visible_home_owners(authz.owner_scope(), entities, &read)
             .await
-            .map_err(|err| storage_error("visible_home_owner", &err))?
-            .filter(|(owner, kind)| authz.may_read(owner, *kind))
-            .ok_or_else(|| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
-        self.veto_read_owner(authz, &owner, kind)
-            .map_err(|_| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
-        Ok(EntryReadPermit { owner, kind })
+            .map_err(|err| storage_error("visible_home_owner", &err))?;
+        homes
+            .into_iter()
+            .map(|home| {
+                let (owner, kind) = home
+                    .filter(|(owner, kind)| authz.may_read(owner, *kind))
+                    .ok_or_else(|| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
+                self.veto_read_owner(authz, &owner, kind)
+                    .map_err(|_| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
+                Ok(EntryReadPermit { owner, kind })
+            })
+            .collect()
     }
 }
 
@@ -1035,6 +1060,56 @@ mod tests {
             *events.lock().expect("recorder lock"),
             vec![(g1_owner, FACT_READ, AuthzOutcome::DeniedVeto)],
             "one decision, for the one owner involved, with the entry's real kind"
+        );
+    }
+
+    /// A batch decides each entry on its own, in order, and stops at the
+    /// first refusal: the entries after it are not decided.
+    #[tokio::test]
+    async fn authorize_entry_reads_decide_each_entry_and_stop_at_the_first_refusal() {
+        let p = owner();
+        let g1 = GroupId::new(uuid::Uuid::now_v7());
+        let g1_owner = OwnerId::from(g1);
+        let authz = member_context(&p, g1, Relation::Viewer);
+        let entities = [
+            EntityId::Memory(MemoryId::new(uuid::Uuid::now_v7())),
+            EntityId::Memory(MemoryId::new(uuid::Uuid::now_v7())),
+            EntityId::Memory(MemoryId::new(uuid::Uuid::now_v7())),
+        ];
+        let decisions = |registry: FlavorRegistry| {
+            engine_from_registry_and_storage(
+                registry,
+                storage_with_entity(p, g1, Some(g1_owner), true),
+            )
+        };
+
+        let allowed_events = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(RecordingOwnerHook {
+            events: allowed_events.clone(),
+        }));
+        let permits = decisions(registry)
+            .authorize_entry_reads(&authz, &entities)
+            .await
+            .expect("every entry is readable");
+        assert_eq!(permits.len(), entities.len());
+        assert_eq!(allowed_events.lock().expect("recorder lock").len(), 3);
+
+        let vetoed_events = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = FlavorRegistry::new();
+        registry.add_authorization_hook(Arc::new(VetoOwner(g1_owner)));
+        registry.add_authorization_hook(Arc::new(RecordingOwnerHook {
+            events: vetoed_events.clone(),
+        }));
+        let err = decisions(registry)
+            .authorize_entry_reads(&authz, &entities)
+            .await
+            .expect_err("the first entry is vetoed");
+        assert_eq!(err.message, super::ENTRY_NOT_FOUND_MESSAGE);
+        assert_eq!(
+            *vetoed_events.lock().expect("recorder lock"),
+            vec![(g1_owner, FACT_READ, AuthzOutcome::DeniedVeto)],
+            "one decision, and none for the entries after the refusal"
         );
     }
 

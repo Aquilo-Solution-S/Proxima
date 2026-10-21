@@ -1547,19 +1547,19 @@ pub(crate) async fn list_group_members_page(
         .collect())
 }
 
-/// Home owner and kind when the row is in `read_owners`. Absent and foreign
-/// are both `None`.
+/// Home owner and kind of each of `entities`, in order, when the row is in
+/// `read_owners`. Absent and foreign are both `None`.
 ///
 /// # Errors
 ///
 /// Returns `Internal` on sqlx failure.
-pub(crate) async fn visible_home_owner<'e>(
-    executor: impl sqlx::PgExecutor<'e>,
-    entity: EntityId,
+pub(crate) async fn visible_home_owners(
+    conn: &mut sqlx::PgConnection,
+    entities: &[EntityId],
     read_owners: &[OwnerId],
-) -> Result<Option<(OwnerId, AccessKind)>, StorageError> {
+) -> Result<Vec<Option<(OwnerId, AccessKind)>>, StorageError> {
     if read_owners.is_empty() {
-        return Ok(None);
+        return Ok(vec![None; entities.len()]);
     }
 
     let owner_ids: Vec<uuid::Uuid> = read_owners
@@ -1567,47 +1567,75 @@ pub(crate) async fn visible_home_owner<'e>(
         .copied()
         .map(OwnerId::into_inner)
         .collect();
+    let (mut memories, mut goals) = (Vec::new(), Vec::new());
+    for entity in entities {
+        match entity {
+            EntityId::Memory(id) => memories.push(id.into_inner()),
+            EntityId::Goal(id) => goals.push(id.into_inner()),
+        }
+    }
     // The entity discriminant is authorization data. Memory visibility is the
     // memory spine, forgotten rows included, while Goal visibility stays on
     // its own spine. The candidate-owner uniqueness guard makes a malformed
     // duplicate `(entity, owner)` state fail closed instead of authorizing the
     // first row returned by PostgreSQL.
-    let row: Option<(uuid::Uuid, String)> = match entity {
-        EntityId::Memory(memory_id) => {
-            sqlx::query_as(
-                "WITH candidates AS (
-                     SELECT owner_id, kind FROM proxima_core.memory WHERE t = $1 /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
-                 )
-                 SELECT c.owner_id, c.kind::text
-                   FROM candidates c
-                  WHERE c.owner_id = ANY($2::uuid[])
-                    AND NOT EXISTS (
-                        SELECT 1
-                          FROM candidates other
-                         WHERE other.owner_id <> c.owner_id
-                    )",
-            )
-            .bind(memory_id.into_inner())
-            .bind(&owner_ids)
-            .fetch_optional(executor)
-            .await
-        }
-        EntityId::Goal(goal_id) => {
-            sqlx::query_as(
-                "SELECT g.owner_id, 'goal'
-               FROM proxima_core.goal g
-              WHERE g.t = $1 AND g.owner_id = ANY($2::uuid[])",
-            )
-            .bind(goal_id.into_inner())
-            .bind(&owner_ids)
-            .fetch_optional(executor)
-            .await
-        }
+    let mut homes: std::collections::HashMap<(bool, uuid::Uuid), (uuid::Uuid, String)> =
+        std::collections::HashMap::new();
+    if !memories.is_empty() {
+        let rows: Vec<(uuid::Uuid, uuid::Uuid, String)> = sqlx::query_as(
+            "WITH candidates AS (
+                 SELECT t, owner_id, kind FROM proxima_core.memory WHERE t = ANY($1::uuid[]) /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
+             )
+             SELECT c.t, c.owner_id, c.kind::text
+               FROM candidates c
+              WHERE c.owner_id = ANY($2::uuid[])
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM candidates other
+                     WHERE other.t = c.t
+                       AND other.owner_id <> c.owner_id
+                )",
+        )
+        .bind(&memories)
+        .bind(&owner_ids)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(map_err)?;
+        homes.extend(
+            rows.into_iter()
+                .map(|(t, owner, kind)| ((false, t), (owner, kind))),
+        );
     }
-    .map_err(map_err)?;
+    if !goals.is_empty() {
+        let rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+            "SELECT g.t, g.owner_id
+               FROM proxima_core.goal g
+              WHERE g.t = ANY($1::uuid[]) AND g.owner_id = ANY($2::uuid[])",
+        )
+        .bind(&goals)
+        .bind(&owner_ids)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(map_err)?;
+        homes.extend(
+            rows.into_iter()
+                .map(|(t, owner)| ((true, t), (owner, "goal".to_owned()))),
+        );
+    }
 
-    row.map(|(id, kind)| Ok((OwnerId::new(id), access_kind(&kind)?)))
-        .transpose()
+    entities
+        .iter()
+        .map(|entity| {
+            let key = match entity {
+                EntityId::Memory(id) => (false, id.into_inner()),
+                EntityId::Goal(id) => (true, id.into_inner()),
+            };
+            homes
+                .get(&key)
+                .map(|(owner, kind)| Ok((OwnerId::new(*owner), access_kind(kind)?)))
+                .transpose()
+        })
+        .collect()
 }
 
 fn access_kind(stored: &str) -> Result<AccessKind, StorageError> {

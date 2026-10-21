@@ -86,6 +86,18 @@ impl OwnerAccessReadPort for PgStorage {
         entity: EntityId,
         read_owners: &[OwnerId],
     ) -> Result<Option<(OwnerId, proxima_core::AccessKind)>, StorageError> {
+        let mut homes = self
+            .visible_home_owners(owner_scope, &[entity], read_owners)
+            .await?;
+        Ok(homes.remove(0))
+    }
+
+    async fn visible_home_owners(
+        &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
+        entities: &[EntityId],
+        read_owners: &[OwnerId],
+    ) -> Result<Vec<Option<(OwnerId, proxima_core::AccessKind)>>, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
             crate::owner_scope::require_owner_scope(owner_scope)?,
@@ -98,7 +110,8 @@ impl OwnerAccessReadPort for PgStorage {
         let result = async {
             let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
             let found =
-                access::owner_columns::visible_home_owner(tx.as_mut(), entity, read_owners).await;
+                access::owner_columns::visible_home_owners(tx.as_mut(), entities, read_owners)
+                    .await;
             lifecycle.finish(tx.as_mut(), found).await
         }
         .await;
