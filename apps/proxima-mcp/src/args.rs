@@ -1,7 +1,11 @@
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:31415";
 pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_dev";
+
+/// Rows per transaction of `maintain-storage` without `--batch-size`.
+const DEFAULT_MAINTENANCE_BATCH: NonZeroU32 = NonZeroU32::new(1000).unwrap();
 
 /// `DATABASE_URL`, or the dev default when it is not configured.
 ///
@@ -252,7 +256,7 @@ pub struct StorageMaintenanceConfig {
     pub database_url: String,
     pub retry_cold_object_purges: bool,
     pub sweep_expired_uploads: bool,
-    pub batch_size: i64,
+    pub batch_size: NonZeroU32,
     pub dry_run: bool,
 }
 
@@ -439,7 +443,7 @@ pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
     let mut database_url: Option<String> = None;
     let mut retry_cold_object_purges = false;
     let mut sweep_expired_uploads = false;
-    let mut batch_size: i64 = 1000;
+    let mut batch_size = DEFAULT_MAINTENANCE_BATCH;
     let mut dry_run = false;
 
     let mut iter = args.into_iter();
@@ -456,13 +460,12 @@ pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
                 match f {
                     "--database-url" => database_url = Some(value),
                     "--batch-size" => {
-                        let parsed: i64 = value.parse().map_err(|err| {
+                        let parsed: u32 = value.parse().map_err(|err| {
                             ArgsError::Invalid(format!("invalid --batch-size {value:?}: {err}"))
                         })?;
-                        if parsed < 1 {
-                            return Err(ArgsError::Invalid("--batch-size must be positive".into()));
-                        }
-                        batch_size = parsed;
+                        batch_size = NonZeroU32::new(parsed).ok_or_else(|| {
+                            ArgsError::Invalid("--batch-size must be positive".into())
+                        })?;
                     }
                     other => return Err(ArgsError::Invalid(format!("unknown flag: {other}"))),
                 }
@@ -587,7 +590,7 @@ mod tests {
         ])
         .expect("retry alone is a valid bounded pass");
         assert!(cfg.retry_cold_object_purges);
-        assert_eq!(cfg.batch_size, 17);
+        assert_eq!(cfg.batch_size.get(), 17);
         assert!(cfg.dry_run);
     }
 
@@ -615,5 +618,18 @@ mod tests {
         ])
         .expect_err("zero batch");
         assert!(err.to_string().contains("--batch-size must be positive"));
+    }
+
+    #[test]
+    fn storage_maintenance_batch_size_refuses_what_u32_cannot_hold() {
+        for value in ["-1", "4294967296", "many"] {
+            let err = parse_storage_maintenance_args([
+                "--sweep-expired-uploads".into(),
+                "--batch-size".into(),
+                value.into(),
+            ])
+            .expect_err(value);
+            assert!(err.to_string().contains("invalid --batch-size"), "{err}");
+        }
     }
 }

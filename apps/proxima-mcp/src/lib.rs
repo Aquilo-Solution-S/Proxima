@@ -600,7 +600,7 @@ async fn storage_maintenance_steps(
         let (blobs, authority) = sweeper.ok_or_else(|| {
             ProximaError::Config("the expired-upload sweep needs the PROXIMA_S3_* block".into())
         })?;
-        let limit = u32::try_from(config.batch_size).unwrap_or(u32::MAX);
+        let limit = config.batch_size.get();
         let mut expired = 0_u64;
         let mut owed = 0_u64;
         let remaining = loop {
@@ -627,7 +627,7 @@ async fn storage_maintenance_steps(
         let outcome = storage
             .retry_cold_object_purges(
                 ColdPurgeRetryOptions::default()
-                    .batch_size(config.batch_size)
+                    .batch_size(i64::from(config.batch_size.get()))
                     .dry_run(config.dry_run),
             )
             .await
