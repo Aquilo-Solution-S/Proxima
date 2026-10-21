@@ -206,9 +206,23 @@ impl PgPlatformScope {
         &self,
         connection: &mut sqlx::PgConnection,
     ) -> Result<(), StorageError> {
+        // One statement: the scope settings take effect only for this
+        // transaction, and a refusal drops the transaction (the caller rolls
+        // the whole transaction back on any error), so checking the identity
+        // and setting the scope need not be two round trips.
         let valid: bool = sqlx::query_scalar(
             "SELECT d.oid::bigint = $1 AND r.oid::bigint = $2
-                    AND NOT r.rolsuper AND NOT r.rolbypassrls
+                    AND NOT r.rolsuper AND NOT r.rolbypassrls,
+                    set_config('app.proxima_scope', 'platform', true),
+                    set_config('app.owner', '{}', true),
+                    set_config('app.read_abstraction', '{}', true),
+                    set_config('app.read_perspective', '{}', true),
+                    set_config('app.read_goal', '{}', true),
+                    set_config('app.write_owner', '{}', true),
+                    set_config('app.write_abstraction', '{}', true),
+                    set_config('app.write_perspective', '{}', true),
+                    set_config('app.write_goal', '{}', true),
+                    set_config('app.manage_owner', '{}', true)
                FROM pg_catalog.pg_database d CROSS JOIN pg_catalog.pg_roles r
               WHERE d.datname = current_database() AND r.rolname = current_user",
         )
@@ -220,21 +234,6 @@ impl PgPlatformScope {
         if !valid {
             return Err(refused("platform database identity changed after boot"));
         }
-        sqlx::query(
-            "SELECT set_config('app.proxima_scope', 'platform', true),
-                    set_config('app.owner', '{}', true),
-                    set_config('app.read_abstraction', '{}', true),
-                    set_config('app.read_perspective', '{}', true),
-                    set_config('app.read_goal', '{}', true),
-                    set_config('app.write_owner', '{}', true),
-                    set_config('app.write_abstraction', '{}', true),
-                    set_config('app.write_perspective', '{}', true),
-                    set_config('app.write_goal', '{}', true),
-                    set_config('app.manage_owner', '{}', true)",
-        )
-        .execute(&mut *connection)
-        .await
-        .map_err(map_err)?;
         Ok(())
     }
 }
