@@ -26,6 +26,7 @@ pub mod upload;
 pub mod walk_memory_lineage;
 pub(crate) mod wire_ref;
 
+pub use ancestry::{NodeStatus, UnavailableReason};
 pub use episode::EpisodeCommitTool;
 pub use fact::CoreFactTool;
 pub use goal::CoreGoalTool;

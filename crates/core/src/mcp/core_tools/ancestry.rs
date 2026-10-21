@@ -15,6 +15,8 @@
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::flavor::Provenance;
@@ -166,16 +168,70 @@ async fn payload_subjects(
     Ok(subjects)
 }
 
+/// `status` of a walk node that is not rendered from a read. The walk never
+/// fails on such a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeStatus {
+    /// The other store erased the memory.
+    Erased,
+    /// An other-store memory that could not be read; see
+    /// [`UnavailableReason`].
+    Unavailable,
+    /// A local memory the caller could read but which is forgotten.
+    Forgotten,
+}
+
+/// Why an `unavailable` other-store memory was not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub enum UnavailableReason {
+    /// The store answered that the caller cannot read it, or there is no
+    /// such store.
+    #[serde(rename = "not readable")]
+    NotReadable,
+    /// The store failed; retry later.
+    #[serde(rename = "store unavailable")]
+    StoreUnavailable,
+    /// The call-wide deadline passed before the store answered.
+    #[serde(rename = "deadline exceeded")]
+    DeadlineExceeded,
+    /// The page cap on other-store reads was reached.
+    #[serde(rename = "origin limit exceeded")]
+    OriginLimitExceeded,
+}
+
+/// An other-store memory a walk could not read: only `Unavailable` has a
+/// reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unread {
+    Erased,
+    Unavailable(UnavailableReason),
+}
+
+impl Unread {
+    pub(crate) fn status(self) -> NodeStatus {
+        match self {
+            Self::Erased => NodeStatus::Erased,
+            Self::Unavailable(_) => NodeStatus::Unavailable,
+        }
+    }
+
+    pub(crate) fn reason(self) -> Option<UnavailableReason> {
+        match self {
+            Self::Erased => None,
+            Self::Unavailable(reason) => Some(reason),
+        }
+    }
+}
+
 /// How an other-store memory renders on a walk: from the read, or empty
-/// with a `status` (and why) when it could not be read. A walk never fails
-/// on such a node.
+/// with the reason it could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemoteProjection {
     pub(crate) kind: String,
     pub(crate) schema_id: String,
     pub(crate) snippet: String,
-    pub(crate) status: Option<&'static str>,
-    pub(crate) unavailable_reason: Option<&'static str>,
+    pub(crate) unread: Option<Unread>,
 }
 
 /// Read `handles` (distinct, in walk order) through the port as the caller,
@@ -224,32 +280,31 @@ pub(crate) fn project_remote_read(
     capped: bool,
 ) -> RemoteProjection {
     const SNIPPET_CHARS: usize = 200;
-    let unread = |status, reason| RemoteProjection {
+    let unread = |unread| RemoteProjection {
         kind: String::new(),
         schema_id: String::new(),
         snippet: String::new(),
-        status: Some(status),
-        unavailable_reason: reason,
+        unread: Some(unread),
     };
+    let unavailable = |reason| unread(Unread::Unavailable(reason));
     match read {
         Some(Ok(RemoteOriginRead::Found(_, memory))) => RemoteProjection {
             kind: memory.kind.as_str().to_string(),
             schema_id: memory.schema_id.clone(),
             snippet: memory.body.chars().take(SNIPPET_CHARS).collect(),
-            status: None,
-            unavailable_reason: None,
+            unread: None,
         },
-        Some(Ok(RemoteOriginRead::Erased)) => unread("erased", None),
+        Some(Ok(RemoteOriginRead::Erased)) => unread(Unread::Erased),
         Some(Err(OtherStoresError::DeadlineExceeded)) => {
-            unread("unavailable", Some("deadline exceeded"))
+            unavailable(UnavailableReason::DeadlineExceeded)
         }
-        _ if capped => unread("unavailable", Some("origin limit exceeded")),
+        _ if capped => unavailable(UnavailableReason::OriginLimitExceeded),
         // The store answered that the caller cannot read it, or there is no
         // such store (also: no other store wired).
         Some(Ok(RemoteOriginRead::NotFound) | Err(OtherStoresError::UnknownStore(_))) | None => {
-            unread("unavailable", Some("not readable"))
+            unavailable(UnavailableReason::NotReadable)
         }
         // The store failed or answered for another memory: retry later.
-        Some(Err(_)) => unread("unavailable", Some("store unavailable")),
+        Some(Err(_)) => unavailable(UnavailableReason::StoreUnavailable),
     }
 }

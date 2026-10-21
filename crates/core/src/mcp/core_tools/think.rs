@@ -7,7 +7,7 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::ancestry::AncestorTarget;
+use super::ancestry::{AncestorTarget, NodeStatus, UnavailableReason, Unread};
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
@@ -90,12 +90,11 @@ pub struct ThinkVisit {
     /// Set only on an other-store visit that could not be read: `erased`
     /// or `unavailable`; `kind` and `sketch` are then empty.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
+    pub status: Option<NodeStatus>,
     /// Why an `unavailable` visit was not read, as in
-    /// `walk_memory_lineage`: `not readable`, `store unavailable`,
-    /// `deadline exceeded`, or `origin limit exceeded`.
+    /// `walk_memory_lineage`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub unavailable_reason: Option<String>,
+    pub unavailable_reason: Option<UnavailableReason>,
 }
 
 impl McpTool for ThinkTool {
@@ -336,8 +335,8 @@ async fn hydrate_visits(
                     depth: visit.depth,
                     edge,
                     store: Some(crate::memory_store_number(handle)),
-                    status: read.status.map(ToString::to_string),
-                    unavailable_reason: read.unavailable_reason.map(ToString::to_string),
+                    status: read.unread.map(Unread::status),
+                    unavailable_reason: read.unread.and_then(Unread::reason),
                 }
             }
         })

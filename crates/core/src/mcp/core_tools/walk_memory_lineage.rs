@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::ancestry::{AncestorEdge, AncestorTarget};
+use super::ancestry::{AncestorEdge, AncestorTarget, NodeStatus, UnavailableReason, Unread};
 use crate::MemoryId;
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpToolCtx, McpToolError};
@@ -14,8 +14,6 @@ use crate::verbs::query::{MemoryLineageCursor, MemoryLineageDirection, MemoryLin
 const MAX_LINEAGE_DEPTH: u32 = 8;
 const DEFAULT_LINEAGE_DEPTH: u32 = 3;
 
-/// `status` of a local lineage node the caller could read but which is forgotten.
-const FORGOTTEN_STATUS: &str = "forgotten";
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WalkMemoryLineageArgs {
     /// Memory UUID.
@@ -104,13 +102,10 @@ pub struct LineageNodeOutput {
     /// could read but which is forgotten: `forgotten` (no snippet; the walk
     /// stops there). The walk never fails on such a node.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
-    /// Why an `unavailable` origin was not read: `not readable` (the store
-    /// answered that the caller cannot read it, or there is no such store),
-    /// `store unavailable` (the store failed; retry later), `deadline
-    /// exceeded`, or `origin limit exceeded` (the page cap).
+    pub status: Option<NodeStatus>,
+    /// Why an `unavailable` origin was not read.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub unavailable_reason: Option<String>,
+    pub unavailable_reason: Option<UnavailableReason>,
 }
 
 /// One hop of the walk: `origin` (made from) or, toward ancestors,
@@ -433,7 +428,7 @@ async fn render_ancestor_page(
             snippet: String::new(),
             distance: reached.get(&node.memory_id).copied().unwrap_or_default(),
             store: None,
-            status: Some(FORGOTTEN_STATUS.to_string()),
+            status: Some(NodeStatus::Forgotten),
             unavailable_reason: None,
         }));
         handles
@@ -507,8 +502,8 @@ async fn append_external_edges(
                 snippet: remote.snippet,
                 distance,
                 store: Some(crate::memory_store_number(origin)),
-                status: remote.status.map(ToString::to_string),
-                unavailable_reason: remote.unavailable_reason.map(ToString::to_string),
+                status: remote.unread.map(Unread::status),
+                unavailable_reason: remote.unread.and_then(Unread::reason),
             });
         }
         edges.push(LineageEdgeOutput {
@@ -528,7 +523,9 @@ mod tests {
     };
 
     use super::{LINEAGE_CURSOR, LineageNodeOutput, append_external_edges, lineage_fingerprint};
-    use crate::mcp::core_tools::ancestry::project_remote_read;
+    use crate::mcp::core_tools::ancestry::{
+        NodeStatus, UnavailableReason, Unread, project_remote_read,
+    };
     use crate::mcp::core_tools::memory_spaces::test_ctx::ctx_for;
     use crate::storage_ports::other_stores::RemoteOriginRead;
     use crate::storage_ports::other_stores::{
@@ -550,18 +547,21 @@ mod tests {
     fn unreadable_origins_say_why_they_are_unavailable() {
         let reason = |read: Option<&Result<RemoteOriginRead, OtherStoresError>>, capped| {
             let projection = project_remote_read(read, capped);
-            assert_eq!(projection.status, Some("unavailable"));
-            projection.unavailable_reason
+            assert_eq!(
+                projection.unread.map(Unread::status),
+                Some(NodeStatus::Unavailable)
+            );
+            projection.unread.and_then(Unread::reason)
         };
         assert_eq!(
             reason(Some(&Ok(RemoteOriginRead::NotFound)), false),
-            Some("not readable")
+            Some(UnavailableReason::NotReadable)
         );
         assert_eq!(
             reason(Some(&Err(OtherStoresError::UnknownStore(1))), false),
-            Some("not readable")
+            Some(UnavailableReason::NotReadable)
         );
-        assert_eq!(reason(None, false), Some("not readable"));
+        assert_eq!(reason(None, false), Some(UnavailableReason::NotReadable));
         for failed in [
             OtherStoresError::Unavailable("remote internals".into()),
             OtherStoresError::MismatchedMemory {
@@ -569,13 +569,51 @@ mod tests {
                 returned: crate::new_memory_uuid(1),
             },
         ] {
-            assert_eq!(reason(Some(&Err(failed)), false), Some("store unavailable"));
+            assert_eq!(
+                reason(Some(&Err(failed)), false),
+                Some(UnavailableReason::StoreUnavailable)
+            );
         }
         assert_eq!(
             reason(Some(&Err(OtherStoresError::DeadlineExceeded)), false),
-            Some("deadline exceeded")
+            Some(UnavailableReason::DeadlineExceeded)
         );
-        assert_eq!(reason(None, true), Some("origin limit exceeded"));
+        assert_eq!(
+            reason(None, true),
+            Some(UnavailableReason::OriginLimitExceeded)
+        );
+    }
+
+    /// The words a client sees are the ones it saw when these were strings.
+    #[test]
+    fn status_and_reason_keep_their_wire_words() {
+        let words = |statuses: &[NodeStatus], reasons: &[UnavailableReason]| {
+            serde_json::json!([statuses, reasons])
+        };
+        assert_eq!(
+            words(
+                &[
+                    NodeStatus::Erased,
+                    NodeStatus::Unavailable,
+                    NodeStatus::Forgotten
+                ],
+                &[
+                    UnavailableReason::NotReadable,
+                    UnavailableReason::StoreUnavailable,
+                    UnavailableReason::DeadlineExceeded,
+                    UnavailableReason::OriginLimitExceeded,
+                ]
+            ),
+            serde_json::json!([
+                ["erased", "unavailable", "forgotten"],
+                [
+                    "not readable",
+                    "store unavailable",
+                    "deadline exceeded",
+                    "origin limit exceeded"
+                ]
+            ])
+        );
     }
 
     #[test]
@@ -708,21 +746,23 @@ mod tests {
         assert_eq!(
             remote
                 .iter()
-                .filter(|node| node.status.as_deref() == Some("unavailable"))
+                .filter(|node| node.status == Some(NodeStatus::Unavailable))
                 .count(),
             215
         );
         assert_eq!(
             remote
                 .iter()
-                .filter(|node| node.unavailable_reason.as_deref() == Some("origin limit exceeded"))
+                .filter(
+                    |node| node.unavailable_reason == Some(UnavailableReason::OriginLimitExceeded)
+                )
                 .count(),
             191
         );
         assert_eq!(
             remote
                 .iter()
-                .filter(|node| node.unavailable_reason.as_deref() == Some("deadline exceeded"))
+                .filter(|node| node.unavailable_reason == Some(UnavailableReason::DeadlineExceeded))
                 .count(),
             24
         );
@@ -730,12 +770,12 @@ mod tests {
         assert!(
             nodes
                 .iter()
-                .any(|node| node.unavailable_reason.as_deref() == Some("origin limit exceeded"))
+                .any(|node| node.unavailable_reason == Some(UnavailableReason::OriginLimitExceeded))
         );
         assert!(
             nodes
                 .iter()
-                .any(|node| node.unavailable_reason.as_deref() == Some("deadline exceeded"))
+                .any(|node| node.unavailable_reason == Some(UnavailableReason::DeadlineExceeded))
         );
     }
 }
