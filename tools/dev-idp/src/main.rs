@@ -183,13 +183,19 @@ fn load_or_create_key(path: Option<&PathBuf>) -> Result<RsaKeyPair, String> {
             .map_err(|_| "failed to generate an RSA key".to_string());
     };
 
-    if let Ok(bytes) = std::fs::read(path) {
-        return RsaKeyPair::from_pkcs8(&bytes).map_err(|err| {
-            format!(
-                "{} is not a usable PKCS#8 RSA key ({err}); delete it to regenerate",
-                path.display()
-            )
-        });
+    // Only a missing file means "generate": any other failure to read an existing key must not
+    // replace it, or every token already issued would stop verifying without a word.
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            return RsaKeyPair::from_pkcs8(&bytes).map_err(|err| {
+                format!(
+                    "{} is not a usable PKCS#8 RSA key ({err}); delete it to regenerate",
+                    path.display()
+                )
+            });
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
     }
 
     let key =
@@ -428,6 +434,33 @@ mod tests {
             matches!(&err, ArgError::Message(m) if m.contains("loopback")),
             "{err}"
         );
+    }
+
+    /// A key file that exists but cannot be read is an error, never a reason to write a new key
+    /// over it.
+    #[test]
+    fn an_unreadable_key_file_is_not_replaced() {
+        let dir = std::env::temp_dir().join(format!("dev-idp-key-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        // A directory where the key file should be cannot be read as a file.
+        let error = load_or_create_key(Some(&dir)).expect_err("must refuse");
+        assert!(error.contains("cannot read"), "{error}");
+        assert!(dir.is_dir(), "the path was left as it was");
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_missing_key_file_is_generated_and_reused() {
+        let dir = std::env::temp_dir().join(format!("dev-idp-key-{}", Uuid::new_v4()));
+        let path = dir.join("key.pkcs8");
+        let first = load_or_create_key(Some(&path)).expect("generated");
+        let second = load_or_create_key(Some(&path)).expect("reused");
+        assert_eq!(
+            first.public_key().as_ref(),
+            second.public_key().as_ref(),
+            "a restart keeps the key"
+        );
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
