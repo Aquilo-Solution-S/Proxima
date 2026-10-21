@@ -69,9 +69,31 @@ pub fn process_env(key: &str) -> Option<String> {
     std::env::var(key).ok()
 }
 
+/// The boolean a setting's value spells: `1`, `true`, `yes` or `on` is true;
+/// `0`, `false`, `no` or `off` is false; case and surrounding whitespace do
+/// not matter. Anything else is `None`, and the caller names the setting in
+/// its own error. Every boolean setting of every crate reads its words here,
+/// so one setting cannot mean different things to different readers.
+///
+/// ```
+/// use proxima_core::parse_bool_word;
+///
+/// assert_eq!(parse_bool_word(" On\n"), Some(true));
+/// assert_eq!(parse_bool_word("NO"), Some(false));
+/// assert_eq!(parse_bool_word("maybe"), None);
+/// ```
+#[must_use]
+pub fn parse_bool_word(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::env_value;
+    use super::{env_value, parse_bool_word};
 
     fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {
@@ -79,6 +101,19 @@ mod tests {
                 .iter()
                 .find(|(k, _)| *k == key)
                 .map(|(_, v)| (*v).to_string())
+        }
+    }
+
+    #[test]
+    fn boolean_words_are_the_documented_set() {
+        for word in ["1", "true", "YES", " On\n"] {
+            assert_eq!(parse_bool_word(word), Some(true), "{word:?}");
+        }
+        for word in ["0", "False", "no", "OFF"] {
+            assert_eq!(parse_bool_word(word), Some(false), "{word:?}");
+        }
+        for word in ["", "2", "y", "enabled", "tru e"] {
+            assert_eq!(parse_bool_word(word), None, "{word:?}");
         }
     }
 

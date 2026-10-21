@@ -265,11 +265,8 @@ fn parse_bool_env(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Result
     let Some(value) = env_value(lookup, key) else {
         return Ok(false);
     };
-    match value.to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Ok(true),
-        "0" | "false" | "no" | "off" => Ok(false),
-        _ => Err(BlobError::Config(format!("invalid boolean {key}={value}"))),
-    }
+    proxima_core::parse_bool_word(&value)
+        .ok_or_else(|| BlobError::Config(format!("invalid boolean {key}={value}")))
 }
 
 fn parse_u64_env(

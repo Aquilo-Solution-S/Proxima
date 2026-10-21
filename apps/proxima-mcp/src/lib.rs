@@ -1052,13 +1052,11 @@ fn parse_bool_env(
 ) -> Result<bool, CliError> {
     match lookup_non_empty(lookup, key) {
         None => Ok(false),
-        Some(raw) => match raw.to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Ok(true),
-            "0" | "false" | "no" | "off" => Ok(false),
-            other => Err(CliError::Runtime(ProximaError::Config(format!(
-                "{key} must be a boolean, got {other:?}"
-            )))),
-        },
+        Some(raw) => proxima_core::parse_bool_word(&raw).ok_or_else(|| {
+            CliError::Runtime(ProximaError::Config(format!(
+                "{key} must be a boolean, got {raw:?}"
+            )))
+        }),
     }
 }
 

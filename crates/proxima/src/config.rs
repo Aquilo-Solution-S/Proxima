@@ -187,13 +187,8 @@ fn parse_positive(
 }
 
 pub(crate) fn parse_bool_value(key: &str, raw: &str) -> Result<bool, ProximaError> {
-    match raw.to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Ok(true),
-        "0" | "false" | "no" | "off" => Ok(false),
-        _ => Err(ProximaError::Config(format!(
-            "{key} must be a boolean, got {raw:?}"
-        ))),
-    }
+    proxima_core::parse_bool_word(raw)
+        .ok_or_else(|| ProximaError::Config(format!("{key} must be a boolean, got {raw:?}")))
 }
 
 #[cfg(test)]
