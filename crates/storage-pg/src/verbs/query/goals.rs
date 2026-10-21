@@ -61,21 +61,9 @@ fn t_timestamp_sql(t: &str) -> String {
     format!("proxima_core.memory_created_at({t})")
 }
 
-fn goal_page_sql(req: &QueryRequest, filters: &[GoalFilter]) -> String {
-    let has_goal_ids = !req.goal_ids.is_empty();
-    let single_goal_stream = matches!(req.entity_kind, Some(EntityKind::Goal));
-    let fetch_limit = if single_goal_stream {
-        u64::from(req.limit) + 1
-    } else {
-        u64::from(req.limit)
-    };
-    let from = if matches!(req.supersession, SupersessionStatus::HeadsOnly) && !has_goal_ids {
-        "FROM proxima_core.goal_head h \
-         JOIN proxima_core.goal g ON g.handle = h.handle AND g.t = h.t"
-    } else {
-        "FROM proxima_core.goal g \
-         JOIN proxima_core.goal_head h ON h.handle = g.handle"
-    };
+/// The columns of a goal row, as [`GoalRowDb`] reads them. `g` is the goal
+/// version and `h` its series head.
+fn goal_columns() -> String {
     // `created_at` is this version's time (`changed_at`); `set_at` is
     // the time of the series' first version, the
     // least `t` among its rows. Both come from the same `t` derivation.
@@ -84,28 +72,102 @@ fn goal_page_sql(req: &QueryRequest, filters: &[GoalFilter]) -> String {
         "(SELECT series.t FROM proxima_core.goal series \
            WHERE series.handle = g.handle ORDER BY series.t LIMIT 1)",
     );
+    format!(
+        "g.handle, g.t AS goal_id, \
+         {created_at} AS created_at, \
+         {set_at} AS set_at, \
+         h.schema_id, \
+         g.owner_id, g.\"by\", g.via, g.title, g.text, g.state, \
+         g.dependency_t AS dependency_goal_ids, \
+         g.assignment_t AS assignment, \
+         g.evidence_t AS evidence"
+    )
+}
+
+fn goal_page_sql(req: &QueryRequest, filters: &[GoalFilter]) -> String {
+    let has_goal_ids = !req.goal_ids.is_empty();
+    let single_goal_stream = matches!(req.entity_kind, Some(EntityKind::Goal));
+    let fetch_limit = if single_goal_stream {
+        u64::from(req.limit) + 1
+    } else {
+        u64::from(req.limit)
+    };
+    let heads_only = matches!(req.supersession, SupersessionStatus::HeadsOnly) && !has_goal_ids;
+    if heads_only
+        && filters.iter().all(|filter| {
+            !matches!(
+                filter,
+                GoalFilter::Unassigned | GoalFilter::Assignments(_) | GoalFilter::Evidence(_)
+            )
+        })
+    {
+        return owner_head_page_sql(filters, fetch_limit);
+    }
+    let from = if heads_only {
+        "FROM proxima_core.goal_head h \
+         JOIN proxima_core.goal g ON g.handle = h.handle AND g.t = h.t"
+    } else {
+        "FROM proxima_core.goal g \
+         JOIN proxima_core.goal_head h ON h.handle = g.handle"
+    };
+    let columns = goal_columns();
     let mut sql = format!(
-        "SELECT g.handle, g.t AS goal_id, \
-                {created_at} AS created_at, \
-                {set_at} AS set_at, \
-                h.schema_id, \
-                g.owner_id, g.\"by\", g.via, g.title, g.text, g.state, \
-                g.dependency_t AS dependency_goal_ids, \
-                g.assignment_t AS assignment, \
-                g.evidence_t AS evidence \
+        "SELECT {columns} \
          {from} \
          JOIN proxima_core.owners o ON o.owner_id = g.owner_id \
          WHERE g.owner_id = ANY($1::uuid[])"
     );
-    let heads_only = matches!(req.supersession, SupersessionStatus::HeadsOnly) && !has_goal_ids;
+    append_goal_filters(&mut sql, filters, |filter, next| {
+        filter.predicate(next, heads_only)
+    });
+    let _ = write!(sql, " ORDER BY g.handle DESC, g.t DESC LIMIT {fetch_limit}");
+    sql
+}
+
+/// Append each filter's predicate, numbering its binds from `$2` (`$1` is the
+/// owner list).
+fn append_goal_filters(
+    sql: &mut String,
+    filters: &[GoalFilter],
+    predicate: impl Fn(&GoalFilter, u32) -> String,
+) {
     let mut next = 2_u32;
     for filter in filters {
         // SQL-POLICY: fixed-fragment — GoalFilter predicates contain only
         // literals and numbered placeholders; outside values are binds below.
-        sql.push_str(&filter.predicate(next, heads_only));
+        sql.push_str(&predicate(filter, next));
         next += filter.bind_count();
     }
-    let _ = write!(sql, " ORDER BY g.handle DESC, g.t DESC LIMIT {fetch_limit}");
+}
+
+/// Current goals by series handle, newest first, filtered by what the head or
+/// the goal's state says: each owner's heads are read in order from the
+/// owner-leading head index, each head's version is probed by its unique `t`,
+/// and an owner stops at the page. The top of the union is contained in the
+/// union of each owner's top, so the owners' pages merge into one. A page
+/// reads the goals it returns however many goals the store holds, and a reader
+/// with few goals does not read the other owners'.
+///
+/// The join is on `t` alone: it is unique, and a second equality on `handle`
+/// makes the planner estimate the join at one row and choose a scan of both
+/// tables.
+fn owner_head_page_sql(filters: &[GoalFilter], fetch_limit: u64) -> String {
+    let columns = goal_columns();
+    let mut sql = format!(
+        "SELECT page.* \
+         FROM proxima_core.owners o CROSS JOIN LATERAL ( \
+           SELECT {columns} \
+           FROM proxima_core.goal_head h \
+           JOIN proxima_core.goal g ON g.t = h.t \
+           WHERE h.owner_id = o.owner_id AND g.owner_id = o.owner_id"
+    );
+    append_goal_filters(&mut sql, filters, GoalFilter::head_predicate);
+    let _ = write!(
+        sql,
+        " ORDER BY h.handle DESC LIMIT {fetch_limit} \
+         ) page WHERE o.owner_id = ANY($1::uuid[]) \
+         ORDER BY page.handle DESC, page.goal_id DESC LIMIT {fetch_limit}"
+    );
     sql
 }
 
@@ -140,6 +202,19 @@ impl GoalFilter {
             | Self::Evidence(_)
             | Self::Ids(_)
             | Self::Handles(_) => 1,
+        }
+    }
+
+    /// The predicate in a page that reads heads first (`h`) and probes the
+    /// version (`g`): the cursor starts the head scan, the rest is as
+    /// [`Self::predicate`] for heads.
+    fn head_predicate(&self, placeholder: u32) -> String {
+        match self {
+            Self::Cursor(_, _) => format!(
+                " AND (h.handle, h.t) < (${placeholder}, ${})",
+                placeholder + 1
+            ),
+            _ => self.predicate(placeholder, true),
         }
     }
 

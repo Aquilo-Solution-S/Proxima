@@ -436,3 +436,40 @@ async fn goal_reference_filters_preserve_kind_and_owner_nondisclosure_under_rls(
     admin.close().await;
     Ok(())
 }
+
+/// A goal page is the newest series across every readable owner, in pages that
+/// neither repeat nor skip a series, and never shows an owner the reader lacks.
+#[tokio::test]
+async fn goal_pages_merge_the_heads_of_every_readable_owner() -> Result<(), TestError> {
+    let (pg, _db) = fresh_pg("proxima_goal_owner_merge").await;
+    let (one, two, outsider) = (owner(), owner(), owner());
+    let scope = owner_scope_for_tests(&[one, two]);
+    let mut written = Vec::new();
+    for writer in [one, two, outsider, one, outsider, two, one, two, one] {
+        let goal = goal(&pg, writer, None, GoalState::Active).await;
+        if writer != outsider {
+            written.push(goal.handle);
+        }
+    }
+    written.sort_unstable_by(|a, b| b.cmp(a));
+    let mut req = QueryRequest::readable();
+    req.entity_kind = Some(EntityKind::Goal);
+    req.limit = 2;
+    let mut seen = Vec::new();
+    loop {
+        let page = pg
+            .query_memories(Some(&scope), &[one, two], &req, &[])
+            .await?;
+        seen.extend(page.goals.iter().map(|goal| goal.handle));
+        assert!(
+            seen.len() <= written.len(),
+            "no series repeats across pages"
+        );
+        let Some(cursor) = page.next_cursor else {
+            break;
+        };
+        req.page.after = Some(cursor);
+    }
+    assert_eq!(seen, written);
+    Ok(())
+}

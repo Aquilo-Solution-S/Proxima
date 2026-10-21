@@ -1,6 +1,6 @@
-//! Work bound for the goal queries recall runs (#539): the Active goals of one
-//! Perspective and the Active goals of none read about the goals they return,
-//! under the shipped RLS policies, however many goals the owner holds.
+//! Work bound for the goal queries under the shipped RLS policies: the Active
+//! goals of one Perspective and of none (#539), and a page of an owner's goals
+//! (#545), read about the goals they return however many goals the store holds.
 
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{EntityKind, GoalAssignmentFilter, QueryRequest};
@@ -142,6 +142,15 @@ async fn run(
     rows
 }
 
+async fn run_listing(
+    runtime: &PgPool,
+    owner: Uuid,
+    req: &QueryRequest,
+    explain: bool,
+) -> Vec<sqlx::postgres::PgRow> {
+    run(runtime, owner, req, None, explain).await
+}
+
 fn goals_under(filter: GoalAssignmentFilter) -> QueryRequest {
     let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
@@ -228,6 +237,105 @@ async fn assigned_and_unassigned_goal_reads_do_not_scan_the_goal_table() {
         assert!(
             !sequential && read < 25.0 * f64::from(u32::try_from(returned).unwrap()),
             "the {what} read walked {read} goal rows for {returned} goals \
+             (sequential: {sequential}); plan: {plan}"
+        );
+    }
+    runtime.close().await;
+    platform.close().await;
+    super::cleanup(&database, admin, &platform_role, &runtime_role).await;
+}
+
+/// An owner of few goals, written before everyone else's so that its series
+/// are the oldest handles in the store, lists its goals without reading the
+/// store's: the page walks the owner's heads, not the heads of other owners.
+#[tokio::test]
+async fn an_owner_of_few_goals_lists_them_without_reading_the_store() {
+    let (database, admin, runtime, platform, platform_role, runtime_role, _) =
+        super::setup_full_schema().await;
+    let (small, large) = (Uuid::now_v7(), Uuid::now_v7());
+    for (owner, series) in [(small, 300), (large, i64::from(SERIES))] {
+        sqlx::query(
+            "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(owner)
+        .execute(&admin)
+        .await
+        .unwrap();
+        let mut seed = admin.acquire().await.unwrap();
+        sqlx::query("SET session_replication_role = replica")
+            .execute(&mut *seed)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TEMP TABLE listed AS
+             SELECT n, uuidv7() AS handle, uuidv7() AS t1, uuidv7() AS t2
+               FROM generate_series(1, $1) n",
+        )
+        .bind(series)
+        .execute(&mut *seed)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+             SELECT handle, 'core/simple-text-v1', $1, t2 FROM listed",
+        )
+        .bind(owner)
+        .execute(&mut *seed)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO proxima_core.goal (handle, t, owner_id, title, state, request_id, \"by\", text)
+             SELECT handle, t1, $1, 'g' || n, 'Active', 'first-' || n,
+                    '00000000-0000-0000-0000-000000000545'::uuid, 'text'
+               FROM listed",
+        )
+        .bind(owner)
+        .execute(&mut *seed)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO proxima_core.goal
+                 (handle, t, owner_id, title, state, request_id, \"by\", text, close_fact_t)
+             SELECT handle, t2, $1, 'g' || n,
+                    CASE WHEN n % 10 = 0 THEN 'Active' ELSE 'Achieved' END::proxima_core.goal_state,
+                    'head-' || n, '00000000-0000-0000-0000-000000000545'::uuid, 'text',
+                    CASE WHEN n % 10 = 0 THEN NULL ELSE uuidv7() END
+               FROM listed",
+        )
+        .bind(owner)
+        .execute(&mut *seed)
+        .await
+        .unwrap();
+        sqlx::query("DROP TABLE listed")
+            .execute(&mut *seed)
+            .await
+            .unwrap();
+    }
+    sqlx::query("VACUUM (ANALYZE) proxima_core.goal")
+        .execute(&admin)
+        .await
+        .unwrap();
+    sqlx::query("VACUUM (ANALYZE) proxima_core.goal_head")
+        .execute(&admin)
+        .await
+        .unwrap();
+
+    // The small owner's Active goals are every tenth of its 300 series; the
+    // page is capped at 50.
+    let mut req = QueryRequest::readable();
+    req.entity_kind = Some(EntityKind::Goal);
+    req.goal_states.insert(GoalState::Active);
+    req.limit = 50;
+    for (who, owner, returned) in [("small", small, 30_usize), ("large", large, 51)] {
+        let rows = run_listing(&runtime, owner, &req, false).await;
+        assert_eq!(rows.len(), returned, "{who} owner's page");
+        let rows = run_listing(&runtime, owner, &req, true).await;
+        let plan: serde_json::Value = rows[0].get(0);
+        let (read, sequential) = goal_work(&plan);
+        assert!(
+            !sequential && read < 40.0 * f64::from(u32::try_from(returned).unwrap()),
+            "the {who} owner's page walked {read} rows for {returned} goals \
              (sequential: {sequential}); plan: {plan}"
         );
     }
