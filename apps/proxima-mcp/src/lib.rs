@@ -177,6 +177,15 @@ impl FlavorApp for BlobMaintenanceApp {
     }
 }
 
+/// The [`CliError`] of a subcommand's argument failure: a request for help
+/// is answered with that subcommand's `usage`.
+fn cli_error(usage: &'static str) -> impl Fn(ArgsError) -> CliError {
+    move |err| match err {
+        ArgsError::Help => CliError::Help(usage),
+        other @ ArgsError::Invalid(_) => CliError::Args(other),
+    }
+}
+
 /// # Errors
 ///
 /// Returns argument, facade boot, or MCP transport failures.
@@ -184,35 +193,24 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
     let mut args: Vec<String> = args.into_iter().collect();
     if args.first().is_some_and(|arg| arg == "maintain-embeddings") {
         args.remove(0);
-        let config = parse_maintain_args(args).map_err(|err| match err {
-            ArgsError::Help => CliError::Help(MAINTAIN_USAGE),
-            other @ ArgsError::Invalid(_) => CliError::Args(other),
-        })?;
+        let config = parse_maintain_args(args).map_err(cli_error(MAINTAIN_USAGE))?;
         return run_maintain(config).await;
     }
     if args.first().is_some_and(|arg| arg == "maintain-storage") {
         args.remove(0);
-        let config = parse_storage_maintenance_args(args).map_err(|err| match err {
-            ArgsError::Help => CliError::Help(STORAGE_MAINTENANCE_USAGE),
-            other @ ArgsError::Invalid(_) => CliError::Args(other),
-        })?;
+        let config =
+            parse_storage_maintenance_args(args).map_err(cli_error(STORAGE_MAINTENANCE_USAGE))?;
         return run_maintain_storage(config).await;
     }
     if args.first().is_some_and(|arg| arg == "maintain-blobs") {
         args.remove(0);
-        let config = parse_maintain_blobs_args(args).map_err(|err| match err {
-            ArgsError::Help => CliError::Help(MAINTAIN_BLOBS_USAGE),
-            other @ ArgsError::Invalid(_) => CliError::Args(other),
-        })?;
+        let config = parse_maintain_blobs_args(args).map_err(cli_error(MAINTAIN_BLOBS_USAGE))?;
         return run_maintain_blobs(config).await;
     }
     if args.first().is_some_and(|arg| arg == "serve") {
         args.remove(0);
     }
-    let config = parse_args(args).map_err(|err| match err {
-        ArgsError::Help => CliError::Help(USAGE),
-        other @ ArgsError::Invalid(_) => CliError::Args(other),
-    })?;
+    let config = parse_args(args).map_err(cli_error(USAGE))?;
     // rmcp 3.x logs idle-session keep-alive expiry and the resulting
     // session-cleanup race at ERROR; both are clean lifecycle events
     // (`quit_reason=Closed`), so those targets are pinned to `warn`.
@@ -1149,6 +1147,15 @@ mod tests {
 
     fn tool(name: &str) -> ToolName {
         ToolName::parse(name).expect("a tool name")
+    }
+
+    #[test]
+    fn an_argument_failure_asks_for_its_own_usage_or_is_reported() {
+        let error = cli_error("sub usage")(ArgsError::Help);
+        assert_eq!(error.help_text(), Some("sub usage"));
+        let error = cli_error("sub usage")(ArgsError::Invalid("bad flag".into()));
+        assert!(!error.is_help());
+        assert_eq!(error.to_string(), "bad flag");
     }
 
     #[test]
