@@ -483,10 +483,7 @@ impl CitedBlobStore {
     /// keys to ask about, and asking costs one request per row instead of a
     /// walk of the whole bucket.
     async fn object_exists(&self, key: &str) -> Result<bool, StorageError> {
-        let client = self
-            .client()
-            .await
-            .map_err(|e| StorageError::Unavailable(format!("s3 client: {e}")))?;
+        let client = self.client();
         match client
             .head_object()
             .bucket(&self.config.bucket)
@@ -514,10 +511,7 @@ impl CitedBlobStore {
     /// comparison. The erase path pages versions because it must delete
     /// them; this one must only know whether the key resolves.
     async fn list_keys(&self, prefix: &str) -> Result<BTreeSet<String>, StorageError> {
-        let client = self
-            .client()
-            .await
-            .map_err(|e| StorageError::Unavailable(format!("s3 client: {e}")))?;
+        let client = self.client();
         let mut keys = BTreeSet::new();
         let mut token: Option<String> = None;
         let mut seen_tokens = BTreeSet::new();

@@ -10,11 +10,7 @@
 //! key it orphans in `proxima_core.cold_purge_pending` — under the object-key
 //! lock, so the refcount that decided it is true at decision time — and the
 //! wired `ColdObjectStore` drains that queue after the commit. There is no
-//! second, owner-enumerating pass here. The `CitedObjectErasePort` that used
-//! to run one was vacuous by construction: it read `blob_uploads` and the
-//! forgotten-memory locators for the owner AFTER the same transaction had deleted every one
-//! of those rows, so it always enumerated nothing and always reported a
-//! clean purge.
+//! second, owner-enumerating pass here.
 
 use std::collections::{HashMap, HashSet};
 
@@ -45,14 +41,13 @@ pub(super) async fn purge_exact_key(
     bucket: &str,
     key: &str,
 ) -> Result<u64, StorageError> {
-    purge_versions(client, bucket, key, true).await
+    purge_versions(client, bucket, key).await
 }
 
 async fn purge_versions(
     client: &aws_sdk_s3::Client,
     bucket: &str,
     listing_prefix: &str,
-    exact: bool,
 ) -> Result<u64, StorageError> {
     let mut deleted = 0_u64;
     let mut key_marker: Option<String> = None;
@@ -98,7 +93,7 @@ async fn purge_versions(
         // A single `list_object_versions` page returns at most `max-keys`
         // (default 1000) versions + delete markers combined, which is within
         // `delete_objects`' 1000-identifier limit, so one batch per page fits.
-        let identifiers = version_identifiers(&page, listing_prefix, exact)?;
+        let identifiers = version_identifiers(&page, listing_prefix)?;
         if !identifiers.is_empty() {
             let batch = Delete::builder()
                 .set_objects(Some(identifiers.clone()))
@@ -173,7 +168,6 @@ fn validate_delete_acknowledgements(
 fn version_identifiers(
     page: &ListObjectVersionsOutput,
     listing_prefix: &str,
-    exact: bool,
 ) -> Result<Vec<ObjectIdentifier>, StorageError> {
     let mut identifiers = Vec::new();
     for (key, version_id) in page
@@ -191,7 +185,7 @@ fn version_identifiers(
                 "version listing under {listing_prefix} contained an entry without a key"
             ))
         })?;
-        if exact && key != listing_prefix {
+        if key != listing_prefix {
             continue;
         }
         // A missing version must never become a key-only delete, which can

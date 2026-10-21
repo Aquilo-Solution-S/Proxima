@@ -371,7 +371,7 @@ impl CitedBlobStore {
             + time::Duration::seconds(
                 i64::try_from(self.config.upload_ttl_seconds).unwrap_or(i64::MAX),
             );
-        let client = self.presigning_client().await?;
+        let client = self.presigning_client();
         let presigned = client
             .put_object()
             .bucket(&self.config.bucket)
@@ -487,7 +487,7 @@ impl CitedBlobStore {
             return Ok(replay);
         }
 
-        let client = self.client().await?;
+        let client = self.client();
         let pending_key = pending_object_key(upload_id);
         let mut source_object_key = row.object_key.clone();
         let (mut streamed, source_etag) =
@@ -969,7 +969,7 @@ impl CitedBlobStore {
     /// Purge the presigned transfer key by version id, including all delete
     /// markers. The canonical object is deliberately not touched here.
     async fn purge_pending_upload(&self, bucket: &str, upload_id: Uuid) -> Result<(), BlobError> {
-        let client = self.client().await?;
+        let client = self.client();
         super::erase::purge_exact_key(client, bucket, &pending_object_key(upload_id))
             .await
             .map(|_| ())

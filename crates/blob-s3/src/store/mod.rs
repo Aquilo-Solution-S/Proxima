@@ -61,9 +61,9 @@ pub struct CitedBlobStore {
     config: S3RuntimeConfig,
     /// S3 client built from the configured static key pair and target,
     /// memoized once per store.
-    client: tokio::sync::OnceCell<aws_sdk_s3::Client>,
+    client: std::sync::OnceLock<aws_sdk_s3::Client>,
     /// Client whose endpoint is selected before signing holder-facing URLs.
-    presigning_client: tokio::sync::OnceCell<aws_sdk_s3::Client>,
+    presigning_client: std::sync::OnceLock<aws_sdk_s3::Client>,
     /// Set once by normal Proxima boot and shared by every store clone.
     /// A witness minted by an unrelated disposable Engine cannot authorize
     /// this store's global operations.
@@ -118,8 +118,8 @@ impl CitedBlobStore {
             store_id,
             pool,
             config,
-            client: tokio::sync::OnceCell::new(),
-            presigning_client: tokio::sync::OnceCell::new(),
+            client: std::sync::OnceLock::new(),
+            presigning_client: std::sync::OnceLock::new(),
             system_authority: std::sync::Arc::new(std::sync::OnceLock::new()),
             platform_scope,
             stage_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_STAGES)),
@@ -175,19 +175,14 @@ impl CitedBlobStore {
     }
 
     /// The memoized S3 client, built on first use from the runtime config.
-    pub(super) async fn client(&self) -> Result<&aws_sdk_s3::Client, BlobError> {
-        Ok(self
-            .client
-            .get_or_init(|| async { self.config.client() })
-            .await)
+    pub(super) fn client(&self) -> &aws_sdk_s3::Client {
+        self.client.get_or_init(|| self.config.client())
     }
 
     /// The memoized client for presigning; object I/O keeps using `client`.
-    pub(super) async fn presigning_client(&self) -> Result<&aws_sdk_s3::Client, BlobError> {
-        Ok(self
-            .presigning_client
-            .get_or_init(|| async { self.config.presigning_client() })
-            .await)
+    pub(super) fn presigning_client(&self) -> &aws_sdk_s3::Client {
+        self.presigning_client
+            .get_or_init(|| self.config.presigning_client())
     }
 
     pub(super) fn bucket(&self) -> &str {
@@ -220,8 +215,8 @@ mod tests {
         )
         .unwrap();
         assert!(!format!("{store:?}").contains(secret));
-        store.client().await.unwrap();
-        store.presigning_client().await.unwrap();
+        store.client();
+        store.presigning_client();
         assert!(!format!("{store:?}").contains(secret));
     }
 
@@ -239,11 +234,11 @@ mod tests {
         .unwrap();
         for (client, expected) in [
             (
-                store.client().await.unwrap(),
+                store.client(),
                 "https://objects.internal.example/internal/test-bucket/config-probe?",
             ),
             (
-                store.presigning_client().await.unwrap(),
+                store.presigning_client(),
                 "https://files.example/objects/test-bucket/config-probe?",
             ),
         ] {

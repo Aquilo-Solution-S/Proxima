@@ -28,12 +28,8 @@ impl ColdObjectStore for S3ColdStore {
     }
 
     async fn delete(&self, key: &str) -> Result<PurgeDeleted, StorageError> {
-        let client = self
-            .store
-            .client()
-            .await
-            .map_err(|err| StorageError::Unavailable(err.to_string()))?;
-        let versions = super::erase::purge_exact_key(client, self.store.bucket(), key).await?;
+        let versions =
+            super::erase::purge_exact_key(self.store.client(), self.store.bucket(), key).await?;
         Ok(PurgeDeleted::from_versions(versions))
     }
 }

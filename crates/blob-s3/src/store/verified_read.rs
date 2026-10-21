@@ -145,8 +145,6 @@ impl CitedBlobReadPort for CitedBlobStore {
 
         let object =
             self.client()
-                .await
-                .map_err(|err| CitedBlobReadError::Unavailable(err.to_string()))?
                 .get_object()
                 .bucket(&row.bucket)
                 .key(&row.object_key)
