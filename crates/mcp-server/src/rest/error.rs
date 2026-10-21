@@ -301,7 +301,7 @@ const fn storage_status(err: &StorageError) -> (StatusCode, &'static str, &'stat
             "Scope not registered",
         ),
         StorageError::Conflict(_) => (StatusCode::CONFLICT, "conflict", "Conflict"),
-        StorageError::IdempotencyConflict { .. } => (
+        StorageError::IdempotencyConflict { .. } | StorageError::ReplayChanged(_) => (
             StatusCode::CONFLICT,
             "idempotency-conflict",
             "Idempotency conflict",

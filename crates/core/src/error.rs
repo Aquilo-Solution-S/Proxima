@@ -71,6 +71,20 @@ impl ProtocolError {
         }
     }
 
+    /// A replay declared something other than the admission its request key
+    /// names: the same key with other content, so an idempotency conflict.
+    #[must_use]
+    pub fn replay_changed(drift: crate::ReplayDrift) -> Self {
+        Self {
+            code: ErrorCode::IdempotencyConflict,
+            message: format!(
+                "{drift}; resend it unchanged to replay, or write a new version with a new key and supersedes"
+            ),
+            request_id: None,
+            existing: None,
+        }
+    }
+
     pub fn unknown_schema(schema_id: impl AsRef<str>, version: u32) -> Self {
         Self {
             code: ErrorCode::UnknownSchema,

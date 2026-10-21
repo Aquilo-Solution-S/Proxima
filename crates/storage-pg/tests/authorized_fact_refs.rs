@@ -1422,8 +1422,11 @@ async fn storage_persists_authorized_links_not_draft_refs() {
                 direct_draft("engine-replay-links", vec![fact_b.into_inner()]),
             )
             .await
-            .expect_err("Engine must map changed-ref replay to InvalidArgument");
-        assert_eq!(error.code, proxima_core::error::ErrorCode::InvalidArgument);
+            .expect_err("Engine must map changed-ref replay to IdempotencyConflict");
+        assert_eq!(
+            error.code,
+            proxima_core::error::ErrorCode::IdempotencyConflict
+        );
         Ok(())
     }
     .await;
@@ -1486,7 +1489,10 @@ async fn receipt_replay_requires_identical_authorized_refs() {
             .ingest_authorized_fact_atomic(&changed, &[])
             .await
             .expect_err("changed refs must conflict");
-        assert!(matches!(error, StorageError::Conflict(message) if message.contains("refs")));
+        assert!(matches!(
+            error,
+            StorageError::ReplayChanged(proxima_core::ReplayDrift::FactRefs)
+        ));
         assert_eq!(
             stored_refs(&pg, outcome.memory_id).await?,
             vec![fact_a.into_inner()]
@@ -1570,7 +1576,10 @@ async fn forgotten_replay_requires_known_identical_refs() {
             .ingest_authorized_fact_atomic(&changed, &[])
             .await
             .expect_err("forgotten replay with changed refs must conflict");
-        assert!(matches!(error, StorageError::Conflict(message) if message.contains("refs")));
+        assert!(matches!(
+            error,
+            StorageError::ReplayChanged(proxima_core::ReplayDrift::FactRefs)
+        ));
 
         Ok(())
     }

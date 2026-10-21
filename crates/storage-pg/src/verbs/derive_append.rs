@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use proxima_core::storage_ports::OwnerWritePermit;
 use proxima_core::verbs::fact_ingest::FactIngestOutcome;
 use proxima_core::{
-    EdgeEndpoint, EdgeKind, EntityKind, MemoryId, MemoryOperatorKind, OwnerId, SchemaId,
-    SchemaVersion, SidecarPayload, StorageError,
+    EdgeEndpoint, EdgeKind, EntityKind, MemoryId, MemoryOperatorKind, OwnerId, ReplayDrift,
+    SchemaId, SchemaVersion, SidecarPayload, StorageError,
 };
 use sqlx::{Acquire, Postgres, Transaction};
 
@@ -284,9 +284,7 @@ async fn derived_replay_in_lifecycle(
                 let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
                 let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(references);
                 if stored_refs != refs || stored_goal_refs != goal_refs {
-                    return Err(StorageError::Conflict(
-                        "derived replay changed declared refs".into(),
-                    ));
+                    return Err(StorageError::ReplayChanged(ReplayDrift::DerivedRefs));
                 }
                 return Ok(Some(DerivedOutcome {
                     memory_id: MemoryId::new(t),
@@ -324,9 +322,7 @@ async fn derived_replay_in_lifecycle(
         let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
         let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(references);
         if stored_refs != refs || stored_goal_refs != goal_refs {
-            return Err(StorageError::Conflict(
-                "derived replay changed declared refs".into(),
-            ));
+            return Err(StorageError::ReplayChanged(ReplayDrift::DerivedRefs));
         }
         return Ok(Some(DerivedOutcome {
             memory_id: MemoryId::new(t),
@@ -496,9 +492,7 @@ pub(crate) async fn assert_derived_index_rows(
             || stored_refs != refs
             || stored_goal_refs != goal_refs
         {
-            return Err(StorageError::Conflict(
-                "derived replay changed declared index rows".into(),
-            ));
+            return Err(StorageError::ReplayChanged(ReplayDrift::DerivedIndexRows));
         }
     }
     Ok(origins.len().saturating_add(references.len()))
@@ -563,8 +557,8 @@ pub(crate) async fn record_external_edges(
         };
         let stored: BTreeSet<(uuid::Uuid, String)> = stored.into_iter().collect();
         if stored != declared {
-            return Err(StorageError::Conflict(
-                "derived replay changed declared external edges".into(),
+            return Err(StorageError::ReplayChanged(
+                ReplayDrift::DerivedExternalEdges,
             ));
         }
         return Ok(declared.len());

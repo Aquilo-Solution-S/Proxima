@@ -89,15 +89,14 @@ impl McpToolError {
                 | crate::StorageError::MembershipIsolation
                 | crate::StorageError::GoalChildrenOpen { .. }
                 | crate::StorageError::GoalChildrenAllAbandoned => McpToolErrorKind::InvalidInput,
-                crate::StorageError::MembershipForbidden(_) => McpToolErrorKind::InvalidRequest,
                 crate::StorageError::NotFound | crate::StorageError::ScopeMissing { .. } => {
                     McpToolErrorKind::NotFound
                 }
-                crate::StorageError::Conflict(_)
+                crate::StorageError::MembershipForbidden(_)
+                | crate::StorageError::Conflict(_)
                 | crate::StorageError::Suppressed(_)
-                | crate::StorageError::IdempotencyConflict { .. } => {
-                    McpToolErrorKind::InvalidRequest
-                }
+                | crate::StorageError::IdempotencyConflict { .. }
+                | crate::StorageError::ReplayChanged(_) => McpToolErrorKind::InvalidRequest,
                 // A refused publication capture keeps the split the write
                 // path already draws: an oversized or unexportable payload
                 // and a listenable write on the receipt-only route are the

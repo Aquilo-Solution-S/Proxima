@@ -249,10 +249,10 @@ async fn same_origins_different_refs_is_conflict() {
         .await
         .expect_err("changed refs must not replay");
         match err {
-            StorageError::Conflict(msg) => {
-                assert!(msg.contains("refs"), "got {msg}");
+            StorageError::ReplayChanged(changed) => {
+                assert_eq!(changed, proxima_core::ReplayDrift::DerivedRefs);
             }
-            other => panic!("expected Conflict, got {other:?}"),
+            other => panic!("expected ReplayChanged, got {other:?}"),
         }
         Ok(())
     }

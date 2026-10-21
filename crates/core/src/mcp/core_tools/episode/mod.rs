@@ -607,7 +607,8 @@ impl EpisodeWrite<'_> {
                     },
                     pin.then_some(act_id),
                 )
-                .await?;
+                .await
+                .map_err(|err| map_bound_fact_error(err, "goal", pin))?;
             reject_bound_replay(pin, outcome.idempotent_replay, "goal")?;
             let handle = outcome.goal_id.into_inner().to_string();
             if pin {
@@ -636,13 +637,7 @@ fn reject_bound_replay(pin: bool, replay: bool, kind: &str) -> Result<(), McpToo
 }
 
 fn map_bound_fact_error(err: crate::error::ProtocolError, kind: &str, pin: bool) -> McpToolError {
-    if pin
-        && matches!(err.code, ErrorCode::InvalidArgument | ErrorCode::Internal)
-        && (err.message.contains("fact replay changed declared refs")
-            || err
-                .message
-                .contains("fact replay changed declared index rows"))
-    {
+    if pin && err.code == ErrorCode::IdempotencyConflict {
         return McpToolError::InvalidInput(format!(
             "bound {kind} replayed an existing row; bind requires a new admission that pins this write-act"
         ));
@@ -655,13 +650,7 @@ fn map_bound_derived_error(
     kind: &str,
     pin: bool,
 ) -> McpToolError {
-    if pin
-        && matches!(err.code, ErrorCode::InvalidArgument | ErrorCode::Internal)
-        && (err.message.contains("derived replay changed declared refs")
-            || err
-                .message
-                .contains("derived replay changed declared index rows"))
-    {
+    if pin && err.code == ErrorCode::IdempotencyConflict {
         return McpToolError::InvalidInput(format!(
             "bound {kind} replayed an existing memory; bind requires a new admission that pins this write-act"
         ));
@@ -784,4 +773,38 @@ fn resolve_local_slot<'a>(
         ));
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{map_bound_derived_error, map_bound_fact_error};
+    use crate::ReplayDrift;
+    use crate::error::ProtocolError;
+    use crate::mcp::McpToolError;
+
+    /// Every drift a replay can show is, for a bound write, the refusal to
+    /// replay; unbound, the idempotency conflict passes through.
+    #[test]
+    fn a_bound_write_refuses_any_changed_replay_by_its_code() {
+        for drift in [
+            ReplayDrift::FactRefs,
+            ReplayDrift::DerivedRefs,
+            ReplayDrift::DerivedIndexRows,
+            ReplayDrift::DerivedExternalEdges,
+        ] {
+            let err = ProtocolError::replay_changed(drift);
+            assert!(matches!(
+                map_bound_fact_error(err.clone(), "remember", true),
+                McpToolError::InvalidInput(_)
+            ));
+            assert!(matches!(
+                map_bound_derived_error(err.clone(), "derive", true),
+                McpToolError::InvalidInput(_)
+            ));
+            assert!(matches!(
+                map_bound_fact_error(err, "remember", false),
+                McpToolError::Protocol(_)
+            ));
+        }
+    }
 }

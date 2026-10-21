@@ -17,7 +17,7 @@
 use proxima_core::edge::EdgeEndpoint;
 use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
 use proxima_core::verbs::query::SidecarAtom;
-use proxima_core::{MemoryId, OwnerId, SidecarPayload, StorageError};
+use proxima_core::{MemoryId, OwnerId, ReplayDrift, SidecarPayload, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -625,9 +625,7 @@ async fn load_ingest_replay(
         ));
     };
     if stored_refs != refs || stored_goal_refs != goal_refs {
-        return Err(StorageError::Conflict(
-            "fact replay changed declared refs".into(),
-        ));
+        return Err(StorageError::ReplayChanged(ReplayDrift::FactRefs));
     }
     Ok(Some(FactIngestOutcome {
         receipt_id: None,

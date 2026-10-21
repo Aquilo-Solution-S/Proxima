@@ -47,6 +47,7 @@ pub(in crate::engine) fn map_write_storage_error(
             request_id,
             existing,
         } => ProtocolError::idempotency_conflict(request_id, existing),
+        StorageError::ReplayChanged(drift) => ProtocolError::replay_changed(drift),
         StorageError::ConstraintViolation(message) | StorageError::Conflict(message) => {
             ProtocolError::invalid_argument(field, message)
         }
@@ -84,6 +85,7 @@ pub(in crate::engine) fn internal_storage_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ReplayDrift;
     use crate::error::ErrorCode;
     use crate::mcp::{McpToolError, McpToolErrorKind};
 
@@ -106,6 +108,28 @@ mod tests {
             let engine = McpToolError::Protocol(map_publication_error(&refusal));
             let storage = McpToolError::Storage(StorageError::PublicationRefused(refusal));
             assert_eq!(engine.kind(), storage.kind(), "for {storage}");
+        }
+    }
+
+    /// A replay that declared something else is an idempotency conflict on
+    /// both channels, whichever drift it was.
+    #[test]
+    fn a_changed_replay_is_an_idempotency_conflict_on_both_paths() {
+        for drift in [
+            ReplayDrift::FactRefs,
+            ReplayDrift::DerivedRefs,
+            ReplayDrift::DerivedIndexRows,
+            ReplayDrift::DerivedExternalEdges,
+        ] {
+            let engine = map_write_storage_error(StorageError::ReplayChanged(drift), "f", "nf");
+            assert_eq!(engine.code, ErrorCode::IdempotencyConflict, "{drift}");
+            assert!(engine.message.starts_with(&drift.to_string()), "{engine}");
+            let storage = McpToolError::Storage(StorageError::ReplayChanged(drift));
+            assert_eq!(
+                McpToolError::Protocol(engine).kind(),
+                storage.kind(),
+                "{drift}"
+            );
         }
     }
 

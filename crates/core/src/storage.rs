@@ -86,8 +86,34 @@ pub enum StorageError {
     /// (#514): split it again, or abandon it.
     #[error("goal children are all abandoned; achieve at least one child first")]
     GoalChildrenAllAbandoned,
+    /// A write replayed an admission its request key already names, but
+    /// declared something other than what that admission stored. The same
+    /// key with a different declaration is an idempotency conflict, and the
+    /// engine answers it as one; the cause travels typed, so no caller reads
+    /// the message to learn which declaration drifted.
+    #[error("{0}")]
+    ReplayChanged(ReplayDrift),
     #[error("internal storage error: {0}")]
     Internal(String),
+}
+
+/// What a replay declared differently from the admission it replays. The
+/// `Display` form is the sentence clients have always read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ReplayDrift {
+    /// A fact replay named other references.
+    #[error("fact replay changed declared refs")]
+    FactRefs,
+    /// A derivation replay named other origins or references.
+    #[error("derived replay changed declared refs")]
+    DerivedRefs,
+    /// A derivation replay's stored pin rows differ from its declaration.
+    #[error("derived replay changed declared index rows")]
+    DerivedIndexRows,
+    /// A derivation replay named other edges to another store's memories,
+    /// kind included.
+    #[error("derived replay changed declared external edges")]
+    DerivedExternalEdges,
 }
 
 fn join_goal_ids(ids: &[crate::GoalId]) -> String {
