@@ -1094,3 +1094,101 @@ async fn a_capacity_check_reads_one_row_whatever_the_backlog() {
     let _ = drop_db(&db_name).await;
     result.expect("capacity check EXPLAIN failed");
 }
+
+/// An erase reads the uploads of its blobs by blob, not by scanning the store's
+/// uploads (#3596).
+///
+/// 30,000 uploads of other owners beside the erased owner's one blob: the
+/// fence-keys read and the unreferenced-blob sweep reach the upload through
+/// `blob_uploads_blob_id_idx` with `enable_seqscan` left on, and a blob row
+/// leaves with its foreign-key check answered by the same index.
+#[tokio::test]
+async fn a_blob_erase_reads_its_uploads_through_the_blob_index() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let pool = pg.pool_for_tests();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner.into_inner())
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "WITH b AS (
+                 INSERT INTO proxima_core.blob (blob_id, owner_id, schema_id, content_hash)
+                 SELECT uuidv7(), $1, 'blob/x', sha256(convert_to(n::text, 'UTF8'))
+                   FROM generate_series(1, 30000) AS n
+                 RETURNING blob_id, owner_id
+             )
+             INSERT INTO proxima_core.blob_uploads
+                 (upload_id, owner_id, bucket, object_key, filename, mime, expected_byte_len,
+                  status, blob_id, expires_at, object_store)
+             SELECT u, owner_id, 'b', 'objects/' || u::text, 'f', 'text/plain', 10,
+                    'completed', blob_id, now() + interval '1 day', 'obj:main'
+               FROM (SELECT uuidv7() AS u, blob_id, owner_id FROM b) AS rows",
+        )
+        .bind(owner.into_inner())
+        .execute(pool)
+        .await?;
+        // SQL-POLICY: fixed-fragment
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "ANALYZE proxima_core.blob; ANALYZE proxima_core.blob_uploads",
+        ))
+        .execute(pool)
+        .await?;
+        let blob: Uuid = sqlx::query_scalar("SELECT blob_id FROM proxima_core.blob LIMIT 1")
+            .fetch_one(pool)
+            .await?;
+
+        let mut tx = pg.platform_scope_for_host().begin().await?;
+        let fence = format!(
+            "EXPLAIN (FORMAT JSON, COSTS OFF) {}",
+            proxima_storage_pg::access::owner_columns::upload_fence_keys_sql_for_tests()
+        );
+        // SQL-POLICY: fixed-fragment — the production fence-keys read.
+        let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(fence))
+            .bind(vec![blob])
+            .fetch_one(&mut *tx)
+            .await?;
+        assert!(
+            !seq_scans(&plan, "blob_uploads")
+                && plan.to_string().contains("blob_uploads_blob_id_idx"),
+            "the fence keys must read the blob index; plan:\n{plan}"
+        );
+        let sweep = format!(
+            "EXPLAIN (FORMAT JSON, COSTS OFF) {}",
+            proxima_storage_pg::verbs::forget::gc_unreferenced_blobs_sql_for_tests()
+        );
+        // SQL-POLICY: fixed-fragment — the production unreferenced-blob sweep.
+        let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(sweep))
+            .bind(vec![blob])
+            .bind(owner.into_inner())
+            .fetch_one(&mut *tx)
+            .await?;
+        assert!(
+            !seq_scans(&plan, "blob_uploads"),
+            "the sweep must not scan the store's uploads; plan:\n{plan}"
+        );
+        // The foreign-key check of a blob delete asks `blob_uploads` for the blob.
+        let plan: serde_json::Value = sqlx::query_scalar(
+            "EXPLAIN (FORMAT JSON, COSTS OFF)
+             SELECT 1 FROM ONLY proxima_core.blob_uploads x WHERE x.blob_id = $1 FOR KEY SHARE OF x",
+        )
+        .bind(blob)
+        .fetch_one(&mut *tx)
+        .await?;
+        assert!(
+            plan.to_string().contains("blob_uploads_blob_id_idx"),
+            "the foreign-key check must read the blob index; plan:\n{plan}"
+        );
+        tx.rollback().await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("blob erase EXPLAIN failed");
+}

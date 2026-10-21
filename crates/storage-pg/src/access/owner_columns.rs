@@ -428,6 +428,14 @@ SELECT DISTINCT key FROM (
 ) keys
 ORDER BY key";
 
+/// The erase fence keys statement, for the plan pin.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn upload_fence_keys_sql_for_tests() -> &'static str {
+    UPLOAD_FENCE_KEYS_SQL
+}
+
 /// Owe an upload's transfer key and its canonical object in the transaction
 /// that ends the upload (abort, expiry, or a stage that lost to either).
 ///

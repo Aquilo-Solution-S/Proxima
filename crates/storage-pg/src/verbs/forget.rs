@@ -1570,6 +1570,14 @@ d_blobs AS (
 SELECT object_key, object_store FROM enqueued"
 );
 
+/// The unreferenced-blob sweep statement, for the plan pin.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+#[must_use]
+pub fn gc_unreferenced_blobs_sql_for_tests() -> &'static str {
+    GC_UNREFERENCED_BLOBS_SQL
+}
+
 // The forget/erase/hydrate suite. Crate-internal because it works at this
 // layer deliberately: it stamps `sidecar_tables` lists by hand — including a
 // registered table that does not exist in Postgres — to prove forget reads
