@@ -46,6 +46,8 @@ const DEFAULT_BIND: &str = "127.0.0.1:31416";
 const DEFAULT_AUDIENCE: &str = "proxima-mcp";
 const DEFAULT_SUBJECT: &str = "proxima-dev";
 const DEFAULT_TTL_DAYS: u64 = 30;
+/// A token lives at least a day, and at most ten years: far below what overflows seconds.
+const MAX_TTL_DAYS: u64 = 3650;
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:31415";
 const KID: &str = "dev-idp";
 
@@ -68,7 +70,7 @@ Options:
   --audience <AUD>      Token audience, must match PROXIMA_OIDC_AUDIENCE [default: proxima-mcp]
   --subject <SUB>       Token subject [default: proxima-dev]
   --user-id <UUID>      Proxima user id for that subject [default: derived from --subject]
-  --ttl-days <N>        Token lifetime in days [default: 30]
+  --ttl-days <N>        Token lifetime in days, 1..=3650 [default: 30]
   --server-url <URL>    Proxima MCP base URL, for the printed client config
                         [default: http://127.0.0.1:31415]
   --key-file <PATH>     Signing key location [default: $HOME/.proxima/dev-idp.pkcs8]
@@ -143,7 +145,13 @@ fn parse_args(argv: impl IntoIterator<Item = String>) -> Result<Config, ArgError
                 let raw = value("--ttl-days")?;
                 ttl_days = raw
                     .parse()
-                    .map_err(|_| ArgError::Message(format!("--ttl-days is not a number: {raw}")))?;
+                    .ok()
+                    .filter(|days| (1..=MAX_TTL_DAYS).contains(days))
+                    .ok_or_else(|| {
+                        ArgError::Message(format!(
+                            "--ttl-days must be a number from 1 to {MAX_TTL_DAYS}: {raw}"
+                        ))
+                    })?;
             }
             other => return Err(ArgError::Message(format!("unknown argument {other}"))),
         }
@@ -467,6 +475,13 @@ mod tests {
     fn rejects_malformed_values() {
         assert!(args(&["--user-id", "nope"]).is_err());
         assert!(args(&["--ttl-days", "soon"]).is_err());
+        for refused in ["0", "3651", "18446744073709551615"] {
+            assert!(args(&["--ttl-days", refused]).is_err(), "{refused}");
+        }
+        assert_eq!(
+            args(&["--ttl-days", "3650"]).expect("the ceiling").ttl_days,
+            3650
+        );
         assert!(args(&["--bind", "not-an-address"]).is_err());
         assert!(args(&["--nonsense"]).is_err());
         assert!(args(&["--bind"]).is_err());
