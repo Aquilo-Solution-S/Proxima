@@ -205,7 +205,10 @@ impl Engine {
             // hands the operator a receipt reading "the user is still there",
             // so a lawful erase is dropped instead of retried.
             Ok(false) => Err(OwnerEraseRefusal::PersonalDropNotVerified),
-            Err(_) => Err(OwnerEraseRefusal::DropProofPortUnavailable),
+            Err(error) => {
+                tracing::warn!(%error, "owner drop proof could not be verified");
+                Err(OwnerEraseRefusal::DropProofPortUnavailable)
+            }
         }
     }
 
@@ -583,6 +586,21 @@ mod purge_tests {
         }
     }
 
+    /// `OwnerDropProofPort` that cannot be asked.
+    #[derive(Debug)]
+    struct DropPortFails;
+
+    #[async_trait]
+    impl OwnerDropProofPort for DropPortFails {
+        async fn verify_personal_owner_dropped(
+            &self,
+            _user_id: UserId,
+            _drop_event_id: &str,
+        ) -> Result<bool, AccessError> {
+            Err(AccessError::Resolution("resolver down".into()))
+        }
+    }
+
     fn system_authz() -> AuthzContext {
         AuthzContext::for_subject(UserId::new(uuid::Uuid::now_v7()), AuthPath::System)
     }
@@ -744,13 +762,16 @@ mod purge_tests {
         // name no drop event, must still reach storage.
         for (drop_proof, expected) in [
             (
-                Some(Arc::new(DropUnverified)),
+                Some(Arc::new(DropUnverified) as Arc<dyn OwnerDropProofPort>),
                 OwnerEraseRefusal::PersonalDropNotVerified,
             ),
             (None, OwnerEraseRefusal::DropProofPortUnavailable),
+            (
+                Some(Arc::new(DropPortFails) as Arc<dyn OwnerDropProofPort>),
+                OwnerEraseRefusal::DropProofPortUnavailable,
+            ),
         ] {
             let erase = Arc::new(FixedOutcomeErase::completed());
-            let drop_proof = drop_proof.map(|d| d as Arc<dyn OwnerDropProofPort>);
             let storage = StoragePorts::rejecting_with_owner_inverse(erase.clone(), drop_proof);
             let engine = Engine::compose_or_panic_for_tests(storage, |_| {});
 
