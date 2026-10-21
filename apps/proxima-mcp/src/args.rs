@@ -287,6 +287,41 @@ impl ArgsError {
     }
 }
 
+/// The arguments of one subcommand, read flag by flag. Every parser asks first which flag it
+/// has, and only a flag that takes a value then reads one, so an unknown flag is always
+/// reported as unknown and a value is never the next flag.
+struct Flags<I> {
+    rest: I,
+}
+
+impl<I: Iterator<Item = String>> Flags<I> {
+    fn new(args: impl IntoIterator<IntoIter = I>) -> Self {
+        Self {
+            rest: args.into_iter(),
+        }
+    }
+
+    /// The next flag; `-h` and `--help` end the parse as [`ArgsError::Help`].
+    fn next_flag(&mut self) -> Result<Option<String>, ArgsError> {
+        match self.rest.next() {
+            Some(flag) if matches!(flag.as_str(), "-h" | "--help") => Err(ArgsError::Help),
+            flag => Ok(flag),
+        }
+    }
+
+    /// The value of `flag`: the next argument, which must not itself be a flag.
+    fn value(&mut self, flag: &str) -> Result<String, ArgsError> {
+        self.rest
+            .next()
+            .filter(|value| !value.starts_with("--"))
+            .ok_or_else(|| ArgsError::Invalid(format!("flag {flag} expects a value")))
+    }
+}
+
+fn unknown_flag(flag: &str) -> ArgsError {
+    ArgsError::Invalid(format!("unknown flag: {flag}"))
+}
+
 /// # Errors
 ///
 /// Returns `ArgsError` for help, unknown flags, missing values, or unreadable
@@ -295,31 +330,24 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
     let mut database_url: Option<String> = None;
     let mut bind: Option<SocketAddr> = None;
 
-    let mut iter = args.into_iter();
-    while let Some(flag) = iter.next() {
+    let mut flags = Flags::new(args);
+    while let Some(flag) = flags.next_flag()? {
         match flag.as_str() {
-            "-h" | "--help" => return Err(ArgsError::Help),
-            f => {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| ArgsError::Invalid(format!("flag {f} expects a value")))?;
-                match f {
-                    "--database-url" => database_url = Some(value),
-                    "--bind" => {
-                        let parsed: SocketAddr = value.parse().map_err(|err| {
-                            ArgsError::Invalid(format!("invalid --bind {value:?}: {err}"))
-                        })?;
-                        if !parsed.ip().is_loopback() {
-                            return Err(ArgsError::Invalid(format!(
-                                "--bind must be loopback, got {}",
-                                parsed.ip()
-                            )));
-                        }
-                        bind = Some(parsed);
-                    }
-                    other => return Err(ArgsError::Invalid(format!("unknown flag: {other}"))),
+            "--database-url" => database_url = Some(flags.value("--database-url")?),
+            "--bind" => {
+                let value = flags.value("--bind")?;
+                let parsed: SocketAddr = value.parse().map_err(|err| {
+                    ArgsError::Invalid(format!("invalid --bind {value:?}: {err}"))
+                })?;
+                if !parsed.ip().is_loopback() {
+                    return Err(ArgsError::Invalid(format!(
+                        "--bind must be loopback, got {}",
+                        parsed.ip()
+                    )));
                 }
+                bind = Some(parsed);
             }
+            other => return Err(unknown_flag(other)),
         }
     }
 
@@ -340,41 +368,33 @@ pub fn parse_maintain_args<I: IntoIterator<Item = String>>(
     let mut scope = ReconcileScope::MissingOnly;
     let mut limit: Option<i64> = None;
 
-    let mut iter = args.into_iter();
-    while let Some(flag) = iter.next() {
+    let mut flags = Flags::new(args);
+    while let Some(flag) = flags.next_flag()? {
         match flag.as_str() {
-            "-h" | "--help" => return Err(ArgsError::Help),
             "--missing-only" => scope = ReconcileScope::MissingOnly,
             "--include-stale" => scope = ReconcileScope::IncludeStale,
-            f => {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| ArgsError::Invalid(format!("flag {f} expects a value")))?;
-                match f {
-                    "--database-url" => database_url = Some(value),
-                    "--model" => model = Some(value),
-                    "--limit" => {
-                        let parsed: i64 = value.parse().map_err(|err| {
-                            ArgsError::Invalid(format!("invalid --limit {value:?}: {err}"))
-                        })?;
-                        if parsed < 0 {
-                            return Err(ArgsError::Invalid("--limit must be nonnegative".into()));
-                        }
-                        limit = Some(parsed);
-                    }
-                    "--since" => {
-                        let parsed = time::OffsetDateTime::parse(
-                            &value,
-                            &time::format_description::well_known::Rfc3339,
-                        )
-                        .map_err(|err| {
-                            ArgsError::Invalid(format!("invalid --since {value:?}: {err}"))
-                        })?;
-                        scope = ReconcileScope::Since(parsed);
-                    }
-                    other => return Err(ArgsError::Invalid(format!("unknown flag: {other}"))),
+            "--database-url" => database_url = Some(flags.value("--database-url")?),
+            "--model" => model = Some(flags.value("--model")?),
+            "--limit" => {
+                let value = flags.value("--limit")?;
+                let parsed: i64 = value.parse().map_err(|err| {
+                    ArgsError::Invalid(format!("invalid --limit {value:?}: {err}"))
+                })?;
+                if parsed < 0 {
+                    return Err(ArgsError::Invalid("--limit must be nonnegative".into()));
                 }
+                limit = Some(parsed);
             }
+            "--since" => {
+                let value = flags.value("--since")?;
+                let parsed = time::OffsetDateTime::parse(
+                    &value,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .map_err(|err| ArgsError::Invalid(format!("invalid --since {value:?}: {err}")))?;
+                scope = ReconcileScope::Since(parsed);
+            }
+            other => return Err(unknown_flag(other)),
         }
     }
 
@@ -413,19 +433,11 @@ pub fn parse_maintain_blobs_args<I: IntoIterator<Item = String>>(
     args: I,
 ) -> Result<MaintainBlobsConfig, ArgsError> {
     let mut database_url: Option<String> = None;
-    let mut iter = args.into_iter();
-    while let Some(flag) = iter.next() {
+    let mut flags = Flags::new(args);
+    while let Some(flag) = flags.next_flag()? {
         match flag.as_str() {
-            "-h" | "--help" => return Err(ArgsError::Help),
-            f => {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| ArgsError::Invalid(format!("flag {f} expects a value")))?;
-                match f {
-                    "--database-url" => database_url = Some(value),
-                    other => return Err(ArgsError::Invalid(format!("unknown flag: {other}"))),
-                }
-            }
+            "--database-url" => database_url = Some(flags.value("--database-url")?),
+            other => return Err(unknown_flag(other)),
         }
     }
     let database_url = database_url.unwrap_or_else(database_url_from_env);
@@ -446,30 +458,22 @@ pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
     let mut batch_size = DEFAULT_MAINTENANCE_BATCH;
     let mut dry_run = false;
 
-    let mut iter = args.into_iter();
-    while let Some(flag) = iter.next() {
+    let mut flags = Flags::new(args);
+    while let Some(flag) = flags.next_flag()? {
         match flag.as_str() {
-            "-h" | "--help" => return Err(ArgsError::Help),
             "--retry-cold-object-purges" => retry_cold_object_purges = true,
             "--sweep-expired-uploads" => sweep_expired_uploads = true,
             "--dry-run" => dry_run = true,
-            f => {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| ArgsError::Invalid(format!("flag {f} expects a value")))?;
-                match f {
-                    "--database-url" => database_url = Some(value),
-                    "--batch-size" => {
-                        let parsed: u32 = value.parse().map_err(|err| {
-                            ArgsError::Invalid(format!("invalid --batch-size {value:?}: {err}"))
-                        })?;
-                        batch_size = NonZeroU32::new(parsed).ok_or_else(|| {
-                            ArgsError::Invalid("--batch-size must be positive".into())
-                        })?;
-                    }
-                    other => return Err(ArgsError::Invalid(format!("unknown flag: {other}"))),
-                }
+            "--database-url" => database_url = Some(flags.value("--database-url")?),
+            "--batch-size" => {
+                let value = flags.value("--batch-size")?;
+                let parsed: u32 = value.parse().map_err(|err| {
+                    ArgsError::Invalid(format!("invalid --batch-size {value:?}: {err}"))
+                })?;
+                batch_size = NonZeroU32::new(parsed)
+                    .ok_or_else(|| ArgsError::Invalid("--batch-size must be positive".into()))?;
             }
+            other => return Err(unknown_flag(other)),
         }
     }
 
@@ -510,6 +514,42 @@ mod tests {
     fn non_loopback_bind_rejected() {
         let err = parse_args(["--bind".into(), "0.0.0.0:31415".into()]).expect_err("non-loopback");
         assert!(err.to_string().contains("loopback"));
+    }
+
+    /// An unknown flag is reported as unknown, with or without an argument after it, and the
+    /// value of a flag is never the next flag.
+    #[test]
+    fn every_parser_names_an_unknown_flag_and_refuses_a_flag_as_a_value() {
+        let unknown = |flags: &[&str]| {
+            flags
+                .iter()
+                .map(|flag| (*flag).to_string())
+                .collect::<Vec<_>>()
+        };
+        for flags in [unknown(&["--nonsense"]), unknown(&["--nonsense", "x"])] {
+            for error in [
+                parse_args(flags.clone()).expect_err("serve"),
+                parse_maintain_args(flags.clone()).expect_err("maintain-embeddings"),
+                parse_maintain_blobs_args(flags.clone()).expect_err("maintain-blobs"),
+                parse_storage_maintenance_args(flags.clone()).expect_err("maintain-storage"),
+            ] {
+                assert!(
+                    error.to_string().contains("unknown flag: --nonsense"),
+                    "{error}"
+                );
+            }
+        }
+        let error = parse_storage_maintenance_args(unknown(&[
+            "--retry-cold-object-purges",
+            "--database-url",
+            "--dry-run",
+        ]))
+        .expect_err("a flag is not a URL");
+        assert!(
+            error.to_string().contains("--database-url expects a value"),
+            "{error}"
+        );
+        assert!(parse_args(unknown(&["--bind"])).is_err());
     }
 
     #[test]
