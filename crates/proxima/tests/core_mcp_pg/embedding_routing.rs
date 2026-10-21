@@ -1995,7 +1995,7 @@ async fn retryable_jobs_complete_after_the_same_clients_window_passes() {
 async fn a_store_keeps_its_vectors_in_a_host_index_over_the_wire() {
     use proxima::vector_index_http::{VectorIndexClient, vector_index_router};
     use proxima_core::llm::EmbeddingDim;
-    let split_db = clone_split_core_db("proxima_core_remote_index")
+    let split_db = clone_split_core_db_host_index("proxima_core_remote_index")
         .await
         .expect("PG required for tests");
     let db_name = split_db.name().to_owned();
@@ -2047,8 +2047,16 @@ async fn a_store_keeps_its_vectors_in_a_host_index_over_the_wire() {
         ];
         expected.sort();
         assert_eq!(owners(index.entries(None, 10).await?), expected);
-        let found = returned_handles(&fixture.search("semantic", 10, None).await?);
-        assert_eq!(found.len(), 2, "{found:?}");
+        let extension: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')",
+        )
+        .fetch_one(&fixture.admin_pool)
+        .await?;
+        assert!(!extension, "the store's database has no vector extension");
+        for mode in ["semantic", "lexical", "hybrid"] {
+            let found = returned_handles(&fixture.search(mode, 10, None).await?);
+            assert_eq!(found.len(), 2, "{mode}: {found:?}");
+        }
 
         let entity = proxima_core::EntityId::Memory(MemoryId::new(moved.parse::<Uuid>()?));
         engine
@@ -2151,7 +2159,7 @@ impl VectorIndex for RendezvousIndex {
 #[tokio::test]
 async fn a_search_over_two_spaces_reads_them_at_once() {
     use proxima_core::llm::EmbeddingDim;
-    let split_db = clone_split_core_db("proxima_core_lane_concurrent")
+    let split_db = clone_split_core_db_host_index("proxima_core_lane_concurrent")
         .await
         .expect("PG required for tests");
     let db_name = split_db.name().to_owned();

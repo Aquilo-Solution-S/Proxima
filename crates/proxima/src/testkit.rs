@@ -14,7 +14,8 @@ pub use proxima_core::test_fixtures::owner_scope_for_tests;
 
 use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OwnerId, Role, UserId};
 use proxima_storage_pg::{
-    PgPoolConfig, PgSidecarRegistry, PgSidecarRegistryFrozen, PgTuning, register_core_pg_sidecars,
+    PgPoolConfig, PgSidecarRegistry, PgSidecarRegistryFrozen, PgTuning, VectorStorage,
+    register_core_pg_sidecars,
 };
 use sqlx::PgPool;
 
@@ -57,6 +58,7 @@ use crate::migrations::{MigrationError, NamedMigrator, check_lineup, lineup, run
 pub struct HostTemplate {
     family: TemplateFamily,
     hash: u64,
+    vectors: VectorStorage,
     /// Core first, then the host's migrators: what a build runs and the hash
     /// covers.
     sources: Vec<NamedMigrator>,
@@ -86,10 +88,50 @@ impl HostTemplate {
         migrators: Vec<NamedMigrator>,
         sidecars: PgSidecarRegistryFrozen,
     ) -> Result<Self, MigrationError> {
-        let sources = lineup(migrators);
+        Self::for_vectors(
+            VectorStorage::Local,
+            family,
+            fingerprint,
+            migrators,
+            sidecars,
+        )
+    }
+
+    /// [`Self::new`] for a store whose vectors live in a host index
+    /// ([`VectorStorage::HostIndex`]): the template's database has no
+    /// `vector` extension, and a boot with `RuntimeBuilder::vector_index`
+    /// finds every migration applied.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::new`].
+    pub fn host_index(
+        family: TemplateFamily,
+        fingerprint: &str,
+        migrators: Vec<NamedMigrator>,
+        sidecars: PgSidecarRegistryFrozen,
+    ) -> Result<Self, MigrationError> {
+        Self::for_vectors(
+            VectorStorage::HostIndex,
+            family,
+            fingerprint,
+            migrators,
+            sidecars,
+        )
+    }
+
+    fn for_vectors(
+        vectors: VectorStorage,
+        family: TemplateFamily,
+        fingerprint: &str,
+        migrators: Vec<NamedMigrator>,
+        sidecars: PgSidecarRegistryFrozen,
+    ) -> Result<Self, MigrationError> {
+        let sources = lineup(migrators, vectors);
         check_lineup(&sources)?;
         Ok(Self {
-            hash: fingerprint_hash(fingerprint, &sources, &sidecars),
+            hash: fingerprint_hash(fingerprint, vectors, &sources, &sidecars),
+            vectors,
             family,
             sources,
             sidecars,
@@ -146,14 +188,18 @@ impl HostTemplate {
             .await?;
         // Nothing may stay connected to a database that is renamed into place.
         pool.close().await;
-        let (_, platform_url) = split_role_urls(&staging).await?;
+        let (_, platform_url) = match self.vectors {
+            VectorStorage::Local => split_role_urls(&staging).await,
+            VectorStorage::HostIndex => split_role_urls_without_pgvector(&staging).await,
+        }?;
         let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
             &platform_url,
             PgPoolConfig::default(),
             PgTuning::default(),
         )
         .await
-        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?
+        .with_vector_storage(self.vectors);
         let migrated = run_lineup(&pg, &self.sources, &self.sidecars).await;
         pg.clone_pool_for_backend().close().await;
         migrated
@@ -169,6 +215,7 @@ impl HostTemplate {
 /// and each list has a count, so different inputs cannot spell the same bytes.
 fn fingerprint_hash(
     fingerprint: &str,
+    vectors: VectorStorage,
     sources: &[NamedMigrator],
     sidecars: &PgSidecarRegistryFrozen,
 ) -> u64 {
@@ -179,7 +226,10 @@ fn fingerprint_hash(
         )
     }
     let mut hash = feed(FNV_OFFSET_BASIS, fingerprint.as_bytes());
-    hash = feed(hash, &proxima_storage_pg::definitions::checksum_bytes());
+    hash = feed(
+        hash,
+        &proxima_storage_pg::definitions::checksum_bytes(vectors),
+    );
     hash = feed(hash, proxima_core::RELEASE_VERSION.as_bytes());
     for source in sources {
         hash = feed(hash, source.source().as_bytes());

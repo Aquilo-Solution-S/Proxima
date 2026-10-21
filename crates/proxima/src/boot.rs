@@ -15,7 +15,7 @@ use proxima_core::{
 };
 use proxima_storage_pg::{
     PgMigrationStorage, PgPlatformScope, PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage,
-    register_core_pg_sidecars,
+    VectorStorage, register_core_pg_sidecars,
 };
 use sqlx::PgPool;
 
@@ -115,16 +115,16 @@ pub(crate) async fn boot<A: FlavorBundle>(
     let embedding_router =
         embedding_router_for(parts.embed_client.clone(), parts.embedding_router.clone())?;
 
-    drop(connect_and_migrate(config, migrators, &pg_sidecars, grants.as_ref()).await?);
-    let pg = connect_serving_storage(config, &registry).await?;
+    let vectors = match parts.vector_index {
+        Some(_) => VectorStorage::HostIndex,
+        None => VectorStorage::Local,
+    };
+    drop(connect_and_migrate(config, migrators, &pg_sidecars, grants.as_ref(), vectors).await?);
+    let pg = connect_serving_storage(config, &registry, parts.vector_index.clone()).await?;
     let pg = if let Some(participant) = parts.host_state_participant.clone() {
         pg.with_host_state_participant(participant)
     } else {
         pg
-    };
-    let pg = match parts.vector_index.clone() {
-        Some(index) => pg.with_vector_index(index),
-        None => pg,
     };
     ensure_pg_sidecars(&pg, &registry, &pg_sidecars).await?;
     let pg = pg
@@ -210,6 +210,7 @@ pub(crate) async fn boot<A: FlavorBundle>(
 async fn connect_serving_storage(
     config: &RuntimeConfig,
     registry: &proxima_core::FlavorRegistryFrozen,
+    vector_index: Option<Arc<dyn proxima_core::storage_ports::VectorIndex>>,
 ) -> Result<PgStorage, ProximaError> {
     let schema_names = composed_schema_names(registry);
     let schema_refs: Vec<&str> = schema_names.iter().map(String::as_str).collect();
@@ -220,16 +221,30 @@ async fn connect_serving_storage(
     let platform_scope = PgPlatformScope::new(platform_pool, &schema_refs)
         .await
         .map_err(|error| ProximaError::Storage(error.into()))?;
-    let pg = PgStorage::connect_with_config(
-        &config.database_url,
-        config.pg_pool_config,
-        config.pg_tuning,
-        platform_scope,
-        config.store_number,
-    )
-    .await
-    .map_err(storage_error)?;
-    Ok(pg)
+    let pg = match vector_index {
+        Some(index) => {
+            PgStorage::connect_with_vector_index(
+                &config.database_url,
+                config.pg_pool_config,
+                config.pg_tuning,
+                platform_scope,
+                config.store_number,
+                index,
+            )
+            .await
+        }
+        None => {
+            PgStorage::connect_with_config(
+                &config.database_url,
+                config.pg_pool_config,
+                config.pg_tuning,
+                platform_scope,
+                config.store_number,
+            )
+            .await
+        }
+    };
+    pg.map_err(storage_error)
 }
 
 /// Register every configured outbox consumer, before any capture of this
@@ -303,6 +318,7 @@ async fn connect_and_migrate(
     migrators: Vec<NamedMigrator>,
     pg_sidecars: &PgSidecarRegistryFrozen,
     runtime_grants: Option<&RuntimeGrants>,
+    vectors: VectorStorage,
 ) -> Result<PgMigrationStorage, ProximaError> {
     let migration_pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
         config.migrations_url(),
@@ -310,7 +326,8 @@ async fn connect_and_migrate(
         config.pg_tuning,
     )
     .await
-    .map_err(storage_error)?;
+    .map_err(storage_error)?
+    .with_vector_storage(vectors);
     if config.skip_migrations {
         // GitOps split-role deploy: schema is migrated out-of-band under a
         // DDL role; here we only run the preflight and issue no DDL.

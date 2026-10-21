@@ -12,11 +12,11 @@ pub use crate::features::FeatureControl;
 pub use crate::features::{BootReport, Feature, FeatureDecision, FeatureState};
 pub use crate::mcp_edge::{McpEdge, layered_router_mcp_only};
 pub use crate::migrations::{
-    CoreAdoption, LedgerConflict, MigrationError, MigrationRunReport, MigrationStorage,
-    MissingMigrationPolicy, NamedMigrator, PendingMigration, flavor_ledger_table,
-    is_flavor_ledger_id, pending_migrations, pending_migrations_with_policy,
-    preflight_without_migrations, preflight_without_migrations_with_policy,
-    run_core_and_flavor_migrations, run_core_and_flavor_migrations_with_policy,
+    LedgerConflict, MigrationError, MigrationRunReport, MigrationStorage, MissingMigrationPolicy,
+    NamedMigrator, PendingMigration, VectorStorage, flavor_ledger_table, is_flavor_ledger_id,
+    pending_migrations, pending_migrations_with_policy, preflight_without_migrations,
+    preflight_without_migrations_with_policy, run_core_and_flavor_migrations,
+    run_core_and_flavor_migrations_with_policy,
 };
 pub use crate::owner_access::{ForwarderPolicy, OwnerRegistry};
 pub use crate::proxima_host::ProximaHost;
@@ -612,8 +612,8 @@ pub use proxima_storage_pg::projection::{Artifact, ProjectionArtifacts, projecti
 /// Migration-only storage and core schema operations for a host's schema lane.
 /// [`MigrationStorage`] is the shared bound of the facade migration runners.
 pub use proxima_storage_pg::{
-    PgMigrationStorage, begin_migration_transaction, core_migrator, ensure_core_schema_current,
-    run_core_schema,
+    PgMigrationStorage, begin_migration_transaction, core_migrator, core_migrator_for,
+    ensure_core_schema_current, run_core_schema,
 };
 /// Owner-RLS boot: the runtime-role guard, the platform scope
 /// [`ProximaHost::platform_scope_for_host`] returns, and the sqlx →

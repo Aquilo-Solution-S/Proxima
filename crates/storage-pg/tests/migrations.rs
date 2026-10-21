@@ -1426,11 +1426,11 @@ fn generator_output_is_the_migration_text() {
     let core = proxima_storage_pg::projection::projection_artifacts(&proxima_core::FLAVOR_0)
         .expect("core artifacts")
         .expect("flavor #0 declares a projection");
-    let baseline = include_str!("../migrations/0033_baseline.sql");
+    let baseline = include_str!("../migrations/0057_baseline.sql");
     for statement in [core.table.forward.as_str(), core.index.forward.as_str()] {
         assert!(
             baseline.contains(statement),
-            "0033_baseline.sql does not carry the generator's output verbatim:\n{statement}"
+            "0057_baseline.sql does not carry the generator's output verbatim:\n{statement}"
         );
     }
     let definitions = include_str!("../definitions/triggers.sql");
@@ -1438,22 +1438,23 @@ fn generator_output_is_the_migration_text() {
         definitions.contains(&core.language_trigger.forward),
         "definitions/triggers.sql does not carry the projection trigger"
     );
-    assert!(
-        include_str!("../migrations/0047_v039_search_tag_index.sql")
-            .contains(&core.tag_index.forward)
-    );
+    assert!(baseline.contains(&core.tag_index.forward));
     for artifact in
         proxima_storage_pg::search_candidates::candidate_artifacts(&proxima_core::FLAVOR_0)
             .expect("core candidates")
-            .into_iter()
-            .chain(
-                proxima_storage_pg::vector_index::vector_candidate_artifacts()
-                    .expect("vector candidates"),
-            )
     {
         assert!(
             proxima_storage_pg::definitions::FUNCTIONS.contains(&artifact.forward),
             "definitions do not carry generated candidate function:\n{}",
+            artifact.forward
+        );
+    }
+    for artifact in
+        proxima_storage_pg::vector_index::vector_candidate_artifacts().expect("vector candidates")
+    {
+        assert!(
+            proxima_storage_pg::definitions::VECTOR.contains(&artifact.forward),
+            "definitions/vector.sql does not carry generated vector candidate function:\n{}",
             artifact.forward
         );
     }

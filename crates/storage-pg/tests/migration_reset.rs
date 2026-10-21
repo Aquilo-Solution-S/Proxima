@@ -2,24 +2,28 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-#[path = "support/migration_reset.rs"]
-mod migration_reset_support;
-
-use migration_reset_support::{
-    apply_pre_identity_schema, pre_reset_pairs as shared_pre_reset_pairs,
-};
 use proxima_core::StorageError;
-use proxima_pg_testkit::{DbGuard, admin_url_or_skip, create_db, split_role_urls};
+use proxima_pg_testkit::{
+    DbGuard, admin_url_or_skip, create_db, split_role_urls, split_role_urls_without_pgvector,
+};
 use proxima_storage_pg::{
-    PgMigrationStorage, PgPoolConfig, PgTuning, adopt::PRE_RESET, definitions,
+    PgMigrationStorage, PgPoolConfig, PgTuning, VectorStorage, core_migrator_for, definitions,
     ensure_core_schema_current,
 };
 use sqlx::AssertSqlSafe;
 
-const BASELINE: &str = include_str!("../migrations/0033_baseline.sql");
+const BASELINE: &str = include_str!("../migrations/0057_baseline.sql");
 
-fn pre_reset_pairs() -> Vec<(i64, Vec<u8>)> {
-    shared_pre_reset_pairs(&PRE_RESET)
+/// Both store kinds, each with the database its roles are provisioned for.
+const KINDS: [VectorStorage; 2] = [VectorStorage::Local, VectorStorage::HostIndex];
+
+/// The definitions files a store of this kind holds.
+fn definition_files(vectors: VectorStorage) -> Vec<&'static str> {
+    let mut files = vec![definitions::FUNCTIONS];
+    if vectors == VectorStorage::Local {
+        files.push(definitions::VECTOR);
+    }
+    files
 }
 
 fn definitions_record_sql(checksum: &str, release: &str) -> String {
@@ -113,82 +117,112 @@ async fn catalog_snapshot(pool: &sqlx::PgPool) -> Vec<String> {
     [functions, aggregates, triggers, policies].concat()
 }
 
-async fn migration_db(prefix: &str) -> Option<(String, PgMigrationStorage, DbGuard)> {
+async fn migration_db(
+    prefix: &str,
+    vectors: VectorStorage,
+) -> Option<(String, PgMigrationStorage, DbGuard)> {
     admin_url_or_skip()?;
     let name = format!(
         "proxima_mig_reset_{prefix}_{}",
         uuid::Uuid::new_v4().simple()
     );
     create_db(&name).await.expect("create test database");
-    let (_, platform_url) = split_role_urls(&name).await.expect("split roles");
+    let (_, platform_url) = match vectors {
+        VectorStorage::Local => split_role_urls(&name).await,
+        VectorStorage::HostIndex => split_role_urls_without_pgvector(&name).await,
+    }
+    .expect("split roles");
     let migration = PgMigrationStorage::connect_with_config(
         &platform_url,
         PgPoolConfig::default(),
         PgTuning::default(),
     )
     .await
-    .expect("migration connection");
+    .expect("migration connection")
+    .with_vector_storage(vectors);
     Some((name.clone(), migration, DbGuard::adopt(name)))
 }
 
+/// Each kind installs exactly its own migrations: the host-index kind into a
+/// database with no `vector` extension, the local kind with pgvector and the
+/// vector column.
 #[tokio::test]
-async fn fresh_database_runs_baseline_and_definitions() {
-    let Some((_name, migration, _guard)) = migration_db("fresh").await else {
-        return;
-    };
-    migration.run_migrations().await.expect("fresh migration");
-    let pool = migration.clone_pool_for_backend();
-    let baseline: i64 = sqlx::query_scalar(
-        "SELECT max(version) FROM public._sqlx_migrations WHERE success AND version = $1",
-    )
-    .bind(
-        proxima_storage_pg::core_migrator()
-            .iter()
-            .next()
-            .expect("baseline")
-            .version,
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("ledger");
-    assert_eq!(
-        baseline,
-        proxima_storage_pg::core_migrator()
-            .iter()
-            .next()
-            .expect("baseline")
-            .version
-    );
-    assert!(
-        definitions::current_matches(&mut pool.acquire().await.expect("connection").detach())
+async fn fresh_database_runs_its_kinds_migrations_and_definitions() {
+    for vectors in KINDS {
+        let Some((_name, migration, _guard)) = migration_db("fresh", vectors).await else {
+            return;
+        };
+        migration.run_migrations().await.expect("fresh migration");
+        let pool = migration.clone_pool_for_backend();
+        let recorded: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM public._sqlx_migrations WHERE success ORDER BY version",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("ledger");
+        assert_eq!(
+            recorded,
+            core_migrator_for(vectors)
+                .iter()
+                .map(|migration| migration.version)
+                .collect::<Vec<_>>(),
+            "{vectors:?}"
+        );
+        assert!(
+            definitions::current_matches(
+                &mut pool.acquire().await.expect("connection").detach(),
+                vectors
+            )
             .await
             .expect("definitions")
-    );
+        );
+        let (extension, vector_column, vector_functions): (bool, bool, bool) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector'),
+                    EXISTS (SELECT 1 FROM information_schema.columns
+                             WHERE table_schema = 'proxima_core'
+                               AND table_name = 'embeddings' AND column_name = 'vec'),
+                    EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                             WHERE n.nspname = 'proxima_core'
+                               AND p.proname = 'vector_candidates_d384')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("vector parts");
+        let expected = vectors == VectorStorage::Local;
+        assert_eq!(
+            (extension, vector_column, vector_functions),
+            (expected, expected, expected),
+            "{vectors:?}"
+        );
+    }
 }
 
 #[tokio::test]
 async fn definitions_pass_is_idempotent() {
-    let Some((_name, migration, _guard)) = migration_db("idempotent").await else {
-        return;
-    };
-    migration.run_migrations().await.expect("first migration");
-    let pool = migration.clone_pool_for_backend();
-    let before = catalog_snapshot(&pool).await;
-    sqlx::raw_sql(AssertSqlSafe(definitions_record_sql(
-        "deadbeef",
-        proxima_core::RELEASE_VERSION,
-    )))
-    .execute(&pool)
-    .await
-    .expect("force definitions pass");
-    migration.run_migrations().await.expect("second migration");
-    let after = catalog_snapshot(&pool).await;
-    assert_eq!(before, after);
+    for vectors in KINDS {
+        let Some((_name, migration, _guard)) = migration_db("idempotent", vectors).await else {
+            return;
+        };
+        migration.run_migrations().await.expect("first migration");
+        let pool = migration.clone_pool_for_backend();
+        let before = catalog_snapshot(&pool).await;
+        sqlx::raw_sql(AssertSqlSafe(definitions_record_sql(
+            "deadbeef",
+            proxima_core::RELEASE_VERSION,
+        )))
+        .execute(&pool)
+        .await
+        .expect("force definitions pass");
+        migration.run_migrations().await.expect("second migration");
+        let after = catalog_snapshot(&pool).await;
+        assert_eq!(before, after, "{vectors:?}");
+    }
 }
 
 #[tokio::test]
 async fn definitions_preserve_flavor_trigger() {
-    let Some((_name, migration, _guard)) = migration_db("trigger").await else {
+    let Some((_name, migration, _guard)) = migration_db("trigger", VectorStorage::Local).await
+    else {
         return;
     };
     migration.run_migrations().await.expect("first migration");
@@ -221,25 +255,33 @@ async fn definitions_preserve_flavor_trigger() {
 }
 
 #[tokio::test]
+async fn core_catalog_has_no_undeclared_objects() {
+    for vectors in KINDS {
+        census(vectors).await;
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one core-only catalog compares the declared functions, triggers and policies"
 )]
-async fn core_catalog_has_no_undeclared_objects() {
-    let Some((_name, migration, _guard)) = migration_db("census").await else {
+async fn census(vectors: VectorStorage) {
+    let Some((_name, migration, _guard)) = migration_db("census", vectors).await else {
         return;
     };
     migration.run_migrations().await.expect("migration");
     let pool = migration.clone_pool_for_backend();
+    let files = definition_files(vectors);
     let mut declared = declared_names(BASELINE, "FUNCTION");
-    for (name, count) in declared_names(definitions::FUNCTIONS, "FUNCTION") {
-        *declared.entry(name).or_default() += count;
-    }
     for (name, count) in declared_names(BASELINE, "AGGREGATE") {
         *declared.entry(name).or_default() += count;
     }
-    for (name, count) in declared_names(definitions::FUNCTIONS, "AGGREGATE") {
-        *declared.entry(name).or_default() += count;
+    for file in &files {
+        for keyword in ["FUNCTION", "AGGREGATE"] {
+            for (name, count) in declared_names(file, keyword) {
+                *declared.entry(name).or_default() += count;
+            }
+        }
     }
     declared.insert("definitions_applied".into(), 1);
     let live: BTreeMap<String, usize> = sqlx::query_scalar(
@@ -255,7 +297,7 @@ async fn core_catalog_has_no_undeclared_objects() {
         *map.entry(name).or_default() += 1;
         map
     });
-    assert_eq!(live, declared);
+    assert_eq!(live, declared, "{vectors:?}");
     let mut declared_triggers = BTreeSet::new();
     let mut trigger_name = None;
     for line in definitions::TRIGGERS.lines() {
@@ -315,12 +357,17 @@ async fn core_catalog_has_no_undeclared_objects() {
             .map(|policy| (table.clone(), policy.to_owned()))
         })
         .collect();
-    declared_policies.extend(definitions::FUNCTIONS.lines().filter_map(|line| {
-        let declaration = line.trim().strip_prefix("CREATE POLICY ")?;
-        let (policy, rest) = declaration.split_once(" ON proxima_core.")?;
-        let table = rest.split_whitespace().next()?;
-        Some((table.to_owned(), policy.to_owned()))
-    }));
+    declared_policies.extend(
+        files
+            .iter()
+            .flat_map(|file| file.lines())
+            .filter_map(|line| {
+                let declaration = line.trim().strip_prefix("CREATE POLICY ")?;
+                let (policy, rest) = declaration.split_once(" ON proxima_core.")?;
+                let table = rest.split_whitespace().next()?;
+                Some((table.to_owned(), policy.to_owned()))
+            }),
+    );
     let live_policies: BTreeSet<(String, String)> = sqlx::query_as(
         "SELECT c.relname, p.polname FROM pg_policy p
            JOIN pg_class c ON c.oid = p.polrelid
@@ -332,12 +379,12 @@ async fn core_catalog_has_no_undeclared_objects() {
     .expect("policies")
     .into_iter()
     .collect();
-    assert_eq!(live_policies, declared_policies);
+    assert_eq!(live_policies, declared_policies, "{vectors:?}");
 }
 
 #[tokio::test]
 async fn newer_definitions_release_refuses_run_and_preflight() {
-    let Some((_name, migration, _guard)) = migration_db("newer").await else {
+    let Some((_name, migration, _guard)) = migration_db("newer", VectorStorage::Local).await else {
         return;
     };
     migration.run_migrations().await.expect("first migration");
@@ -359,10 +406,13 @@ async fn newer_definitions_release_refuses_run_and_preflight() {
             if message.contains("newer release 99.0.0")),
         "got: {run_error}"
     );
-    let preflight_error =
-        ensure_core_schema_current(&pool, proxima_storage_pg::MissingMigrationPolicy::Reject)
-            .await
-            .expect_err("newer release refuses preflight");
+    let preflight_error = ensure_core_schema_current(
+        &pool,
+        proxima_storage_pg::MissingMigrationPolicy::Reject,
+        VectorStorage::Local,
+    )
+    .await
+    .expect_err("newer release refuses preflight");
     assert!(
         matches!(&preflight_error, StorageError::Internal(message)
             if message.contains("newer release 99.0.0")),
@@ -372,7 +422,8 @@ async fn newer_definitions_release_refuses_run_and_preflight() {
 
 #[tokio::test]
 async fn same_release_checksum_drift_reapplies_definitions() {
-    let Some((_name, migration, _guard)) = migration_db("checksum").await else {
+    let Some((_name, migration, _guard)) = migration_db("checksum", VectorStorage::Local).await
+    else {
         return;
     };
     migration.run_migrations().await.expect("first migration");
@@ -388,78 +439,65 @@ async fn same_release_checksum_drift_reapplies_definitions() {
         .run_migrations()
         .await
         .expect("reapply definitions");
-    let matches =
-        definitions::current_matches(&mut pool.acquire().await.expect("connection").detach())
-            .await
-            .expect("definitions");
+    let matches = definitions::current_matches(
+        &mut pool.acquire().await.expect("connection").detach(),
+        VectorStorage::Local,
+    )
+    .await
+    .expect("definitions");
     assert!(matches);
 }
 
+/// A store installed before the baseline reset is refused, whichever kind
+/// opens it and whatever versions it recorded: nothing is stamped, adopted or
+/// created, and the ledger is as it was.
 #[tokio::test]
-async fn pre_reset_main_ledger_is_stamped_without_baseline_execution() {
-    let Some((_name, migration, _guard)) = migration_db("stamp").await else {
-        return;
-    };
-    let pool = migration.clone_pool_for_backend();
-    apply_pre_identity_schema(&pool)
-        .await
-        .expect("schema before store identities");
-    let pairs = pre_reset_pairs();
-    assert_eq!(pairs.len(), 32);
-    let migrator = proxima_storage_pg::core_migrator();
-    let baseline = migrator.iter().next().expect("embedded baseline");
-    sqlx::query("DELETE FROM public._sqlx_migrations WHERE version = $1")
-        .bind(baseline.version)
-        .execute(&pool)
-        .await
-        .expect("remove current stamp");
-    for (version, checksum) in pairs {
-        sqlx::query(
-            "INSERT INTO public._sqlx_migrations
-                 (version, description, success, checksum, execution_time)
-             VALUES ($1, 'old', true, $2, 0)",
-        )
-        .bind(version)
-        .bind(checksum)
-        .execute(&pool)
-        .await
-        .expect("restore pre-reset ledger");
+async fn a_pre_reset_ledger_is_refused_and_left_as_it_was() {
+    for vectors in KINDS {
+        for recorded in [33..=56_i64, 1..=29, 56..=56] {
+            let Some((_name, migration, _guard)) = migration_db("refused", vectors).await else {
+                return;
+            };
+            let pool = migration.clone_pool_for_backend();
+            for version in recorded.clone() {
+                sqlx::query(
+                    "INSERT INTO public._sqlx_migrations
+                         (version, description, success, checksum, execution_time)
+                     VALUES ($1, 'old', true, $2, 0)",
+                )
+                .bind(version)
+                .bind(vec![0_u8; 48])
+                .execute(&pool)
+                .await
+                .expect("ledger row");
+            }
+            let refusals = [
+                migration.run_migrations().await,
+                ensure_core_schema_current(
+                    &pool,
+                    proxima_storage_pg::MissingMigrationPolicy::Allow,
+                    vectors,
+                )
+                .await,
+            ];
+            for refusal in refusals {
+                assert!(
+                    matches!(refusal, Err(StorageError::SchemaResetRequired { .. })),
+                    "{vectors:?} {recorded:?}: {refusal:?}"
+                );
+            }
+            let (rows, schema): (i64, bool) = sqlx::query_as(
+                "SELECT (SELECT count(*) FROM public._sqlx_migrations),
+                        EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'proxima_core')",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("state");
+            assert_eq!(
+                (rows, schema),
+                (i64::try_from(recorded.count()).expect("count"), false),
+                "{vectors:?}: the refusal changed nothing"
+            );
+        }
     }
-    migration.run_migrations().await.expect("stamp adoption");
-    let (description, checksum, success): (String, Vec<u8>, bool) = sqlx::query_as(
-        "SELECT description, checksum, success
-           FROM public._sqlx_migrations WHERE version = $1",
-    )
-    .bind(baseline.version)
-    .fetch_one(&pool)
-    .await
-    .expect("stamp");
-    assert_eq!(description, baseline.description.as_ref());
-    assert_eq!(checksum, baseline.checksum.as_ref());
-    assert!(success);
-}
-
-#[tokio::test]
-async fn incomplete_ledger_requires_schema_reset() {
-    let Some((_name, migration, _guard)) = migration_db("unknown").await else {
-        return;
-    };
-    let pool = migration.clone_pool_for_backend();
-    for (version, checksum) in pre_reset_pairs().into_iter().take(29) {
-        sqlx::query(
-            "INSERT INTO public._sqlx_migrations
-                 (version, description, success, checksum, execution_time)
-             VALUES ($1, 'old', true, $2, 0)",
-        )
-        .bind(version)
-        .bind(checksum)
-        .execute(&pool)
-        .await
-        .expect("ledger row");
-    }
-    let error = migration
-        .run_migrations()
-        .await
-        .expect_err("incomplete ledger must refuse");
-    assert!(matches!(error, StorageError::SchemaResetRequired { .. }));
 }

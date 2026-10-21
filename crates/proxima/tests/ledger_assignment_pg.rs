@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use proxima::{
-    LedgerConflict, MigrationError, MissingMigrationPolicy, NamedMigrator,
+    LedgerConflict, MigrationError, MissingMigrationPolicy, NamedMigrator, VectorStorage,
     pending_migrations_with_policy, preflight_without_migrations_with_policy,
     run_core_and_flavor_migrations, run_core_and_flavor_migrations_with_policy,
 };
@@ -110,9 +110,14 @@ async fn changing_a_baselines_ledger_is_refused_before_any_replay_under_both_pol
             MissingMigrationPolicy::Reject,
             MissingMigrationPolicy::Allow,
         ] {
-            let planned = pending_migrations_with_policy(&admin, &[source(false)], policy)
-                .await
-                .expect_err("a plan refuses the changed ledger assignment");
+            let planned = pending_migrations_with_policy(
+                &admin,
+                &[source(false)],
+                policy,
+                VectorStorage::Local,
+            )
+            .await
+            .expect_err("a plan refuses the changed ledger assignment");
             let preflight = preflight_without_migrations_with_policy(
                 &pg,
                 vec![source(false)],

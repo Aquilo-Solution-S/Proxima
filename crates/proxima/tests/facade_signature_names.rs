@@ -321,13 +321,13 @@ facade_names! {
 
     // Needed by `pending_migrations`, the read-only plan beside the runner.
     pending_migrations {
-        host_only: [CoreAdoption, missing_migration_policy_from_lookup, MissingMigrationPolicy, PendingMigration, pending_migrations, pending_migrations_with_policy, preflight_without_migrations_with_policy, run_core_and_flavor_migrations_with_policy],
+        host_only: [VectorStorage, missing_migration_policy_from_lookup, MissingMigrationPolicy, PendingMigration, pending_migrations, pending_migrations_with_policy, preflight_without_migrations_with_policy, run_core_and_flavor_migrations_with_policy],
         both_tiers: [],
     }
 
     // Needed by hosts connecting a migration-only lane and managing the core schema.
     host_schema_maintenance {
-        host_only: [MigrationStorage, PgMigrationStorage, assert_runtime_rls, is_transient_conflict, begin_migration_transaction, run_core_schema, core_migrator, ensure_core_schema_current, ensure_owner_row, core_definitions_match, core_definitions_match_with_policy],
+        host_only: [MigrationStorage, PgMigrationStorage, assert_runtime_rls, is_transient_conflict, begin_migration_transaction, run_core_schema, core_migrator, core_migrator_for, ensure_core_schema_current, ensure_owner_row, core_definitions_match, core_definitions_match_with_policy],
         both_tiers: [],
     }
 

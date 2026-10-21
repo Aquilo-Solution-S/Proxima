@@ -278,7 +278,7 @@ async fn unknown_pre_reset_ledger_surfaces_typed_reset_error_through_boot() {
         match err {
             ProximaError::SchemaResetRequired { details } => {
                 assert!(
-                    details.contains("v0.0.35") && details.contains("reset"),
+                    details.contains("reinstall") && details.contains("reset"),
                     "reset details should name the schema mismatch, got: {details}"
                 );
             }

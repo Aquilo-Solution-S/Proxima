@@ -300,6 +300,7 @@ impl EmbeddingMaintenancePort for PgStorage {
             &self.pool,
             &self.platform_scope,
             policy.stale_claim_timeout_seconds(),
+            self.vector_storage(),
         )
         .await
     }

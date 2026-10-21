@@ -886,10 +886,13 @@ async fn preflight_refuses_missing_follows_state_and_empty_sql_run_repairs_it() 
             matches!(refused, Err(MigrationError::SidecarOwnerRls(_))),
             "preflight refuses mismatched deployment: {refused:?}"
         );
-        let pending =
-            proxima::pending_migrations(&pg.clone_pool_for_backend(), &ExampleFlavor::migrators())
-                .await
-                .expect("SQL migration plan");
+        let pending = proxima::pending_migrations(
+            &pg.clone_pool_for_backend(),
+            &ExampleFlavor::migrators(),
+            proxima::VectorStorage::Local,
+        )
+        .await
+        .expect("SQL migration plan");
         assert!(
             pending.is_empty(),
             "registry state is separate from the SQL ledger"
@@ -963,10 +966,14 @@ async fn empty_sql_run_replaces_an_owner_only_follows_policy() {
         "preflight refuses the unmarked Follows table: {refused:?}"
     );
     assert!(
-        proxima::pending_migrations(&pg.clone_pool_for_backend(), &ExampleFlavor::migrators())
-            .await
-            .expect("plan")
-            .is_empty(),
+        proxima::pending_migrations(
+            &pg.clone_pool_for_backend(),
+            &ExampleFlavor::migrators(),
+            proxima::VectorStorage::Local
+        )
+        .await
+        .expect("plan")
+        .is_empty(),
         "no SQL is pending"
     );
     proxima::run_core_and_flavor_migrations(&pg, ExampleFlavor::migrators(), &sidecars)

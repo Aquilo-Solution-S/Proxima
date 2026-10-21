@@ -19,9 +19,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use proxima_core::StorageError;
-pub use proxima_storage_pg::{CoreAdoption, MissingMigrationPolicy};
+pub use proxima_storage_pg::{MissingMigrationPolicy, VectorStorage};
 use proxima_storage_pg::{
-    PgMigrationStorage, PgSidecarRegistryFrozen, PgStorage, core_migrator,
+    PgMigrationStorage, PgSidecarRegistryFrozen, PgStorage, core_migrator_for,
     ensure_core_ledger_compatible_on_connection_with_policy, ensure_core_schema_current,
 };
 use sqlx::migrate::{MigrateError, Migration, Migrator};
@@ -35,17 +35,29 @@ const CORE_SOURCE: &str = "proxima-core";
 /// migration connection from being used as a runtime store.
 pub trait MigrationStorage {
     fn clone_migration_pool(&self) -> PgPool;
+
+    /// Where the store keeps its vectors, which decides the core migrations
+    /// and definitions it takes.
+    fn vector_storage(&self) -> VectorStorage;
 }
 
 impl MigrationStorage for PgStorage {
     fn clone_migration_pool(&self) -> PgPool {
         self.clone_pool_for_backend()
     }
+
+    fn vector_storage(&self) -> VectorStorage {
+        PgStorage::vector_storage(self)
+    }
 }
 
 impl MigrationStorage for PgMigrationStorage {
     fn clone_migration_pool(&self) -> PgPool {
         self.clone_pool_for_backend()
+    }
+
+    fn vector_storage(&self) -> VectorStorage {
+        PgMigrationStorage::vector_storage(self)
     }
 }
 
@@ -305,7 +317,7 @@ pub async fn run_core_and_flavor_migrations_with_policy<P: MigrationStorage>(
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
 ) -> Result<MigrationRunReport, MigrationError> {
-    run_lineup_with_policy(pg, &lineup(flavors), sidecars, policy).await
+    run_lineup_with_policy(pg, &lineup(flavors, pg.vector_storage()), sidecars, policy).await
 }
 
 /// [`run_core_and_flavor_migrations`] over a [`lineup`] the caller keeps: the
@@ -327,7 +339,14 @@ async fn run_lineup_with_policy<P: MigrationStorage>(
     policy: MissingMigrationPolicy,
 ) -> Result<MigrationRunReport, MigrationError> {
     check_lineup(sources)?;
-    run_lineup_with_pool(pg.clone_migration_pool(), sources, sidecars, policy).await
+    run_lineup_with_pool(
+        pg.clone_migration_pool(),
+        sources,
+        sidecars,
+        policy,
+        pg.vector_storage(),
+    )
+    .await
 }
 
 async fn run_lineup_with_pool(
@@ -335,6 +354,7 @@ async fn run_lineup_with_pool(
     sources: &[NamedMigrator],
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
+    vectors: VectorStorage,
 ) -> Result<MigrationRunReport, MigrationError> {
     let report = MigrationRunReport::from_sources(sources);
 
@@ -344,7 +364,7 @@ async fn run_lineup_with_pool(
         .await
         .map_err(MigrationError::PinSearchPath)?;
 
-    let migration_result = run_locked_sources(&mut conn, sources, sidecars, policy).await;
+    let migration_result = run_locked_sources(&mut conn, sources, sidecars, policy, vectors).await;
     let reset_result = reset_migration_search_path(&mut conn).await;
 
     match (migration_result, reset_result) {
@@ -366,11 +386,18 @@ async fn run_locked_sources(
     sources: &[NamedMigrator],
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
+    vectors: VectorStorage,
 ) -> Result<(), MigrationError> {
     let lock = SessionLock::acquire(conn).await.map_err(execute_error)?;
     let result = async {
-        validate_ledgers(lock.conn, &sources.iter().collect::<Vec<_>>(), policy).await?;
-        run_sources_on_connection(lock.conn, sources, sidecars).await
+        validate_ledgers(
+            lock.conn,
+            &sources.iter().collect::<Vec<_>>(),
+            policy,
+            vectors,
+        )
+        .await?;
+        run_sources_on_connection(lock.conn, sources, sidecars, vectors).await
     }
     .await;
     let released = lock.release().await;
@@ -437,7 +464,8 @@ pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
 ) -> Result<MigrationRunReport, MigrationError> {
-    let sources = prepare_sources(flavors)?;
+    let vectors = pg.vector_storage();
+    let sources = prepare_sources(flavors, vectors)?;
     let report = MigrationRunReport::from_sources(&sources);
     let pool = pg.clone_migration_pool();
     let mut conn = acquire_session_connection(&pool).await?;
@@ -450,7 +478,13 @@ pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
         .map_err(execute_error)?;
     let mut snapshot = lock.begin_snapshot().await.map_err(execute_error)?;
     let result = async {
-        validate_ledgers(&mut snapshot, &sources.iter().collect::<Vec<_>>(), policy).await?;
+        validate_ledgers(
+            &mut snapshot,
+            &sources.iter().collect::<Vec<_>>(),
+            policy,
+            vectors,
+        )
+        .await?;
         for source in sources
             .iter()
             .filter(|source| !is_core_ledger(&source.migrator.table_name))
@@ -480,13 +514,13 @@ pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
     ended.map_err(execute_error)?;
     released.map_err(execute_error)?;
     drop(conn);
-    ensure_core_schema_current(&pool, MissingMigrationPolicy::Allow)
+    ensure_core_schema_current(&pool, MissingMigrationPolicy::Allow, vectors)
         .await
         .map_err(MigrationError::CorePreflight)?;
     Ok(report)
 }
 
-/// One pending embedded SQL, core adoption or core-definitions operation.
+/// One pending embedded SQL or core-definitions operation.
 ///
 /// Only [`pending_migrations`] constructs an operation read from the database.
 ///
@@ -509,20 +543,12 @@ pub enum PendingMigration {
         description: String,
         checksum: Vec<u8>,
     },
-    /// Adopt the previous core schema instead of executing the baseline.
-    #[non_exhaustive]
-    CoreAdoption {
-        version: i64,
-        description: String,
-        checksum: Vec<u8>,
-        adoption: CoreAdoption,
-    },
     /// Replace the core functions, triggers and policies in place.
     #[non_exhaustive]
     CoreDefinitions { checksum: Vec<u8>, release: String },
 }
 
-/// Pending embedded SQL, core adoption and core definitions, applying nothing.
+/// Pending embedded SQL and core definitions, applying nothing.
 ///
 /// `sources` is what `flavors` is to [`run_core_and_flavor_migrations`]; core
 /// is always first. The list holds core's pending migrations, then each
@@ -567,8 +593,9 @@ pub enum PendingMigration {
 pub async fn pending_migrations(
     pool: &PgPool,
     sources: &[NamedMigrator],
+    vectors: VectorStorage,
 ) -> Result<Vec<PendingMigration>, MigrationError> {
-    pending_migrations_with_policy(pool, sources, MissingMigrationPolicy::Reject).await
+    pending_migrations_with_policy(pool, sources, MissingMigrationPolicy::Reject, vectors).await
 }
 
 /// [`pending_migrations`] with an explicit missing-version policy.
@@ -581,12 +608,13 @@ pub async fn pending_migrations_with_policy(
     pool: &PgPool,
     sources: &[NamedMigrator],
     policy: MissingMigrationPolicy,
+    vectors: VectorStorage,
 ) -> Result<Vec<PendingMigration>, MigrationError> {
-    let core = core_source();
+    let core = core_source(vectors);
     let lineup: Vec<&NamedMigrator> = std::iter::once(&core).chain(sources).collect();
     validate_sources(&lineup)?;
     let mut conn = acquire_session_connection(pool).await?;
-    plan_under_lock(&mut conn, &lineup, policy).await
+    plan_under_lock(&mut conn, &lineup, policy, vectors).await
 }
 
 /// The lock wait and the snapshot's statements are a run's own, so their
@@ -599,6 +627,7 @@ async fn plan_under_lock(
     conn: &mut PgConnection,
     lineup: &[&NamedMigrator],
     policy: MissingMigrationPolicy,
+    vectors: VectorStorage,
 ) -> Result<Vec<PendingMigration>, MigrationError> {
     sqlx::query(MIGRATION_LOCK_TIMEOUT_SQL)
         .execute(&mut *conn)
@@ -606,7 +635,7 @@ async fn plan_under_lock(
         .map_err(execute_error)?;
     let mut lock = SessionLock::acquire(conn).await.map_err(execute_error)?;
     let mut snapshot = lock.begin_snapshot().await.map_err(execute_error)?;
-    let plan = plan_snapshot(&mut snapshot, lineup, policy).await;
+    let plan = plan_snapshot(&mut snapshot, lineup, policy, vectors).await;
     // Nothing to commit: the snapshot only read.
     let ended = snapshot.rollback().await;
     let released = lock.release().await;
@@ -661,28 +690,23 @@ async fn plan_snapshot(
     snapshot: &mut PgConnection,
     lineup: &[&NamedMigrator],
     policy: MissingMigrationPolicy,
+    vectors: VectorStorage,
 ) -> Result<Vec<PendingMigration>, MigrationError> {
-    validate_ledgers(snapshot, lineup, policy).await?;
+    validate_ledgers(snapshot, lineup, policy, vectors).await?;
     let mut plan = Vec::new();
     for source in lineup {
         if source.source == CORE_SOURCE {
             source.require_transactional()?;
             let rows = read_ledger(snapshot, source, &source.ledger(), true).await?;
             unrecorded(&source.lane(), &rows).map_err(|err| source.run_error(err))?;
-            let core =
-                proxima_storage_pg::pending_core_schema(snapshot, MissingMigrationPolicy::Allow)
-                    .await
-                    .map_err(MigrationError::CorePreflight)?;
+            let core = proxima_storage_pg::pending_core_schema(
+                snapshot,
+                MissingMigrationPolicy::Allow,
+                vectors,
+            )
+            .await
+            .map_err(MigrationError::CorePreflight)?;
             plan.extend(core.into_iter().map(|action| match action {
-                proxima_storage_pg::CoreSchemaAction::Adopt {
-                    migration,
-                    adoption,
-                } => PendingMigration::CoreAdoption {
-                    version: migration.version,
-                    description: migration.description.into_owned(),
-                    checksum: migration.checksum.into_owned(),
-                    adoption,
-                },
                 proxima_storage_pg::CoreSchemaAction::Migration(migration) => {
                     PendingMigration::Sql {
                         ledger: source.ledger(),
@@ -807,10 +831,11 @@ async fn run_sources_on_connection(
     conn: &mut PgConnection,
     sources: &[NamedMigrator],
     sidecars: &PgSidecarRegistryFrozen,
+    vectors: VectorStorage,
 ) -> Result<(), MigrationError> {
     for source in sources {
         if source.source == CORE_SOURCE {
-            run_source_with_contention_retry(conn, source).await?;
+            run_source_with_contention_retry(conn, source, vectors).await?;
             prepare_ledger(conn, source).await?;
             sync_owner_follows(conn, sidecars)
                 .await?
@@ -819,7 +844,7 @@ async fn run_sources_on_connection(
                 .map_err(execute_error)?;
         } else {
             prepare_ledger(conn, source).await?;
-            run_source_with_contention_retry(conn, source).await?;
+            run_source_with_contention_retry(conn, source, vectors).await?;
         }
     }
 
@@ -880,6 +905,7 @@ const CATALOG_CONTENTION_BACKOFF: Duration = Duration::from_millis(100);
 async fn run_source_with_contention_retry(
     conn: &mut PgConnection,
     source: &NamedMigrator,
+    vectors: VectorStorage,
 ) -> Result<(), MigrationError> {
     let mut attempt = 1;
     loop {
@@ -917,9 +943,13 @@ async fn run_source_with_contention_retry(
             .map_err(MigrationError::CorePreflight)?;
             let rows = read_ledger(&mut transaction, source, &source.ledger(), true).await?;
             unrecorded(&source.lane(), &rows).map_err(|err| source.run_error(err))?;
-            proxima_storage_pg::run_core_schema(&mut transaction, MissingMigrationPolicy::Allow)
-                .await
-                .map_err(MigrationError::CorePreflight)?;
+            proxima_storage_pg::run_core_schema(
+                &mut transaction,
+                MissingMigrationPolicy::Allow,
+                vectors,
+            )
+            .await
+            .map_err(MigrationError::CorePreflight)?;
             return transaction
                 .commit()
                 .await
@@ -1173,19 +1203,6 @@ impl NamedMigrator {
             .collect()
     }
 
-    /// Versions owned by this source, including core's validated adopted history.
-    fn accounted_versions(&self) -> BTreeSet<i64> {
-        let mut versions: BTreeSet<i64> = self.lane_versions().into_iter().collect();
-        if self.source == CORE_SOURCE {
-            versions.extend(
-                proxima_storage_pg::adopt::PRE_RESET
-                    .iter()
-                    .map(|(version, _)| *version),
-            );
-        }
-        versions
-    }
-
     /// The versions of [`Self::lane`], ascending: the lineage view of a
     /// ledger, where the order a run walks does not matter.
     fn lane_versions(&self) -> Vec<i64> {
@@ -1370,7 +1387,7 @@ fn composed_ledgers<'a>(sources: &[&'a NamedMigrator]) -> Vec<ComposedLedger<'a>
                 versions: BTreeSet::new(),
             });
         }
-        ledgers[index].versions.extend(source.accounted_versions());
+        ledgers[index].versions.extend(source.lane_versions());
     }
     ledgers
 }
@@ -1383,6 +1400,7 @@ async fn validate_ledgers(
     conn: &mut PgConnection,
     sources: &[&NamedMigrator],
     policy: MissingMigrationPolicy,
+    vectors: VectorStorage,
 ) -> Result<(), MigrationError> {
     // The facade owns the complete set of sources. The backend's artifact
     // and checksum checks remain mandatory, while only this union can decide
@@ -1394,7 +1412,7 @@ async fn validate_ledgers(
         .iter()
         .flat_map(|&source| {
             source
-                .accounted_versions()
+                .lane_versions()
                 .into_iter()
                 .map(move |version| (version, source))
         })
@@ -1414,7 +1432,7 @@ async fn validate_ledgers(
         check_recorded_versions(&ledger.versions, &rows, policy)
             .map_err(|err| ledger.source.run_error(err))?;
     }
-    proxima_storage_pg::definitions::current_matches_with_policy(conn, policy)
+    proxima_storage_pg::definitions::current_matches_with_policy(conn, policy, vectors)
         .await
         .map_err(MigrationError::CorePreflight)?;
     Ok(())
@@ -1486,14 +1504,15 @@ fn unapplied(lane: &[i64], recorded: &[i64]) -> Option<LedgerConflict> {
     (!pending.is_empty()).then_some(LedgerConflict::Unapplied { pending })
 }
 
-fn core_source() -> NamedMigrator {
-    NamedMigrator::new(CORE_SOURCE, core_migrator())
+fn core_source(vectors: VectorStorage) -> NamedMigrator {
+    NamedMigrator::new(CORE_SOURCE, core_migrator_for(vectors))
 }
 
 fn prepare_sources(
     flavors: impl IntoIterator<Item = NamedMigrator>,
+    vectors: VectorStorage,
 ) -> Result<Vec<NamedMigrator>, MigrationError> {
-    let sources = lineup(flavors);
+    let sources = lineup(flavors, vectors);
     check_lineup(&sources)?;
     Ok(sources)
 }
@@ -1502,8 +1521,11 @@ fn prepare_sources(
 /// run needs it. `SQLx` ignores versions outside each individual source;
 /// [`validate_ledgers`] checks the complete union before any DDL. Nothing is refused here: a run
 /// validates the lineup ([`check_lineup`]) before it connects.
-pub(crate) fn lineup(flavors: impl IntoIterator<Item = NamedMigrator>) -> Vec<NamedMigrator> {
-    let mut sources = vec![core_source()];
+pub(crate) fn lineup(
+    flavors: impl IntoIterator<Item = NamedMigrator>,
+    vectors: VectorStorage,
+) -> Vec<NamedMigrator> {
+    let mut sources = vec![core_source(vectors)];
 
     for mut source in flavors {
         source.migrator.set_ignore_missing(true);
@@ -1587,7 +1609,7 @@ mod tests {
 
     use super::{
         LedgerConflict, LedgerRow, MigrationError, MissingMigrationPolicy, NamedMigrator,
-        check_recorded_versions, composed_ledgers, core_source, flavor_ledger_table,
+        VectorStorage, check_recorded_versions, composed_ledgers, core_source, flavor_ledger_table,
         ledger_conflict, pending_migrations, prepare_sources, unapplied, unrecorded,
     };
 
@@ -1614,10 +1636,13 @@ mod tests {
 
     #[test]
     fn duplicate_versions_fail_before_run() {
-        let err = prepare_sources([
-            NamedMigrator::new("alpha", migrator(&[TEST_FLAVOR_VERSION])),
-            NamedMigrator::new("beta", migrator(&[TEST_FLAVOR_VERSION])),
-        ])
+        let err = prepare_sources(
+            [
+                NamedMigrator::new("alpha", migrator(&[TEST_FLAVOR_VERSION])),
+                NamedMigrator::new("beta", migrator(&[TEST_FLAVOR_VERSION])),
+            ],
+            VectorStorage::Local,
+        )
         .expect_err("duplicate migration version should fail");
 
         assert!(matches!(
@@ -1643,10 +1668,13 @@ mod tests {
             "a ledger already in use is never renamed under a live database"
         );
 
-        let err = prepare_sources([
-            NamedMigrator::flavor("a-b", migrator(&[TEST_FLAVOR_VERSION])),
-            NamedMigrator::flavor("a_b", migrator(&[TEST_FLAVOR_VERSION + 1])),
-        ])
+        let err = prepare_sources(
+            [
+                NamedMigrator::flavor("a-b", migrator(&[TEST_FLAVOR_VERSION])),
+                NamedMigrator::flavor("a_b", migrator(&[TEST_FLAVOR_VERSION + 1])),
+            ],
+            VectorStorage::Local,
+        )
         .expect_err("two flavors on one ledger");
         assert!(matches!(
             err,
@@ -1656,10 +1684,13 @@ mod tests {
                 ..
             }
         ));
-        prepare_sources([
-            NamedMigrator::new("alpha", migrator(&[TEST_FLAVOR_VERSION])),
-            NamedMigrator::new("beta", migrator(&[TEST_FLAVOR_VERSION + 1])),
-        ])
+        prepare_sources(
+            [
+                NamedMigrator::new("alpha", migrator(&[TEST_FLAVOR_VERSION])),
+                NamedMigrator::new("beta", migrator(&[TEST_FLAVOR_VERSION + 1])),
+            ],
+            VectorStorage::Local,
+        )
         .expect("flavors still on core's shared ledger are a warning, not a refusal");
     }
 
@@ -1865,8 +1896,10 @@ mod tests {
             .connect_lazy("postgres://nobody@127.0.0.1:1/none")
             .expect("a lazy pool parses its URL and connects later");
         (
-            prepare_sources(sources()).map(drop),
-            pending_migrations(&pool, &sources()).await.map(drop),
+            prepare_sources(sources(), VectorStorage::Local).map(drop),
+            pending_migrations(&pool, &sources(), VectorStorage::Local)
+                .await
+                .map(drop),
         )
     }
 
@@ -2023,7 +2056,10 @@ mod tests {
 
     #[test]
     fn a_ledger_is_named_as_flavor_ledger_table_names_it() {
-        assert_eq!(core_source().ledger(), "public._sqlx_migrations");
+        assert_eq!(
+            core_source(VectorStorage::Local).ledger(),
+            "public._sqlx_migrations"
+        );
         assert_eq!(
             NamedMigrator::flavor("fixture-flavor", migrator(&[1])).ledger(),
             flavor_ledger_table("fixture-flavor")
@@ -2157,6 +2193,7 @@ mod tests {
                 NamedMigrator::new("alpha", migrator(&[TEST_FLAVOR_VERSION])),
                 NamedMigrator::new("beta", migrator(&[TEST_FLAVOR_VERSION])),
             ],
+            VectorStorage::Local,
         )
         .await
         .expect_err("duplicate migration version");
@@ -2176,12 +2213,13 @@ mod tests {
                 NamedMigrator::flavor("a-b", migrator(&[TEST_FLAVOR_VERSION])),
                 NamedMigrator::flavor("a_b", migrator(&[TEST_FLAVOR_VERSION + 1])),
             ],
+            VectorStorage::Local,
         )
         .await
         .expect_err("two flavors on one ledger");
         assert!(matches!(shared, MigrationError::DuplicateLedger { .. }));
 
-        let reachable = pending_migrations(&pool, &[]).await;
+        let reachable = pending_migrations(&pool, &[], VectorStorage::Local).await;
         assert!(
             matches!(reachable, Err(MigrationError::Connection(_))),
             "a valid lineup does reach for the database: {reachable:?}"

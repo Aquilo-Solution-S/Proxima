@@ -1,25 +1,58 @@
 use proxima_core::StorageError;
-use proxima_storage_pg::{PgPlatformScope, PgPoolConfig, PgStorage, PgTuning, core_migrator};
+use std::sync::Arc;
+
+use proxima_storage_pg::{
+    PgPlatformScope, PgPoolConfig, PgStorage, PgTuning, VectorStorage, core_migrator_for,
+};
 
 use proxima_pg_testkit::{
-    DbGuard, FNV_OFFSET_BASIS, create_db_from_template, create_named_db_from_template, db_url,
-    drop_db, ensure_template, fnv1a64_extend, split_role_urls,
+    DbGuard, FNV_OFFSET_BASIS, TemplateFamily, create_db_from_template,
+    create_named_db_from_template, db_url, drop_db, ensure_template, ensure_template_in,
+    fnv1a64_extend, split_role_urls, split_role_urls_without_pgvector,
 };
 use sqlx::Connection;
 
-#[must_use]
-pub fn core_template_name() -> String {
+/// The test roles for `database`; a host-index database gets no `vector`
+/// extension.
+async fn roles_for(
+    database: &str,
+    vectors: VectorStorage,
+) -> Result<(String, String), sqlx::Error> {
+    match vectors {
+        VectorStorage::Local => split_role_urls(database).await,
+        VectorStorage::HostIndex => split_role_urls_without_pgvector(database).await,
+    }
+}
+
+/// The host-index kind's templates are a family of their own: a template
+/// build drops the idle templates of its family, and the two kinds must not
+/// evict each other's.
+fn host_index_family() -> TemplateFamily {
+    TemplateFamily::new("proxima_tmpl_corehi_").expect("a valid template family")
+}
+
+/// What the template of this store kind is a function of: its migrations, its
+/// definitions and the release.
+fn core_template_hash(vectors: VectorStorage) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
-    for migration in core_migrator().iter() {
+    for migration in core_migrator_for(vectors).iter() {
         hash = fnv1a64_extend(hash, &migration.version.to_be_bytes());
         hash = fnv1a64_extend(hash, migration.checksum.as_ref());
     }
     hash = fnv1a64_extend(
         hash,
-        proxima_storage_pg::definitions::checksum_hex().as_bytes(),
+        proxima_storage_pg::definitions::checksum_hex(vectors).as_bytes(),
     );
-    hash = fnv1a64_extend(hash, proxima_core::RELEASE_VERSION.as_bytes());
-    format!("proxima_tmpl_core_{hash:016x}")
+    fnv1a64_extend(hash, proxima_core::RELEASE_VERSION.as_bytes())
+}
+
+#[must_use]
+pub fn core_template_name(vectors: VectorStorage) -> String {
+    let hash = core_template_hash(vectors);
+    match vectors {
+        VectorStorage::Local => format!("proxima_tmpl_core_{hash:016x}"),
+        VectorStorage::HostIndex => host_index_family().template_name(hash),
+    }
 }
 
 /// Build the full core schema template once per migration set.
@@ -27,13 +60,13 @@ pub fn core_template_name() -> String {
 /// # Errors
 ///
 /// Returns admin connection, template build, or migration errors.
-pub async fn ensure_core_template() -> Result<String, sqlx::Error> {
-    let template = core_template_name();
-    ensure_template(&template, |pool| async move {
+pub async fn ensure_core_template(vectors: VectorStorage) -> Result<String, sqlx::Error> {
+    let template = core_template_name(vectors);
+    let build = |pool: sqlx::PgPool| async move {
         let database: String = sqlx::query_scalar("SELECT current_database()")
             .fetch_one(&pool)
             .await?;
-        let (_runtime_url, platform_url) = split_role_urls(&database).await?;
+        let (_runtime_url, platform_url) = roles_for(&database, vectors).await?;
         pool.close().await;
         let mut connection = sqlx::PgConnection::connect(&platform_url).await?;
         let mut transaction = proxima_storage_pg::begin_migration_transaction(&mut connection)
@@ -42,23 +75,33 @@ pub async fn ensure_core_template() -> Result<String, sqlx::Error> {
         proxima_storage_pg::run_core_schema(
             &mut transaction,
             proxima_storage_pg::MissingMigrationPolicy::Reject,
+            vectors,
         )
         .await
         .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
         transaction.commit().await
-    })
-    .await?;
+    };
+    match vectors {
+        VectorStorage::Local => ensure_template(&template, build).await?,
+        VectorStorage::HostIndex => {
+            ensure_template_in(&host_index_family(), core_template_hash(vectors), build)
+                .await?
+                .release()
+                .await?;
+        }
+    }
     Ok(template)
 }
 
-/// Create `name` already migrated through the full core template, cloned
-/// from that template. Drop it with `drop_db` like any other test database.
+/// Create `name` already migrated through the full core template of a store
+/// with pgvector vectors, cloned from that template. Drop it with `drop_db`
+/// like any other test database.
 ///
 /// # Errors
 ///
 /// Returns admin connection, template build, or clone errors.
 pub async fn create_core_db(name: &str) -> Result<(), sqlx::Error> {
-    let template = ensure_core_template().await?;
+    let template = ensure_core_template(VectorStorage::Local).await?;
     create_named_db_from_template(name, &template).await
 }
 
@@ -72,14 +115,38 @@ pub async fn create_core_db(name: &str) -> Result<(), sqlx::Error> {
 /// Panics when the local test Postgres admin connection, template
 /// creation, clone creation, or cloned database connection fails.
 pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
-    let template = ensure_core_template()
+    fresh_pg_with(prefix, None).await
+}
+
+/// [`fresh_pg`] for a store whose vectors live in `index`: its database has
+/// no `vector` extension.
+///
+/// # Panics
+///
+/// As [`fresh_pg`].
+pub async fn fresh_pg_host_index(
+    prefix: &str,
+    index: Arc<dyn proxima_core::storage_ports::VectorIndex>,
+) -> (PgStorage, DbGuard) {
+    fresh_pg_with(prefix, Some(index)).await
+}
+
+async fn fresh_pg_with(
+    prefix: &str,
+    index: Option<Arc<dyn proxima_core::storage_ports::VectorIndex>>,
+) -> (PgStorage, DbGuard) {
+    let vectors = match index {
+        Some(_) => VectorStorage::HostIndex,
+        None => VectorStorage::Local,
+    };
+    let template = ensure_core_template(vectors)
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
 
     let db_name = create_db_from_template(prefix, &template)
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but admin connect failed: {e}"));
-    let (runtime_url, platform_url) = split_role_urls(&db_name)
+    let (runtime_url, platform_url) = roles_for(&db_name, vectors)
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but role provisioning failed: {e}"));
     let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
@@ -88,7 +155,8 @@ pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
         PgTuning::default(),
     )
     .await
-    .unwrap_or_else(|e| panic!("PG required for tests but migration connect failed: {e}"));
+    .unwrap_or_else(|e| panic!("PG required for tests but migration connect failed: {e}"))
+    .with_vector_storage(vectors);
     migration
         .run_migrations()
         .await
@@ -103,15 +171,31 @@ pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
     let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core"])
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but platform validation failed: {e}"));
-    let storage = match PgStorage::connect_with_config(
-        &proxima_pg_testkit::through_test_pooler(&runtime_url),
-        PgPoolConfig::default(),
-        PgTuning::default(),
-        platform_scope,
-        1,
-    )
-    .await
-    {
+    let runtime_url = proxima_pg_testkit::through_test_pooler(&runtime_url);
+    let connected = match index {
+        Some(index) => {
+            PgStorage::connect_with_vector_index(
+                &runtime_url,
+                PgPoolConfig::default(),
+                PgTuning::default(),
+                platform_scope,
+                1,
+                index,
+            )
+            .await
+        }
+        None => {
+            PgStorage::connect_with_config(
+                &runtime_url,
+                PgPoolConfig::default(),
+                PgTuning::default(),
+                platform_scope,
+                1,
+            )
+            .await
+        }
+    };
+    let storage = match connected {
         Ok(pg) => pg,
         Err(err) => {
             let _ = drop_db(&db_name).await;

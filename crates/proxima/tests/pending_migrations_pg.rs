@@ -19,9 +19,9 @@ use std::time::Duration;
 
 use proxima::{
     LedgerConflict, MigrationError, MissingMigrationPolicy, NamedMigrator, PendingMigration,
-    pending_migrations, pending_migrations_with_policy, preflight_without_migrations,
-    preflight_without_migrations_with_policy, run_core_and_flavor_migrations,
-    run_core_and_flavor_migrations_with_policy,
+    VectorStorage, pending_migrations, pending_migrations_with_policy,
+    preflight_without_migrations, preflight_without_migrations_with_policy,
+    run_core_and_flavor_migrations, run_core_and_flavor_migrations_with_policy,
 };
 use proxima_pg_testkit::{
     DbGuard, SplitRoleDb, create_db, db_url, split_role_urls, unique_db_name,
@@ -184,7 +184,7 @@ impl Db {
         &self,
         sources: &[NamedMigrator],
     ) -> Result<Vec<PendingMigration>, MigrationError> {
-        pending_migrations(&self.platform, sources).await
+        pending_migrations(&self.platform, sources, VectorStorage::Local).await
     }
 
     async fn ledger_exists(&self, ledger: &str) -> bool {
@@ -382,9 +382,6 @@ fn planned(plan: &[PendingMigration]) -> Vec<Triple> {
                 checksum,
                 ..
             } => Some((ledger.clone(), *version, checksum.clone())),
-            PendingMigration::CoreAdoption {
-                version, checksum, ..
-            } => Some((CORE.to_owned(), *version, checksum.clone())),
             PendingMigration::CoreDefinitions { .. } => None,
             other => panic!("unknown pending operation {other:?}"),
         })
@@ -397,7 +394,6 @@ fn coordinates(plan: &[PendingMigration]) -> Vec<(&str, i64)> {
             PendingMigration::Sql {
                 ledger, version, ..
             } => Some((ledger.as_str(), *version)),
-            PendingMigration::CoreAdoption { version, .. } => Some((CORE, *version)),
             PendingMigration::CoreDefinitions { .. } => None,
             other => panic!("unknown pending operation {other:?}"),
         })
@@ -451,17 +447,6 @@ fn full(plan: &[PendingMigration]) -> Vec<(String, i64, String, Vec<u8>)> {
                 ..
             } => Some((
                 ledger.clone(),
-                *version,
-                description.clone(),
-                checksum.clone(),
-            )),
-            PendingMigration::CoreAdoption {
-                version,
-                description,
-                checksum,
-                ..
-            } => Some((
-                CORE.to_owned(),
                 *version,
                 description.clone(),
                 checksum.clone(),
@@ -758,7 +743,7 @@ async fn a_changed_definitions_record_is_planned_and_reapplied() {
             .definitions_catalog()
             .await
             .expect("drift definitions record");
-        let plan = pending_migrations_with_policy(&db.platform, &[], policy)
+        let plan = pending_migrations_with_policy(&db.platform, &[], policy, VectorStorage::Local)
             .await
             .expect("checksum drift is listed by the plan");
         assert!(matches!(
@@ -795,7 +780,7 @@ async fn a_changed_definitions_record_is_planned_and_reapplied() {
             .expect("definitions record after reapply");
         assert_eq!(
             applied_checksum,
-            proxima_storage_pg::definitions::checksum_hex()
+            proxima_storage_pg::definitions::checksum_hex(VectorStorage::Local)
         );
         assert_eq!(applied_release, proxima_core::RELEASE_VERSION);
         assert_eq!(
@@ -804,7 +789,7 @@ async fn a_changed_definitions_record_is_planned_and_reapplied() {
             "definitions changed no ledger rows"
         );
         assert!(
-            pending_migrations_with_policy(&db.platform, &[], policy)
+            pending_migrations_with_policy(&db.platform, &[], policy, VectorStorage::Local)
                 .await
                 .expect("definitions are current after run")
                 .is_empty()
@@ -845,7 +830,7 @@ async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
     .await
     .expect("modified definitions function");
 
-    let planned = pending_migrations(&db.platform, &[])
+    let planned = pending_migrations(&db.platform, &[], VectorStorage::Local)
         .await
         .expect_err("reject policy refuses newer definitions in plan");
     let preflight = preflight_without_migrations(
@@ -875,9 +860,14 @@ async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
         .definitions_catalog()
         .await
         .expect("newer definitions record");
-    let plan = pending_migrations_with_policy(&db.platform, &[], MissingMigrationPolicy::Allow)
-        .await
-        .expect("allow policy accepts newer definitions in plan");
+    let plan = pending_migrations_with_policy(
+        &db.platform,
+        &[],
+        MissingMigrationPolicy::Allow,
+        VectorStorage::Local,
+    )
+    .await
+    .expect("allow policy accepts newer definitions in plan");
     assert!(
         plan.iter()
             .all(|pending| !matches!(pending, PendingMigration::CoreDefinitions { .. })),
@@ -935,12 +925,15 @@ async fn a_core_ledger_that_does_not_reconcile_is_refused_as_the_run_refuses_it(
         .await
         .expect("restore");
 
+    let baseline = core_migrator().iter().next().expect("baseline").version;
     let original: Vec<u8> =
-        sqlx::query_scalar("SELECT checksum FROM public._sqlx_migrations WHERE version = 33")
+        sqlx::query_scalar("SELECT checksum FROM public._sqlx_migrations WHERE version = $1")
+            .bind(baseline)
             .fetch_one(&db.admin)
             .await
             .expect("checksum");
-    sqlx::query("UPDATE public._sqlx_migrations SET checksum = '\\x00' WHERE version = 33")
+    sqlx::query("UPDATE public._sqlx_migrations SET checksum = '\\x00' WHERE version = $1")
+        .bind(baseline)
         .execute(&db.admin)
         .await
         .expect("amend");
@@ -949,8 +942,9 @@ async fn a_core_ledger_that_does_not_reconcile_is_refused_as_the_run_refuses_it(
         matches!(amended, MigrationError::CorePreflight(_)),
         "{amended:?}"
     );
-    sqlx::query("UPDATE public._sqlx_migrations SET checksum = $1 WHERE version = 33")
+    sqlx::query("UPDATE public._sqlx_migrations SET checksum = $1 WHERE version = $2")
         .bind(original)
+        .bind(baseline)
         .execute(&db.admin)
         .await
         .expect("restore");
@@ -1070,7 +1064,9 @@ async fn a_plan_waits_for_a_run_mid_source_and_reports_the_state_after_it() {
     wait_for_waiters(&mut blocker, BLOCK_KEY).await;
 
     let plan_pool = db.platform.clone();
-    let mut plan = tokio::spawn(async move { pending_migrations(&plan_pool, &sources()).await });
+    let mut plan = tokio::spawn(async move {
+        pending_migrations(&plan_pool, &sources(), VectorStorage::Local).await
+    });
     wait_for_waiters(&mut blocker, MIGRATION_KEY).await;
     assert!(
         tokio::time::timeout(Duration::from_millis(300), &mut plan)
@@ -1192,7 +1188,9 @@ async fn a_plan_dropped_while_it_waits_for_the_lock_does_not_strand_the_lock() {
         .expect("hold the migration lock");
 
     let pool = db.platform.clone();
-    let plan = tokio::spawn(async move { pending_migrations(&pool, &[forge(&[F1])]).await });
+    let plan = tokio::spawn(async move {
+        pending_migrations(&pool, &[forge(&[F1])], VectorStorage::Local).await
+    });
     wait_for_waiters(&mut holder, MIGRATION_KEY).await;
     plan.abort();
     assert!(
@@ -1214,7 +1212,7 @@ async fn a_plan_dropped_while_it_waits_for_the_lock_does_not_strand_the_lock() {
     let started = std::time::Instant::now();
     assert_eq!(
         coordinates(
-            &pending_migrations(&other, &[forge(&[F1])])
+            &pending_migrations(&other, &[forge(&[F1])], VectorStorage::Local)
                 .await
                 .expect("a plan after the dropped one gets the lock")
         ),
@@ -1320,7 +1318,7 @@ async fn a_plan_under_the_runtime_role_succeeds_and_writes_nothing() {
         ]
     };
 
-    let plan = pending_migrations(&db.runtime, &sources())
+    let plan = pending_migrations(&db.runtime, &sources(), VectorStorage::Local)
         .await
         .expect("the runtime role can plan");
     assert_eq!(

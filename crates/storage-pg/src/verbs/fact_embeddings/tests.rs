@@ -40,6 +40,7 @@ mod pg_tests {
         load_embedding_texts, reclaim_stale_embedding_jobs, reconcile_embeddings,
         release_embedding_jobs, renew_embedding_jobs,
     };
+    use crate::VectorStorage;
     use crate::test_fixtures::fresh_pg;
     use crate::verbs::forget::forget_memory;
 
@@ -87,6 +88,15 @@ mod pg_tests {
 
     fn stale_claim_seconds() -> i64 {
         EmbeddingRuntimePolicy::default().stale_claim_timeout_seconds()
+    }
+
+    /// The operator read of a store that keeps its vectors in pgvector.
+    async fn local_observability(
+        pool: &sqlx::PgPool,
+        platform: &crate::PgPlatformScope,
+    ) -> Result<proxima_core::EmbeddingAnnObservability, proxima_core::StorageError> {
+        embedding_ann_observability(pool, platform, stale_claim_seconds(), VectorStorage::Local)
+            .await
     }
 
     fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
@@ -351,8 +361,7 @@ mod pg_tests {
                     .enqueued,
                 0
             );
-            let observability =
-                embedding_ann_observability(pool, &platform, stale_claim_seconds()).await?;
+            let observability = local_observability(pool, &platform).await?;
             assert_eq!(
                 (
                     observability.embedding_rows,
@@ -1467,7 +1476,7 @@ mod pg_tests {
                 "heartbeat must retain the fencing token"
             );
             assert_eq!(
-                embedding_ann_observability(pool, &platform, stale_claim_seconds())
+                local_observability(pool, &platform)
                     .await?
                     .stale_processing_jobs,
                 0

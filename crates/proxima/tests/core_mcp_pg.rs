@@ -1,5 +1,7 @@
 #[path = "fixtures/split_core_db.rs"]
 mod split_core_db;
+#[path = "fixtures/split_core_db_host_index.rs"]
+mod split_core_db_host_index;
 
 use proxima_core::storage_ports::*;
 use std::collections::HashSet;
@@ -18,6 +20,7 @@ use proxima_core::{
 use proxima_pg_testkit::{db_url, split_role_urls};
 use proxima_storage_pg::PgStorage;
 use split_core_db::clone_split_core_db;
+use split_core_db_host_index::clone_split_core_db_host_index;
 use uuid::Uuid;
 
 #[cfg(feature = "openai-compat-embed")]

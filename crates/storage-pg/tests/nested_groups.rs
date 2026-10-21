@@ -49,6 +49,7 @@ impl Harness {
         proxima_storage_pg::run_core_schema(
             &mut tx,
             proxima_storage_pg::MissingMigrationPolicy::Reject,
+            proxima_storage_pg::VectorStorage::Local,
         )
         .await?;
         tx.commit().await?;

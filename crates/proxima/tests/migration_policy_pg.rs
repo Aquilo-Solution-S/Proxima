@@ -6,129 +6,72 @@ mod setup_error;
 use setup_error::expect_described;
 use std::borrow::Cow;
 
-#[path = "../../storage-pg/tests/support/migration_reset.rs"]
-mod migration_reset_support;
-use migration_reset_support::{apply_pre_identity_schema, pre_reset_pairs};
 use proxima::{
-    CoreAdoption, MigrationError, NamedMigrator, PendingMigration, pending_migrations,
-    preflight_without_migrations, run_core_and_flavor_migrations,
+    MigrationError, NamedMigrator, VectorStorage, pending_migrations, preflight_without_migrations,
+    run_core_and_flavor_migrations,
 };
+use proxima_core::StorageError;
 use proxima_pg_testkit::SplitRoleDb;
-use proxima_storage_pg::{
-    PgMigrationStorage, PgPoolConfig, PgTuning, adopt::PRE_RESET, core_migrator,
-};
+use proxima_storage_pg::{PgMigrationStorage, PgPoolConfig, PgTuning, core_migrator};
 use sqlx::migrate::{MigrateError, Migration, MigrationType, Migrator};
 use sqlx::{PgPool, SqlSafeStr};
 
 const FIRST: i64 = 20_991_001_000_010;
 const UNKNOWN: i64 = FIRST + 1;
 
-async fn core_history_db(count: usize) -> SplitRoleDb {
+/// A store installed before the baseline reset is refused at every entry the
+/// facade has, and nothing in its ledger changes.
+#[tokio::test]
+async fn the_facade_refuses_a_pre_reset_ledger_everywhere() {
     let db = expect_described(
         "owned PG required",
-        SplitRoleDb::create("proxima_policy_adoption", &[]).await,
+        SplitRoleDb::create("proxima_policy_reset", &[]).await,
     )
     .await;
-    let platform =
-        expect_described("platform pool", PgPool::connect(db.platform_url()).await).await;
-    expect_described(
-        "schema before store identities",
-        apply_pre_identity_schema(&platform).await,
-    )
-    .await;
-    platform.close().await;
     let admin = expect_described("admin pool", PgPool::connect(&db.admin_url()).await).await;
-    sqlx::query("DELETE FROM public._sqlx_migrations")
-        .execute(&admin)
-        .await
-        .expect("clear current core ledger");
-    for (version, checksum) in pre_reset_pairs(&PRE_RESET).into_iter().take(count) {
+    for version in 33..=56_i64 {
         sqlx::query(
             "INSERT INTO public._sqlx_migrations
                  (version, description, success, checksum, execution_time)
              VALUES ($1, 'pre-reset', true, $2, 0)",
         )
         .bind(version)
-        .bind(checksum)
+        .bind(vec![0_u8; 48])
         .execute(&admin)
         .await
         .expect("pre-reset ledger row");
     }
-    admin.close().await;
-    db
-}
-
-#[tokio::test]
-async fn the_facade_adopts_the_complete_pre_reset_main_ledger() {
-    let db = core_history_db(PRE_RESET.len()).await;
     let pg = storage(&db).await;
-    let before = pending_migrations(&pg.clone_pool_for_backend(), &[])
-        .await
-        .expect("complete pre-reset history is recognized by the planner");
-    assert!(
-        before
-            .iter()
-            .any(|pending| matches!(pending, PendingMigration::CoreAdoption { .. }))
+    let sidecars = proxima::PgSidecarRegistryFrozen::default();
+    let refused = |error: MigrationError| {
+        assert!(
+            matches!(
+                &error,
+                MigrationError::CorePreflight(StorageError::SchemaResetRequired { .. })
+            ),
+            "got: {error}"
+        );
+    };
+    refused(
+        pending_migrations(&pg.clone_pool_for_backend(), &[], VectorStorage::Local)
+            .await
+            .expect_err("the planner refuses"),
     );
-
-    run_core_and_flavor_migrations(
-        &pg,
-        Vec::new(),
-        &proxima::PgSidecarRegistryFrozen::default(),
-    )
-    .await
-    .expect("complete pre-reset history is adopted");
-    preflight_without_migrations(
-        &pg,
-        Vec::new(),
-        &proxima::PgSidecarRegistryFrozen::default(),
-    )
-    .await
-    .expect("adopted history passes facade preflight");
-
-    let pool = pg.clone_pool_for_backend();
-    let expected: Vec<i64> = PRE_RESET
-        .iter()
-        .map(|(version, _)| *version)
-        .chain(core_migrator().iter().map(|migration| migration.version))
-        .collect();
-    let rows: Vec<i64> =
-        sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
-            .fetch_all(&pool)
+    refused(
+        run_core_and_flavor_migrations(&pg, Vec::new(), &sidecars)
             .await
-            .expect("core ledger");
-    assert_eq!(
-        rows, expected,
-        "adoption retains history and applies current migrations"
+            .expect_err("the run refuses"),
     );
-}
-
-#[tokio::test]
-async fn the_facade_classifies_the_v0035_shaped_ledger_as_adoption() {
-    let db = core_history_db(30).await;
-    let pg = storage(&db).await;
-    let pool = pg.clone_pool_for_backend();
-    let ledger_before: Vec<i64> =
-        sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
-            .fetch_all(&pool)
+    refused(
+        preflight_without_migrations(&pg, Vec::new(), &sidecars)
             .await
-            .expect("v0.0.35 ledger");
-    let plan = pending_migrations(&pg.clone_pool_for_backend(), &[])
+            .expect_err("the preflight refuses"),
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM public._sqlx_migrations")
+        .fetch_one(&admin)
         .await
-        .expect("v0.0.35 history is recognized by the planner");
-    assert!(plan.iter().any(|pending| matches!(
-        pending,
-        PendingMigration::CoreAdoption {
-            adoption: CoreAdoption::Bridge,
-            ..
-        }
-    )));
-    let after: Vec<i64> =
-        sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
-            .fetch_all(&pool)
-            .await
-            .expect("v0.0.35 ledger after plan");
-    assert_eq!(after, ledger_before, "planning must not run the bridge");
+        .expect("ledger rows");
+    assert_eq!(rows, 24, "the refusals changed nothing");
 }
 
 fn source(id: &'static str, version: i64, shared: bool) -> NamedMigrator {
@@ -190,7 +133,7 @@ async fn an_unknown_version_on_a_later_ledger_prevents_every_schema_change() {
             source("later", FIRST + 2, false),
         ]
     };
-    let planned = pending_migrations(&admin, &sources())
+    let planned = pending_migrations(&admin, &sources(), VectorStorage::Local)
         .await
         .expect_err("unknown ledger version must refuse a plan");
     let ran = run_core_and_flavor_migrations(
@@ -251,7 +194,7 @@ async fn a_shared_ledger_recognizes_every_composed_source() {
         .expect("all shared sources recognized");
     let pool = pg.clone_pool_for_backend();
     assert!(
-        pending_migrations(&pool, &sources())
+        pending_migrations(&pool, &sources(), VectorStorage::Local)
             .await
             .expect("current composition")
             .is_empty()
@@ -308,7 +251,7 @@ async fn missing_versions_need_an_explicit_policy_for_run_plan_and_preflight() {
         Err(MigrationError::Core(MigrateError::VersionMissing(9000)))
     ));
     assert!(matches!(
-        pending_migrations(&pool, &[]).await,
+        pending_migrations(&pool, &[], VectorStorage::Local).await,
         Err(MigrationError::Core(MigrateError::VersionMissing(9000)))
     ));
     run_core_and_flavor_migrations_with_policy(
@@ -328,10 +271,15 @@ async fn missing_versions_need_an_explicit_policy_for_run_plan_and_preflight() {
     .await
     .expect("read-only boot uses same policy");
     assert!(
-        pending_migrations_with_policy(&pool, &[], MissingMigrationPolicy::Allow)
-            .await
-            .expect("planner uses same policy")
-            .is_empty()
+        pending_migrations_with_policy(
+            &pool,
+            &[],
+            MissingMigrationPolicy::Allow,
+            VectorStorage::Local
+        )
+        .await
+        .expect("planner uses same policy")
+        .is_empty()
     );
 
     let baseline = core_migrator().iter().next().expect("baseline").version;
@@ -373,10 +321,14 @@ async fn shared_sources_in_the_core_number_range_are_recognized_by_the_union() {
         .await
         .expect("union recognizes the host version");
     assert!(
-        pending_migrations(&pg.clone_pool_for_backend(), &sources())
-            .await
-            .expect("union plans the host version")
-            .is_empty()
+        pending_migrations(
+            &pg.clone_pool_for_backend(),
+            &sources(),
+            VectorStorage::Local
+        )
+        .await
+        .expect("union plans the host version")
+        .is_empty()
     );
 }
 

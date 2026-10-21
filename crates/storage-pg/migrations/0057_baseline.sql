@@ -1,4 +1,7 @@
--- v0.0.36 reset baseline: the schema core migrations 1..32 built.
+-- Baseline: the schema the core migrations through 0056 built, without the
+-- pgvector part. A store that keeps its vectors in pgvector applies
+-- 0058_pgvector_local_vectors.sql after this file; a store whose vectors live
+-- in a host index never does, and needs no `vector` extension.
 -- Mutable functions, triggers and policies live in ../definitions/.
 -- Immutable once released.
 
@@ -29,8 +32,8 @@ BEGIN
 END
 $owner_rls_role$;
 
-CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS btree_gin;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- Schema and types
 
@@ -184,7 +187,9 @@ CREATE TABLE proxima_core.delegated_authority_grants (
     auth_epoch bigint NOT NULL,
     issued_at timestamp with time zone NOT NULL,
     revoked_at timestamp with time zone,
-    revoked_by_user_id uuid
+    revoked_by_user_id uuid,
+    by uuid NOT NULL,
+    via uuid
 );
 
 CREATE TABLE proxima_core.group_edges (
@@ -262,8 +267,10 @@ CREATE TABLE proxima_core.blob_uploads (
     aborted_at timestamp with time zone,
     mounted_from_upload_id uuid,
     content_hash bytea,
+    object_store text NOT NULL,
     CONSTRAINT blob_uploads_content_hash_chk CHECK (((content_hash IS NULL) OR (octet_length(content_hash) = 32))),
-    CONSTRAINT blob_uploads_mount_not_self_chk CHECK ((mounted_from_upload_id IS DISTINCT FROM upload_id))
+    CONSTRAINT blob_uploads_mount_not_self_chk CHECK ((mounted_from_upload_id IS DISTINCT FROM upload_id)),
+    CONSTRAINT blob_uploads_object_store_chk CHECK (((object_store ~ '^[a-z][a-z0-9]*:'::text) AND (octet_length(object_store) <= 512)))
 );
 
 CREATE TABLE proxima_core.closed_handle (
@@ -275,7 +282,14 @@ CREATE TABLE proxima_core.cold_purge_pending (
     object_key text NOT NULL,
     owner_id uuid,
     enqueued_at timestamp with time zone DEFAULT now() NOT NULL,
-    backend text DEFAULT ''::text NOT NULL
+    object_store text NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    next_attempt_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_attempt_at timestamp with time zone,
+    last_error text,
+    CONSTRAINT cold_purge_pending_attempts_chk CHECK ((attempts >= 0)),
+    CONSTRAINT cold_purge_pending_last_error_chk CHECK (((last_error IS NULL) OR (octet_length(last_error) <= 1024))),
+    CONSTRAINT cold_purge_pending_object_store_chk CHECK (((object_store ~ '^[a-z][a-z0-9]*:'::text) AND (octet_length(object_store) <= 512)))
 );
 
 CREATE TABLE proxima_core.content (
@@ -284,27 +298,6 @@ CREATE TABLE proxima_core.content (
     schema_id text NOT NULL,
     content_hash bytea NOT NULL,
     CONSTRAINT content_hash_len_chk CHECK ((octet_length(content_hash) = 32))
-);
-
-CREATE TABLE proxima_core.cooled (
-    t uuid NOT NULL,
-    handle uuid NOT NULL,
-    owner_id uuid NOT NULL,
-    kind proxima_core.memory_kind NOT NULL,
-    object_key text NOT NULL,
-    blob_id uuid,
-    content_id uuid,
-    source_id text,
-    ingest_key text,
-    cooled_at timestamp with time zone DEFAULT now() NOT NULL,
-    origins uuid[],
-    refs uuid[],
-    goal_refs uuid[],
-    cold_digest bytea,
-    CONSTRAINT cooled_cold_digest_len_chk CHECK (((cold_digest IS NULL) OR (octet_length(cold_digest) = 32))),
-    CONSTRAINT cooled_goal_refs_no_null_chk CHECK (((goal_refs IS NULL) OR (array_position(goal_refs, NULL::uuid) IS NULL))),
-    CONSTRAINT cooled_origins_no_null_chk CHECK (((origins IS NULL) OR (array_position(origins, NULL::uuid) IS NULL))),
-    CONSTRAINT cooled_refs_no_null_chk CHECK (((refs IS NULL) OR (array_position(refs, NULL::uuid) IS NULL)))
 );
 
 CREATE TABLE proxima_core.erased_pin_target (
@@ -321,7 +314,7 @@ CREATE TABLE proxima_core.ingest_keys (
 
 CREATE TABLE proxima_core.memory (
     handle uuid NOT NULL,
-    t uuid DEFAULT uuidv7() NOT NULL,
+    t uuid NOT NULL,
     kind proxima_core.memory_kind NOT NULL,
     owner_id uuid NOT NULL,
     schema_id text NOT NULL,
@@ -334,6 +327,10 @@ CREATE TABLE proxima_core.memory (
     sidecar_tables text[] DEFAULT '{}'::text[] NOT NULL,
     goal_refs uuid[] DEFAULT '{}'::uuid[] NOT NULL,
     occurred_at timestamp with time zone,
+    by uuid NOT NULL,
+    via uuid,
+    lexical_language regconfig DEFAULT proxima_core.lexical_config() NOT NULL,
+    forgotten_at timestamp with time zone,
     CONSTRAINT memory_ap_content_chk CHECK (((kind = 'fact'::proxima_core.memory_kind) OR (content_id IS NOT NULL))),
     CONSTRAINT memory_blob_fa_chk CHECK (((blob_id IS NULL) OR (kind = ANY (ARRAY['fact'::proxima_core.memory_kind, 'abstraction'::proxima_core.memory_kind])))),
     CONSTRAINT memory_fact_occurred_at_chk CHECK (((kind = 'fact'::proxima_core.memory_kind) = (occurred_at IS NOT NULL))),
@@ -347,10 +344,9 @@ CREATE TABLE proxima_core.memory (
 
 CREATE TABLE proxima_core.memory_external_origin (
     t uuid NOT NULL,
-    store text NOT NULL,
-    handle text NOT NULL,
-    CONSTRAINT memory_external_origin_handle_chk CHECK (((char_length(handle) >= 1) AND (char_length(handle) <= 512))),
-    CONSTRAINT memory_external_origin_store_chk CHECK (((store ~ '^[a-z][a-z0-9_-]{1,63}$'::text) AND (store <> 'local'::text)))
+    memory uuid NOT NULL,
+    edge_kind text NOT NULL,
+    CONSTRAINT memory_external_origin_edge_kind_chk CHECK ((edge_kind = ANY (ARRAY['origin'::text, 'reference'::text])))
 );
 
 CREATE TABLE proxima_core.memory_head (
@@ -474,20 +470,18 @@ CREATE TABLE proxima_core.embeddings (
     entity_id uuid NOT NULL,
     model_id text NOT NULL,
     embedding_version integer DEFAULT 1 NOT NULL,
-    vec public.vector NOT NULL,
     owner_id uuid NOT NULL,
     dim smallint NOT NULL,
     chunk_ordinal integer DEFAULT 0 NOT NULL,
     CONSTRAINT embeddings_chunk_ordinal_chk CHECK ((chunk_ordinal >= 0)),
-    CONSTRAINT embeddings_dim_lane_chk CHECK ((dim = ANY (ARRAY[384, 768, 1024, 1536, 2048, 3072]))),
-    CONSTRAINT embeddings_vec_width_chk CHECK ((public.vector_dims(vec) = dim))
+    CONSTRAINT embeddings_dim_lane_chk CHECK ((dim = ANY (ARRAY[384, 768, 1024, 1536, 2048, 3072])))
 );
 
 -- Goals and replay declarations
 
 CREATE TABLE proxima_core.goal (
     handle uuid NOT NULL,
-    t uuid DEFAULT uuidv7() NOT NULL,
+    t uuid NOT NULL,
     owner_id uuid NOT NULL,
     title text NOT NULL,
     state proxima_core.goal_state NOT NULL,
@@ -498,9 +492,14 @@ CREATE TABLE proxima_core.goal (
     evidence_t uuid[] DEFAULT '{}'::uuid[] NOT NULL,
     write_act_t uuid,
     text text,
+    by uuid NOT NULL,
+    via uuid,
+    parent_handle uuid,
     CONSTRAINT goal_arrays_no_null_chk CHECK (((array_position(dependency_t, NULL::uuid) IS NULL) AND (array_position(evidence_t, NULL::uuid) IS NULL))),
+    CONSTRAINT goal_parent_not_self_chk CHECK (((parent_handle IS NULL) OR (parent_handle <> handle))),
     CONSTRAINT goal_terminal_close_chk CHECK (((state = ANY (ARRAY['Achieved'::proxima_core.goal_state, 'Abandoned'::proxima_core.goal_state])) = (close_fact_t IS NOT NULL))),
-    CONSTRAINT goal_text_nonblank_chk CHECK (((text IS NULL) OR (length(btrim(text, E' \t\n\r\x0b\f'::text)) > 0))),
+    CONSTRAINT goal_text_nonblank_chk CHECK (((text IS NULL) OR (length(btrim(text, ' 	
+'::text)) > 0))),
     CONSTRAINT goal_title_nonblank_chk CHECK ((length(btrim(title)) > 0))
 );
 
@@ -591,6 +590,69 @@ COMMENT ON TABLE proxima_core.installation IS 'Payload-free deployment identity,
 
 COMMENT ON TABLE proxima_core.publication_origin IS 'Payload-free immutable original publication identity. Lifecycle erasure may delete the row; payload and broker delivery state remain exclusively in publication_outbox.';
 
+-- Tables added after the first baseline
+
+CREATE TABLE proxima_core.export_erase_fence (
+    singleton boolean DEFAULT true NOT NULL,
+    CONSTRAINT export_erase_fence_empty_chk CHECK (false)
+);
+
+COMMENT ON TABLE proxima_core.export_erase_fence IS 'Never holds a row (CHECK false). Owner export locks it IN SHARE MODE before its snapshot and erase IN ROW EXCLUSIVE MODE, so exports and erases exclude each other without a session lock.';
+
+CREATE UNLOGGED TABLE proxima_core.maintenance_lease (
+    name text NOT NULL,
+    holder uuid NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    CONSTRAINT maintenance_lease_name_chk CHECK ((name = ANY (ARRAY['storage'::text, 'embedding'::text])))
+);
+
+COMMENT ON TABLE proxima_core.maintenance_lease IS 'The holder of each maintenance singleton (storage, embedding) and when its lease expires. A pass takes a missing or expired lease, renews its own, and deletes it when done; an unrenewed lease expires.';
+
+CREATE TABLE proxima_core.owner_follows (
+    table_name text NOT NULL,
+    CONSTRAINT owner_follows_qualified_chk CHECK (((table_name ~~ '%.%'::text) AND (table_name = lower(table_name))))
+);
+
+COMMENT ON TABLE proxima_core.owner_follows IS 'Follows sidecar tables, one row per schema-qualified table. Written by the host from pg_sidecar!(owner: follows) through sync_owner_follows; flavors never write it. A listed table gets the host follows owner RLS from install_owner_rls whatever class it is listed in.';
+
+CREATE TABLE proxima_core.publication_backlog (
+    singleton boolean DEFAULT true NOT NULL,
+    pending bigint NOT NULL,
+    measured_at timestamp with time zone NOT NULL,
+    CONSTRAINT publication_backlog_pending_chk CHECK ((pending >= 0)),
+    CONSTRAINT publication_backlog_singleton_chk CHECK (singleton)
+);
+
+COMMENT ON TABLE proxima_core.publication_backlog IS 'An estimate of how many outbox records are not yet published, and when the publisher measured it. A listenable write trusts a fresh estimate below the pending ceiling instead of probing the backlog; an old one sends it to the exact probe.';
+
+CREATE TABLE proxima_core.publication_counter (
+    handle uuid NOT NULL,
+    owner_id uuid NOT NULL,
+    sequence bigint NOT NULL,
+    CONSTRAINT publication_counter_sequence_chk CHECK ((sequence >= 0))
+);
+
+CREATE TABLE proxima_core.store_identity (
+    singleton boolean DEFAULT true NOT NULL,
+    store_number integer NOT NULL,
+    CONSTRAINT store_identity_singleton_check CHECK (singleton),
+    CONSTRAINT store_identity_store_number_check CHECK (((store_number >= 0) AND (store_number <= 65535)))
+);
+
+CREATE TABLE proxima_core.vector_index_debt (
+    entity_id uuid NOT NULL,
+    model_id text NOT NULL,
+    dim smallint NOT NULL,
+    owner_id uuid NOT NULL,
+    op text NOT NULL,
+    enqueued_at timestamp with time zone DEFAULT now() NOT NULL,
+    xact xid8 DEFAULT pg_current_xact_id() NOT NULL,
+    CONSTRAINT vector_index_debt_dim_lane_chk CHECK ((dim = ANY (ARRAY[384, 768, 1024, 1536, 2048, 3072]))),
+    CONSTRAINT vector_index_debt_op_chk CHECK ((op = ANY (ARRAY['delete'::text, 'owner'::text])))
+);
+
+COMMENT ON TABLE proxima_core.vector_index_debt IS 'What a store owes its host vector index: delete the key''s chunks, or record owner_id as their owner. Written by the embedding_heads trigger in the head change''s transaction; deleted once applied.';
+
 -- Primary, unique and check constraints
 
 ALTER TABLE ONLY proxima_core.agent_derivation_v1
@@ -612,16 +674,13 @@ ALTER TABLE ONLY proxima_core.closed_handle
     ADD CONSTRAINT closed_handle_pkey PRIMARY KEY (handle);
 
 ALTER TABLE ONLY proxima_core.cold_purge_pending
-    ADD CONSTRAINT cold_purge_pending_pkey PRIMARY KEY (object_key);
+    ADD CONSTRAINT cold_purge_pending_pkey PRIMARY KEY (object_store, object_key);
 
 ALTER TABLE ONLY proxima_core.content
     ADD CONSTRAINT content_owner_id_schema_id_content_hash_key UNIQUE (owner_id, schema_id, content_hash);
 
 ALTER TABLE ONLY proxima_core.content
     ADD CONSTRAINT content_pkey PRIMARY KEY (content_id);
-
-ALTER TABLE ONLY proxima_core.cooled
-    ADD CONSTRAINT cooled_pkey PRIMARY KEY (t);
 
 ALTER TABLE ONLY proxima_core.delegated_authority_grants
     ADD CONSTRAINT delegated_authority_grants_pkey PRIMARY KEY (delegation_id);
@@ -640,6 +699,9 @@ ALTER TABLE ONLY proxima_core.embeddings
 
 ALTER TABLE ONLY proxima_core.erased_pin_target
     ADD CONSTRAINT erased_pin_target_pkey PRIMARY KEY (t);
+
+ALTER TABLE ONLY proxima_core.export_erase_fence
+    ADD CONSTRAINT export_erase_fence_pkey PRIMARY KEY (singleton);
 
 ALTER TABLE ONLY proxima_core.flavor_surface
     ADD CONSTRAINT flavor_surface_pkey PRIMARY KEY (table_name);
@@ -692,8 +754,11 @@ ALTER TABLE ONLY proxima_core.lexical_default
 ALTER TABLE ONLY proxima_core.lexical_languages
     ADD CONSTRAINT lexical_languages_pkey PRIMARY KEY (config);
 
+ALTER TABLE ONLY proxima_core.maintenance_lease
+    ADD CONSTRAINT maintenance_lease_pkey PRIMARY KEY (name);
+
 ALTER TABLE ONLY proxima_core.memory_external_origin
-    ADD CONSTRAINT memory_external_origin_pkey PRIMARY KEY (t, store, handle);
+    ADD CONSTRAINT memory_external_origin_pkey PRIMARY KEY (t, memory);
 
 ALTER TABLE ONLY proxima_core.memory_head
     ADD CONSTRAINT memory_head_pkey PRIMARY KEY (handle);
@@ -704,6 +769,9 @@ ALTER TABLE ONLY proxima_core.memory
 ALTER TABLE ONLY proxima_core.memory
     ADD CONSTRAINT memory_t_key UNIQUE (t);
 
+ALTER TABLE ONLY proxima_core.owner_follows
+    ADD CONSTRAINT owner_follows_pkey PRIMARY KEY (table_name);
+
 ALTER TABLE ONLY proxima_core.owner_rls_epoch
     ADD CONSTRAINT owner_rls_epoch_pkey PRIMARY KEY (singleton);
 
@@ -713,8 +781,14 @@ ALTER TABLE ONLY proxima_core.owners
 ALTER TABLE ONLY proxima_core.owners
     ADD CONSTRAINT owners_pkey PRIMARY KEY (owner_id);
 
+ALTER TABLE ONLY proxima_core.publication_backlog
+    ADD CONSTRAINT publication_backlog_pkey PRIMARY KEY (singleton);
+
 ALTER TABLE ONLY proxima_core.publication_consumer
     ADD CONSTRAINT publication_consumer_pkey PRIMARY KEY (name);
+
+ALTER TABLE ONLY proxima_core.publication_counter
+    ADD CONSTRAINT publication_counter_pkey PRIMARY KEY (handle);
 
 ALTER TABLE ONLY proxima_core.publication_delivery
     ADD CONSTRAINT publication_delivery_pkey PRIMARY KEY (t, consumer);
@@ -734,11 +808,17 @@ ALTER TABLE ONLY proxima_core.sketch
 ALTER TABLE ONLY proxima_core.source_cursors
     ADD CONSTRAINT source_cursors_pkey PRIMARY KEY (owner_id, source);
 
+ALTER TABLE ONLY proxima_core.store_identity
+    ADD CONSTRAINT store_identity_pkey PRIMARY KEY (singleton);
+
 ALTER TABLE ONLY proxima_core.task_goal_v1
     ADD CONSTRAINT task_goal_v1_pkey PRIMARY KEY (t);
 
 ALTER TABLE ONLY proxima_core.utterance_v1
     ADD CONSTRAINT utterance_v1_pkey PRIMARY KEY (t);
+
+ALTER TABLE ONLY proxima_core.vector_index_debt
+    ADD CONSTRAINT vector_index_debt_pkey PRIMARY KEY (entity_id, model_id, dim);
 
 ALTER TABLE ONLY proxima_core.write_act_v1
     ADD CONSTRAINT write_act_v1_pkey PRIMARY KEY (t);
@@ -760,51 +840,53 @@ CREATE TABLE proxima_core.projection (
 
 -- Indexes
 
+CREATE INDEX agent_derivation_v1_substring_trgm ON proxima_core.agent_derivation_v1 USING gin (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(title, ''::text), NULLIF(body, ''::text), proxima_core.lexical_text_array(tags)])) public.gin_trgm_ops);
+
+CREATE INDEX agent_note_v1_substring_trgm ON proxima_core.agent_note_v1 USING gin (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(title, ''::text), NULLIF(body, ''::text), proxima_core.lexical_text_array(tags)])) public.gin_trgm_ops);
+
+CREATE INDEX blob_uploads_mounted_from_idx ON proxima_core.blob_uploads USING btree (mounted_from_upload_id) WHERE (mounted_from_upload_id IS NOT NULL);
+
 CREATE INDEX blob_uploads_object_key_idx ON proxima_core.blob_uploads USING btree (object_key);
 
 CREATE INDEX blob_uploads_owner_status_idx ON proxima_core.blob_uploads USING btree (owner_id, status);
 
+CREATE INDEX blob_uploads_pending_expiry_idx ON proxima_core.blob_uploads USING btree (expires_at) WHERE (status = 'pending'::proxima_core.blob_upload_status);
+
 CREATE INDEX blob_uploads_terminal_content_idx ON proxima_core.blob_uploads USING btree (owner_id, content_hash) WHERE (status = ANY (ARRAY['aborted'::proxima_core.blob_upload_status, 'expired'::proxima_core.blob_upload_status]));
 
-CREATE INDEX cold_purge_pending_backend_idx ON proxima_core.cold_purge_pending USING btree (backend, enqueued_at, object_key);
+CREATE INDEX cold_purge_pending_due_idx ON proxima_core.cold_purge_pending USING btree (object_store, next_attempt_at, enqueued_at, object_key);
 
 CREATE INDEX cold_purge_pending_owner_idx ON proxima_core.cold_purge_pending USING btree (owner_id, enqueued_at);
 
 CREATE INDEX content_owner_schema_idx ON proxima_core.content USING btree (owner_id, schema_id);
 
-CREATE INDEX cooled_content_id_idx ON proxima_core.cooled USING btree (content_id) WHERE (content_id IS NOT NULL);
-
-CREATE INDEX cooled_owner_id_idx ON proxima_core.cooled USING btree (owner_id);
-
-CREATE INDEX cooled_owner_source_idx ON proxima_core.cooled USING btree (owner_id, source_id) WHERE (source_id IS NOT NULL);
-
 CREATE INDEX core_projection_owner_tsv_gin ON proxima_core.projection USING gin (owner_id, search_tsv);
+
+CREATE INDEX core_projection_owner_tsv_gin_tag ON proxima_core.projection USING gin (owner_id, tag);
 
 CREATE INDEX embedding_jobs_pending_claim_idx ON proxima_core.embedding_jobs USING btree (job_id) WHERE (status = 'pending'::proxima_core.embedding_job_status);
 
-CREATE INDEX embeddings_hnsw_d1024 ON proxima_core.embeddings USING hnsw (((vec)::public.vector(1024)) public.vector_cosine_ops) WHERE (dim = 1024);
-
-CREATE INDEX embeddings_hnsw_d1536 ON proxima_core.embeddings USING hnsw (((vec)::public.vector(1536)) public.vector_cosine_ops) WHERE (dim = 1536);
-
-CREATE INDEX embeddings_hnsw_d2048 ON proxima_core.embeddings USING hnsw (((vec)::public.halfvec(2048)) public.halfvec_cosine_ops) WHERE (dim = 2048);
-
-CREATE INDEX embeddings_hnsw_d3072 ON proxima_core.embeddings USING hnsw (((vec)::public.halfvec(3072)) public.halfvec_cosine_ops) WHERE (dim = 3072);
-
-CREATE INDEX embeddings_hnsw_d384 ON proxima_core.embeddings USING hnsw (((vec)::public.vector(384)) public.vector_cosine_ops) WHERE (dim = 384);
-
-CREATE INDEX embeddings_hnsw_d768 ON proxima_core.embeddings USING hnsw (((vec)::public.vector(768)) public.vector_cosine_ops) WHERE (dim = 768);
+CREATE INDEX embedding_jobs_processing_idx ON proxima_core.embedding_jobs USING btree (claimed_at) WHERE (status = 'processing'::proxima_core.embedding_job_status);
 
 CREATE INDEX embeddings_owner_model_idx ON proxima_core.embeddings USING btree (owner_id, model_id, dim);
+
+CREATE INDEX goal_assignment_state_t_idx ON proxima_core.goal USING btree (assignment_t, state, t DESC) WHERE (assignment_t IS NOT NULL);
 
 CREATE INDEX goal_dependency_gin ON proxima_core.goal USING gin (dependency_t);
 
 CREATE INDEX goal_evidence_gin ON proxima_core.goal USING gin (evidence_t);
+
+CREATE INDEX goal_head_owner_handle_idx ON proxima_core.goal_head USING btree (owner_id, handle);
 
 CREATE INDEX goal_head_owner_schema_idx ON proxima_core.goal_head USING btree (owner_id, schema_id, handle);
 
 CREATE INDEX goal_owner_handle_t_idx ON proxima_core.goal USING btree (owner_id, handle, t DESC);
 
 CREATE INDEX goal_owner_state_t_idx ON proxima_core.goal USING btree (owner_id, state, t DESC);
+
+CREATE INDEX goal_parent_handle_idx ON proxima_core.goal USING btree (owner_id, parent_handle) WHERE (parent_handle IS NOT NULL);
+
+CREATE INDEX goal_unassigned_owner_state_idx ON proxima_core.goal USING btree (owner_id, state, handle DESC, t DESC) WHERE (assignment_t IS NULL);
 
 CREATE INDEX group_edges_parent_idx ON proxima_core.group_edges USING btree (parent_group_id);
 
@@ -814,13 +896,21 @@ CREATE INDEX group_role_projection_group_idx ON proxima_core.group_role_projecti
 
 CREATE INDEX idx_agent_note_v1_nk ON proxima_core.agent_note_v1 USING btree (note_id);
 
+CREATE INDEX interpretation_v1_substring_trgm ON proxima_core.interpretation_v1 USING gin (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(claim, ''::text)])) public.gin_trgm_ops);
+
 CREATE INDEX memory_blob_id_idx ON proxima_core.memory USING btree (blob_id) WHERE (blob_id IS NOT NULL);
 
 CREATE INDEX memory_content_id_idx ON proxima_core.memory USING btree (content_id) WHERE (content_id IS NOT NULL);
 
 CREATE INDEX memory_goal_refs_gin ON proxima_core.memory USING gin (goal_refs);
 
+CREATE INDEX memory_head_owner_abstraction_t_idx ON proxima_core.memory_head USING btree (owner_id, t DESC) INCLUDE (handle, kind) WHERE (kind = 'abstraction'::proxima_core.memory_kind);
+
+CREATE INDEX memory_head_owner_fact_t_idx ON proxima_core.memory_head USING btree (owner_id, t DESC) INCLUDE (handle, kind) WHERE (kind = 'fact'::proxima_core.memory_kind);
+
 CREATE INDEX memory_head_owner_kind_idx ON proxima_core.memory_head USING btree (owner_id, kind, handle);
+
+CREATE INDEX memory_head_owner_perspective_t_idx ON proxima_core.memory_head USING btree (owner_id, t DESC) INCLUDE (handle, kind) WHERE (kind = 'perspective'::proxima_core.memory_kind);
 
 CREATE INDEX memory_head_owner_schema_idx ON proxima_core.memory_head USING btree (owner_id, schema_id, handle);
 
@@ -840,6 +930,8 @@ CREATE INDEX memory_refs_gin ON proxima_core.memory USING gin (refs);
 
 CREATE INDEX owners_kind_idx ON proxima_core.owners USING btree (kind, owner_id);
 
+CREATE INDEX publication_counter_owner_idx ON proxima_core.publication_counter USING btree (owner_id, handle);
+
 CREATE INDEX publication_delivery_consumer_idx ON proxima_core.publication_delivery USING btree (consumer);
 
 CREATE INDEX publication_delivery_pending_idx ON proxima_core.publication_delivery USING btree (consumer, attempts, t) WHERE (state <> 'published'::proxima_core.publication_state);
@@ -850,7 +942,11 @@ CREATE INDEX publication_outbox_owner_idx ON proxima_core.publication_outbox USI
 
 CREATE INDEX publication_outbox_pending_idx ON proxima_core.publication_outbox USING btree (t) WHERE (state <> 'published'::proxima_core.publication_record_state);
 
+CREATE INDEX publication_outbox_published_idx ON proxima_core.publication_outbox USING btree (published_at) WHERE (state = 'published'::proxima_core.publication_record_state);
+
 CREATE INDEX sketch_owner_t_idx ON proxima_core.sketch USING btree (owner_id, t DESC);
+
+CREATE INDEX utterance_v1_substring_trgm ON proxima_core.utterance_v1 USING gin (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(text, ''::text)])) public.gin_trgm_ops);
 
 -- Foreign keys
 
@@ -874,15 +970,6 @@ ALTER TABLE ONLY proxima_core.cold_purge_pending
 
 ALTER TABLE ONLY proxima_core.content
     ADD CONSTRAINT content_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES proxima_core.owners(owner_id);
-
-ALTER TABLE ONLY proxima_core.cooled
-    ADD CONSTRAINT cooled_blob_id_fkey FOREIGN KEY (blob_id) REFERENCES proxima_core.blob(blob_id);
-
-ALTER TABLE ONLY proxima_core.cooled
-    ADD CONSTRAINT cooled_content_id_fkey FOREIGN KEY (content_id) REFERENCES proxima_core.content(content_id);
-
-ALTER TABLE ONLY proxima_core.cooled
-    ADD CONSTRAINT cooled_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES proxima_core.owners(owner_id);
 
 ALTER TABLE ONLY proxima_core.embedding_heads
     ADD CONSTRAINT embedding_heads_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES proxima_core.owners(owner_id);
@@ -947,6 +1034,9 @@ ALTER TABLE ONLY proxima_core.memory_head
 ALTER TABLE ONLY proxima_core.memory
     ADD CONSTRAINT memory_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES proxima_core.owners(owner_id);
 
+ALTER TABLE ONLY proxima_core.publication_counter
+    ADD CONSTRAINT publication_counter_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES proxima_core.owners(owner_id);
+
 ALTER TABLE ONLY proxima_core.publication_delivery
     ADD CONSTRAINT publication_delivery_consumer_fkey FOREIGN KEY (consumer) REFERENCES proxima_core.publication_consumer(name) ON DELETE CASCADE;
 
@@ -996,6 +1086,9 @@ VALUES (true, 1);
 
 INSERT INTO proxima_core.publication_consumer (name) VALUES ('default');
 
+INSERT INTO proxima_core.publication_backlog (singleton, pending, measured_at)
+VALUES (true, 0, '-infinity');
+
 -- Row-level security enablement
 
 ALTER TABLE proxima_core.agent_derivation_v1 ENABLE ROW LEVEL SECURITY;
@@ -1012,8 +1105,6 @@ ALTER TABLE proxima_core.cold_purge_pending ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.content ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE proxima_core.cooled ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE proxima_core.delegated_authority_grants ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.embedding_heads ENABLE ROW LEVEL SECURITY;
@@ -1023,6 +1114,8 @@ ALTER TABLE proxima_core.embedding_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE proxima_core.embeddings ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.erased_pin_target ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE proxima_core.export_erase_fence ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.flavor_surface ENABLE ROW LEVEL SECURITY;
 
@@ -1052,11 +1145,15 @@ ALTER TABLE proxima_core.lexical_default ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.lexical_languages ENABLE ROW LEVEL SECURITY;
 
+ALTER TABLE proxima_core.maintenance_lease ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE proxima_core.memory ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.memory_external_origin ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.memory_head ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE proxima_core.owner_follows ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.owner_rls_epoch ENABLE ROW LEVEL SECURITY;
 
@@ -1064,7 +1161,11 @@ ALTER TABLE proxima_core.owners ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.projection ENABLE ROW LEVEL SECURITY;
 
+ALTER TABLE proxima_core.publication_backlog ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE proxima_core.publication_consumer ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE proxima_core.publication_counter ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.publication_delivery ENABLE ROW LEVEL SECURITY;
 
@@ -1076,9 +1177,13 @@ ALTER TABLE proxima_core.sketch ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.source_cursors ENABLE ROW LEVEL SECURITY;
 
+ALTER TABLE proxima_core.store_identity ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE proxima_core.task_goal_v1 ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.utterance_v1 ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE proxima_core.vector_index_debt ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE proxima_core.write_act_v1 ENABLE ROW LEVEL SECURITY;
 
@@ -1096,8 +1201,6 @@ ALTER TABLE ONLY proxima_core.cold_purge_pending FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.content FORCE ROW LEVEL SECURITY;
 
-ALTER TABLE ONLY proxima_core.cooled FORCE ROW LEVEL SECURITY;
-
 ALTER TABLE ONLY proxima_core.delegated_authority_grants FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.embedding_heads FORCE ROW LEVEL SECURITY;
@@ -1107,6 +1210,8 @@ ALTER TABLE ONLY proxima_core.embedding_jobs FORCE ROW LEVEL SECURITY;
 ALTER TABLE ONLY proxima_core.embeddings FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.erased_pin_target FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE ONLY proxima_core.export_erase_fence FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.flavor_surface FORCE ROW LEVEL SECURITY;
 
@@ -1136,11 +1241,15 @@ ALTER TABLE ONLY proxima_core.lexical_default FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.lexical_languages FORCE ROW LEVEL SECURITY;
 
+ALTER TABLE ONLY proxima_core.maintenance_lease FORCE ROW LEVEL SECURITY;
+
 ALTER TABLE ONLY proxima_core.memory FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.memory_external_origin FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.memory_head FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE ONLY proxima_core.owner_follows FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.owner_rls_epoch FORCE ROW LEVEL SECURITY;
 
@@ -1148,7 +1257,11 @@ ALTER TABLE ONLY proxima_core.owners FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.projection FORCE ROW LEVEL SECURITY;
 
+ALTER TABLE ONLY proxima_core.publication_backlog FORCE ROW LEVEL SECURITY;
+
 ALTER TABLE ONLY proxima_core.publication_consumer FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE ONLY proxima_core.publication_counter FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.publication_delivery FORCE ROW LEVEL SECURITY;
 
@@ -1160,9 +1273,13 @@ ALTER TABLE ONLY proxima_core.sketch FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.source_cursors FORCE ROW LEVEL SECURITY;
 
+ALTER TABLE ONLY proxima_core.store_identity FORCE ROW LEVEL SECURITY;
+
 ALTER TABLE ONLY proxima_core.task_goal_v1 FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.utterance_v1 FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE ONLY proxima_core.vector_index_debt FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY proxima_core.write_act_v1 FORCE ROW LEVEL SECURITY;
 
@@ -1170,6 +1287,6 @@ ALTER TABLE ONLY proxima_core.write_act_v1 FORCE ROW LEVEL SECURITY;
 
 GRANT SELECT ON TABLE proxima_core.group_edges TO PUBLIC;
 
-GRANT SELECT,INSERT ON TABLE proxima_core.group_lock_request TO PUBLIC;
+GRANT SELECT ON TABLE proxima_core.group_lock_request TO PUBLIC;
 
 GRANT SELECT ON TABLE proxima_core.group_role_projection TO PUBLIC;

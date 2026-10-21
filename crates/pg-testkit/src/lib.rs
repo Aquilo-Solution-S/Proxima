@@ -423,13 +423,38 @@ pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::E
 /// Returns admin, target-database, catalog, or role-attribute errors, and a
 /// protocol error for a schema name that is not a plain lowercase
 /// identifier.
+pub async fn split_role_urls_for(
+    database: &str,
+    flavor_schemas: &[&str],
+) -> Result<(String, String), sqlx::Error> {
+    split_roles(
+        database,
+        flavor_schemas,
+        &["vector", "btree_gin", "pg_trgm"],
+    )
+    .await
+}
+
+/// [`split_role_urls`] for the database of a store whose vectors live in a
+/// host index: the same roles and grants, without the `vector` extension, so
+/// installing the schema there proves it needs none.
+///
+/// # Errors
+/// As [`split_role_urls`].
+pub async fn split_role_urls_without_pgvector(
+    database: &str,
+) -> Result<(String, String), sqlx::Error> {
+    split_roles(database, &[], &["btree_gin", "pg_trgm"]).await
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "isolated split-role fixture provisioning"
 )]
-pub async fn split_role_urls_for(
+async fn split_roles(
     database: &str,
     flavor_schemas: &[&str],
+    extensions: &[&str],
 ) -> Result<(String, String), sqlx::Error> {
     let database = database.trim();
     if database.is_empty() {
@@ -534,12 +559,12 @@ pub async fn split_role_urls_for(
             target.close().await?;
             return Ok(());
         }
-        for extension in ["vector", "btree_gin", "pg_trgm"] {
+        for extension in extensions.iter().copied() {
             let statement = format!(
                 "CREATE EXTENSION IF NOT EXISTS {}",
                 quoted_ident(extension)
             );
-            // SQL-POLICY: fixed-fragment — extension names are closed above.
+            // SQL-POLICY: fixed-fragment — extension names are the closed lists above.
             sqlx::raw_sql(AssertSqlSafe(statement))
                 .execute(&mut target)
                 .await?;

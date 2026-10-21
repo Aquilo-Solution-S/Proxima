@@ -1,26 +1,37 @@
 //! The mutable core functions, triggers and policies pass.
 
-use std::sync::LazyLock;
-
 use proxima_core::{RELEASE_VERSION, StorageError};
 use sha2::{Digest, Sha384};
 use sqlx::PgConnection;
 
+use crate::VectorStorage;
 use crate::error::internal;
 
 pub const FUNCTIONS: &str = include_str!("../definitions/functions.sql");
 pub const TRIGGERS: &str = include_str!("../definitions/triggers.sql");
 pub const POLICIES: &str = include_str!("../definitions/policies.sql");
+/// The vector candidate functions: applied only to a store that keeps its
+/// vectors in pgvector.
+pub const VECTOR: &str = include_str!("../definitions/vector.sql");
 
-static CHECKSUM: LazyLock<Vec<u8>> = LazyLock::new(|| {
+/// The definitions a store of this kind holds, in application order.
+fn files(vectors: VectorStorage) -> &'static [&'static str] {
+    match vectors {
+        VectorStorage::Local => &[FUNCTIONS, TRIGGERS, POLICIES, VECTOR],
+        VectorStorage::HostIndex => &[FUNCTIONS, TRIGGERS, POLICIES],
+    }
+}
+
+fn checksum(vectors: VectorStorage) -> Vec<u8> {
     let mut digest = Sha384::new();
-    digest.update(FUNCTIONS.as_bytes());
-    digest.update([0]);
-    digest.update(TRIGGERS.as_bytes());
-    digest.update([0]);
-    digest.update(POLICIES.as_bytes());
+    for (index, sql) in files(vectors).iter().enumerate() {
+        if index > 0 {
+            digest.update([0]);
+        }
+        digest.update(sql.as_bytes());
+    }
     digest.finalize().to_vec()
-});
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Release(u64, u64, u64);
@@ -88,16 +99,16 @@ impl AppliedDefinitions {
 /// The SHA-384 checksum used by the definitions record and test templates.
 #[doc(hidden)]
 #[must_use]
-pub fn checksum_bytes() -> Vec<u8> {
-    CHECKSUM.clone()
+pub fn checksum_bytes(vectors: VectorStorage) -> Vec<u8> {
+    checksum(vectors)
 }
 
 /// The definitions checksum as the record function returns it.
 #[doc(hidden)]
 #[must_use]
-pub fn checksum_hex() -> String {
+pub fn checksum_hex(vectors: VectorStorage) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    CHECKSUM
+    checksum(vectors)
         .iter()
         .flat_map(|byte| {
             [
@@ -116,8 +127,9 @@ pub fn checksum_hex() -> String {
 pub(crate) async fn apply(
     connection: &mut PgConnection,
     policy: crate::MissingMigrationPolicy,
+    vectors: VectorStorage,
 ) -> Result<(), StorageError> {
-    if current_matches_with_policy(connection, policy).await? {
+    if current_matches_with_policy(connection, policy, vectors).await? {
         return Ok(());
     }
     let tables: Vec<String> = sqlx::query_scalar(
@@ -142,14 +154,14 @@ pub(crate) async fn apply(
         .execute(&mut *connection)
         .await
         .map_err(internal)?;
-    for sql in [FUNCTIONS, TRIGGERS, POLICIES] {
-        // SQL-POLICY: fixed-fragment — the three embedded definitions files.
+    for sql in files(vectors).iter().copied() {
+        // SQL-POLICY: fixed-fragment — the embedded definitions files.
         sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
             .execute(&mut *connection)
             .await
             .map_err(internal)?;
     }
-    let checksum = checksum_hex();
+    let checksum = checksum_hex(vectors);
     // SQL-POLICY: fixed-fragment — generated hex checksum and compiled release constant.
     let record = format!(
         "CREATE OR REPLACE FUNCTION proxima_core.definitions_applied()
@@ -168,8 +180,11 @@ pub(crate) async fn apply(
 /// # Errors
 ///
 /// Refuses a newer or malformed recorded release and propagates catalog errors.
-pub async fn current_matches(connection: &mut PgConnection) -> Result<bool, StorageError> {
-    current_matches_with_policy(connection, crate::MissingMigrationPolicy::Reject).await
+pub async fn current_matches(
+    connection: &mut PgConnection,
+    vectors: VectorStorage,
+) -> Result<bool, StorageError> {
+    current_matches_with_policy(connection, crate::MissingMigrationPolicy::Reject, vectors).await
 }
 
 /// Whether the recorded definitions are current under the missing-version policy.
@@ -184,10 +199,11 @@ pub async fn current_matches(connection: &mut PgConnection) -> Result<bool, Stor
 pub async fn current_matches_with_policy(
     connection: &mut PgConnection,
     policy: crate::MissingMigrationPolicy,
+    vectors: VectorStorage,
 ) -> Result<bool, StorageError> {
     Ok(match AppliedDefinitions::read(connection, policy).await? {
         Some(AppliedDefinitions::Newer) => true,
-        Some(AppliedDefinitions::Current { checksum }) => checksum == checksum_hex(),
+        Some(AppliedDefinitions::Current { checksum }) => checksum == checksum_hex(vectors),
         None => false,
     })
 }

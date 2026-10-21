@@ -5,7 +5,7 @@ use proxima_core::{EmbeddableEntityRef, EntityKind, MemoryId, SpaceVector, UserI
 use uuid::Uuid;
 
 use super::*;
-use crate::test_fixtures::fresh_pg;
+use crate::test_fixtures::fresh_pg_host_index;
 
 /// Index debt is read from the database, so its rows are parsed at that
 /// spring: an operation or width the store does not know is refused.
@@ -36,13 +36,13 @@ fn debt_rows_parse_only_known_operations_and_widths() {
 /// owner's debt stays for the drain.
 #[tokio::test]
 async fn an_erase_settles_its_owners_debt_before_commit() {
-    let (pg, _guard) = fresh_pg("vector_index_settle").await;
+    let index = Arc::new(InMemoryVectorIndex::default());
+    let (pg, _guard) = fresh_pg_host_index("vector_index_settle", index.clone()).await;
     let pool = pg.pool_for_tests();
     let (owner, other) = (
         OwnerId::from(UserId::new(Uuid::now_v7())),
         OwnerId::from(UserId::new(Uuid::now_v7())),
     );
-    let index = Arc::new(InMemoryVectorIndex::default());
     let (erased, forgotten, foreign) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     for (entity, owner) in [(erased, owner), (forgotten, owner), (foreign, other)] {
         sqlx::query(
@@ -174,7 +174,8 @@ async fn debt_reaches_the_index_in_bounded_calls() {
 /// hold yet is not deleted while its writer holds the head's lock.
 #[tokio::test]
 async fn the_sweep_skips_a_head_its_drain_is_writing() {
-    let (pg, _guard) = fresh_pg("vector_index_sweep_lock").await;
+    let index = Arc::new(InMemoryVectorIndex::default());
+    let (pg, _guard) = fresh_pg_host_index("vector_index_sweep_lock", index.clone()).await;
     let pool = pg.pool_for_tests().clone();
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
@@ -194,7 +195,6 @@ async fn the_sweep_skips_a_head_its_drain_is_writing() {
         .await
         .unwrap();
     }
-    let index = InMemoryVectorIndex::default();
     let mut drain = pool.begin().await.unwrap();
     assert!(
         try_lock_embedding_key(&mut drain, writing, "debt", 384)
@@ -202,7 +202,7 @@ async fn the_sweep_skips_a_head_its_drain_is_writing() {
             .unwrap()
     );
 
-    let swept = sweep_index(&pg.pool, &pg.platform_scope, &index)
+    let swept = sweep_index(&pg.pool, &pg.platform_scope, index.as_ref())
         .await
         .unwrap();
     assert_eq!(swept.heads_deleted, 1, "only the head nobody is writing");

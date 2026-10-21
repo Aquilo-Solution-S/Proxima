@@ -368,7 +368,7 @@ def check_event_source_vocabulary(findings: list[Finding]) -> None:
     module_roots = [
         "crates/core/src",
         "crates/storage-pg/src",
-        "crates/storage-pg/migrations/0033_baseline.sql",
+        "crates/storage-pg/migrations/0057_baseline.sql",
         "crates/mcp-server/src",
         "crates/proxima/src",
         "apps/proxima-mcp/src",
@@ -745,6 +745,7 @@ FUNCTION_START = re.compile(r"CREATE (?:OR REPLACE )?FUNCTION ")
 MEMORY_CENSUS_ALWAYS = (
     "crates/storage-pg/definitions/functions.sql",
     "crates/storage-pg/definitions/triggers.sql",
+    "crates/storage-pg/definitions/vector.sql",
 )
 # Verb modules whose callers bind platform scope (ports/embeddings.rs) rather
 # than the module itself, so the file-level binding test cannot see them.
@@ -762,7 +763,7 @@ MEMORY_CENSUS_PLATFORM_CALLEES = (
 LIVE_ONLY_FILTER = re.compile(r"\bforgotten_at IS NULL\b")
 LIVE_ONLY_WINDOW = 8
 LIVE_ONLY_RLS_REASON = "under owner RLS"
-EXPECTED_MEMORY_READS = {"live-only": 62, "includes-forgotten": 75}
+EXPECTED_MEMORY_READS = {"live-only": 62, "includes-forgotten": 70}
 
 
 def in_memory_census(text: str, suffix: str, rel: str = "") -> bool:

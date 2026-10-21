@@ -690,6 +690,11 @@ impl RuntimeBuilder {
     /// [`proxima_core::storage_ports::VectorIndex`] describes; the network
     /// form is [`crate::vector_index_http`]. Without it the store's pgvector
     /// index serves.
+    ///
+    /// The setting also picks the schema the boot installs
+    /// ([`crate::host::VectorStorage::HostIndex`]): the store's database
+    /// needs no `vector` extension. The kind is chosen when the store is
+    /// installed.
     #[must_use]
     pub fn vector_index(
         mut self,

@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_EPOCH = "v0.0.36"
+RELEASE_EPOCH = "v0.0.48"
 RELEASE_VERSION_SOURCE = "crates/core/src/lib.rs"
 RELEASE_VERSION_CONST = re.compile(
     r'^pub const RELEASE_VERSION: &str = "(?P<version>\d+\.\d+\.\d+)";$',

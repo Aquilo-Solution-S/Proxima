@@ -193,7 +193,7 @@ mod tests {
     /// baseline indexes, or the lane falls back to a sequential scan.
     #[test]
     fn every_lane_spells_its_migration_index() {
-        let migration = include_str!("../migrations/0033_baseline.sql");
+        let migration = include_str!("../migrations/0058_pgvector_local_vectors.sql");
         for dim in EmbeddingDim::ALL {
             let lane = Lane::of(dim);
             assert_eq!(usize::try_from(lane.width).ok(), Some(dim.width()));

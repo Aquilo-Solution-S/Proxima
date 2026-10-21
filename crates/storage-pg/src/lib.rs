@@ -40,8 +40,7 @@ use crate::pgvector::set_hnsw_search_sql;
 
 #[doc(hidden)]
 pub mod access;
-#[doc(hidden)]
-pub mod adopt;
+mod baseline;
 #[doc(hidden)]
 pub mod definitions;
 mod delegated_authority;
@@ -130,30 +129,43 @@ pub enum MissingMigrationPolicy {
     Allow,
 }
 
-/// How the previous core schema is adopted at this reset.
+/// Where a store keeps its vectors; it decides which part of the core schema
+/// the store installs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CoreAdoption {
-    /// Apply the v0.0.35 bridge before recording the baseline.
-    Bridge,
-    /// Record the baseline over the complete pre-reset schema.
-    Stamp,
+pub enum VectorStorage {
+    /// In the store's own database, with the `vector` extension: the
+    /// migration whose description starts with `pgvector` and the vector
+    /// candidate functions apply.
+    Local,
+    /// In a host vector index ([`proxima_core::storage_ports::VectorIndex`]): the store
+    /// writes no vector row, and its database needs no `vector` extension.
+    HostIndex,
+}
+
+impl VectorStorage {
+    /// Whether a store of this kind applies `migration`. A migration whose
+    /// file name starts `pgvector` belongs to [`Self::Local`] alone.
+    #[must_use]
+    pub fn applies(self, migration: &sqlx::migrate::Migration) -> bool {
+        match self {
+            Self::Local => true,
+            Self::HostIndex => !migration.description.starts_with("pgvector"),
+        }
+    }
 }
 
 /// One operation reported by the core schema planner.
 #[derive(Debug, Clone)]
 pub enum CoreSchemaAction {
-    /// Adopt a pre-reset database and record the embedded baseline.
-    Adopt {
-        migration: sqlx::migrate::Migration,
-        adoption: CoreAdoption,
-    },
     /// Apply an embedded `SQLx` migration.
     Migration(sqlx::migrate::Migration),
     /// Replace the mutable definitions bundle.
     Definitions { checksum: Vec<u8>, release: String },
 }
 
-/// Embedded core migration set under `crates/storage-pg/migrations/`.
+/// Embedded core migration set under `crates/storage-pg/migrations/`: every
+/// migration of every store kind, which is what the ledger is validated
+/// against. [`core_migrator_for`] is the set a store applies.
 ///
 /// `SQLx` ignores versions outside this source because composed host sources
 /// can share its ledger. The migration facade validates their union; direct
@@ -165,11 +177,22 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
     migrator
 }
 
+/// The core migrations a store of this kind applies, in order.
+#[must_use]
+pub fn core_migrator_for(vectors: VectorStorage) -> sqlx::migrate::Migrator {
+    let mut migrator = core_migrator();
+    let applied: Vec<sqlx::migrate::Migration> = migrator
+        .iter()
+        .filter(|migration| vectors.applies(migration))
+        .cloned()
+        .collect();
+    migrator.migrations = std::borrow::Cow::Owned(applied);
+    migrator
+}
+
 struct CoreSchemaState {
     migrator: sqlx::migrate::Migrator,
-    first: sqlx::migrate::Migration,
     recorded: std::collections::BTreeSet<i64>,
-    baseline: adopt::BaselineState,
 }
 
 impl CoreSchemaState {
@@ -195,14 +218,12 @@ impl CoreSchemaState {
             Vec::new()
         };
         let migrator = core_migrator();
-        let first = migrator
+        let first_version = migrator
             .iter()
             .next()
             .expect("embedded core baseline")
-            .clone();
-        let first_version = first.version;
+            .version;
         let mut recorded = std::collections::BTreeSet::new();
-        let mut core_rows = Vec::with_capacity(rows.len());
         for (version, checksum, success) in rows {
             if !success {
                 return Err(internal(sqlx::migrate::MigrateError::Dirty(version)));
@@ -224,7 +245,6 @@ impl CoreSchemaState {
                 }
             }
             recorded.insert(version);
-            core_rows.push((version, checksum));
         }
         let has_schema: bool = if recorded.contains(&first_version) {
             true
@@ -236,17 +256,12 @@ impl CoreSchemaState {
             .await
             .map_err(internal)?
         };
-        let baseline = adopt::classify(&core_rows, has_schema, first_version)?;
-        Ok(Self {
-            migrator,
-            first,
-            recorded,
-            baseline,
-        })
+        baseline::check(&recorded, has_schema, first_version)?;
+        Ok(Self { migrator, recorded })
     }
 }
 
-/// Report adoption, SQL migrations and definitions without changing the database.
+/// Report SQL migrations and definitions without changing the database.
 ///
 /// The `policy` argument is `Allow` from the facade after composed host-ledger
 /// and definitions validation, and `Reject` for direct storage runs.
@@ -257,41 +272,33 @@ impl CoreSchemaState {
 pub async fn pending_core_schema(
     connection: &mut PgConnection,
     policy: MissingMigrationPolicy,
+    vectors: VectorStorage,
 ) -> Result<Vec<CoreSchemaAction>, StorageError> {
     let state = CoreSchemaState::read(connection, policy).await?;
-    let baseline = &state.first;
     let mut actions = Vec::new();
-    if let adopt::BaselineState::Adopt(adoption) = state.baseline {
-        actions.push(CoreSchemaAction::Adopt {
-            migration: baseline.clone(),
-            adoption,
-        });
-    }
     for migration in state.migrator.iter() {
-        let recorded_by_adoption = migration.version == baseline.version
-            && matches!(state.baseline, adopt::BaselineState::Adopt(_));
-        if !(state.recorded.contains(&migration.version) || recorded_by_adoption) {
+        if vectors.applies(migration) && !state.recorded.contains(&migration.version) {
             actions.push(CoreSchemaAction::Migration(migration.clone()));
         }
     }
-    if !definitions::current_matches_with_policy(connection, policy).await? {
+    if !definitions::current_matches_with_policy(connection, policy, vectors).await? {
         actions.push(CoreSchemaAction::Definitions {
-            checksum: definitions::checksum_bytes(),
+            checksum: definitions::checksum_bytes(vectors),
             release: proxima_core::RELEASE_VERSION.to_owned(),
         });
     }
     Ok(actions)
 }
 
-/// Adopt the previous schema, run core `SQLx` migrations, then apply definitions.
-/// The transaction holds the migration lock until commit. Adoption is temporary
-/// and removed at the next reset.
+/// Run the core `SQLx` migrations a store of this kind applies, then its
+/// definitions. The transaction holds the migration lock until commit.
 ///
 /// ```compile_fail,E0308
 /// fn migrate(connection: &mut sqlx::PgConnection) {
 ///     let _ = proxima_storage_pg::run_core_schema(
 ///         connection,
 ///         proxima_storage_pg::MissingMigrationPolicy::Reject,
+///         proxima_storage_pg::VectorStorage::Local,
 ///     );
 /// }
 /// ```
@@ -305,6 +312,7 @@ pub async fn pending_core_schema(
 pub async fn run_core_schema(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     policy: MissingMigrationPolicy,
+    vectors: VectorStorage,
 ) -> Result<(), StorageError> {
     let connection = transaction.as_mut();
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -312,16 +320,12 @@ pub async fn run_core_schema(
         .execute(&mut *connection)
         .await
         .map_err(internal)?;
-    let state = CoreSchemaState::read(connection, policy).await?;
-    if let adopt::BaselineState::Adopt(adoption) = state.baseline {
-        adopt::apply(connection, &state.first, adoption).await?;
-    }
-    state
-        .migrator
+    CoreSchemaState::read(connection, policy).await?;
+    core_migrator_for(vectors)
         .run_direct(None, &mut *connection, false)
         .await
         .map_err(internal)?;
-    definitions::apply(connection, policy).await
+    definitions::apply(connection, policy, vectors).await
 }
 
 /// Check core ledger compatibility on the caller's connection and policy.
@@ -357,6 +361,7 @@ pub async fn ensure_core_ledger_compatible_on_connection_with_policy(
 pub async fn ensure_core_schema_current(
     pool: &PgPool,
     policy: MissingMigrationPolicy,
+    vectors: VectorStorage,
 ) -> Result<(), StorageError> {
     let mut connection = pool.acquire().await.map_err(internal)?.detach();
     let mut transaction = begin_migration_transaction(&mut connection).await?;
@@ -365,7 +370,9 @@ pub async fn ensure_core_schema_current(
         let pending: Vec<i64> = state
             .migrator
             .iter()
-            .filter(|migration| !state.recorded.contains(&migration.version))
+            .filter(|migration| {
+                vectors.applies(migration) && !state.recorded.contains(&migration.version)
+            })
             .map(|migration| migration.version)
             .collect();
         if !pending.is_empty() {
@@ -373,7 +380,7 @@ pub async fn ensure_core_schema_current(
                 "core migrations {pending:?} are not applied; run migrations before boot"
             )));
         }
-        if !definitions::current_matches_with_policy(&mut transaction, policy).await? {
+        if !definitions::current_matches_with_policy(&mut transaction, policy, vectors).await? {
             return Err(StorageError::Internal(
                 "database core definitions are not current; run migrations before boot".to_owned(),
             ));
@@ -551,9 +558,14 @@ pub struct PgStorage {
 pub struct PgMigrationStorage {
     pool: PgPool,
     tuning: PgTuning,
+    vectors: VectorStorage,
 }
 
-async fn run_migrations_on_pool(pool: &PgPool, tuning: &PgTuning) -> Result<(), StorageError> {
+async fn run_migrations_on_pool(
+    pool: &PgPool,
+    tuning: &PgTuning,
+    vectors: VectorStorage,
+) -> Result<(), StorageError> {
     let mut conn = pool.acquire().await.map_err(internal)?;
     sqlx::query("SET statement_timeout = 0")
         .execute(&mut *conn)
@@ -561,13 +573,16 @@ async fn run_migrations_on_pool(pool: &PgPool, tuning: &PgTuning) -> Result<(), 
         .map_err(internal)?;
     let migrated = async {
         let mut transaction = begin_migration_transaction(&mut conn).await?;
-        run_core_schema(&mut transaction, MissingMigrationPolicy::Reject).await?;
+        run_core_schema(&mut transaction, MissingMigrationPolicy::Reject, vectors).await?;
         transaction.commit().await.map_err(internal)
     }
     .await;
     conn.detach();
     migrated?;
-    ensure_pgvector_runtime_compatible(pool, tuning).await
+    match vectors {
+        VectorStorage::Local => ensure_pgvector_runtime_compatible(pool, tuning).await,
+        VectorStorage::HostIndex => Ok(()),
+    }
 }
 
 fn validate_store_number(persisted: Option<i32>, configured: u16) -> Result<(), StorageError> {
@@ -603,7 +618,27 @@ impl PgMigrationStorage {
             .execute(&pool)
             .await
             .map_err(|error| StorageError::Unavailable(error.to_string()))?;
-        Ok(Self { pool, tuning })
+        Ok(Self {
+            pool,
+            tuning,
+            vectors: VectorStorage::Local,
+        })
+    }
+
+    /// Where this store keeps its vectors.
+    #[must_use]
+    pub fn vector_storage(&self) -> VectorStorage {
+        self.vectors
+    }
+
+    /// Install the schema of a store that keeps its vectors in `vectors`
+    /// (default [`VectorStorage::Local`]). A host that gives its serving
+    /// storage a vector index installs [`VectorStorage::HostIndex`] here, and
+    /// the facade derives both from the same setting.
+    #[must_use]
+    pub fn with_vector_storage(mut self, vectors: VectorStorage) -> Self {
+        self.vectors = vectors;
+        self
     }
 
     /// Write this store's number on its first boot, or verify the number
@@ -644,14 +679,19 @@ impl PgMigrationStorage {
     ///
     /// Returns migration or database compatibility errors.
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
-        run_migrations_on_pool(&self.pool, &self.tuning).await
+        run_migrations_on_pool(&self.pool, &self.tuning, self.vectors).await
     }
 
     /// # Errors
     ///
     /// Returns an error when the installed pgvector cannot serve this deployment.
     pub async fn ensure_pgvector_compatible(&self) -> Result<(), StorageError> {
-        ensure_pgvector_runtime_compatible(&self.pool, &self.tuning).await
+        match self.vectors {
+            VectorStorage::Local => {
+                ensure_pgvector_runtime_compatible(&self.pool, &self.tuning).await
+            }
+            VectorStorage::HostIndex => Ok(()),
+        }
     }
 }
 
@@ -1013,7 +1053,42 @@ impl PgStorage {
         platform_scope: PgPlatformScope,
         store_number: u16,
     ) -> Result<Self, StorageError> {
-        Self::connect_for_purpose(url, pool_config, tuning, platform_scope, store_number).await
+        Self::connect_for_purpose(
+            url,
+            pool_config,
+            tuning,
+            platform_scope,
+            store_number,
+            vector_index::StoreVectors::Local,
+        )
+        .await
+    }
+
+    /// [`Self::connect_with_config`] for a store whose vectors live in `index`
+    /// (#519): the store keeps each entity's head and calls the index as
+    /// [`proxima_core::storage_ports::VectorIndex`] describes. Its database
+    /// needs no `vector` extension, so the pgvector preflight does not run.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::connect_with_config`], except for the pgvector checks.
+    pub async fn connect_with_vector_index(
+        url: &str,
+        pool_config: PgPoolConfig,
+        tuning: PgTuning,
+        platform_scope: PgPlatformScope,
+        store_number: u16,
+        index: Arc<dyn proxima_core::storage_ports::VectorIndex>,
+    ) -> Result<Self, StorageError> {
+        Self::connect_for_purpose(
+            url,
+            pool_config,
+            tuning,
+            platform_scope,
+            store_number,
+            vector_index::StoreVectors::Remote(index),
+        )
+        .await
     }
 
     async fn connect_for_purpose(
@@ -1022,6 +1097,7 @@ impl PgStorage {
         tuning: PgTuning,
         platform_scope: PgPlatformScope,
         store_number: u16,
+        vectors: vector_index::StoreVectors,
     ) -> Result<Self, StorageError> {
         let pool_config = pool_config.validate()?;
         // A conservative per-statement timeout bounds
@@ -1059,7 +1135,9 @@ impl PgStorage {
         let (schemas, persisted) = platform_scope.boot_catalog().await?;
         let schema_refs: Vec<_> = schemas.iter().map(String::as_str).collect();
         rls_guard::assert_runtime_rls_on(&mut conn, &schema_refs).await?;
-        ensure_pgvector_runtime_compatible_on(&mut conn, &tuning).await?;
+        if matches!(vectors, vector_index::StoreVectors::Local) {
+            ensure_pgvector_runtime_compatible_on(&mut conn, &tuning).await?;
+        }
         drop(conn);
         validate_store_number(persisted, store_number)?;
 
@@ -1077,7 +1155,7 @@ impl PgStorage {
             non_embeddable_schemas: Vec::new(),
             tuning,
             embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
-            vectors: vector_index::StoreVectors::Local,
+            vectors,
             cold: Arc::new(verbs::forget::MemoryColdStore),
             host_state: None,
         })
@@ -1147,17 +1225,13 @@ impl PgStorage {
             .and_then(|registered| registered.lifecycle.clone()))
     }
 
-    /// Keep this store's chunk vectors in `index` instead of its own
-    /// database (#519). The store keeps each entity's head and calls the
-    /// index as [`proxima_core::storage_ports::VectorIndex`] describes;
-    /// without this the store's own pgvector index serves.
+    /// Where this store keeps its vectors.
     #[must_use]
-    pub fn with_vector_index(
-        mut self,
-        index: Arc<dyn proxima_core::storage_ports::VectorIndex>,
-    ) -> Self {
-        self.vectors = vector_index::StoreVectors::Remote(index);
-        self
+    pub fn vector_storage(&self) -> VectorStorage {
+        match self.vectors {
+            vector_index::StoreVectors::Local => VectorStorage::Local,
+            vector_index::StoreVectors::Remote(_) => VectorStorage::HostIndex,
+        }
     }
 
     /// Replace the object store erase purges blob objects from (S3 in the
@@ -1394,6 +1468,7 @@ impl PgStorage {
             &self.pool,
             &self.platform_scope,
             self.embedding_runtime_policy.stale_claim_timeout_seconds(),
+            self.vector_storage(),
         )
         .await
     }

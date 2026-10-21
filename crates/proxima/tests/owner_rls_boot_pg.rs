@@ -579,7 +579,14 @@ async fn split_role_boot_refuses_mismatched_baseline_checksum() {
     )
     .await;
     sqlx::query(
-        "UPDATE public._sqlx_migrations SET checksum = decode('00', 'hex') WHERE version = 33",
+        "UPDATE public._sqlx_migrations SET checksum = decode('00', 'hex') WHERE version = $1",
+    )
+    .bind(
+        proxima_storage_pg::core_migrator()
+            .iter()
+            .next()
+            .expect("baseline")
+            .version,
     )
     .execute(&admin)
     .await

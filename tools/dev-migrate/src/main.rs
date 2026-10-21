@@ -16,8 +16,10 @@
 //!
 //! The target database URL always comes from `--database-url <URL>` when
 //! given, falling back to `DATABASE_URL`; the resolved host/database is
-//! printed before anything runs. Two repair modes exist beyond the plain
-//! migration run:
+//! printed before anything runs. `--host-vector-index` installs the schema
+//! of a store whose vectors live in a host index: it needs no `vector`
+//! extension, and the host sets the same kind with `RuntimeBuilder::vector_index`.
+//! Two repair modes exist beyond the plain migration run:
 //!
 //! - `--reset`: destructive drop-and-recreate of every `proxima_*` schema
 //!   (see [`reset_local_dev_database`]) — the same namespace
@@ -35,10 +37,11 @@
 use proxima::flavor::FlavorBundle;
 use proxima::{missing_migration_policy_from_lookup, run_core_and_flavor_migrations_with_policy};
 use proxima_storage_pg::{
-    CORE_MIGRATION_VERSION_CEILING, PgMigrationStorage, PgPoolConfig, PgTuning,
+    CORE_MIGRATION_VERSION_CEILING, PgMigrationStorage, PgPoolConfig, PgTuning, VectorStorage,
 };
 
 const DATABASE_URL_FLAG: &str = "--database-url";
+const HOST_VECTOR_INDEX_FLAG: &str = "--host-vector-index";
 const RESET_FLAG: &str = "--reset";
 const RESET_DEPENDENT_LANES_FLAG: &str = "--reset-dependent-lanes";
 // Keep the destructive-reset confirmation versioned so stale operator scripts
@@ -63,7 +66,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PgPoolConfig::from_env()?,
         PgTuning::from_env()?,
     )
-    .await?;
+    .await?
+    .with_vector_storage(if args.iter().any(|arg| arg == HOST_VECTOR_INDEX_FLAG) {
+        VectorStorage::HostIndex
+    } else {
+        VectorStorage::Local
+    });
     let dependent_lanes = if args.iter().any(|arg| arg == RESET_DEPENDENT_LANES_FLAG) {
         DependentLanes::Reset
     } else {

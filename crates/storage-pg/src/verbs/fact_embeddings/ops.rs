@@ -62,16 +62,22 @@ pub(crate) async fn embedding_ann_observability(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,
     stale_claim_timeout_seconds: i64,
+    vectors: crate::VectorStorage,
 ) -> Result<EmbeddingAnnObservability, StorageError> {
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
-    let result =
-        embedding_ann_observability_on_connection(tx.as_mut(), stale_claim_timeout_seconds).await;
+    let result = embedding_ann_observability_on_connection(
+        tx.as_mut(),
+        stale_claim_timeout_seconds,
+        vectors,
+    )
+    .await;
     crate::owner_scope::finish_transaction(tx, result).await
 }
 
 async fn embedding_ann_observability_on_connection(
     pool: &mut PgConnection,
     stale_claim_timeout_seconds: i64,
+    vectors: crate::VectorStorage,
 ) -> Result<EmbeddingAnnObservability, StorageError> {
     let row = sqlx::query_as::<_, EmbeddingAnnObservabilityRow>(
         "WITH source_entities AS MATERIALIZED (
@@ -158,7 +164,12 @@ async fn embedding_ann_observability_on_connection(
     .await
     .map_err(map_err)?;
 
-    observability_from_row(&row, embedding_recall_canary(&mut *pool, 10).await?)
+    // A host-index store keeps no vectors here, so there is nothing to sample.
+    let canary = match vectors {
+        crate::VectorStorage::Local => embedding_recall_canary(&mut *pool, 10).await?,
+        crate::VectorStorage::HostIndex => None,
+    };
+    observability_from_row(&row, canary)
 }
 
 fn observability_from_row(

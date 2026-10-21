@@ -272,7 +272,10 @@ transaction that changes their rows. A host can keep them in an index outside
 it instead, one index serving several stores: implement the `VectorIndex` port
 (`put`, `delete`, `set_owner`, `nearest`, `entries`) and register it with
 `RuntimeBuilder::vector_index`. `InMemoryVectorIndex` is the reference
-implementation. The store's database still needs the vector extension.
+implementation. The store's database needs no `vector` extension: the schema
+installs without the pgvector column, indexes and candidate functions when the
+host sets the index (`dev-migrate --host-vector-index` does the same for a
+migration job).
 
 ```rust
 let index = VectorIndexClient::new("https://index.internal", store_number, &plaintext_hosts)?

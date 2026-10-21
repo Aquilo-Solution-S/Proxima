@@ -37,14 +37,18 @@ that statement; do not add an edge sidecar.
 
 ## Migrations
 
-Released migration files are immutable from v0.0.36 onward; a schema fix is a
+Released migration files are immutable from v0.0.48 onward; a schema fix is a
 new migration whose version is above every released version in its directory.
 Definitions in `crates/storage-pg/definitions/` are edited in place.
 Run `scripts/check-migrations.py` before changing SQL.
 At a reset, number the new baseline above the old head, move mutable
-objects into definitions, and adopt only the exact supported previous ledgers.
-Delete replaced migration files and the previous adoption module after
-proving fresh and adopted schemas and seed rows identical.
+objects into definitions, and refuse every earlier ledger with
+`SchemaResetRequired`: pre-alpha stores install fresh, and no compatibility
+arm stays. Delete the replaced migration files, and prove the new baseline
+equals the old head's schema and seed rows. A migration that only a
+pgvector-backed store needs has a description starting with `pgvector`; a store
+with a host vector index skips it, and its definitions live in
+`definitions/vector.sql`.
 
 ## Local verification
 

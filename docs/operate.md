@@ -7,8 +7,10 @@ host binary. [Get started](get-started.md) supplies the local bootstrap;
 
 ## PostgreSQL and migrations
 
-Use PostgreSQL with `vector`, `pg_trgm`, and `btree_gin`. Boot checks the
-supported pgvector version and search capabilities. The serving and platform
+Use PostgreSQL with `vector`, `pg_trgm`, and `btree_gin`. A store whose
+vectors live in a [host index](host-integration.md#vector-index) needs only
+`pg_trgm` and `btree_gin`. Boot checks the supported pgvector version and
+search capabilities, except for such a store. The serving and platform
 connections use separate roles with `NOBYPASSRLS`. Serving requests enter an
 owner-scoped transaction; platform maintenance enters the separately authorized
 platform scope. Owner RLS is always enforced.
@@ -46,9 +48,13 @@ after migrations. Deployments that manage grants themselves must grant
 schema to their runtime role. These functions find candidates through the
 indexes; ordinary memory RLS still gates every returned id and score.
 
-Released migrations are immutable. This release adopts databases at v0.0.35 or
-later; older databases must be upgraded to v0.0.35 first, or reset when used
-for development. A database migrated by a newer release refuses an older
+Released migrations are immutable. The core migrations restart at
+`0057_baseline.sql` in v0.0.48; the pgvector column and indexes are
+`0058_pgvector_local_vectors.sql`, which a store with a host vector index never
+applies (`RuntimeBuilder::vector_index`, or `--host-vector-index` for
+`dev-migrate`). There is no upgrade path from a database installed earlier:
+boot refuses it with `SchemaResetRequired`, and the store is installed fresh
+(export what you keep first). A database migrated by a newer release refuses an older
 binary unless the host [allows missing migration versions](configuration.md);
 then the older binary leaves newer core definitions in place. Existing
 supported databases append pending migrations; a migration checksum mismatch

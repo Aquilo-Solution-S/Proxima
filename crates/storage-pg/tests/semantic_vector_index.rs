@@ -13,7 +13,7 @@ use proxima_core::{
     EmbeddableEntityRef, EmbeddingDim, EmbeddingSpace, MemoryId, OwnerId, SpaceVector,
     StorageError, UserId,
 };
-use proxima_storage_pg::test_fixtures::fresh_pg;
+use proxima_storage_pg::test_fixtures::fresh_pg_host_index;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -122,14 +122,14 @@ async fn seed(pool: &PgPool, owner: OwnerId, schema: &str, tag: &str) -> Result<
 
 #[tokio::test]
 async fn semantic_port_expands_past_stale_foreign_and_filtered_candidates() -> TestResult {
-    let (pg, _database) = fresh_pg("semantic_memory_index").await;
+    let index = Arc::new(RecordingIndex::default());
+    let (pg, _database) = fresh_pg_host_index("semantic_memory_index", index.clone()).await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let other = OwnerId::from(UserId::new(Uuid::now_v7()));
     let visible = seed(pg.pool_for_tests(), owner, "core/agent-note-v1", "wanted").await?;
     let wrong_tag = seed(pg.pool_for_tests(), owner, "core/agent-note-v1", "other").await?;
     let wrong_schema = seed(pg.pool_for_tests(), owner, "semantic/other-v1", "wanted").await?;
     let foreign = seed(pg.pool_for_tests(), other, "core/agent-note-v1", "wanted").await?;
-    let index = Arc::new(RecordingIndex::default());
     let entity = |id| EmbeddableEntityRef::Memory {
         kind: EntityKind::Fact,
         memory_id: MemoryId::new(id),
@@ -145,7 +145,6 @@ async fn semantic_port_expands_past_stale_foreign_and_filtered_candidates() -> T
     index
         .put(entity(visible), owner, 1, &[vector(0.1), vector(0.8)])
         .await?;
-    let pg = pg.with_vector_index(index.clone());
     let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
     let scope = owner_scope_for_tests(&[owner]);
     let page = pg
@@ -204,19 +203,18 @@ async fn debt_rows(pool: &PgPool) -> Result<i64, sqlx::Error> {
 #[tokio::test]
 async fn the_drain_pays_head_deletes_and_owner_moves_to_the_index() -> TestResult {
     use proxima_core::storage_ports::EmbeddingJobPort;
-    let (pg, _database) = fresh_pg("vector_index_debt_drain").await;
+    let index = Arc::new(InMemoryVectorIndex::default());
+    let (pg, _database) = fresh_pg_host_index("vector_index_debt_drain", index.clone()).await;
     let pool = pg.pool_for_tests().clone();
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let other = OwnerId::from(UserId::new(Uuid::now_v7()));
     let gone = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
     let moved = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
     seed(&pool, other, "core/agent-note-v1", "wanted").await?;
-    let index = Arc::new(InMemoryVectorIndex::default());
     for entity in [gone, moved] {
         head(&pool, entity, owner, 1).await?;
         index.put(fact(entity), owner, 1, &[vector(1.0)]).await?;
     }
-    let pg = pg.with_vector_index(index.clone());
     sqlx::query("DELETE FROM proxima_core.embedding_heads WHERE entity_id = $1")
         .bind(gone)
         .execute(&pool)
@@ -248,7 +246,8 @@ async fn the_drain_pays_head_deletes_and_owner_moves_to_the_index() -> TestResul
 /// index lost is deleted so reconciliation embeds it again.
 #[tokio::test]
 async fn the_sweep_repairs_the_index_against_the_heads() -> TestResult {
-    let (pg, _database) = fresh_pg("vector_index_sweep").await;
+    let index = Arc::new(InMemoryVectorIndex::default());
+    let (pg, _database) = fresh_pg_host_index("vector_index_sweep", index.clone()).await;
     let pool = pg.pool_for_tests().clone();
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let other = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -257,7 +256,6 @@ async fn the_sweep_repairs_the_index_against_the_heads() -> TestResult {
     let misowned = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
     let lost = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
     let stale_version = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
-    let index = Arc::new(InMemoryVectorIndex::default());
     for entity in [kept, misowned, lost, stale_version] {
         head(&pool, entity, owner, 2).await?;
     }
@@ -272,7 +270,6 @@ async fn the_sweep_repairs_the_index_against_the_heads() -> TestResult {
             .put(fact(Uuid::now_v7()), owner, 1, &[vector(1.0)])
             .await?;
     }
-    let pg = pg.with_vector_index(index.clone());
 
     let outcome = pg.sweep_orphan_embedding_rows().await?;
     assert_eq!(outcome.embeddings_deleted, 700);
@@ -296,5 +293,57 @@ async fn the_sweep_repairs_the_index_against_the_heads() -> TestResult {
     let mut expected = vec![kept, misowned];
     expected.sort();
     assert_eq!(heads, expected);
+    Ok(())
+}
+
+/// An owner erase deletes the owner's rows and their index entries before it
+/// commits, in a database that has no pgvector to hold them.
+#[tokio::test]
+async fn an_owner_erase_takes_its_entries_out_of_the_index() -> TestResult {
+    use proxima_core::owner_inverse::{
+        EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerSurfaces,
+    };
+    use proxima_core::storage_ports::OwnerInversePort;
+
+    let index = Arc::new(InMemoryVectorIndex::default());
+    let (pg, _database) = fresh_pg_host_index("vector_index_erase", index.clone()).await;
+    let pool = pg.pool_for_tests().clone();
+    let user = UserId::new(Uuid::now_v7());
+    let owner = OwnerId::from(user);
+    let other = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let erased = seed(&pool, owner, "core/agent-note-v1", "wanted").await?;
+    let kept = seed(&pool, other, "core/agent-note-v1", "wanted").await?;
+    for (entity, entity_owner) in [(erased, owner), (kept, other)] {
+        head(&pool, entity, entity_owner, 1).await?;
+        index
+            .put(fact(entity), entity_owner, 1, &[vector(1.0)])
+            .await?;
+    }
+
+    let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+        user_id: user,
+        drop_event_id: "test-drop".into(),
+    });
+    let surfaces = OwnerSurfaces::for_registry(
+        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+    );
+    let outcome = pg.erase_personal_owner(&auth, user, &surfaces).await?;
+    assert!(
+        matches!(outcome, OwnerEraseOutcome::Completed { .. }),
+        "{outcome:?}"
+    );
+
+    let held: Vec<VectorKey> = index
+        .entries(None, 10)
+        .await?
+        .into_iter()
+        .map(|entry| entry.key)
+        .collect();
+    assert_eq!(held, [key(kept)]);
+    let heads: Vec<Uuid> = sqlx::query_scalar("SELECT entity_id FROM proxima_core.embedding_heads")
+        .fetch_all(&pool)
+        .await?;
+    assert_eq!(heads, [kept]);
+    assert_eq!(debt_rows(&pool).await?, 0);
     Ok(())
 }
