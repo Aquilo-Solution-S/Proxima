@@ -185,6 +185,37 @@ fn build_frozen_registry() -> Result<proxima_core::FlavorRegistryFrozen, Proxima
     Ok(registry.try_freeze()?)
 }
 
+/// Where the process writes its log.
+#[derive(Debug, Clone, Copy)]
+enum LogSink {
+    /// `serve`: the log is the process output.
+    Stdout,
+    /// A maintenance command: stdout carries the report operators read, so
+    /// the log goes beside it.
+    Stderr,
+}
+
+/// Install the log output of this process, filtered by `RUST_LOG` (default
+/// `info`).
+fn init_logging(sink: LogSink) {
+    // rmcp 3.x logs idle-session keep-alive expiry and the resulting
+    // session-cleanup race at ERROR; both are clean lifecycle events
+    // (`quit_reason=Closed`), so those targets are pinned to `warn`.
+    let builder = tracing_subscriber::fmt().with_env_filter(
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(
+                "info,rmcp::transport::worker=warn,\
+                 rmcp::transport::streamable_http_server::tower=warn",
+            )
+        }),
+    );
+    match sink {
+        LogSink::Stdout => builder.try_init(),
+        LogSink::Stderr => builder.with_writer(std::io::stderr).try_init(),
+    }
+    .ok();
+}
+
 /// The [`CliError`] of a subcommand's argument failure: a request for help
 /// is answered with that subcommand's `usage`.
 fn cli_error(usage: &'static str) -> impl Fn(ArgsError) -> CliError {
@@ -202,37 +233,27 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
     if args.first().is_some_and(|arg| arg == "maintain-embeddings") {
         args.remove(0);
         let config = parse_maintain_args(args).map_err(cli_error(MAINTAIN_USAGE))?;
+        init_logging(LogSink::Stderr);
         return run_maintain(config).await;
     }
     if args.first().is_some_and(|arg| arg == "maintain-storage") {
         args.remove(0);
         let config =
             parse_storage_maintenance_args(args).map_err(cli_error(STORAGE_MAINTENANCE_USAGE))?;
+        init_logging(LogSink::Stderr);
         return run_maintain_storage(config).await;
     }
     if args.first().is_some_and(|arg| arg == "maintain-blobs") {
         args.remove(0);
         let config = parse_maintain_blobs_args(args).map_err(cli_error(MAINTAIN_BLOBS_USAGE))?;
+        init_logging(LogSink::Stderr);
         return run_maintain_blobs(config).await;
     }
     if args.first().is_some_and(|arg| arg == "serve") {
         args.remove(0);
     }
     let config = parse_args(args).map_err(cli_error(USAGE))?;
-    // rmcp 3.x logs idle-session keep-alive expiry and the resulting
-    // session-cleanup race at ERROR; both are clean lifecycle events
-    // (`quit_reason=Closed`), so those targets are pinned to `warn`.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                tracing_subscriber::EnvFilter::new(
-                    "info,rmcp::transport::worker=warn,\
-                     rmcp::transport::streamable_http_server::tower=warn",
-                )
-            }),
-        )
-        .try_init()
-        .ok();
+    init_logging(LogSink::Stdout);
 
     let running = run_with_handle(config).await?;
     let addr = running
