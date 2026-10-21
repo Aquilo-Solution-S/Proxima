@@ -173,11 +173,11 @@ async fn owner_tx(runtime: &PgPool, reader: Uuid) -> sqlx::Transaction<'_, sqlx:
         .unwrap()
 }
 
-/// Run the deployed substring statement as `reader`, plain or under
+/// Run the deployed substring statement on `tx`, plain or under
 /// `EXPLAIN (ANALYZE, FORMAT JSON)`, with every schema named missing and a
 /// window of 20.
-async fn run_candidates(
-    runtime: &PgPool,
+async fn run_candidates_on(
+    tx: &mut sqlx::PgConnection,
     reader: Uuid,
     query: &str,
     explain: bool,
@@ -194,9 +194,8 @@ async fn run_candidates(
     } else {
         sql
     };
-    let mut tx = owner_tx(runtime, reader).await;
     // SQL-POLICY: fixed-fragment — the closed production substring builder.
-    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+    sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(like_pattern(query))
         .bind(20_i64)
         .bind(None::<Vec<String>>)
@@ -209,9 +208,20 @@ async fn run_candidates(
         .bind(true)
         .bind(None::<&str>)
         .bind(false)
-        .fetch_all(&mut *tx)
+        .fetch_all(tx)
         .await
-        .unwrap();
+        .unwrap()
+}
+
+/// As `reader`, the way a request reaches the arm.
+async fn run_candidates(
+    runtime: &PgPool,
+    reader: Uuid,
+    query: &str,
+    explain: bool,
+) -> Vec<sqlx::postgres::PgRow> {
+    let mut tx = owner_tx(runtime, reader).await;
+    let rows = run_candidates_on(&mut tx, reader, query, explain).await;
     tx.rollback().await.unwrap();
     rows
 }
@@ -293,6 +303,68 @@ async fn substring_legs_read_only_memories_of_their_own_schemas() {
         let found = run_candidates(&runtime, reader, query, false).await;
         assert_eq!(found.len(), expected, "{query}");
     }
+    runtime.close().await;
+    platform.close().await;
+    super::cleanup(&database, admin, &platform_role, &runtime_role).await;
+}
+
+/// The substring statement as the candidate role reads the sidecar through its
+/// trigram index, with sequential scans left enabled (#554).
+///
+/// The candidate function runs as `proxima_search`. Owner row security does
+/// not apply to that role on the core sidecars (the `proxima_search_candidates`
+/// policy), so the planner may use an index for `LIKE`, which is not leakproof
+/// and so could never be an index qual under a security qual. Membership and
+/// ownership stay with `memory`, whose policy the same statement still joins.
+#[tokio::test]
+async fn substring_arm_reads_the_sidecar_through_its_trigram_index() {
+    let (database, admin, runtime, platform, platform_role, runtime_role, _) =
+        super::setup_full_schema().await;
+    let owner = Uuid::now_v7();
+    for _ in 0..BIG_OWNER_NOTES / 1_000 {
+        seed_notes(&admin, owner, 1_000).await;
+    }
+    sqlx::query("VACUUM (ANALYZE) proxima_core.agent_note_v1, proxima_core.memory")
+        .execute(&admin)
+        .await
+        .unwrap();
+    let mut tx = admin.begin().await.unwrap();
+    sqlx::query("SET LOCAL ROLE proxima_search")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        "SELECT set_config('app.proxima_scope', 'owner', true),
+                set_config('app.owner', $1, true),
+                set_config('app.read_abstraction', $1, true),
+                set_config('app.read_perspective', $1, true),
+                set_config('app.read_goal', $1, true)",
+    )
+    .bind(format!("{{{owner}}}"))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let rows = run_candidates_on(&mut tx, owner, "nomatchtypo", true).await;
+    tx.rollback().await.unwrap();
+    let plan: serde_json::Value = rows[0].get(0);
+    let mut indexes = Vec::new();
+    let mut note_scans = Vec::new();
+    walk(&plan, &mut |node| {
+        if !text(node, "Index Name").is_empty() {
+            indexes.push(text(node, "Index Name").to_owned());
+        }
+        if text(node, "Relation Name") == "agent_note_v1" {
+            note_scans.push(text(node, "Node Type").to_owned());
+        }
+    });
+    assert!(
+        indexes.contains(&"agent_note_v1_substring_trgm".to_owned()),
+        "the note leg reads its trigram index; plan: {plan}"
+    );
+    assert!(
+        note_scans.iter().all(|scan| scan != "Seq Scan"),
+        "no sequential scan of the {BIG_OWNER_NOTES} notes; plan: {plan}"
+    );
     runtime.close().await;
     platform.close().await;
     super::cleanup(&database, admin, &platform_role, &runtime_role).await;

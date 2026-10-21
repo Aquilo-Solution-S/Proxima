@@ -2045,7 +2045,9 @@ END
 $function$;
 REVOKE ALL ON FUNCTION proxima_core.owner_rls_apply_follows(caller text, target_schema text, target_table text) FROM PUBLIC;
 
--- Candidate policies are limited to derived projections and the local vector index.
+-- Candidate policies are limited to derived projections, the local vector index
+-- and the core sidecars the substring candidate function reads through their
+-- trigram indexes.
 CREATE OR REPLACE FUNCTION proxima_core.is_search_candidate_relation(relation_id oid)
  RETURNS boolean
  LANGUAGE sql STABLE
@@ -2054,7 +2056,9 @@ AS $function$
     SELECT EXISTS (
         SELECT 1 FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
          WHERE relation.oid = relation_id AND relation.relkind IN ('r', 'p')
-           AND ((namespace.nspname = 'proxima_core' AND relation.relname IN ('embeddings', 'embedding_heads'))
+           AND ((namespace.nspname = 'proxima_core' AND relation.relname IN (
+                    'embeddings', 'embedding_heads',
+                    'agent_derivation_v1', 'agent_note_v1', 'interpretation_v1', 'utterance_v1'))
              OR (EXISTS (
                  SELECT 1 FROM pg_attribute a WHERE a.attrelid = relation_id AND a.attname = 'search_tsv'
                    AND a.atttypid = 'tsvector'::regtype AND a.attnum > 0 AND NOT a.attisdropped
@@ -2442,6 +2446,14 @@ GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
 GRANT SELECT ON proxima_core.agent_derivation_v1, proxima_core.agent_note_v1, proxima_core.interpretation_v1, proxima_core.lexical_default, proxima_core.lexical_languages, proxima_core.memory, proxima_core.memory_head, proxima_core.projection, proxima_core.utterance_v1 TO proxima_search;
 DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.projection;
 CREATE POLICY proxima_search_candidates ON proxima_core.projection FOR SELECT TO proxima_search USING (true);
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.agent_derivation_v1;
+CREATE POLICY proxima_search_candidates ON proxima_core.agent_derivation_v1 FOR SELECT TO proxima_search USING (true);
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.agent_note_v1;
+CREATE POLICY proxima_search_candidates ON proxima_core.agent_note_v1 FOR SELECT TO proxima_search USING (true);
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.interpretation_v1;
+CREATE POLICY proxima_search_candidates ON proxima_core.interpretation_v1 FOR SELECT TO proxima_search USING (true);
+DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.utterance_v1;
+CREATE POLICY proxima_search_candidates ON proxima_core.utterance_v1 FOR SELECT TO proxima_search USING (true);
 SET LOCAL ROLE proxima_search;
 EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxima_core.search_substring_candidates(query_text text, candidate_limit bigint, requested_tags text[], since_time timestamptz, until_time timestamptz, before_id uuid, requested_owners uuid[], requested_schemas text[], rescue boolean, recency boolean, heads_only boolean, requested_kind text, tag_all boolean)
 RETURNS TABLE(t uuid, lexical_score real)

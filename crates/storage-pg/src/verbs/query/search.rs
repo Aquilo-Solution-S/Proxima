@@ -855,6 +855,7 @@ const fn candidate_order_of(recency: bool) -> SearchOrder {
 /// reads. A leg whose schemas the request does not name matches no row, so
 /// the function leaves it out of the statement it plans.
 pub(crate) struct CandidateLeg {
+    pub(crate) table: String,
     pub(crate) schemas: Vec<String>,
     pub(crate) sql: String,
 }
@@ -931,6 +932,7 @@ fn substring_candidate_legs(
             &candidate_authorization("m.t", &heads_of_leg),
         )?;
         Ok(CandidateLeg {
+            table: leg.projection.sidecar_table.clone(),
             schemas: leg
                 .schema_ids
                 .iter()

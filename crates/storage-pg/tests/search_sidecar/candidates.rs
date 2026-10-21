@@ -330,3 +330,42 @@ async fn substring_candidates_answer_for_the_requested_schemas_only() -> TestRes
     }
     Ok(())
 }
+
+/// The candidate role reads the sidecars without owner row security so the
+/// trigram index can serve its `LIKE`; what a search returns is still gated by
+/// `memory`. Another owner's note matches the partial word (the first
+/// assertion shows it does) and does not come back to a scope that cannot read
+/// it.
+#[tokio::test]
+async fn substring_fallback_never_returns_another_owners_match() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let both = owner_scope_for_tests(&[fixture.owner, fixture.other]);
+    let mut req = search_req(fixture.owner, "eedl");
+    req.read_owners = vec![fixture.owner, fixture.other];
+    let page = fixture
+        .pg
+        .search_memories(Some(&both), &req, &[note_projection()])
+        .await?;
+    let mut handles: Vec<Uuid> = page
+        .results
+        .iter()
+        .map(|hit| hit.memory_id.into_inner())
+        .collect();
+    handles.sort_unstable();
+    let mut expected = vec![fixture.ours, fixture.theirs];
+    expected.sort_unstable();
+    assert_eq!(handles, expected, "both notes match the partial word");
+
+    let ours_only = fixture.scope();
+    let page = fixture
+        .pg
+        .search_memories(
+            Some(&ours_only),
+            &search_req(fixture.owner, "eedl"),
+            &[note_projection()],
+        )
+        .await?;
+    assert_eq!(page.results.len(), 1);
+    assert_eq!(page.results[0].memory_id.into_inner(), fixture.ours);
+    Ok(())
+}

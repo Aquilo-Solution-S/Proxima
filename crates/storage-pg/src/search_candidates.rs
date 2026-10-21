@@ -91,7 +91,7 @@ fn candidate_artifacts_for_projection(
 ) -> Result<Vec<Artifact>, StorageError> {
     let mut artifacts = Vec::new();
     for substring in [false, true] {
-        let (relevance, recency) = if substring {
+        let (relevance, recency, candidate_tables) = if substring {
             let Some(relevance) =
                 crate::verbs::query::projection_substring_candidates(projections, false)?
             else {
@@ -99,9 +99,22 @@ fn candidate_artifacts_for_projection(
             };
             let recency = crate::verbs::query::projection_substring_candidates(projections, true)?
                 .ok_or_else(missing_recency)?;
+            // The candidate role reads the core sidecars through their
+            // trigram indexes, which row security would otherwise keep out of
+            // reach. A flavor's sidecar has no such index (see `SubstringArm`)
+            // and stays under owner row security.
+            let mut tables = vec![table.to_owned()];
+            tables.extend(
+                relevance
+                    .legs
+                    .iter()
+                    .filter(|leg| leg.table.starts_with("proxima_core."))
+                    .map(|leg| leg.table.clone()),
+            );
             (
                 substring_execution(&relevance),
                 substring_execution(&recency),
+                tables,
             )
         } else {
             let Some(relevance) =
@@ -112,7 +125,11 @@ fn candidate_artifacts_for_projection(
             let recency =
                 crate::verbs::query::projection_candidate_statements(projections, false, true)?
                     .ok_or_else(missing_recency)?;
-            (execution(&relevance), execution(&recency))
+            (
+                execution(&relevance),
+                execution(&recency),
+                vec![table.to_owned()],
+            )
         };
         let name = function_name(table, substring)?;
         let returns = if substring {
@@ -159,7 +176,16 @@ fn candidate_artifacts_for_projection(
             .split_once('.')
             .ok_or_else(|| StorageError::Internal("unqualified projection".into()))?
             .0;
-        let forward = installation_sql(schema, &forward, &signature, &read_tables, &[table])?;
+        let forward = installation_sql(
+            schema,
+            &forward,
+            &signature,
+            &read_tables,
+            &candidate_tables
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        )?;
         artifacts.push(Artifact {
             forward,
             // SQL-POLICY: PgIdent — the inverse uses the same checked function name.

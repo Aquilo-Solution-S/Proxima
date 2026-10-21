@@ -181,7 +181,10 @@ pub enum SubstringArm {
     /// A same-table `LIKE` scan over the sidecar's own text columns, run
     /// only when the `@@` arm returned zero rows. Naming this shape is what
     /// keeps a flavor's substring lane a declaration instead of an
-    /// undeclared third mechanism.
+    /// undeclared third mechanism. Core's sidecars carry a `pg_trgm` index on
+    /// the arm's expression and a read policy for the candidate role that lets
+    /// it be used; a flavor's sidecar has neither, so the scan reads every row
+    /// of the owner's memories of that schema.
     SameTableLike,
 }
 

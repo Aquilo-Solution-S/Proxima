@@ -297,7 +297,9 @@ async fn relations(
                        AND (target.rolsuper OR target.rolbypassrls)
                        AND pg_has_role(current_user, target.oid, 'SET')
                 ) AS dangerous_set_role,
-                ((n.nspname = 'proxima_core' AND c.relname IN ('embeddings', 'embedding_heads'))
+                ((n.nspname = 'proxima_core' AND c.relname IN (
+                    'embeddings', 'embedding_heads',
+                    'agent_derivation_v1', 'agent_note_v1', 'interpretation_v1', 'utterance_v1'))
                  OR (EXISTS (SELECT 1 FROM pg_attribute a
                               WHERE a.attrelid = c.oid AND a.attname = 'search_tsv'
                                 AND a.atttypid = 'tsvector'::regtype
