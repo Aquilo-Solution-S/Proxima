@@ -181,10 +181,7 @@ async fn owner_paged_memory_work_is_bounded_after_filters() {
     // all-visible, both head and memory scans must stop at K per owner.
     for settled in [false, true] {
         if settled {
-            sqlx::query("VACUUM (ANALYZE) proxima_core.memory_head")
-                .execute(&admin)
-                .await
-                .unwrap();
+            super::vacuum_all_visible(&admin, &[super::Vacuumed::MemoryHead]).await;
         }
         let mut tx = begin_owner_transaction(&runtime, authz.owner_scope().unwrap())
             .await
@@ -305,10 +302,7 @@ async fn kind_page_reads_its_partial_index_under_rls_and_generic_plans() {
     .execute(&admin)
     .await
     .unwrap();
-    sqlx::query("VACUUM (ANALYZE) proxima_core.memory_head")
-        .execute(&admin)
-        .await
-        .unwrap();
+    super::vacuum_all_visible(&admin, &[super::Vacuumed::MemoryHead]).await;
     let roles = vec![(OwnerId::from(GroupId::new(owners[0])), Role::viewer())];
     let verifier = super::SyntheticVerifier {
         roles: OwnerRoles::for_subject(UserId::new(Uuid::now_v7()), roles).unwrap(),

@@ -192,10 +192,7 @@ async fn assigned_and_unassigned_goal_reads_do_not_scan_the_goal_table() {
         super::setup_full_schema().await;
     let owner = Uuid::now_v7();
     seed(&admin, owner).await;
-    sqlx::query("VACUUM (ANALYZE) proxima_core.goal")
-        .execute(&admin)
-        .await
-        .unwrap();
+    super::vacuum_all_visible(&admin, &[super::Vacuumed::Goal]).await;
     let first_perspective: Uuid =
         sqlx::query_scalar("SELECT uuid_in(md5('perspective0')::cstring)")
             .fetch_one(&admin)
@@ -312,14 +309,8 @@ async fn an_owner_of_few_goals_lists_them_without_reading_the_store() {
             .await
             .unwrap();
     }
-    sqlx::query("VACUUM (ANALYZE) proxima_core.goal")
-        .execute(&admin)
-        .await
-        .unwrap();
-    sqlx::query("VACUUM (ANALYZE) proxima_core.goal_head")
-        .execute(&admin)
-        .await
-        .unwrap();
+    super::vacuum_all_visible(&admin, &[super::Vacuumed::Goal]).await;
+    super::vacuum_all_visible(&admin, &[super::Vacuumed::GoalHead]).await;
 
     // The small owner's Active goals are every tenth of its 300 series; the
     // page is capped at 50.

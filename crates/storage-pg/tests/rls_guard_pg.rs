@@ -265,6 +265,76 @@ async fn setup() -> (String, PgPool, PgPool, String, String, String, String) {
     )
 }
 
+/// How long `vacuum_all_visible` keeps vacuuming before it names the holder.
+const VISIBILITY_ATTEMPTS: u32 = 50;
+
+/// A table a fixture vacuums to settle its visibility map.
+#[derive(Clone, Copy, Debug)]
+enum Vacuumed {
+    MemoryHead,
+    Goal,
+    GoalHead,
+}
+
+impl Vacuumed {
+    fn relation(self) -> &'static str {
+        match self {
+            Self::MemoryHead => "proxima_core.memory_head",
+            Self::Goal => "proxima_core.goal",
+            Self::GoalHead => "proxima_core.goal_head",
+        }
+    }
+}
+
+/// `VACUUM (ANALYZE)` each of `tables` until every page of it is all-visible.
+///
+/// A plan that stops at a page's size is an index-only scan only while the
+/// visibility map is set; without it the planner may sort the whole owner
+/// instead. One vacuum cannot set the map while any other transaction of the
+/// database is older than the fixture's commits (a concurrent autovacuum's
+/// analyze is one), so the fixture waits for the map and, when a holder
+/// never goes away, fails naming it rather than as a plan flake.
+async fn vacuum_all_visible(pool: &PgPool, tables: &[Vacuumed]) {
+    for table in tables {
+        let relation = table.relation();
+        let mut pages = (0, 0);
+        for _ in 0..VISIBILITY_ATTEMPTS {
+            let vacuum = match table {
+                Vacuumed::MemoryHead => sqlx::query("VACUUM (ANALYZE) proxima_core.memory_head"),
+                Vacuumed::Goal => sqlx::query("VACUUM (ANALYZE) proxima_core.goal"),
+                Vacuumed::GoalHead => sqlx::query("VACUUM (ANALYZE) proxima_core.goal_head"),
+            };
+            vacuum.execute(pool).await.unwrap();
+            pages = sqlx::query_as(
+                "SELECT relpages, relallvisible FROM pg_class WHERE oid = $1::regclass",
+            )
+            .bind(relation)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if pages.1 >= pages.0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let (total, visible): (i32, i32) = pages;
+        if visible < total {
+            let holders: Vec<(String, Option<String>)> = sqlx::query_as(
+                "SELECT state, left(query, 80) FROM pg_stat_activity
+                  WHERE datname = current_database() AND (backend_xmin IS NOT NULL OR backend_xid IS NOT NULL)
+                    AND pid <> pg_backend_pid()",
+            )
+            .fetch_all(pool)
+            .await
+            .unwrap();
+            panic!(
+                "{relation}: {visible} of {total} pages all-visible after {VISIBILITY_ATTEMPTS} \
+                 vacuums; transactions holding the horizon: {holders:?}"
+            );
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the complete split-role fixture keeps its setup together"
