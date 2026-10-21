@@ -87,8 +87,9 @@ pub trait WriteSessionFactory: Send + Sync {
     /// ([`WriteSession::erase_series`]).
     ///
     /// A separate begin because the erase's locks come FIRST: the backend
-    /// takes the exclusive lifecycle fence before anything else in the
-    /// transaction, where an ordinary session would already hold it shared.
+    /// takes the owner's exclusive fence before anything else in the
+    /// transaction, where an ordinary session holds it shared from its first
+    /// write. Another owner's sessions are not held up.
     /// `permit` is the Admin-level owner permit the engine minted; the
     /// session erases for that owner only.
     ///

@@ -1235,15 +1235,6 @@ async fn source_erase_exclusive_fence_makes_waiting_origin_check_see_revocation(
         let reader_pool = pool.clone();
         let reader = tokio::spawn(async move {
             let mut tx = reader_pool.begin().await.expect("begin waiting UoW");
-            // The lifecycle fence key is the stable ASCII `proxhlcy` key
-            // documented by `access::owner_columns`; use the same transaction
-            // advisory lock as a host-capable UnitOfWork.
-            let fence_key = i64::from_be_bytes(*b"proxhlcy");
-            sqlx::query("SELECT pg_advisory_xact_lock_shared($1)")
-                .bind(fence_key)
-                .execute(&mut *tx)
-                .await
-                .expect("eligibility UoW acquires shared fence after erase");
             let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
                 reader_pg.as_ref(),
                 &mut tx,
@@ -1256,22 +1247,20 @@ async fn source_erase_exclusive_fence_makes_waiting_origin_check_see_revocation(
             eligibility
         });
 
-        let fence_key = i64::from_be_bytes(*b"proxhlcy");
+        // The erase holds the origin's target fence; the late check queues on
+        // it and, once the erase commits, finds the origin revoked.
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let waiting: bool = sqlx::query_scalar(
                     "SELECT EXISTS (
                          SELECT 1 FROM pg_locks
                           WHERE locktype = 'advisory' AND NOT granted
-                            AND mode = 'ShareLock'
+                            AND mode = 'ExclusiveLock'
                             AND database = (
                                 SELECT oid FROM pg_database WHERE datname = current_database()
                             )
-                            AND classid::bigint = (($1::bigint >> 32) & 4294967295)
-                            AND objid::bigint = ($1::bigint & 4294967295)
                      )",
                 )
-                .bind(fence_key)
                 .fetch_one(&pool)
                 .await?;
                 if waiting {
@@ -1303,6 +1292,72 @@ async fn source_erase_exclusive_fence_makes_waiting_origin_check_see_revocation(
     lifecycle.set_erase_gate(None);
     close_pg(&db_name).await;
     result.expect("exclusive source erase must precede late eligibility");
+}
+
+/// An owner's erase fences that owner's writes and no other owner's (#491).
+///
+/// The erase of A is held inside its host callback, with every lock it takes
+/// still held. A write of B, through a unit of work and through the direct
+/// admission path, commits meanwhile; a write of A waits for the erase.
+#[tokio::test]
+async fn an_erase_fences_its_own_owner_and_no_other() {
+    let (db_name, pg, lifecycle) = fresh_pg(6).await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests();
+        let erased = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let fact = ingest(&pg, erased, "source-a", "erased-fact").await;
+        seed_host_fact(pool, erased, fact, "source-a", &[1]).await;
+        ingest(&pg, other, "source-b", "other-first").await;
+
+        let gate = Arc::new(CallbackGate::default());
+        lifecycle.set_erase_gate(Some(gate.clone()));
+        let erase_pg = pg.clone();
+        let user_id = erased.as_user();
+        let erase = tokio::spawn(async move {
+            let auth = erase_auth(erased, None);
+            erase_pg
+                .erase_personal_owner(&auth, user_id, erase_pg.surfaces())
+                .await
+        });
+        gate.entered.notified().await;
+
+        let scope = owner_scope_for_tests(&[other]);
+        let session = tokio::time::timeout(
+            Duration::from_secs(2),
+            WriteSessionFactory::begin(pg.as_ref(), Some(&scope)),
+        )
+        .await
+        .expect("another owner's unit begins during the erase")?;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            ingest(&pg, other, "source-b", "other-during-erase"),
+        )
+        .await
+        .expect("another owner's write commits during the erase");
+        session.commit().await?;
+
+        let waiting_pg = pg.clone();
+        let waiting = tokio::spawn(async move {
+            ingest(&waiting_pg, erased, "source-a", "erased-owner-during-erase").await
+        });
+        assert!(
+            wait_for_advisory_waiters(pool, 1).await,
+            "the erased owner's write waits at its owner fence"
+        );
+        assert!(!waiting.is_finished());
+
+        gate.release.notify_one();
+        assert!(matches!(erase.await??, OwnerEraseOutcome::Completed { .. }));
+        lifecycle.set_erase_gate(None);
+        waiting.await?;
+        assert_eq!(host_fact_count(pool, erased).await, 0);
+        Ok(())
+    }
+    .await;
+    lifecycle.set_erase_gate(None);
+    close_pg(&db_name).await;
+    result.expect("an erase fences its own owner and no other");
 }
 
 #[tokio::test]
@@ -1980,16 +2035,31 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_l
         });
         gate.entered.notified().await;
 
-        let writer_pg = pg.clone();
-        let writer = tokio::spawn(async move {
-            let scope = owner_scope_for_tests(&[owner]);
-            WriteSessionFactory::begin(writer_pg.as_ref(), Some(&scope)).await
+        // A unit takes no store-wide fence at entry: it begins during the
+        // erase, and what waits is a write into the erased owner's source.
+        let scope = owner_scope_for_tests(&[owner]);
+        let session = tokio::time::timeout(
+            Duration::from_secs(2),
+            WriteSessionFactory::begin(pg.as_ref(), Some(&scope)),
+        )
+        .await
+        .expect("a unit of work begins during an erase")?;
+        let late_pg = pg.clone();
+        let late_source = source.clone();
+        let late_write = tokio::spawn(async move {
+            ingest(
+                &late_pg,
+                owner,
+                late_source.as_str(),
+                "written-during-erase",
+            )
+            .await
         });
         assert!(
             wait_for_advisory_waiters(pool, 1).await,
-            "host-capable UoW waits at global entry fence"
+            "a write into the erased source waits at its source fence"
         );
-        assert!(!writer.is_finished(), "UoW cannot enter during erasure");
+        assert!(!late_write.is_finished(), "the erase excludes that write");
 
         let export_pg = pg.clone();
         let export = tokio::spawn(async move {
@@ -2019,8 +2089,8 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_l
             "queued export sees post-erase state"
         );
         assert!(bundle.tables.get(FACTS_TABLE).is_some_and(Vec::is_empty));
-        let session = writer.await??;
         session.commit().await?;
+        late_write.await?;
 
         // An export cancelled while it waits on the fence leaves no lock
         // behind: its transaction rolls back when its connection returns.
@@ -2066,26 +2136,27 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_l
             &[2, 4, 6],
         )
         .await;
-        let scope = owner_scope_for_tests(&[owner]);
-        let mut session = WriteSessionFactory::begin(pg.as_ref(), Some(&scope)).await?;
-        session.advisory_xact_lock(55_019).await?;
+        // A unit holds its owner's fence shared from its first write; a
+        // whole-owner erase queues behind it.
+        let mut writer = pool.begin().await?;
+        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut writer, &owner)
+            .await?;
         let reverse_gate = Arc::new(CallbackGate::default());
         lifecycle.set_erase_gate(Some(reverse_gate.clone()));
         let erase_pg = pg.clone();
         let erase_surfaces = pg.surfaces().clone();
-        let erase_source = reverse_source.clone();
         let reverse_erase = tokio::spawn(async move {
-            let auth = erase_auth(owner, Some(erase_source.clone()));
+            let auth = erase_auth(owner, None);
             erase_pg
-                .erase_personal_source_scope(&auth, user_id, &erase_source, &erase_surfaces)
+                .erase_personal_owner(&auth, user_id, &erase_surfaces)
                 .await
         });
         assert!(
             wait_for_advisory_waiters(pool, 1).await,
-            "erase waits behind a UoW that entered the shared lifecycle fence first"
+            "erase waits behind a unit that holds its owner's fence first"
         );
         assert!(!reverse_erase.is_finished());
-        session.commit().await?;
+        writer.commit().await?;
         reverse_gate.entered.notified().await;
         reverse_gate.release.notify_one();
         assert!(matches!(

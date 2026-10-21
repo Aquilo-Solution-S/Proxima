@@ -181,7 +181,7 @@ impl WriteSessionFactory for PgStorage {
             crate::owner_scope::require_owner_scope(owner_scope)?,
         )
         .await?;
-        self.session_from_transaction(tx).await
+        Ok(self.session_from_transaction(tx))
     }
 
     async fn begin_host_state(
@@ -204,7 +204,7 @@ impl WriteSessionFactory for PgStorage {
             ));
         }
         let tx = self.platform_transaction().await?;
-        self.session_from_transaction(tx).await
+        Ok(self.session_from_transaction(tx))
     }
 
     async fn begin_series_erase(
@@ -228,13 +228,13 @@ impl WriteSessionFactory for PgStorage {
             .execute(&mut *tx)
             .await
             .map_err(crate::error::map_err)?;
-        // The exclusive lifecycle fence is the transaction's first lock and
-        // the owner fence its second: an ordinary unit holds the former
-        // shared from entry, and a transfer takes the latter exclusively
-        // before it moves a series, so the footprint below is one ownership
-        // snapshot.
-        crate::access::owner_columns::lock_host_lifecycle_fence_exclusive_tx(&mut tx).await?;
-        crate::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, permit.owner()).await?;
+        // The owner fence, exclusive, is the transaction's first lock: an
+        // ordinary unit of this owner holds it shared from its first write,
+        // and a transfer takes it exclusively before it moves a series, so
+        // the footprint below is one ownership snapshot. A unit of another
+        // owner is not held up.
+        crate::access::owner_columns::lock_owner_fence_exclusive_tx(&mut tx, permit.owner())
+            .await?;
         Ok(Box::new(PgWriteSession {
             store_number: self.store_number,
             tx,
@@ -257,16 +257,11 @@ impl WriteSessionFactory for PgStorage {
 }
 
 impl PgStorage {
-    async fn session_from_transaction(
+    fn session_from_transaction(
         &self,
-        mut tx: Transaction<'static, Postgres>,
-    ) -> Result<Box<dyn WriteSession>, StorageError> {
-        if !self.surfaces.host_lifecycle_surfaces().is_empty() {
-            // This global shared xact fence is the first lock in a host-capable
-            // UoW, before a cognitive method can take owner/handle locks.
-            crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut tx).await?;
-        }
-        Ok(Box::new(PgWriteSession {
+        tx: Transaction<'static, Postgres>,
+    ) -> Box<dyn WriteSession> {
+        Box::new(PgWriteSession {
             store_number: self.store_number,
             tx,
             sidecars: self.sidecars.clone(),
@@ -275,7 +270,7 @@ impl PgStorage {
             cold: Arc::clone(&self.cold),
             host_state: self.host_state.clone(),
             series_erase: None,
-        }))
+        })
     }
 }
 

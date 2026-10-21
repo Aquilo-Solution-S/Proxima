@@ -10,8 +10,8 @@
 //! last refusal has been asked.
 //!
 //! It runs on the transaction `PgStorage::begin_series_erase` opened: the
-//! exclusive lifecycle fence and the owner fence are already held, and they
-//! were the transaction's first locks.
+//! owner's exclusive fence is already held, and it was the transaction's
+//! first lock.
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -259,6 +259,15 @@ pub enum FlavorRegistryError {
         flavor_id: &'static str,
         table: &'static str,
     },
+    #[error(
+        "flavor {flavor_id} declares {table} as host-state lifecycle state but no \
+         owner_column; an erase fences one owner's rows through that column, so a \
+         host-state surface names the column that carries its owner"
+    )]
+    HostStateWithoutOwnerColumn {
+        flavor_id: &'static str,
+        table: &'static str,
+    },
     /// A schema declared itself listenable and published no JSON schema.
     ///
     /// A captured event names its `dataschema`

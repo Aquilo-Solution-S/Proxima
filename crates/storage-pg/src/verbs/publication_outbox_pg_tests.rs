@@ -205,16 +205,8 @@ async fn outbox_rows(pool: &sqlx::PgPool) -> i64 {
         .expect("count reads")
 }
 
-async fn assert_ineligible_under_shared_fence(
-    pg: &PgStorage,
-    pool: &sqlx::PgPool,
-    owner: OwnerId,
-    fact: MemoryId,
-) {
+async fn assert_ineligible(pg: &PgStorage, pool: &sqlx::PgPool, owner: OwnerId, fact: MemoryId) {
     let mut tx = pool.begin().await.expect("begin late eligibility check");
-    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut tx)
-        .await
-        .expect("hold shared lifecycle fence for admission check");
     let eligibility =
         PublicationOriginEligibilityPort::check_in_transaction(pg, &mut tx, owner, fact)
             .await
@@ -441,9 +433,6 @@ async fn origin_eligibility_fails_closed_for_wrong_owner_and_hard_delete_witness
         OwnerId::from(UserId::new(Uuid::now_v7())),
     ] {
         let mut wrong_owner_tx = pool.begin().await.expect("begin wrong-owner check");
-        crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut wrong_owner_tx)
-            .await
-            .expect("hold the caller's shared lifecycle fence");
         let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
             &pg,
             &mut wrong_owner_tx,
@@ -473,9 +462,6 @@ async fn origin_eligibility_fails_closed_for_wrong_owner_and_hard_delete_witness
     );
 
     let mut witnessed_tx = pool.begin().await.expect("begin witnessed check");
-    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut witnessed_tx)
-        .await
-        .expect("hold the caller's shared lifecycle fence");
     let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
         &pg,
         &mut witnessed_tx,
@@ -1189,12 +1175,9 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
         group.into_inner()
     );
 
-    // Model the GT UnitOfWork's entry fence. Eligibility and the following
-    // host-state update both remain in this transaction until commit.
+    // Eligibility and the following host-state update both remain in this
+    // transaction until commit.
     let mut host_tx = pool.begin().await.expect("begin host UoW");
-    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut host_tx)
-        .await
-        .expect("host UoW holds shared lifecycle fence");
     let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
         &pg,
         &mut host_tx,
@@ -1245,7 +1228,6 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
         assert!(matches!(outcome, OwnerEraseOutcome::Completed { .. }));
     });
 
-    let key = crate::access::owner_columns::HOST_STATE_LIFECYCLE_FENCE_KEY;
     let wait_seen = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             let waiting: bool = sqlx::query_scalar(
@@ -1254,14 +1236,11 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
                       WHERE locktype = 'advisory' AND NOT granted
                         AND mode = 'ExclusiveLock'
                         AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-                        AND classid::bigint = (($1::bigint >> 32) & 4294967295)
-                        AND objid::bigint = ($1::bigint & 4294967295)
                  )",
             )
-            .bind(key)
             .fetch_one(&pool)
             .await
-            .expect("inspect lifecycle fence wait");
+            .expect("inspect the target fence wait");
             if waiting {
                 break;
             }
@@ -1271,7 +1250,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
     .await;
     assert!(
         wait_seen.is_ok(),
-        "erase must block on the UoW shared fence"
+        "the erase must wait for the origin's target fence, which the UoW holds"
     );
 
     host_tx
@@ -1312,9 +1291,6 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
     );
 
     let mut after_erase = pool.begin().await.expect("begin post-erase check");
-    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut after_erase)
-        .await
-        .expect("post-erase UoW holds shared fence");
     let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
         &pg,
         &mut after_erase,
@@ -1344,9 +1320,6 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
         "the source name has no permanent stop marker"
     );
     let mut reuse_check = pool.begin().await.expect("begin reused-source check");
-    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut reuse_check)
-        .await
-        .expect("reused-source UoW holds the shared lifecycle fence");
     let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
         &pg,
         &mut reuse_check,
@@ -1371,7 +1344,7 @@ async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
     let (pg, db) = fresh_pg("pub_erase_first_eligibility").await;
     let pool = pg.pool_for_tests().clone();
 
-    // Whole-owner erase first, then a fresh shared-fence UoW admission check.
+    // Whole-owner erase first, then a fresh UoW admission check.
     let whole_owner = owner_fixture();
     let whole_fact = ingest_listenable_with_source_id(
         &pg,
@@ -1390,7 +1363,7 @@ async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
     OwnerInversePort::erase_personal_owner(&pg, &whole_auth, whole_user, pg.surfaces())
         .await
         .expect("whole-owner erase commits first");
-    assert_ineligible_under_shared_fence(&pg, &pool, whole_owner, whole_fact).await;
+    assert_ineligible(&pg, &pool, whole_owner, whole_fact).await;
 
     // Source erase first after transfer: the live physical Fact remains at B,
     // but the original A admission can no longer pass the late check.
@@ -1442,7 +1415,7 @@ async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
             .expect("source-erased transferred Fact remains live"),
         destination.into_inner()
     );
-    assert_ineligible_under_shared_fence(&pg, &pool, source_owner, source_fact).await;
+    assert_ineligible(&pg, &pool, source_owner, source_fact).await;
 
     // Exact physical erase first removes the origin and leaves its append-only
     // witness; the late eligibility check is denied by that committed state.
@@ -1470,7 +1443,7 @@ async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
     .await
     .expect("exact Fact erase succeeds");
     erase_tx.commit().await.expect("exact erase commits first");
-    assert_ineligible_under_shared_fence(&pg, &pool, exact_owner, exact_fact).await;
+    assert_ineligible(&pg, &pool, exact_owner, exact_fact).await;
 
     drop(pg);
     let _ = drop_db(&db).await;
@@ -1554,9 +1527,6 @@ async fn source_erase_after_outbox_prune_revokes_transferred_origin_only() {
     );
 
     let mut check = pool.begin().await.expect("begin late-delivery check");
-    crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut check)
-        .await
-        .expect("hold lifecycle shared fence");
     let eligibility = PublicationOriginEligibilityPort::check_in_transaction(
         &pg,
         &mut check,

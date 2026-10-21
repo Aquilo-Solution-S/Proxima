@@ -207,17 +207,17 @@ pub(super) static UNREACHABLE_EXPORT_SURFACE: FlavorContract = erase_fixture(
     &[],
 );
 
-/// Host-managed ownerless exports are reached by the registered lifecycle
-/// callback, which is checked against the exact declared table set by
-/// storage at boot. The generic exporter has no owner join to spell.
-pub(super) static HOST_MANAGED_OWNERLESS_EXPORTS: FlavorContract = erase_fixture(
+/// Host-managed exports are reached by the registered lifecycle callback,
+/// which is checked against the exact declared table set by storage at
+/// boot, and name the column that carries each row's owner.
+pub(super) static HOST_MANAGED_EXPORTS: FlavorContract = erase_fixture(
     &[
         Surface {
             table: "test_flavor.host_rows",
             key: KeyShape::Custom(&["thing_id"]),
-            owner_column: None,
+            owner_column: Some("owner_id"),
             transfer: TransferRule::RetainAtSource {
-                why: "the callback resolves owner from execution",
+                why: "the host state belongs to the publishing owner",
             },
             erase: EraseRule::HostState {
                 whole_owner: crate::flavor::contract::HostStateEraseDisposition::Erase,
@@ -237,9 +237,9 @@ pub(super) static HOST_MANAGED_OWNERLESS_EXPORTS: FlavorContract = erase_fixture
         Surface {
             table: "test_flavor.host_allowlist",
             key: KeyShape::Custom(&["thing_id"]),
-            owner_column: None,
+            owner_column: Some("owner_id"),
             transfer: TransferRule::RetainAtSource {
-                why: "the callback resolves owner from execution",
+                why: "the host state belongs to the publishing owner",
             },
             erase: EraseRule::HostState {
                 whole_owner: crate::flavor::contract::HostStateEraseDisposition::Erase,
@@ -257,6 +257,34 @@ pub(super) static HOST_MANAGED_OWNERLESS_EXPORTS: FlavorContract = erase_fixture
             completeness: None,
         },
     ],
+    &[],
+);
+
+/// A host-state surface that names no owner column: an erase of one owner
+/// could not fence that owner's rows, so freeze refuses it.
+pub(super) static HOST_STATE_WITHOUT_OWNER_COLUMN: FlavorContract = erase_fixture(
+    &[Surface {
+        table: "test_flavor.host_rows",
+        key: KeyShape::Custom(&["thing_id"]),
+        owner_column: None,
+        transfer: TransferRule::RetainAtSource {
+            why: "the callback resolves owner from execution",
+        },
+        erase: EraseRule::HostState {
+            whole_owner: crate::flavor::contract::HostStateEraseDisposition::Erase,
+            source: crate::flavor::contract::HostStateEraseDisposition::Retain,
+            exact_fact: crate::flavor::contract::HostStateEraseDisposition::Retain,
+        },
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep {
+            why: "a fixture, not a memory",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "a fixture contributes to no receipt",
+        },
+        completeness: None,
+    }],
     &[],
 );
 

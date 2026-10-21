@@ -243,10 +243,11 @@ impl FlavorRegistry {
     /// its key and filter there. A generic surface that declares `Rows` or
     /// `Allowlist` while carrying neither is a bundle leg nothing can emit.
     /// An explicit `HostState` surface is different: its registered,
-    /// transaction-bound lifecycle callback owns the export query and can
-    /// join through its own authoritative owner relation. Storage validates
-    /// that callback's exact participant and managed table set at boot and
-    /// validates every returned table/row at export time.
+    /// transaction-bound lifecycle callback owns the export query. Storage
+    /// validates that callback's exact participant and managed table set at
+    /// boot and validates every returned table/row at export time. It must
+    /// still declare its `owner_column`, because the erase of an owner
+    /// fences that owner's rows through it.
     ///
     /// It is deliberately not a check on ERASE. An unreachable surface that
     /// declares `Excluded` is a stated non-export; one that cascades is
@@ -257,10 +258,18 @@ impl FlavorRegistry {
         use crate::flavor::contract::EraseRule;
 
         for surface in contract.all_surfaces() {
-            if !surface.export.carries_rows() {
+            if matches!(surface.erase, EraseRule::HostState { .. }) {
+                // The column that names the owner of each row is how an erase
+                // of one owner fences that owner's rows and no other's.
+                if surface.owner_column.is_none() {
+                    return Err(FlavorRegistryError::HostStateWithoutOwnerColumn {
+                        flavor_id: contract.flavor_id,
+                        table: surface.table,
+                    });
+                }
                 continue;
             }
-            if matches!(surface.erase, EraseRule::HostState { .. }) {
+            if !surface.export.carries_rows() {
                 continue;
             }
             if surface.owner_column.is_none() && surface.key.home().is_none() {

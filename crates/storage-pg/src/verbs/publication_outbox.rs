@@ -811,7 +811,6 @@ impl PublicationOriginEligibilityPort for PgStorage {
         fact_id: proxima_core::MemoryId,
     ) -> Result<PublicationOriginEligibility, StorageError> {
         let mut tx = self.platform_transaction().await?;
-        crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut tx).await?;
         let result = self
             .check_in_transaction(&mut tx, original_owner, fact_id)
             .await?;
@@ -825,10 +824,10 @@ impl PublicationOriginEligibilityPort for PgStorage {
         original_owner: proxima_core::OwnerId,
         fact_id: proxima_core::MemoryId,
     ) -> Result<PublicationOriginEligibility, StorageError> {
-        // The caller's UnitOfWork holds the lifecycle-wide shared fence from
-        // transaction entry. Take the same per-Fact target fence used by
-        // hard deletion and keep it through the caller's host-state write and
-        // commit. Opening a nested pool transaction here would split the
+        // Take the same per-Fact target fence used by hard deletion and keep
+        // it through the caller's host-state write and commit; an erase that
+        // revokes this origin holds it first, so a check either precedes the
+        // erase or sees the revocation. Opening a nested pool transaction here would split the
         // eligibility decision from that write and permit a time-of-check race.
         super::forget::lock_lifecycle_targets_tx(tx, &[fact_id.into_inner()]).await?;
         let owner_id = original_owner.into_inner();

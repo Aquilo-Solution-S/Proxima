@@ -40,11 +40,10 @@ pub enum PublicationOriginEligibility {
 #[async_trait::async_trait]
 pub trait PublicationOriginEligibilityPort: Send + Sync {
     /// Check one exact `(original owner, physical Fact)` pair in its own
-    /// short transaction. This method takes the database-wide shared
-    /// lifecycle fence before the existing per-Fact target fence, commits,
-    /// and only then returns the result to a host caller. It grants no
-    /// authority to read the Fact or retain a database fence across an
-    /// external operation.
+    /// short transaction. This method takes the per-Fact target fence that
+    /// hard deletion and origin revocation take, commits, and only then
+    /// returns the result to a host caller. It grants no authority to read
+    /// the Fact or retain a database fence across an external operation.
     ///
     /// This convenience is for host work that must not carry a caller's
     /// transaction into an external await. Atomic host-state admission must
@@ -60,9 +59,8 @@ pub trait PublicationOriginEligibilityPort: Send + Sync {
 
     /// Check one `(original owner, physical Fact)` pair inside the caller's
     /// current `UoW` transaction, under the same target fence used by hard
-    /// deletion. The caller must hold the database-wide lifecycle fence in
-    /// shared mode from transaction entry, before acquiring owner or target
-    /// locks; this method does not acquire that fence after the fact. The
+    /// deletion. An erase that revokes the origin holds that fence first, so
+    /// the check either precedes the erase or finds the origin revoked. The
     /// caller must commit any corresponding host-state write in this
     /// transaction; a pool-only preflight is not authoritative.
     ///

@@ -691,18 +691,21 @@ impl std::fmt::Debug for PgHostStateEraseContext {
 }
 
 impl PgHostStateEraseContext {
-    /// Acquire the global host-state exclusive fence as the transaction's
-    /// first erase lock. Callers that perform flavor-owned queries or DML
-    /// before delegating a physical erase must call this immediately after
-    /// BEGIN and before any owner/source/handle/target locks.
+    /// Acquire `owner`'s exclusive fence as the transaction's first erase
+    /// lock. Callers that perform flavor-owned queries or DML before
+    /// delegating a physical erase must call this immediately after BEGIN and
+    /// before any source/handle/target locks. Only `owner`'s writes wait; the
+    /// rows a flavor table keeps for `owner` are the ones its surface names in
+    /// `owner_column`.
     ///
     /// # Errors
     /// Returns a storage error when `PostgreSQL` cannot acquire the fence.
     pub async fn lock_before_physical_erase(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        owner: &proxima_core::OwnerId,
     ) -> Result<(), StorageError> {
-        crate::access::owner_columns::lock_host_lifecycle_fence_exclusive_tx(tx).await
+        crate::access::owner_columns::lock_owner_fence_exclusive_tx(tx, owner).await
     }
 
     /// Explicit fixture constructor for registries without lifecycle-owned

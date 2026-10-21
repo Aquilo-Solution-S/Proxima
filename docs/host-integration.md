@@ -389,8 +389,12 @@ exercise scope, atomicity, and both concurrency orders.
 
 Register lifecycle callbacks on the same boot-frozen participant when its
 declared tables need owner, source, or exact-Fact maintenance. Core performs
-authorization and acquires the lifecycle fence; the callback receives a typed
-selection and returns receipts for the declared tables. Whole-owner, source,
+authorization and fences the erased owner, so that owner's writes wait and no
+other owner's do; the callback receives a typed selection and returns receipts
+for the declared tables. Each declared host-state surface names the column
+that carries its rows' owner (`Surface.owner_column`; freeze refuses one
+without), and a host-state command writes only rows of the owner it is stamped
+with. Whole-owner, source,
 flavor-scoped, and exact-physical-Fact scopes remain distinct. Export is a
 read path under the caller's authorization; it does not grant erase authority.
 

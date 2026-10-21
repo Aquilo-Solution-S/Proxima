@@ -31,8 +31,6 @@ use proxima_storage_pg::{
 };
 use uuid::Uuid;
 
-const HOST_STATE_LIFECYCLE_FENCE_KEY: i64 = i64::from_be_bytes(*b"proxhlcy");
-
 /// The five sidecar legs exactly as the engine assembles them: from the
 /// frozen flavor registry. Passing empty slices here would silently skip
 /// the owner-pinned leg, which is the difference these tests exist to
@@ -165,21 +163,6 @@ async fn object_key_waiter_count(
             ) & 4294967295)",
     )
     .bind(object_key)
-    .fetch_one(pool)
-    .await
-}
-
-async fn host_lifecycle_fence_waiter_count(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT count(*)::bigint
-           FROM pg_locks
-          WHERE locktype = 'advisory'
-            AND NOT granted
-            AND mode = 'ExclusiveLock'
-            AND classid::bigint = (($1::bigint >> 32) & 4294967295)
-            AND objid::bigint = ($1::bigint & 4294967295)",
-    )
-    .bind(HOST_STATE_LIFECYCLE_FENCE_KEY)
     .fetch_one(pool)
     .await
 }
@@ -4054,11 +4037,11 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
 /// than an observation: the second erase runs its refcount after the first
 /// has committed its deletion.
 ///
-/// The rendezvous is the proof that both boundaries are taken in order. A
-/// third session holds `proxima-object-key:<key>`; the first erase must queue
-/// behind it while the second queues behind the global lifecycle fence. Once
-/// both waits are visible, releasing the object key lets the serialized
-/// refcount decisions prove that the bytes are destroyed exactly once.
+/// The rendezvous is the proof that both erases decide under the key. A third
+/// session holds `proxima-object-key:<key>`; the two erases (of different
+/// owners, so they share no owner fence) must both queue behind it. Once both
+/// waits are visible, releasing the object key lets the serialized refcount
+/// decisions prove that the bytes are destroyed exactly once.
 #[tokio::test]
 async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() {
     let (db_name, pg, cold) = fresh_pg_with_counting_cold().await;
@@ -4092,9 +4075,7 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
         .await?;
         assert_eq!(mounts, 2, "two owners now name one object");
 
-        // Hold the object's key so the first erase cannot decide. The second
-        // must queue at the lifecycle fence rather than pass the origin
-        // revocation boundary concurrently.
+        // Hold the object's key so neither erase can decide.
         let mut barrier = pool.begin().await?;
         sqlx::query(
             "SELECT pg_advisory_xact_lock(
@@ -4127,9 +4108,7 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
 
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                if object_key_waiter_count(pool, &object_key).await? >= 1
-                    && host_lifecycle_fence_waiter_count(pool).await? >= 1
-                {
+                if object_key_waiter_count(pool, &object_key).await? >= 2 {
                     return Ok::<(), sqlx::Error>(());
                 }
                 tokio::task::yield_now().await;

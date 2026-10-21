@@ -17,9 +17,9 @@ use super::leg_fixtures::{
     BESPOKE_LEG_FOR_NOTHING, BESPOKE_LEG_OVER_A_CASCADE, BESPOKE_TRANSFER_LEG_FOR_NOTHING,
     BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE, DERIVED_FROM_A_LOOP, DERIVED_FROM_MEMORY,
     DERIVED_FROM_NOWHERE, DERIVED_FROM_THE_EXCLUDED, ERASED_BUT_EXCLUDED,
-    FOLLOW_WITH_NOTHING_TO_SET, HOST_MANAGED_OWNERLESS_EXPORTS, NON_CORE_BESPOKE_ERASE_LEG,
-    NON_CORE_BESPOKE_TRANSFER_LEG, NON_CORE_DEDUPE, PER_ROW_ON_THE_WRONG_COLUMN,
-    UNDELETABLE_SURFACE, UNFORGETTABLE_SURFACE, UNMOVABLE_SURFACE,
+    FOLLOW_WITH_NOTHING_TO_SET, HOST_MANAGED_EXPORTS, HOST_STATE_WITHOUT_OWNER_COLUMN,
+    NON_CORE_BESPOKE_ERASE_LEG, NON_CORE_BESPOKE_TRANSFER_LEG, NON_CORE_DEDUPE,
+    PER_ROW_ON_THE_WRONG_COLUMN, UNDELETABLE_SURFACE, UNFORGETTABLE_SURFACE, UNMOVABLE_SURFACE,
     UNREACHABLE_ALLOWLIST_EXPORT_SURFACE, UNREACHABLE_EXPORT_SURFACE,
 };
 use super::projection_fixtures::{
@@ -303,6 +303,19 @@ fn each_contract_cross_check_rejects_its_own_shape() {
                     err,
                     FlavorRegistryError::UnreachableExportSurface {
                         table: "test_flavor.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a host-state surface names no owner column",
+            |registry| registry.contracts.push(&HOST_STATE_WITHOUT_OWNER_COLUMN),
+            |err| {
+                matches!(
+                    err,
+                    FlavorRegistryError::HostStateWithoutOwnerColumn {
+                        table: "test_flavor.host_rows",
                         ..
                     }
                 )
@@ -638,9 +651,9 @@ fn the_shapes_the_new_refusals_must_accept_freeze() {
         });
     lifecycle_owned_exports
         .contracts
-        .push(&HOST_MANAGED_OWNERLESS_EXPORTS);
+        .push(&HOST_MANAGED_EXPORTS);
     if let Err(err) = lifecycle_owned_exports.try_freeze() {
-        panic!("host lifecycle can export its ownerless Rows and Allowlist surfaces: {err}");
+        panic!("host lifecycle can export its Rows and Allowlist surfaces: {err}");
     }
 }
 

@@ -32,32 +32,6 @@ impl From<PgAccessCeiling> for proxima_core::AccessCeiling {
     }
 }
 
-/// One cross-process boundary shared by every host-capable `UoW` and exclusive
-/// owner/source erasure. ASCII `proxhlcy` is a stable advisory-lock key.
-pub(crate) const HOST_STATE_LIFECYCLE_FENCE_KEY: i64 = i64::from_be_bytes(*b"proxhlcy");
-
-pub(crate) async fn lock_host_lifecycle_fence_shared_tx(
-    tx: &mut Transaction<'_, Postgres>,
-) -> Result<(), StorageError> {
-    sqlx::query("SELECT pg_advisory_xact_lock_shared($1)")
-        .bind(HOST_STATE_LIFECYCLE_FENCE_KEY)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    Ok(())
-}
-
-pub(crate) async fn lock_host_lifecycle_fence_exclusive_tx(
-    tx: &mut Transaction<'_, Postgres>,
-) -> Result<(), StorageError> {
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(HOST_STATE_LIFECYCLE_FENCE_KEY)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    Ok(())
-}
-
 use crate::error::{map_err, with_bounded_retry};
 use crate::verbs::fact_embeddings::{
     RouteSpaces, enqueue_series_head_in_tx, purge_series_embedding_spaces_in_tx,

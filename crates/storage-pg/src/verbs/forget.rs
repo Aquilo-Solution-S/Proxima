@@ -991,7 +991,7 @@ async fn erase_memory_in_lifecycle(
     owner: &OwnerId,
     t: Uuid,
 ) -> Result<ColdPurgePlan, StorageError> {
-    context.lock_before_physical_erase(tx).await?;
+    context.lock_before_physical_erase(tx, owner).await?;
     let surfaces = &context.surfaces;
     // Probe the series identity first. The handle lock is the first
     // serialization boundary; a missing target is not a successful no-op.
@@ -1140,7 +1140,7 @@ pub async fn erase_memory_series(
     if ts.is_empty() {
         return Ok((0, ColdPurgePlan::default()));
     }
-    context.lock_before_physical_erase(tx).await?;
+    context.lock_before_physical_erase(tx, owner).await?;
     // The lifecycle scope: an owner-scope caller must reach forgotten
     // versions too, or they would outlive the series erase.
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;

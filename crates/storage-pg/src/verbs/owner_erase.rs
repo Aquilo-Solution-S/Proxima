@@ -64,21 +64,14 @@ async fn begin_bulk_erase_tx(
     platform: &crate::PgPlatformScope,
 ) -> Result<Tx<'static>, StorageError> {
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
-    // The database-wide lifecycle fence is the first lock in this
-    // transaction. Bound that wait before taking it: the long-work
-    // statement_timeout override below is for the erase body and must not
-    // turn a queued erase into an unbounded first-lock wait. 55P03 is a
-    // retryable lock conflict, so the outer erase retries the whole tx.
+    // Bound the first lock wait: the long-work statement_timeout override
+    // below is for the erase body and must not turn a queued erase into an
+    // unbounded wait for its owner's fence. 55P03 is a retryable lock
+    // conflict, so the outer erase retries the whole tx.
     sqlx::query("SET LOCAL lock_timeout = '5s'")
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
-    // Publication-origin eligibility is checked inside ordinary host UoWs,
-    // which hold this fence shared from transaction entry. Every owner or
-    // source erase now revokes that origin index, even when no optional
-    // lifecycle callback is registered, so it must take the exclusive fence
-    // before owner/source/target locks in every configuration.
-    crate::access::owner_columns::lock_host_lifecycle_fence_exclusive_tx(&mut tx).await?;
     // Owner export holds this fence in SHARE mode for its whole snapshot
     // (`PgPlatformScope::begin_export_snapshot`). ROW EXCLUSIVE waits for
     // running exports and makes queued ones wait for this commit, so an
@@ -938,11 +931,13 @@ async fn open_erase_bookkeeping(
     owner: OwnerId,
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
-    // The global lifecycle fence is acquired by `begin_bulk_erase_tx` before
-    // this selection. It protects original-publication provenance against
-    // checked host UoWs through commit. The following scope fence then keeps
-    // the core selection exact while preserving different-source concurrency
-    // for direct storage admissions that do not carry host lifecycle state.
+    // The owner fence below is the first lock of the erase. It protects
+    // original-publication provenance against checked host UoWs through
+    // commit: a check takes the per-Fact target fence this erase takes for
+    // every origin it revokes. The scope fence keeps the core selection exact
+    // while preserving different-source concurrency for direct storage
+    // admissions that do not carry host lifecycle state, and no other
+    // owner's write waits.
     //
     // Selecting first and revalidating afterwards was the earlier shape, and
     // it could not make progress under load. The window between the selection
@@ -1989,35 +1984,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bulk_erase_bounds_the_first_global_fence_wait_and_releases_the_tx() {
+    async fn bulk_erase_bounds_its_owner_fence_wait_and_fences_no_other_owner() {
         use std::time::Duration;
 
         use crate::test_fixtures::fresh_pg;
-        use proxima_core::StorageError;
+        use proxima_core::{StorageError, UserId};
         use proxima_pg_testkit::drop_db;
 
-        let (pg, database) = fresh_pg("owner_erase_global_lock_timeout").await;
+        let (pg, database) = fresh_pg("owner_erase_owner_lock_timeout").await;
         let pool = pg.pool_for_tests();
         let platform = pg.platform_scope_for_host();
+        let owner = proxima_core::OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+        let other = proxima_core::OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let mut blocker = pool.begin().await.expect("begin shared-fence blocker");
-        crate::access::owner_columns::lock_host_lifecycle_fence_shared_tx(&mut blocker)
+        super::lock_owner_fence_shared_tx(&mut blocker, &owner)
             .await
-            .expect("hold the lifecycle fence shared");
+            .expect("hold the owner fence shared");
 
+        let mut tx = super::begin_bulk_erase_tx(pool, &platform)
+            .await
+            .expect("the erase transaction begins without any lock");
         let attempt = tokio::time::timeout(
             Duration::from_secs(8),
-            super::begin_bulk_erase_tx(pool, &platform),
+            super::open_erase_bookkeeping(
+                &mut tx,
+                pg.surfaces(),
+                owner,
+                super::SelectionScope::Owner,
+            ),
         )
         .await
-        .expect("the first global fence wait is bounded by lock_timeout");
+        .expect("the owner fence wait is bounded by lock_timeout");
         assert!(
             matches!(attempt, Err(StorageError::Retryable(_))),
             "the waiter returns a retryable lock conflict, got {attempt:?}"
         );
-        drop(attempt);
+        drop(tx);
+
+        // Another owner's erase is not held up by the first owner's fence.
+        let mut tx = super::begin_bulk_erase_tx(pool, &platform)
+            .await
+            .expect("begin the other owner's erase");
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            super::open_erase_bookkeeping(
+                &mut tx,
+                pg.surfaces(),
+                other,
+                super::SelectionScope::Owner,
+            ),
+        )
+        .await
+        .expect("another owner's fence is free")
+        .expect("the other owner's erase opens");
+        tx.rollback().await.expect("release the other erase");
 
         blocker.rollback().await.expect("release shared fence");
-        let tx = super::begin_bulk_erase_tx(pool, &platform)
+        let mut tx = super::begin_bulk_erase_tx(pool, &platform)
+            .await
+            .expect("a fresh attempt begins");
+        super::open_erase_bookkeeping(&mut tx, pg.surfaces(), owner, super::SelectionScope::Owner)
             .await
             .expect("a fresh attempt acquires the fence after release");
         tx.commit().await.expect("empty retry transaction commits");
