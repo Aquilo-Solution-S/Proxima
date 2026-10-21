@@ -19,7 +19,7 @@ use crate::error::BlobError;
 pub(super) enum LengthExpectation {
     /// The upload row declared this length. Anything else is a mismatch, and
     /// the read stops one byte past the declaration.
-    Declared(i64),
+    Declared(u64),
     /// Nothing to enforce: read bounded only by the configured cap.
     CapOnly,
 }
@@ -73,7 +73,7 @@ pub(super) async fn hash_uploaded_object(
     let mut sha256_hasher = Sha256::new();
     let mut bytes = Vec::new();
     let declared = match expected {
-        LengthExpectation::Declared(len) => Some(u64::try_from(len).unwrap_or(0)),
+        LengthExpectation::Declared(len) => Some(len),
         LengthExpectation::CapOnly => None,
     };
     if let Some(declared) = declared
@@ -117,7 +117,7 @@ pub(super) async fn hash_uploaded_object(
             )));
         }
         if let LengthExpectation::Declared(expected_byte_len) = expected
-            && byte_len > declared.unwrap_or(0)
+            && byte_len > expected_byte_len
         {
             return Err(BlobError::State(format!(
                 "uploaded byte length {byte_len} does not match expected {expected_byte_len}"
@@ -128,7 +128,7 @@ pub(super) async fn hash_uploaded_object(
         }
     }
     if let LengthExpectation::Declared(expected_byte_len) = expected
-        && i64::try_from(byte_len).unwrap_or(i64::MAX) != expected_byte_len
+        && byte_len != expected_byte_len
     {
         return Err(BlobError::State(format!(
             "uploaded byte length {byte_len} does not match expected {expected_byte_len}"
@@ -204,7 +204,7 @@ mod tests {
         let input: &'static [u8] = b"tiny";
         let error = hash_uploaded_object(
             aws_sdk_s3::primitives::ByteStream::from_static(input),
-            LengthExpectation::Declared(i64::MAX),
+            LengthExpectation::Declared(1 << 62),
             u64::MAX,
             Retain::Bytes,
         )

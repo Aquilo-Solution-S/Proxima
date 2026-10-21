@@ -21,6 +21,7 @@ use super::keys::{
 };
 use super::live_upload::with_live_blob_upload;
 use super::port::blob_error_to_storage;
+use super::rows::byte_len_from_column;
 
 /// Rows read per round trip.
 ///
@@ -205,7 +206,8 @@ impl CitedBlobStore {
                     outcome.missing_sample.push(CitedBlobMissingObject {
                         cited_object_id: row.cited_object_id,
                         object_key: row.object_key.clone(),
-                        byte_len: u64::try_from(row.byte_len).unwrap_or(0),
+                        byte_len: byte_len_from_column(row.byte_len)
+                            .map_err(blob_error_to_storage)?,
                         filename: row.filename.clone(),
                     });
                 }
@@ -292,7 +294,8 @@ impl CitedBlobStore {
                 if outcome.missing_sample.len() < MAX_RECONCILE_SAMPLE {
                     outcome.missing_sample.push(CitedBlobOwnerMissingObject {
                         cited_object_id: row.cited_object_id,
-                        byte_len: u64::try_from(row.byte_len).unwrap_or(0),
+                        byte_len: byte_len_from_column(row.byte_len)
+                            .map_err(blob_error_to_storage)?,
                         filename: row.filename.clone(),
                     });
                 }
