@@ -1514,7 +1514,6 @@ async fn sweep_stale_on(conn: &mut PgConnection) -> Result<usize, sqlx::Error> {
              datname LIKE 'proxima\\_%' ESCAPE '\\'
              OR datname LIKE 'pub\\_%' ESCAPE '\\'
            )
-           AND datname NOT LIKE 'proxima\\_tmpl\\_core\\_%' ESCAPE '\\'
            AND NOT EXISTS (
              SELECT 1 FROM pg_stat_activity a WHERE a.datname = pg_database.datname
            )",
@@ -2231,13 +2230,20 @@ mod tests {
         // UUID v7 older than its grace. A template's last segment is 16 hex
         // digits, whatever the hash.
         let far_future = OffsetDateTime::now_utc() + time::Duration::days(3650);
-        for prefix in ["host_", "proxima_split_core_", "a_b_"] {
-            let family = TemplateFamily::new(prefix).expect("family");
-            for hash in [0, 1, 0xdead_beef_dead_beef, u64::MAX, 0x0192_8f5a_0000_0000] {
-                let name = family.template_name(hash);
-                assert!(!name_is_stale_clone(&name, far_future), "{name}");
-                assert!(name.len() <= 63, "{name}");
-            }
+        let hashes = [0, 1, 0xdead_beef_dead_beef, u64::MAX, 0x0192_8f5a_0000_0000];
+        let host_families = ["host_", "proxima_split_core_", "a_b_"]
+            .map(|prefix| TemplateFamily::new(prefix).expect("family"));
+        let names = host_families
+            .iter()
+            .flat_map(|family| hashes.map(|hash| family.template_name(hash)))
+            .chain(
+                BUILTIN_FAMILIES
+                    .into_iter()
+                    .flat_map(|prefix| hashes.map(move |hash| format!("{prefix}{hash:016x}"))),
+            );
+        for name in names {
+            assert!(!name_is_stale_clone(&name, far_future), "{name}");
+            assert!(name.len() <= 63, "{name}");
         }
     }
 }
