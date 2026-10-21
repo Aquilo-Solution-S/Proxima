@@ -6,7 +6,6 @@
 //! with shared listener-level Host and Origin validation. rmcp retains its
 //! own `/mcp` DNS-rebinding guard as defense in depth.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,21 +15,14 @@ use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use http_body_util::Limited;
-use proxima_core::RevalidationConfig;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService,
     session::local::{LocalSessionManager, SessionConfig},
 };
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::McpServerError;
-use crate::auth::McpEdgeAuth;
 use crate::handler::DynamicHandler;
-use crate::security::{
-    HostAllowlist, OriginAllowlist, assert_loopback, cors_layer, host_guard_layer,
-    mcp_auth_layer_with_config,
-};
+use crate::security::{HostAllowlist, OriginAllowlist, cors_layer, host_guard_layer};
 use crate::server::McpToolHost;
 
 /// The rmcp service `/mcp` is served by ([`streamable_http_service`]).
@@ -87,71 +79,23 @@ pub fn streamable_http_service_with_transport(
     )
 }
 
-/// # Errors
-///
-/// Returns loopback validation, TCP bind, or HTTP server failures.
-///
-/// `auth` is required so each MCP request can be matched against the
-/// host bearer path; unrecognized token prefixes fail closed before host auth.
-pub async fn serve_streamable_http(
-    addr: SocketAddr,
-    server: McpToolHost,
-    allowlist: OriginAllowlist,
-    auth: Arc<McpEdgeAuth>,
-) -> Result<(JoinHandle<Result<(), McpServerError>>, SocketAddr), McpServerError> {
-    serve_streamable_http_with_revalidation(
-        addr,
-        server,
-        allowlist,
-        auth,
-        RevalidationConfig::default(),
-    )
-    .await
-}
-
-/// # Errors
-///
-/// Returns loopback validation, TCP bind, or HTTP server failures.
-pub async fn serve_streamable_http_with_revalidation(
-    addr: SocketAddr,
-    server: McpToolHost,
-    allowlist: OriginAllowlist,
-    auth: Arc<McpEdgeAuth>,
-    revalidation: RevalidationConfig,
-) -> Result<(JoinHandle<Result<(), McpServerError>>, SocketAddr), McpServerError> {
-    assert_loopback(&addr)?;
-
-    let cancellation_token = CancellationToken::new();
-    // These helpers bind loopback only (asserted above), so the shared policy
-    // contains exactly the three loopback authorities.
-    let host_allowlist = HostAllowlist::default();
-    let service = streamable_http_service(server, &allowlist, &host_allowlist, &cancellation_token);
-    // Layer order is bottom-up (the last `.layer` is outermost): the
-    // body-size guard runs first and 413s oversized requests before auth
-    // or JSON parsing, then the shared Host guard, listener-wide CORS/Origin
-    // guard, auth, and finally rmcp's own Host/Origin guard.
-    // Native CLI clients commonly omit Origin and keep the bearer path.
-    let app = axum::Router::new()
-        .nest_service(crate::oauth::MCP_PATH, service)
-        .layer(mcp_auth_layer_with_config(auth, revalidation))
-        .layer(cors_layer(allowlist))
-        .layer(host_guard_layer(host_allowlist))
-        .layer(middleware::from_fn(enforce_body_limit));
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    let bound_addr = listener.local_addr()?;
-    tracing::info!(addr = %bound_addr, "mcp listening");
-
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                cancellation_token.cancelled_owned().await;
-            })
-            .await
-            .map_err(|err| McpServerError::Axum(err.to_string()))
-    });
-
-    Ok((handle, bound_addr))
+/// The listener-wide guards over a router whose routes already carry their
+/// own authentication, in the one order they are correct in. Layers run
+/// outermost first: the body cap 413s an oversized request before anything
+/// parses it, then the Host guard, then CORS/Origin. Authentication is applied
+/// to the router before this call, so it runs after all three. Native CLI
+/// clients commonly omit `Origin` and keep the bearer path.
+#[must_use = "serve the returned router; the guards apply to it"]
+pub fn guard_listener(
+    router: axum::Router,
+    origins: OriginAllowlist,
+    hosts: HostAllowlist,
+    max_body_bytes: usize,
+) -> axum::Router {
+    router
+        .layer(cors_layer(origins))
+        .layer(host_guard_layer(hosts))
+        .layer(body_limit_layer(max_body_bytes))
 }
 
 /// Default cap on the accepted request-body size. Sits generously above the
@@ -287,24 +231,25 @@ mod tests {
     use proxima_core::RevalidationConfig;
     use tower::ServiceExt;
 
-    use super::{MAX_REQUEST_BODY_BYTES, enforce_body_limit};
+    use super::{MAX_REQUEST_BODY_BYTES, enforce_body_limit, guard_listener};
     use crate::auth::McpEdgeAuth;
-    use crate::security::{cors_layer, default_allowlist, mcp_auth_layer_with_config};
+    use crate::security::{HostAllowlist, default_allowlist, mcp_auth_layer_with_config};
 
-    /// Relevant production stack order: body-limit outermost, then CORS and
-    /// auth over an OK `/mcp` stub. Auth is headless (rejects every bearer),
-    /// so any request that reaches auth returns 401 — letting us prove the
-    /// body guard runs first.
+    /// The production stack over an OK `/mcp` stub. Auth is headless (rejects
+    /// every bearer), so any request that reaches auth returns 401 — letting
+    /// us prove the guards run first.
     fn guarded_app() -> Router {
-        let allowlist = default_allowlist();
-        Router::new()
-            .route("/mcp", any(|| async { StatusCode::OK }))
-            .layer(mcp_auth_layer_with_config(
-                Arc::new(McpEdgeAuth::headless()),
-                RevalidationConfig::default(),
-            ))
-            .layer(cors_layer(allowlist))
-            .layer(axum::middleware::from_fn(enforce_body_limit))
+        guard_listener(
+            Router::new()
+                .route("/mcp", any(|| async { StatusCode::OK }))
+                .layer(mcp_auth_layer_with_config(
+                    Arc::new(McpEdgeAuth::headless()),
+                    RevalidationConfig::default(),
+                )),
+            default_allowlist(),
+            HostAllowlist::default(),
+            MAX_REQUEST_BODY_BYTES,
+        )
     }
 
     // An over-cap declared Content-Length is 413'd before auth.
@@ -343,12 +288,25 @@ mod tests {
         assert_eq!(app.oneshot(within).await.unwrap().status(), StatusCode::OK);
     }
 
+    // A foreign Host is refused before auth, whatever the bearer.
+    #[tokio::test]
+    async fn foreign_host_is_rejected_before_auth() {
+        let request = Request::builder()
+            .uri("/mcp")
+            .header("Host", "evil.example")
+            .body(Body::from("{}"))
+            .unwrap();
+        let status = guarded_app().oneshot(request).await.unwrap().status();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
     // A small body flows through the guard and is then handled by auth.
     #[tokio::test]
     async fn in_limit_request_without_bearer_reaches_auth() {
         let app = guarded_app();
         let request = Request::builder()
             .uri("/mcp")
+            .header("Host", "localhost")
             .header("Origin", "http://localhost")
             .body(Body::from("{}"))
             .unwrap();

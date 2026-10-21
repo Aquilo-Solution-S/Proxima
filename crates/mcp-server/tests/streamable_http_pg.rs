@@ -1,4 +1,4 @@
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -6,15 +6,12 @@ use std::time::Duration;
 mod common;
 
 use async_trait::async_trait;
-use common::{create_db, drop_db, initialize, initialized, split_role_urls};
+use common::{create_db, initialize, initialized, split_role_urls};
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, OwnerId,
     RevalidationConfig,
 };
-use proxima_mcp_server::{
-    McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http,
-    serve_streamable_http_with_revalidation,
-};
+use proxima_mcp_server::{McpEdgeAuth, McpToolHost};
 use serde_json::json;
 use tokio::task::JoinHandle;
 
@@ -182,25 +179,6 @@ async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std:
 }
 
 #[tokio::test]
-async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = create_db().await?;
-    let (runtime_url, platform_url) = split_role_urls(&db_name).await?;
-    let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_urls(&runtime_url, &platform_url, registry, 0).await?;
-    let bind: SocketAddr = "0.0.0.0:0".parse()?;
-    let auth_store = Arc::new(McpEdgeAuth::headless());
-    let err = serve_streamable_http(bind, server, default_allowlist(), auth_store)
-        .await
-        .expect_err("must refuse non-loopback");
-    assert!(matches!(
-        err,
-        proxima_mcp_server::McpServerError::NonLoopbackBind(_)
-    ));
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-#[tokio::test]
 async fn host_bearer_sse_get_closes_at_identity_expiry() -> Result<(), Box<dyn std::error::Error>> {
     let auth = Arc::new(TestHostAuth::new(nil_owner(), Some(Duration::from_secs(2))));
     let (handle, addr, db_name) =
@@ -303,14 +281,7 @@ async fn start_host_auth_server(
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_urls(&runtime_url, &platform_url, registry, 0).await?;
     let auth_store = Arc::new(McpEdgeAuth::headless().with_host(authenticator));
-    let (handle, addr) = serve_streamable_http_with_revalidation(
-        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
-        server,
-        default_allowlist(),
-        auth_store,
-        revalidation,
-    )
-    .await?;
+    let (handle, addr) = common::serve_loopback(server, auth_store, revalidation).await?;
     Ok((handle, addr, db_name))
 }
 

@@ -167,7 +167,7 @@ impl Engine {
     /// engine starts without an MCP server (`mcp_url()` stays `None`)
     /// — fine for tests and headless callers that don't need MCP.
     /// Host binaries wire a concrete listener
-    /// backed by `proxima_mcp_server::serve_streamable_http`.
+    /// serving `proxima_mcp_server::streamable_http_service`.
     #[must_use]
     pub fn with_mcp_listener(mut self, listener: Arc<dyn EngineMcpListener>) -> Self {
         self.mcp_listener = Some(listener);

@@ -40,7 +40,6 @@ pub use session::{McpSessionBindings, owner_key, parse_owner_key};
 pub use tool_list::ToolListNotifier;
 pub use transport::{
     BodyLimitLayer, DEFAULT_PROGRESS_HEARTBEAT, MAX_REQUEST_BODY_BYTES, McpStreamableService,
-    McpTransportConfig, body_limit_layer, enforce_body_limit, serve_streamable_http,
-    serve_streamable_http_with_revalidation, streamable_http_service,
-    streamable_http_service_with_transport,
+    McpTransportConfig, body_limit_layer, enforce_body_limit, guard_listener,
+    streamable_http_service, streamable_http_service_with_transport,
 };

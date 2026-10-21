@@ -172,6 +172,44 @@ pub async fn create_core_db() -> Result<String, Box<dyn std::error::Error>> {
 #[allow(dead_code)]
 pub type ServeHandle = tokio::task::JoinHandle<Result<(), proxima_mcp_server::McpServerError>>;
 
+/// Serve `server` on a loopback port behind the production listener stack:
+/// bearer auth on `/mcp`, wrapped by [`proxima_mcp_server::guard_listener`]
+/// with the loopback Host policy and the default Origin allowlist.
+#[allow(dead_code)]
+pub async fn serve_loopback(
+    server: proxima_mcp_server::McpToolHost,
+    auth: std::sync::Arc<proxima_mcp_server::McpEdgeAuth>,
+    revalidation: proxima_core::RevalidationConfig,
+) -> Result<(ServeHandle, std::net::SocketAddr), Box<dyn std::error::Error>> {
+    let origins = proxima_mcp_server::default_allowlist();
+    let hosts = proxima_mcp_server::HostAllowlist::default();
+    let service = proxima_mcp_server::streamable_http_service(
+        server,
+        &origins,
+        &hosts,
+        &tokio_util::sync::CancellationToken::new(),
+    );
+    let app = proxima_mcp_server::guard_listener(
+        axum::Router::new()
+            .nest_service(proxima_mcp_server::MCP_PATH, service)
+            .layer(proxima_mcp_server::mcp_auth_layer_with_config(
+                auth,
+                revalidation,
+            )),
+        origins,
+        hosts,
+        proxima_mcp_server::MAX_REQUEST_BODY_BYTES,
+    );
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .map_err(|err| proxima_mcp_server::McpServerError::Axum(err.to_string()))
+    });
+    Ok((handle, addr))
+}
+
 /// Boot a streamable-HTTP server on a fresh database. Returns the serve
 /// task, the bound loopback address, and the database name to pass to
 /// [`stop_server`].
@@ -188,11 +226,10 @@ pub async fn start_server(
         0,
     )
     .await?;
-    let (handle, addr) = proxima_mcp_server::serve_streamable_http(
-        std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), 0),
+    let (handle, addr) = serve_loopback(
         server,
-        proxima_mcp_server::default_allowlist(),
         auth_store,
+        proxima_core::RevalidationConfig::default(),
     )
     .await?;
     Ok((handle, addr, db_name))

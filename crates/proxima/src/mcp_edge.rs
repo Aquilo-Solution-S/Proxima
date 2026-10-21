@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 use proxima_core::RevalidationConfig;
 use proxima_mcp_server::{
     HostAllowlist, McpEdgeAuth, McpStreamableService, McpToolHost, McpTransportConfig,
-    OriginAllowlist, ResourceServerMetadata, body_limit_layer, cors_layer, host_guard_layer,
+    OriginAllowlist, ResourceServerMetadata, guard_listener,
     streamable_http_service_with_transport,
 };
 use tokio_util::sync::CancellationToken;
@@ -125,10 +125,12 @@ impl McpEdge {
         if let Some(metadata) = &self.resource_metadata {
             router = router.merge(proxima_mcp_server::protected_resource_router(metadata));
         }
-        router
-            .layer(cors_layer(self.origin_allowlist.clone()))
-            .layer(host_guard_layer(self.host_allowlist.clone()))
-            .layer(body_limit_layer(self.transport.max_request_body_bytes))
+        guard_listener(
+            router,
+            self.origin_allowlist.clone(),
+            self.host_allowlist.clone(),
+            self.transport.max_request_body_bytes,
+        )
     }
 }
 
@@ -153,16 +155,17 @@ where
     S::Response: IntoResponse,
     S::Future: Send + 'static,
 {
-    Router::new()
+    let router = Router::new()
         .nest_service(proxima_mcp_server::MCP_PATH, mcp_service)
         .layer(proxima_mcp_server::mcp_auth_layer_with_config(
             edge_auth,
             revalidation,
         ))
-        .merge(app_router)
-        .layer(cors_layer(allowlist))
-        .layer(host_guard_layer(host_allowlist))
-        .layer(axum::middleware::from_fn(
-            proxima_mcp_server::enforce_body_limit,
-        ))
+        .merge(app_router);
+    guard_listener(
+        router,
+        allowlist,
+        host_allowlist,
+        proxima_mcp_server::MAX_REQUEST_BODY_BYTES,
+    )
 }

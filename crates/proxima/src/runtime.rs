@@ -20,7 +20,7 @@ use proxima_core::{
 use proxima_core::{EngineHandle, OwnerId};
 use proxima_mcp_server::{
     HostAllowlist, McpEdgeAuth, McpToolHost, McpTransportConfig, OriginAllowlist, assert_loopback,
-    body_limit_layer, cors_layer, default_allowlist, host_guard_layer,
+    default_allowlist, guard_listener,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -1026,18 +1026,19 @@ where
     S::Response: IntoResponse,
     S::Future: Send + 'static,
 {
-    Router::new()
+    let router = Router::new()
         .nest_service(proxima_mcp_server::MCP_PATH, mcp_service)
         .merge(app_router)
         .layer(proxima_mcp_server::mcp_auth_layer_with_config(
             edge_auth,
             revalidation,
-        ))
-        .layer(cors_layer(allowlist))
-        .layer(host_guard_layer(host_allowlist))
-        .layer(axum::middleware::from_fn(
-            proxima_mcp_server::enforce_body_limit,
-        ))
+        ));
+    guard_listener(
+        router,
+        allowlist,
+        host_allowlist,
+        proxima_mcp_server::MAX_REQUEST_BODY_BYTES,
+    )
 }
 
 /// Erase the concrete store once, then expose its disjoint capabilities over
@@ -1253,23 +1254,20 @@ fn build_router<A: FlavorApp>(
     if let Some(md) = &edge.resource_metadata {
         router = router.merge(proxima_mcp_server::protected_resource_router(md));
     }
-    // Apply listener-wide layers only after anonymous OAuth metadata has been
-    // merged. Body-size rejection remains outermost; Host validation then runs
-    // before CORS and bearer auth. CORS covers public metadata and preflights;
-    // bearer auth remains inside it on protected routes. Health probes sit
-    // outside the Host guard: an orchestrator probes the pod address, not a
+    // Apply listener-wide guards only after anonymous OAuth metadata has been
+    // merged, so CORS covers public metadata and preflights. Health probes sit
+    // outside the guards: an orchestrator probes the pod address, not a
     // public host, and the probes disclose nothing a rebinding page could use.
     // Everything else, the fallback included, falls through to the guarded
     // router; a `merge` here would replace its guarded fallback with an
     // unguarded one.
-    let guarded = router
-        .layer(cors_layer(edge.origin_allowlist.clone()))
-        .layer(host_guard_layer(edge.host_allowlist.clone()));
-    health_router
-        .fallback_service(guarded)
-        .layer(body_limit_layer(
-            config.mcp_transport.max_request_body_bytes,
-        ))
+    let guarded = guard_listener(
+        router,
+        edge.origin_allowlist.clone(),
+        edge.host_allowlist.clone(),
+        config.mcp_transport.max_request_body_bytes,
+    );
+    health_router.fallback_service(guarded)
 }
 
 /// The `/v1` REST surface, merged inside the shared auth, Host, and body-limit

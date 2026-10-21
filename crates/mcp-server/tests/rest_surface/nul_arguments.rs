@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::http::{Method, StatusCode, header};
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError, ToolEffect};
 use proxima_core::{AuthError, AuthPath, Authenticator, AuthzContext, Credentials};
-use proxima_mcp_server::{McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http};
+use proxima_mcp_server::{McpEdgeAuth, McpToolHost};
 use serde_json::{Value, json};
 
 use super::{Answer, FlavorRegistry, FlavorServices, McpAuthContext, app, call};
@@ -108,11 +108,10 @@ async fn observe_transports() -> TestResult<Vec<Observation>> {
     };
     let router = app(host.clone());
     let auth = McpEdgeAuth::headless().with_host(Arc::new(FixtureAuth(authz)));
-    let (task, address) = serve_streamable_http(
-        "127.0.0.1:0".parse()?,
+    let (task, address) = common::serve_loopback(
         host,
-        default_allowlist(),
         Arc::new(auth),
+        proxima_core::RevalidationConfig::default(),
     )
     .await?;
     let server = ServerGuard(Some(task));
