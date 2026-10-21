@@ -151,6 +151,29 @@ async fn digest_can_use_core_superseding_derived_authoring() {
         "the revision is the live head and the superseded digest is not"
     );
 
+    // A read of the superseded version at its series head answers with the
+    // revision; the exact read still answers with the version as written.
+    for (at, expected) in [
+        (proxima::host::ReadAt::SeriesHead, new),
+        (proxima::host::ReadAt::Version, old),
+    ] {
+        let read = h
+            .engine
+            .get_memory(
+                &authz,
+                &proxima_core::GetMemoryReadRequest {
+                    memory_id: old,
+                    include_neighbor_edges: false,
+                    at,
+                },
+            )
+            .await
+            .expect("memory read");
+        let snapshot = read.memory.expect("the version is readable");
+        assert_eq!(snapshot.memory_id, expected);
+        assert_eq!(snapshot.series, old_handle);
+    }
+
     // The revision keeps its edges: one origin, two references.
     let (origins, refs): (Vec<Uuid>, Vec<Uuid>) =
         sqlx::query_as("SELECT origins, refs FROM proxima_core.memory WHERE t = $1")

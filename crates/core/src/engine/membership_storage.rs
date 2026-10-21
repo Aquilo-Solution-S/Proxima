@@ -312,6 +312,15 @@ impl MemoryInspectPort for MembershipStorage {
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
         Ok(Vec::new())
     }
+
+    async fn load_series_head(
+        &self,
+        _scope: Option<&crate::OwnerScope>,
+        _read_owners: &[OwnerId],
+        _memory_id: MemoryId,
+    ) -> Result<Option<MemoryId>, StorageError> {
+        Ok(None)
+    }
 }
 
 #[async_trait::async_trait]

@@ -258,7 +258,10 @@ and sort by timestamp and counter. Start fresh stores for this release.
 
 For a store accessed by flavor workers, register an `OtherStores` port with
 `RuntimeBuilder::other_stores`; the facade wraps it as a typed service with the
-configured timeout. The extra-store transaction is separate from a Proxima
+configured timeout. `OtherStores::read` takes a `ReadAt`: `Version` answers
+the exact memory asked for, `SeriesHead` the newest version of its series the
+caller may read, and `RemoteMemory::series` names that series. Goal evidence
+names a remote memory through the same owner-authorized read. The extra-store transaction is separate from a Proxima
 `UnitOfWork`; use host-state participation when the change must be atomic with
 a Fact write. A flavor never queries `proxima_core` directly.
 

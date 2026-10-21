@@ -1,4 +1,4 @@
-use super::{EntityKind, GoalId, GoalState, MemoryId, SchemaId, SchemaVersion};
+use super::{GoalId, GoalState, MemoryId, SchemaId, SchemaVersion};
 
 #[derive(Debug)]
 pub(super) struct InsertedGoal {
@@ -21,7 +21,6 @@ pub(super) struct StoredGoal {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct EvidenceTarget {
-    pub(super) kind: EntityKind,
     pub(super) memory_id: MemoryId,
 }
 

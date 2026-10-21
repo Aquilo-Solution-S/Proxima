@@ -165,7 +165,7 @@ async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std:
                 .and_then(serde_json::Value::as_str)
         })
         .collect();
-    assert!(template_uris.contains(&"proxima://memory/{id}{?expand_neighbors}"));
+    assert!(template_uris.contains(&"proxima://memory/{id}{?expand_neighbors,version}"));
     assert!(template_uris.contains(&"proxima://memories{?ids}"));
     assert!(
         template_uris.contains(&"proxima://memory/{id}/lineage{?direction,depth,limit,cursor}")

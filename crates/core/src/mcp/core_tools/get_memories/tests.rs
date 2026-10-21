@@ -69,6 +69,7 @@ impl OtherStores for ControlledStore {
         &'a self,
         caller: StoreCaller<'a>,
         id: Uuid,
+        _at: crate::storage_ports::other_stores::ReadAt,
     ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
         Box::pin(async move {
             assert_eq!(caller.owner, self.owner, "remote reads retain the caller");
@@ -120,6 +121,15 @@ impl MemoryInspectPort for LocalStore {
             .map(|_| self.memory.clone())
             .collect())
     }
+
+    async fn load_series_head(
+        &self,
+        _scope: Option<&OwnerScope>,
+        _read_owners: &[OwnerId],
+        _id: MemoryId,
+    ) -> Result<Option<MemoryId>, StorageError> {
+        Ok(None)
+    }
 }
 
 struct Fixture {
@@ -135,6 +145,7 @@ fn fixture() -> Fixture {
     let local = Arc::new(LocalStore {
         memory: MemorySnapshot {
             memory_id: MemoryId::new(crate::new_memory_uuid(0)),
+            series: crate::SeriesHandle::new(crate::new_memory_uuid(0)),
             kind: EntityKind::Fact,
             schema_id: crate::SchemaId::new("test/local-note".into()),
             schema_version: crate::SchemaVersion::new(1),
@@ -195,14 +206,12 @@ async fn started_reads(
 
 fn memory(id: Uuid) -> RemoteMemory {
     RemoteMemory {
-        handle: id,
         writer: REMOTE_WRITER,
-        kind: EntityKind::Fact,
         schema_id: "remote/note".into(),
         title: Some("remote title".into()),
         body: "remote body".into(),
-        created_at: time::OffsetDateTime::UNIX_EPOCH,
         tags: vec!["remote".into()],
+        ..RemoteMemory::fixture(id)
     }
 }
 

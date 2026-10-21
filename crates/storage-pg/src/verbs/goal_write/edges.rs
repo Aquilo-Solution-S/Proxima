@@ -1,7 +1,4 @@
-use super::{
-    EdgeEndpoint, EntityKind, EvidenceTarget, GoalId, MemoryId, OwnerId, Postgres, StorageError,
-    Transaction,
-};
+use super::{EvidenceTarget, GoalId, MemoryId, OwnerId, Postgres, StorageError, Transaction};
 
 /// The reference rows a Goal's own topology implies.
 ///
@@ -20,15 +17,6 @@ pub(super) async fn assert_goal_topology_references(
     dependencies: &[GoalId],
     evidence: &[EvidenceTarget],
 ) -> Result<usize, StorageError> {
-    let mut targets =
-        Vec::with_capacity(usize::from(assignment.is_some()) + dependencies.len() + evidence.len());
-    targets.extend(assignment.map(|id| EdgeEndpoint::memory(EntityKind::Perspective, id)));
-    targets.extend(dependencies.iter().copied().map(EdgeEndpoint::goal));
-    targets.extend(
-        evidence
-            .iter()
-            .map(|target| EdgeEndpoint::memory(target.kind, target.memory_id)),
-    );
     let _ = (tx, owner, goal_id);
-    Ok(targets.len())
+    Ok(usize::from(assignment.is_some()) + dependencies.len() + evidence.len())
 }

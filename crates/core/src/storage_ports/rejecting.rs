@@ -291,6 +291,15 @@ impl MemoryInspectPort for RejectingStorage {
     ) -> Result<Vec<MemorySnapshot>, StorageError> {
         Ok(Vec::new())
     }
+
+    async fn load_series_head(
+        &self,
+        _scope: Option<&crate::OwnerScope>,
+        _read_owners: &[OwnerId],
+        _memory_id: crate::MemoryId,
+    ) -> Result<Option<crate::MemoryId>, StorageError> {
+        Ok(None)
+    }
 }
 
 #[async_trait::async_trait]

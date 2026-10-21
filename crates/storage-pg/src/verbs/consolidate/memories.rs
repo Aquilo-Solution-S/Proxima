@@ -18,7 +18,7 @@ pub(crate) async fn load_memory_by_id_on_connection(
     schemas: &[MemorySchemaSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
     let raw: Option<StoredMemoryRow> = sqlx::query_as(
-        "SELECT m.t, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
+        "SELECT m.t, m.handle, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
     ).bind(memory_id.into_inner()).fetch_optional(&mut *connection).await.map_err(map_err)?;
     let Some(row) = raw.map(StoredMemoryRow::into_hydration) else {
         return Ok(None);
@@ -48,13 +48,44 @@ pub(crate) async fn load_memories_by_ids_on_connection(
         .collect();
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
     let raw: Vec<StoredMemoryRow> = sqlx::query_as(
-        "SELECT m.t, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
+        "SELECT m.t, m.handle, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
     ).bind(&owner_ids).bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     let rows = raw
         .into_iter()
         .map(StoredMemoryRow::into_hydration)
         .collect::<Vec<_>>();
     snapshots_from_rows_on_connection(connection, pg_sidecars, &rows, schemas).await
+}
+
+/// The newest version of the series of one memory `read_owners` can read.
+///
+/// # Errors
+/// Returns storage errors from query execution.
+pub(crate) async fn load_series_head_on_connection(
+    connection: &mut PgConnection,
+    read_owners: &[proxima_core::OwnerId],
+    memory_id: MemoryId,
+) -> Result<Option<MemoryId>, StorageError> {
+    if read_owners.is_empty() {
+        return Ok(None);
+    }
+    let owner_ids: Vec<uuid::Uuid> = read_owners
+        .iter()
+        .copied()
+        .map(proxima_core::OwnerId::into_inner)
+        .collect();
+    let head: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT h.t
+           FROM proxima_core.memory m
+           JOIN proxima_core.memory_head h ON h.handle = m.handle
+          WHERE m.t = $1 AND m.owner_id = ANY($2::uuid[])",
+    )
+    .bind(memory_id.into_inner())
+    .bind(&owner_ids)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(map_err)?;
+    Ok(head.map(MemoryId::new))
 }
 
 /// # Errors
@@ -154,6 +185,7 @@ pub(crate) async fn load_memory_graph_payloads_on_connection(
 #[derive(sqlx::FromRow)]
 struct StoredMemoryRow {
     t: uuid::Uuid,
+    handle: uuid::Uuid,
     kind: PgMemoryKind,
     schema_id: String,
     owner_id: uuid::Uuid,
@@ -167,6 +199,7 @@ impl StoredMemoryRow {
     fn into_hydration(self) -> MemoryHydrationRow {
         MemoryHydrationRow {
             memory_id: self.t,
+            series: proxima_core::SeriesHandle::new(self.handle),
             kind: self.kind.into(),
             schema_id: self.schema_id,
             owner: OwnerId::new(self.owner_id),
@@ -183,6 +216,7 @@ impl StoredMemoryRow {
 #[derive(Debug)]
 struct MemoryHydrationRow {
     memory_id: uuid::Uuid,
+    series: proxima_core::SeriesHandle,
     kind: EntityKind,
     schema_id: String,
     owner: OwnerId,
@@ -230,6 +264,7 @@ async fn snapshots_from_rows_on_connection(
         }
         snapshots.push(MemorySnapshot {
             memory_id: id,
+            series: row.series,
             kind: row.kind,
             schema_id: spec.schema_id.clone(),
             schema_version: spec.schema_version,
@@ -330,6 +365,7 @@ mod tests {
             MemoryHydrationRow {
                 writer: crate::test_fixtures::writer(),
                 memory_id: uuid::Uuid::now_v7(),
+                series: proxima_core::SeriesHandle::new(uuid::Uuid::now_v7()),
                 kind: EntityKind::Fact,
                 schema_id: UploadV1::SCHEMA_ID.to_owned(),
                 owner,
@@ -339,6 +375,7 @@ mod tests {
             MemoryHydrationRow {
                 writer: crate::test_fixtures::writer(),
                 memory_id: uuid::Uuid::now_v7(),
+                series: proxima_core::SeriesHandle::new(uuid::Uuid::now_v7()),
                 kind: EntityKind::Fact,
                 schema_id: AgentNoteV1::SCHEMA_ID.to_owned(),
                 owner,

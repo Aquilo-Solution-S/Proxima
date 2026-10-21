@@ -637,23 +637,12 @@ mod tests {
             &'a self,
             _caller: StoreCaller<'a>,
             id: uuid::Uuid,
+            _at: crate::storage_ports::other_stores::ReadAt,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             self.reads.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(1_900)).await;
-                Ok(RemoteRead::Found(RemoteMemory {
-                    handle: id,
-                    writer: crate::WriterAttribution {
-                        by: uuid::Uuid::from_u128(3),
-                        via: None,
-                    },
-                    kind: crate::EntityKind::Fact,
-                    schema_id: "test/fact-v1".into(),
-                    title: None,
-                    body: String::new(),
-                    created_at: time::OffsetDateTime::UNIX_EPOCH,
-                    tags: Vec::new(),
-                }))
+                Ok(RemoteRead::Found(RemoteMemory::fixture(id)))
             })
         }
     }

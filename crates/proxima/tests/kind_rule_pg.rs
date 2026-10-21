@@ -367,6 +367,7 @@ async fn assert_reads(
                 &GetMemoryReadRequest {
                     memory_id: MemoryId::new(t),
                     include_neighbor_edges: true,
+                    at: proxima::host::ReadAt::Version,
                 },
             )
             .await;
@@ -396,6 +397,7 @@ async fn assert_reads(
             &GetMemoryReadRequest {
                 memory_id: fact,
                 include_neighbor_edges: true,
+                at: proxima::host::ReadAt::Version,
             },
         )
         .await?

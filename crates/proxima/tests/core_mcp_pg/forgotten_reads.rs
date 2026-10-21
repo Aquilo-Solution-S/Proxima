@@ -169,6 +169,7 @@ impl proxima::host::OtherStores for ForwardTo {
         &'a self,
         _caller: proxima::host::StoreCaller<'a>,
         id: Uuid,
+        at: proxima::host::ReadAt,
     ) -> futures::future::BoxFuture<
         'a,
         Result<proxima::host::RemoteRead, proxima::host::OtherStoresError>,
@@ -178,12 +179,24 @@ impl proxima::host::OtherStores for ForwardTo {
                 &self.tools,
                 self.authz.clone(),
                 self.owner,
-                &format!("proxima://memory/{id}"),
+                &match at {
+                    proxima::host::ReadAt::Version => format!("proxima://memory/{id}"),
+                    proxima::host::ReadAt::SeriesHead => {
+                        format!("proxima://memory/{id}?version=head")
+                    }
+                },
             )
             .await;
             Ok(match read {
                 Ok(memory) => proxima::host::RemoteRead::Found(proxima::host::RemoteMemory {
-                    handle: id,
+                    handle: memory["handle"]
+                        .as_str()
+                        .and_then(|h| h.parse().ok())
+                        .unwrap_or(id),
+                    series: memory["series"]
+                        .as_str()
+                        .and_then(|h| h.parse().ok())
+                        .unwrap_or(id),
                     writer: proxima_core::WriterAttribution {
                         by: self.owner.into_inner(),
                         via: None,

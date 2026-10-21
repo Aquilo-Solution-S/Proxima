@@ -78,6 +78,9 @@ pub(crate) struct PreparedGoalWrite {
     expected_head_t: Option<Uuid>,
     command: GoalWriteCommand,
     targets: Vec<Uuid>,
+    /// The store this write mints into. Evidence of another number is held by
+    /// another store and was read there when the write named it.
+    store_number: u16,
     write_act_identity: Option<ReservedFactIdentity>,
     close_fact_identity: Option<ReservedFactIdentity>,
     /// The goal-change Fact's reserved identity. Held here only so it joins
@@ -311,6 +314,7 @@ pub(crate) async fn prepare_goal_write(
         expected_head_t,
         command,
         targets,
+        store_number,
         write_act_identity,
         close_fact_identity: None,
         change_fact_identity: None,
@@ -570,7 +574,13 @@ async fn revalidate_prepared_goal_targets(
         prepared.write_act_identity.map(|identity| identity.t),
         prepared.close_fact_identity.map(|identity| identity.t),
     ];
-    validate_goal_targets_live(tx, &prepared.command, &reserved_lifecycle).await?;
+    validate_goal_targets_live(
+        tx,
+        &prepared.command,
+        &reserved_lifecycle,
+        prepared.store_number,
+    )
+    .await?;
     Ok(())
 }
 
@@ -719,6 +729,7 @@ async fn validate_goal_targets_live(
     tx: &mut Transaction<'_, Postgres>,
     draft: &GoalWriteCommand,
     reserved_lifecycle: &[Option<Uuid>; 2],
+    store_number: u16,
 ) -> Result<(), StorageError> {
     // Retained Goal rows may keep forgotten or witnessed pins for historical
     // validity; a new successor is fresh admission and must reauthorize hot,
@@ -745,7 +756,11 @@ async fn validate_goal_targets_live(
             ));
         }
     }
-    for evidence in &draft.evidence_t {
+    for evidence in draft
+        .evidence_t
+        .iter()
+        .filter(|evidence| proxima_core::memory_store_number(**evidence) == store_number)
+    {
         ensure_live_memory_kind(
             tx,
             *evidence,

@@ -269,6 +269,16 @@ pub trait MemoryInspectPort: Send + Sync {
         memory_ids: &[crate::MemoryId],
         schemas: &[MemorySchemaSpec],
     ) -> Result<Vec<MemorySnapshot>, StorageError>;
+
+    /// The newest version of the series `memory_id` belongs to, when
+    /// `memory_id` is readable by `read_owners`. `None` when it is unknown,
+    /// invisible or tombstoned, exactly as for [`Self::load_memories_by_ids`].
+    async fn load_series_head(
+        &self,
+        owner_scope: Option<&OwnerScope>,
+        read_owners: &[OwnerId],
+        memory_id: crate::MemoryId,
+    ) -> Result<Option<crate::MemoryId>, StorageError>;
 }
 
 #[async_trait::async_trait]

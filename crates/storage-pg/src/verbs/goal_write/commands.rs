@@ -3,14 +3,14 @@ use super::{
     DecomposeGoalOutcome, DecomposedGoalOutcome, DraftFromPayload, GoalAuthorship, GoalChange,
     GoalId, GoalState, GoalWriteOutcome, LifecycleWrite, ModifyGoalAtomicRequest, OwnerWritePermit,
     PgPool, PgSidecarRegistryFrozen, PostLockGuard, PreparedGoalInsert, RowColumns, StorageError,
-    SystemOrigin, TransitionGoalAtomicRequest, achieve_replay_declaration, child_draft,
-    create_replay_declaration, decompose_replay_declarations, draft_from_payload,
-    draft_from_stored, insert_or_replay_goal, internal, lifecycle_outcome,
-    load_goal_evidence_exact, load_prior_goal, lock_prepared_goal_writes,
-    modify_replay_declaration, persist_prepared_goal_insert, prepare_goal_insert,
-    record_goal_replay_declaration, require_goal_replay, resolve_decompose_replay_set,
-    resolve_goal_replay, transition_replay_declaration, validate_active_head,
-    validate_evidence_in_owner, validate_goal_achievement, validate_goal_transition,
+    SystemOrigin, TransitionGoalAtomicRequest, achieve_replay_declaration, carried_evidence,
+    child_draft, create_replay_declaration, decompose_replay_declarations, draft_from_payload,
+    draft_from_stored, insert_or_replay_goal, internal, lifecycle_outcome, load_prior_goal,
+    lock_prepared_goal_writes, modify_replay_declaration, persist_prepared_goal_insert,
+    prepare_goal_insert, record_goal_replay_declaration, require_goal_replay,
+    resolve_decompose_replay_set, resolve_goal_replay, transition_replay_declaration,
+    validate_active_head, validate_evidence_in_owner, validate_goal_achievement,
+    validate_goal_transition,
 };
 use crate::error::with_bounded_retry;
 use proxima_core::GoalAssignmentTarget;
@@ -370,13 +370,10 @@ pub(crate) async fn modify_goal_atomic_in_pool(
         crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
-    let carried_or_explicit = match &req.evidence {
-        Some(evidence) => evidence.clone(),
-        None => load_goal_evidence_exact(&mut tx, &req.owner, req.prior_goal_id)
-            .await?
-            .unwrap_or_default(),
+    let evidence = match &req.evidence {
+        Some(evidence) => validate_evidence_in_owner(&mut tx, &req.owner, evidence).await?,
+        None => carried_evidence(&mut tx, &req.owner, req.prior_goal_id, store_number).await?,
     };
-    let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &carried_or_explicit).await?;
     let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
     if prior.state != GoalState::Active {
         return Err(StorageError::ConstraintViolation(

@@ -153,7 +153,11 @@ pub struct RemoteHit {
 /// One remote memory, as read.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteMemory {
+    /// The version this is: the requested one for an exact read, the series
+    /// head for a head read.
     pub handle: Uuid,
+    /// The series the version belongs to; the same on every version of it.
+    pub series: Uuid,
     pub writer: WriterAttribution,
     pub kind: EntityKind,
     pub schema_id: String,
@@ -161,6 +165,29 @@ pub struct RemoteMemory {
     pub body: String,
     pub created_at: time::OffsetDateTime,
     pub tags: Vec<String>,
+}
+
+impl RemoteMemory {
+    /// A readable Fact of its own one-version series, for tests that need a
+    /// valid value and name only the fields they care about.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn fixture(handle: Uuid) -> Self {
+        Self {
+            handle,
+            series: handle,
+            writer: WriterAttribution {
+                by: Uuid::from_u128(3),
+                via: None,
+            },
+            kind: EntityKind::Fact,
+            schema_id: "test/fact-v1".into(),
+            title: None,
+            body: String::new(),
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            tags: Vec::new(),
+        }
+    }
 }
 
 /// A memory of another store that this caller read through the port: what
@@ -175,7 +202,7 @@ pub struct RemoteMemory {
 ///     ReadOrigin { handle, kind: proxima_core::verbs::query::EntityKind::Fact }
 /// }
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadOrigin {
     handle: Uuid,
     kind: EntityKind,
@@ -237,6 +264,16 @@ pub enum OtherStoresError {
     DeadlineExceeded,
 }
 
+/// Which version of a memory's series one read returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadAt {
+    /// The version as written: the one the id names.
+    Version,
+    /// The newest version of the series the id names, as far as this caller
+    /// may read it.
+    SeriesHead,
+}
+
 /// Read access to memory stores beside this one.
 pub trait OtherStores: Send + Sync {
     /// The stores `caller` may read.
@@ -255,11 +292,14 @@ pub trait OtherStores: Send + Sync {
         args: &'a RemoteSearch,
     ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>>;
 
-    /// Read one memory of one store as `caller`.
+    /// Read one memory of one store as `caller`: the version `id` names, or
+    /// the head of its series. [`RemoteMemory::handle`] says which version
+    /// came back, and [`RemoteMemory::series`] its series.
     fn read<'a>(
         &'a self,
         caller: StoreCaller<'a>,
         id: Uuid,
+        at: ReadAt,
     ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>>;
 }
 
@@ -325,7 +365,8 @@ impl OtherStoresService {
     }
 
     /// Read one handle under the time bound; a timeout is
-    /// [`OtherStoresError::Unavailable`].
+    /// [`OtherStoresError::Unavailable`]. An exact read must answer with the
+    /// version asked for; a head read with a version of the asked store.
     ///
     /// # Errors
     ///
@@ -334,17 +375,24 @@ impl OtherStoresService {
         &self,
         caller: StoreCaller<'_>,
         id: Uuid,
+        at: ReadAt,
     ) -> Result<RemoteRead, OtherStoresError> {
-        let read = tokio::time::timeout(self.timeout, self.port.read(caller, id))
+        let read = tokio::time::timeout(self.timeout, self.port.read(caller, id, at))
             .await
             .unwrap_or_else(|_| Err(OtherStoresError::Unavailable("timed out".into())))?;
-        if let RemoteRead::Found(memory) = &read
-            && memory.handle != id
-        {
-            return Err(OtherStoresError::MismatchedMemory {
-                requested: id,
-                returned: memory.handle,
-            });
+        if let RemoteRead::Found(memory) = &read {
+            let answers_the_question = match at {
+                ReadAt::Version => memory.handle == id,
+                ReadAt::SeriesHead => {
+                    crate::memory_store_number(memory.handle) == crate::memory_store_number(id)
+                }
+            };
+            if !answers_the_question {
+                return Err(OtherStoresError::MismatchedMemory {
+                    requested: id,
+                    returned: memory.handle,
+                });
+            }
         }
         Ok(read)
     }
@@ -361,16 +409,18 @@ impl OtherStoresService {
         caller: StoreCaller<'_>,
         id: Uuid,
     ) -> Result<Option<(ReadOrigin, RemoteMemory)>, OtherStoresError> {
-        Ok(match self.read_bounded(caller, id).await? {
-            RemoteRead::Found(memory) => Some((
-                ReadOrigin {
-                    handle: id,
-                    kind: memory.kind,
-                },
-                memory,
-            )),
-            RemoteRead::NotFound | RemoteRead::Erased => None,
-        })
+        Ok(
+            match self.read_bounded(caller, id, ReadAt::Version).await? {
+                RemoteRead::Found(memory) => Some((
+                    ReadOrigin {
+                        handle: id,
+                        kind: memory.kind,
+                    },
+                    memory,
+                )),
+                RemoteRead::NotFound | RemoteRead::Erased => None,
+            },
+        )
     }
 
     /// Read origins under one call-wide deadline and construct witnesses only
@@ -430,9 +480,12 @@ impl OtherStoresService {
                     let result = if tokio::time::Instant::now() >= deadline {
                         Err(OtherStoresError::DeadlineExceeded)
                     } else {
-                        tokio::time::timeout_at(deadline, self.read_bounded(caller, handle))
-                            .await
-                            .unwrap_or(Err(OtherStoresError::DeadlineExceeded))
+                        tokio::time::timeout_at(
+                            deadline,
+                            self.read_bounded(caller, handle, ReadAt::Version),
+                        )
+                        .await
+                        .unwrap_or(Err(OtherStoresError::DeadlineExceeded))
                     };
                     (index, result)
                 })
@@ -678,20 +731,12 @@ mod tests {
             &'a self,
             _caller: StoreCaller<'a>,
             _id: Uuid,
+            _at: ReadAt,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             Box::pin(async {
                 Ok(RemoteRead::Found(RemoteMemory {
-                    handle: Uuid::from_u128(2),
-                    writer: crate::WriterAttribution {
-                        by: Uuid::from_u128(3),
-                        via: None,
-                    },
-                    kind: EntityKind::Fact,
-                    schema_id: "remote/note".into(),
-                    title: None,
                     body: "different memory".into(),
-                    created_at: time::OffsetDateTime::UNIX_EPOCH,
-                    tags: Vec::new(),
+                    ..RemoteMemory::fixture(Uuid::from_u128(2))
                 }))
             })
         }
@@ -733,6 +778,40 @@ mod tests {
             &reads[0],
             Err(OtherStoresError::MismatchedMemory { requested: actual, returned })
                 if *actual == requested && *returned == Uuid::from_u128(2)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_head_read_may_answer_with_another_version_of_the_requested_store_only() {
+        let owner = crate::UserId::new(Uuid::nil());
+        let authz = AuthzContext::for_subject(owner, crate::AuthPath::System);
+        let caller = || StoreCaller {
+            owner: owner.into(),
+            authz: &authz,
+        };
+        let service = OtherStoresService::new(Arc::new(WrongMemoryStore));
+        // The store answers with `from_u128(2)`, a version it issued.
+        let same_store = Uuid::from_u128(1);
+        let head = service
+            .read_bounded(caller(), same_store, ReadAt::SeriesHead)
+            .await
+            .expect("a head read names the version it returns");
+        assert!(matches!(head, RemoteRead::Found(memory) if memory.handle == Uuid::from_u128(2)));
+        let exact = service
+            .read_bounded(caller(), same_store, ReadAt::Version)
+            .await;
+        assert!(matches!(
+            exact,
+            Err(OtherStoresError::MismatchedMemory { .. })
+        ));
+        // An answer issued by a different store is not the head of this series.
+        let other_store = crate::new_memory_uuid(1);
+        let foreign = service
+            .read_bounded(caller(), other_store, ReadAt::SeriesHead)
+            .await;
+        assert!(matches!(
+            foreign,
+            Err(OtherStoresError::MismatchedMemory { .. })
         ));
     }
 
@@ -794,6 +873,7 @@ mod tests {
             &'a self,
             _caller: StoreCaller<'a>,
             _id: Uuid,
+            _at: ReadAt,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             Box::pin(async {
                 use std::sync::atomic::Ordering::SeqCst;

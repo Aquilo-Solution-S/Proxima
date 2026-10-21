@@ -1239,7 +1239,7 @@ const RESOURCES: &[ResourceContract] = &[
         reads: &["proxima_core.embedding_jobs"],
     },
     ResourceContract {
-        uri_template: "proxima://memory/{id}{?expand_neighbors}",
+        uri_template: "proxima://memory/{id}{?expand_neighbors,version}",
         path: "memory",
         name: "proxima-memory",
         title: "Proxima Memory",

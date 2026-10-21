@@ -6,6 +6,7 @@ use crate::error::ProtocolError;
 use crate::read_models::{MemoryCounts, MemorySchemaSpec, MemorySnapshot};
 use crate::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow, StorageError};
 use crate::storage_ports::ReadVerbStoragePorts;
+use crate::storage_ports::other_stores::ReadAt;
 use crate::verbs::query::{
     FactCitationReadback, MAX_RELEVANCE_SEARCH_DEPTH, MemorySearchRequest, MemorySearchResult,
     SearchCursor, SearchMode,
@@ -39,6 +40,8 @@ pub struct SearchReadResponse {
 pub struct GetMemoryReadRequest {
     pub memory_id: MemoryId,
     pub include_neighbor_edges: bool,
+    /// The version `memory_id` names, or the head of its series.
+    pub at: crate::storage_ports::other_stores::ReadAt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -561,9 +564,18 @@ pub(in crate::engine) async fn get_memory_authorized(
     if read_owners.is_empty() {
         return Err(ProtocolError::not_found("memory not found"));
     }
+    let memory_id = match req.at {
+        ReadAt::Version => req.memory_id,
+        ReadAt::SeriesHead => ports
+            .memory_inspect
+            .load_series_head(owner_scope, read_owners, req.memory_id)
+            .await
+            .map_err(|err| storage_error("load_series_head", &err))?
+            .ok_or_else(|| ProtocolError::not_found("memory not found"))?,
+    };
     let mut found = ports
         .memory_inspect
-        .load_memories_by_ids(owner_scope, read_owners, &[req.memory_id], schemas)
+        .load_memories_by_ids(owner_scope, read_owners, &[memory_id], schemas)
         .await
         .map_err(|err| storage_error("load_memories_by_ids", &err))?;
     let Some(memory) = found.pop() else {
@@ -574,7 +586,7 @@ pub(in crate::engine) async fn get_memory_authorized(
             &ports.memory_read,
             owner_scope,
             read_owners,
-            &[req.memory_id],
+            &[memory_id],
             NEIGHBOR_EDGE_LIMIT,
         )
         .await?
@@ -834,6 +846,7 @@ mod tests {
         let req = GetMemoryReadRequest {
             memory_id: MemoryId::new(uuid::Uuid::now_v7()),
             include_neighbor_edges: false,
+            at: crate::storage_ports::other_stores::ReadAt::Version,
         };
         let err = engine()
             .get_memory(&AuthzContext::denied_for_owner(&owner), &req)
@@ -848,6 +861,7 @@ mod tests {
         let req = GetMemoryReadRequest {
             memory_id: MemoryId::new(uuid::Uuid::now_v7()),
             include_neighbor_edges: false,
+            at: crate::storage_ports::other_stores::ReadAt::Version,
         };
         let err = engine()
             .get_memory(&granted_authz(&owner), &req)

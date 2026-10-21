@@ -65,6 +65,11 @@ pub struct GoalItem {
     pub changed_at: time::OffsetDateTime,
     /// Goals this one depends on (`<uuid>`), as declared on its own row.
     pub dependencies: Vec<String>,
+    /// Memories this goal names as evidence (`<uuid>`), as declared on its own
+    /// row; one may be held by another store. Read each with
+    /// `proxima://memory/{id}` (`?version=head` for the newest version the
+    /// caller may read).
+    pub evidence: Vec<String>,
 }
 
 /// Keyset resume point carried inside the opaque goal cursor.
@@ -181,6 +186,11 @@ fn project_goals(rows: Vec<crate::verbs::query::GoalRow>) -> Vec<GoalItem> {
             changed_at: row.changed_at,
             dependencies: row
                 .dependency_goal_ids
+                .into_iter()
+                .map(|id| id.into_inner().to_string())
+                .collect(),
+            evidence: row
+                .evidence
                 .into_iter()
                 .map(|id| id.into_inner().to_string())
                 .collect(),

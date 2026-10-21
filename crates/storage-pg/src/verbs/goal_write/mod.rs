@@ -11,8 +11,7 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    EdgeEndpoint, EntityKind, GoalChange, GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion,
-    StorageError,
+    EntityKind, GoalChange, GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, StorageError,
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
@@ -30,7 +29,7 @@ mod types;
 
 use children::{ChildRule, ensure_goal_children_closed};
 use edges::assert_goal_topology_references;
-use evidence::{load_goal_evidence_exact, validate_evidence_in_owner};
+use evidence::{carried_evidence, validate_evidence_in_owner};
 use insert::{
     PostLockGuard, PreparedGoalInsert, insert_or_replay_goal, persist_prepared_goal_insert,
     prepare_goal_insert,

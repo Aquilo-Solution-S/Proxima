@@ -261,7 +261,7 @@ impl McpTool for CoreGoalTool {
 
 async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput, McpToolError> {
     let payload = encode_goal_payload(&ctx, args.payload)?;
-    let evidence = resolve_goal_evidence_handles(&ctx, &args.evidence)?;
+    let evidence = resolve_goal_evidence_handles(&ctx, &args.evidence).await?;
     let assignment = target_perspective(&ctx, args.target_perspective.as_deref())?;
     let topology =
         GoalTopologyWrite::new(assignment, Vec::new(), evidence).map_err(McpToolError::Protocol)?;
@@ -384,7 +384,7 @@ async fn goal_mark_achieved(
     args: GoalMarkAchievedArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
     let prior = ctx.resolve_goal(&args.goal)?;
-    let evidence = resolve_evidence(&ctx, &args.evidence)?;
+    let evidence = resolve_goal_evidence_handles(&ctx, &args.evidence).await?;
     let request_id =
         IdempotencyKey::optional_or_generated("goal_mark_achieved", args.idempotency_key)
             .map_err(McpToolError::InvalidInput)?;
@@ -433,7 +433,7 @@ async fn goal_modify(
     let prior = ctx.resolve_goal(&args.goal)?;
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = match args.evidence.as_ref() {
-        Some(evidence) => Some(resolve_goal_evidence_handles(&ctx, evidence)?),
+        Some(evidence) => Some(resolve_goal_evidence_handles(&ctx, evidence).await?),
         None => None,
     };
     let request_id = IdempotencyKey::optional_or_generated("goal_modify", args.idempotency_key)
@@ -525,7 +525,7 @@ async fn goal_decompose(
     for (index, child) in args.children.into_iter().enumerate() {
         children.push(ChildGoalDraft {
             payload: encode_goal_payload(&ctx, child.payload)?,
-            evidence: resolve_goal_evidence_handles(&ctx, &child.evidence)?,
+            evidence: resolve_goal_evidence_handles(&ctx, &child.evidence).await?,
             // Cannot fail: the root bound leaves room for every child key.
             request_id: root_key
                 .child(DECOMPOSE_CHILD_PREFIX, index)
@@ -610,22 +610,27 @@ pub(crate) fn encode_goal_payload(
     })
 }
 
-fn resolve_evidence(
+/// Parse supplied Goal evidence handles (bare UUIDs). Storage checks each of
+/// this store is a live owned Fact or Abstraction in the write transaction; one
+/// issued by another store is read there as the caller, refused when the store
+/// is unavailable or the caller may not read it, and named by the read.
+pub(crate) async fn resolve_goal_evidence_handles(
     ctx: &McpToolCtx,
     evidence: &[String],
 ) -> Result<Vec<GoalEvidenceRef>, McpToolError> {
-    evidence
-        .iter()
-        .map(|handle| ctx.resolve_memory(handle).map(GoalEvidenceRef::new))
-        .collect()
-}
-
-/// Parse supplied Goal evidence handles (bare UUIDs); storage checks each is a live owned Fact or Abstraction in the write transaction.
-pub(crate) fn resolve_goal_evidence_handles(
-    ctx: &McpToolCtx,
-    evidence: &[String],
-) -> Result<Vec<GoalEvidenceRef>, McpToolError> {
-    resolve_evidence(ctx, evidence)
+    let mut resolved = Vec::with_capacity(evidence.len());
+    for handle in evidence {
+        let id = ctx.resolve_memory(handle)?;
+        resolved.push(
+            if crate::memory_store_number(id.into_inner()) == ctx.require_engine()?.store_number() {
+                GoalEvidenceRef::new(id)
+            } else {
+                let (origin, _) = super::other_stores::read_origin(ctx, id.into_inner()).await?;
+                GoalEvidenceRef::remote(origin)
+            },
+        );
+    }
+    Ok(resolved)
 }
 
 fn target_perspective(
@@ -780,7 +785,7 @@ mod tests {
     #[tokio::test]
     async fn direct_goal_actions_forward_operator_authorship() {
         let (ctx, observed, target) = operator_recording_ctx();
-        let abstraction = format!("{}", uuid::Uuid::now_v7());
+        let abstraction = crate::new_memory_uuid(0).to_string();
         let perspective = target.into_inner().to_string();
 
         let set_error = goal_set(
@@ -871,7 +876,7 @@ mod tests {
                     evidence: vec![if bad_first && index == 0 {
                         format!("F:{}", uuid::Uuid::now_v7())
                     } else {
-                        uuid::Uuid::now_v7().to_string()
+                        crate::new_memory_uuid(0).to_string()
                     }],
                 })
                 .collect(),
@@ -951,12 +956,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn goal_evidence_rejects_prefixed_ids_before_storage() {
+    #[tokio::test]
+    async fn goal_evidence_rejects_prefixed_ids_before_storage() {
         let ctx = test_ctx();
         for prefix in ['F', 'A', 'P', 'G'] {
             let raw = format!("{prefix}:{}", uuid::Uuid::now_v7());
-            let err = resolve_goal_evidence_handles(&ctx, &[raw]).expect_err("bare UUID required");
+            let err = resolve_goal_evidence_handles(&ctx, &[raw])
+                .await
+                .expect_err("bare UUID required");
             assert!(matches!(err, McpToolError::InvalidInput(_)), "{err}");
         }
     }

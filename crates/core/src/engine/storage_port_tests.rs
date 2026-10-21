@@ -341,6 +341,15 @@ mod storage_port_tests_support {
         ) -> Result<Vec<crate::read_models::MemorySnapshot>, StorageError> {
             Ok(Vec::new())
         }
+
+        async fn load_series_head(
+            &self,
+            _scope: Option<&crate::OwnerScope>,
+            _read_owners: &[crate::OwnerId],
+            _memory_id: crate::MemoryId,
+        ) -> Result<Option<crate::MemoryId>, StorageError> {
+            Ok(None)
+        }
     }
 
     #[derive(Debug)]

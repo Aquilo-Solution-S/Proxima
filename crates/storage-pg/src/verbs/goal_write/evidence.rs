@@ -5,8 +5,9 @@ use super::{
 use crate::pg_enums::PgMemoryKind;
 
 /// The one evidence-kind rule for every goal write (set, modify, decompose
-/// child, episode goal, `mark_achieved`): a live owned Fact or Abstraction; a
-/// Perspective is refused.
+/// child, episode goal, `mark_achieved`): a live Fact or Abstraction; a
+/// Perspective is refused. A memory of another store is judged by the kind
+/// that store reported when the caller read it.
 pub(super) async fn validate_evidence_in_owner(
     tx: &mut Transaction<'_, Postgres>,
     _owner: &OwnerId,
@@ -20,6 +21,18 @@ pub(super) async fn validate_evidence_in_owner(
                 "duplicate goal evidence".into(),
             ));
         }
+        out.push(evidence_target(tx, *item).await?);
+    }
+    Ok(out)
+}
+
+async fn evidence_target(
+    tx: &mut Transaction<'_, Postgres>,
+    item: GoalEvidenceRef,
+) -> Result<EvidenceTarget, StorageError> {
+    let kind = if let Some(origin) = item.remote_origin() {
+        origin.kind()
+    } else {
         let stored: Option<PgMemoryKind> =
             sqlx::query_scalar("SELECT kind FROM proxima_core.memory WHERE t = $1")
                 .bind(item.memory_id().into_inner())
@@ -31,30 +44,31 @@ pub(super) async fn validate_evidence_in_owner(
                 proxima_core::verbs::goal_write::EVIDENCE_DOES_NOT_EXIST.into(),
             ));
         };
-        let kind = EntityKind::from(stored);
-        match kind {
-            EntityKind::Fact | EntityKind::Abstraction => out.push(EvidenceTarget {
-                kind,
-                memory_id: item.memory_id(),
-            }),
-            _ => {
-                return Err(StorageError::ConstraintViolation(
-                    "evidence must be Fact or Abstraction".into(),
-                ));
-            }
-        }
+        EntityKind::from(stored)
+    };
+    match kind {
+        EntityKind::Fact | EntityKind::Abstraction => Ok(EvidenceTarget {
+            memory_id: item.memory_id(),
+        }),
+        _ => Err(StorageError::ConstraintViolation(
+            "evidence must be Fact or Abstraction".into(),
+        )),
     }
-    Ok(out)
 }
 
-/// Read the exact prior Goal evidence vector for a storage-level omitted
-/// modify. This remains a Goal-column read: joining through Memory would turn
-/// a forgotten or missing target into a shorter successor statement.
-pub(super) async fn load_goal_evidence_exact(
+/// The evidence an omitted-evidence modify carries from its prior Goal, in the
+/// prior order. Evidence held by this store is judged again; evidence of
+/// another store was read there when the Goal named it, and stays.
+///
+/// The evidence column is read from the Goal row itself: joining through
+/// Memory would turn a forgotten or missing target into a shorter successor
+/// statement.
+pub(super) async fn carried_evidence(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
     goal_id: GoalId,
-) -> Result<Option<Vec<GoalEvidenceRef>>, StorageError> {
+    store_number: u16,
+) -> Result<Vec<EvidenceTarget>, StorageError> {
     let ids: Option<Vec<uuid::Uuid>> = sqlx::query_scalar(
         "SELECT evidence_t
            FROM proxima_core.goal
@@ -65,10 +79,14 @@ pub(super) async fn load_goal_evidence_exact(
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
-    Ok(ids.map(|ids| {
-        ids.into_iter()
-            .map(MemoryId::new)
-            .map(GoalEvidenceRef::new)
-            .collect()
-    }))
+    let mut out = Vec::new();
+    for id in ids.unwrap_or_default() {
+        let memory_id = MemoryId::new(id);
+        out.push(if proxima_core::memory_store_number(id) == store_number {
+            evidence_target(tx, GoalEvidenceRef::new(memory_id)).await?
+        } else {
+            EvidenceTarget { memory_id }
+        });
+    }
+    Ok(out)
 }

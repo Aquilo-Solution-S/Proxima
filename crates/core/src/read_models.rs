@@ -47,6 +47,8 @@ impl MemoryCounts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemorySnapshot {
     pub memory_id: MemoryId,
+    /// The series this version belongs to; the same on every version of it.
+    pub series: crate::SeriesHandle,
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,

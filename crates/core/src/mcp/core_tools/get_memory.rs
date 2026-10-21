@@ -9,6 +9,27 @@ use crate::mcp::{McpToolCtx, McpToolError};
 
 use super::memory::search::{NeighborEdge, neighbor_edges_from_rows};
 
+/// Which version of the memory's series a read answers with.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionSelector {
+    /// The version `memory` names.
+    #[default]
+    Exact,
+    /// The newest version of the series `memory` belongs to that the caller
+    /// may read.
+    Head,
+}
+
+impl VersionSelector {
+    pub(crate) fn read_at(self) -> crate::storage_ports::other_stores::ReadAt {
+        match self {
+            Self::Exact => crate::storage_ports::other_stores::ReadAt::Version,
+            Self::Head => crate::storage_ports::other_stores::ReadAt::SeriesHead,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetMemoryArgs {
     /// Memory reference: Memory UUID.
@@ -21,12 +42,20 @@ pub struct GetMemoryArgs {
     /// reports the memory's own space.
     #[serde(default)]
     pub space: Option<String>,
+    /// `exact` (default) reads the named version; `head` reads the newest
+    /// readable version of its series, in this store or the one that issued
+    /// the UUID. The output's `handle` names the version returned.
+    #[serde(default)]
+    pub version: VersionSelector,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetMemoryOutput {
+    /// The version this read returned.
     pub handle: String,
     pub memory: String,
+    /// The series every version of this memory shares.
+    pub series: String,
     pub space: String,
     pub by: uuid::Uuid,
     pub via: Option<uuid::Uuid>,
@@ -61,7 +90,7 @@ pub async fn get_memory(
     let memory_id = ctx.resolve_memory(&args.memory)?;
     let engine = ctx.require_engine()?;
     if crate::memory_store_number(memory_id.into_inner()) != engine.store_number() {
-        return remote_memory_output(&ctx, memory_id.into_inner()).await;
+        return remote_memory_output(&ctx, memory_id.into_inner(), args.version).await;
     }
     // Validated for compatibility; the label comes from the memory's owner.
     super::memory_spaces::resolve_space_owner(
@@ -75,6 +104,7 @@ pub async fn get_memory(
             &GetMemoryReadRequest {
                 memory_id,
                 include_neighbor_edges: args.expand_neighbors,
+                at: args.version.read_at(),
             },
         )
         .await
@@ -100,13 +130,17 @@ pub async fn get_memory(
 }
 
 /// A remote UUID read through the other-stores port, as the caller.
-/// The space is the issuing store's number; a remote memory has no local payload,
-/// version or neighbor edges.
+/// The space is the issuing store's number; a remote memory has no local payload
+/// or neighbor edges.
 pub(super) async fn remote_memory_output(
     ctx: &McpToolCtx,
     origin: uuid::Uuid,
+    version: VersionSelector,
 ) -> Result<GetMemoryOutput, McpToolError> {
-    let (_, memory) = super::other_stores::read_origin(ctx, origin).await?;
+    let memory = match version {
+        VersionSelector::Exact => super::other_stores::read_origin(ctx, origin).await?.1,
+        VersionSelector::Head => super::other_stores::read_head(ctx, origin).await?,
+    };
     Ok(project_remote_memory(memory))
 }
 
@@ -118,6 +152,7 @@ pub(super) fn project_remote_memory(
     GetMemoryOutput {
         handle: handle.clone(),
         memory: handle,
+        series: memory.series.to_string(),
         space: crate::memory_store_number(memory.handle).to_string(),
         by: memory.writer.by,
         via: memory.writer.via,
@@ -159,6 +194,7 @@ pub(super) fn project_memory_snapshot(
     Ok(GetMemoryOutput {
         handle: handle.clone(),
         memory: handle,
+        series: snapshot.series.into_inner().to_string(),
         space,
         by: snapshot.writer.by,
         via: snapshot.writer.via,
@@ -219,6 +255,7 @@ mod tests {
                 &ctx,
                 MemorySnapshot {
                     memory_id: MemoryId::new(crate::new_memory_uuid(0)),
+                    series: crate::SeriesHandle::new(crate::new_memory_uuid(0)),
                     kind: EntityKind::Fact,
                     schema_id: SchemaId::new("core/agent-note-v1".into()),
                     schema_version: SchemaVersion::new(1),
@@ -233,14 +270,10 @@ mod tests {
             )
             .expect("local projection");
             let remote = project_remote_memory(RemoteMemory {
-                handle: origin,
                 writer,
-                kind: EntityKind::Fact,
                 schema_id: "remote/note".into(),
-                title: None,
                 body: "stored remote note".into(),
-                created_at: time::OffsetDateTime::UNIX_EPOCH,
-                tags: Vec::new(),
+                ..RemoteMemory::fixture(origin)
             });
             for output in [local, remote] {
                 let wire = serde_json::to_value(output).expect("wire output");

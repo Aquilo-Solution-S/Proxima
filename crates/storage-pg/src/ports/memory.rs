@@ -674,4 +674,21 @@ impl MemoryInspectPort for PgStorage {
         .await;
         crate::owner_scope::finish_transaction(tx, result).await
     }
+
+    async fn load_series_head(
+        &self,
+        owner_scope: Option<&proxima_core::OwnerScope>,
+        read_owners: &[OwnerId],
+        memory_id: MemoryId,
+    ) -> Result<Option<MemoryId>, StorageError> {
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
+        let result =
+            verbs::consolidate::load_series_head_on_connection(&mut tx, read_owners, memory_id)
+                .await;
+        crate::owner_scope::finish_transaction(tx, result).await
+    }
 }

@@ -1475,7 +1475,7 @@ pub struct ToolContract {
 /// list from any other ordinal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResourceContract {
-    /// RFC 6570 template, e.g. `proxima://memory/{id}{?expand_neighbors}`.
+    /// RFC 6570 template, e.g. `proxima://memory/{id}{?expand_neighbors,version}`.
     pub uri_template: &'static str,
     /// First path segment after `proxima://` — what dispatch matches on.
     pub path: &'static str,

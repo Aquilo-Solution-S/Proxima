@@ -6,6 +6,7 @@
 
 use crate::ProtocolError;
 use crate::publication::PublicationStamp;
+use crate::storage_ports::other_stores::ReadOrigin;
 use crate::text_bounds::{TrimmedLenViolation, check_trimmed_len};
 use crate::{
     GoalChange, GoalId, GoalPayload, InputContractId, MemoryId, ModelId, OperatorId, OwnerId,
@@ -230,20 +231,48 @@ pub struct GoalWriteOutcome {
 
 pub use crate::verbs::idempotency::IdempotencyKey;
 
+/// A memory a Goal rests on: held by this store, or by another registered
+/// store the caller was shown (`remote`).
+///
+/// A remote reference exists only with the [`ReadOrigin`] the other-stores
+/// service issued for it, so a Goal cannot name a foreign memory its writer
+/// could not read. The witness is not serialized: a deserialized reference is
+/// local, and a foreign id on it is refused where the Goal is written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalEvidenceRef {
     memory_id: MemoryId,
+    #[serde(skip)]
+    remote: Option<ReadOrigin>,
 }
 
 impl GoalEvidenceRef {
     #[must_use]
     pub const fn new(memory_id: MemoryId) -> Self {
-        Self { memory_id }
+        Self {
+            memory_id,
+            remote: None,
+        }
+    }
+
+    /// Evidence held by another store, read as the caller.
+    #[must_use]
+    pub const fn remote(origin: ReadOrigin) -> Self {
+        Self {
+            memory_id: MemoryId::new(origin.handle()),
+            remote: Some(origin),
+        }
     }
 
     #[must_use]
     pub const fn memory_id(self) -> MemoryId {
         self.memory_id
+    }
+
+    /// The proof the caller read this memory in its own store, when it is
+    /// held by another store.
+    #[must_use]
+    pub const fn remote_origin(self) -> Option<ReadOrigin> {
+        self.remote
     }
 }
 
@@ -695,5 +724,30 @@ mod goal_state_matrix_tests {
         assert!(!GoalState::Paused.may_achieve());
         assert!(!GoalState::Achieved.may_achieve());
         assert!(!GoalState::Abandoned.may_achieve());
+    }
+}
+
+#[cfg(test)]
+mod evidence_ref_tests {
+    use super::GoalEvidenceRef;
+    use crate::EntityKind;
+    use crate::storage_ports::other_stores::ReadOrigin;
+
+    #[test]
+    fn a_remote_reference_names_what_was_read_and_is_not_serialized_as_proof() {
+        let handle = crate::new_memory_uuid(1);
+        let remote = GoalEvidenceRef::remote(ReadOrigin::for_tests(handle, EntityKind::Fact));
+        assert_eq!(remote.memory_id().into_inner(), handle);
+        assert_eq!(
+            remote.remote_origin().map(|origin| origin.handle()),
+            Some(handle)
+        );
+
+        // Round-tripped bytes carry no proof: the id comes back local, and
+        // a write refuses a foreign id that has no read behind it.
+        let wire = serde_json::to_string(&remote).expect("serialize");
+        let back: GoalEvidenceRef = serde_json::from_str(&wire).expect("deserialize");
+        assert_eq!(back, GoalEvidenceRef::new(remote.memory_id()));
+        assert!(back.remote_origin().is_none());
     }
 }

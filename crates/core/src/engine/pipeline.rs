@@ -902,6 +902,7 @@ mod tests {
                 &super::super::GetMemoryReadRequest {
                     memory_id: id,
                     include_neighbor_edges: true,
+                    at: crate::storage_ports::other_stores::ReadAt::Version,
                 },
             )
             .await

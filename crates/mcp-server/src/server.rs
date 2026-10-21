@@ -6,7 +6,7 @@ use proxima_core::flavor::flavor0::resource as core_resource;
 use proxima_core::mcp::core_tools::{
     get_graph::{GetGraphArgs, get_graph},
     get_memories::{GetMemoriesArgs, get_memories},
-    get_memory::{GetMemoryArgs, get_memory},
+    get_memory::{GetMemoryArgs, VersionSelector, get_memory},
     goal_reads::{ListGoalsArgs, get_goal, list_goals},
     list_schemas::{ListSchemasArgs, get_schema, list_schemas},
     list_substrate_tools::{ListSubstrateToolsArgs, list_substrate_tools},
@@ -901,6 +901,7 @@ fn parse_memory_resource_path(
         memory: rest.to_string(),
         expand_neighbors: query_bool(query, "expand_neighbors"),
         space: None,
+        version: query_version(query)?,
     }))
 }
 
@@ -963,6 +964,18 @@ fn query_lineage_direction(
             param: "direction",
             value: other.to_string(),
             expected: "'ancestors' or 'descendants'",
+        }),
+    }
+}
+
+fn query_version(query: &[(&str, &str)]) -> Result<VersionSelector, ResourceUriError> {
+    match query_value(query, "version") {
+        None | Some("exact") => Ok(VersionSelector::Exact),
+        Some("head") => Ok(VersionSelector::Head),
+        Some(other) => Err(ResourceUriError::InvalidParam {
+            param: "version",
+            value: other.to_string(),
+            expected: "'exact' or 'head'",
         }),
     }
 }
@@ -1384,6 +1397,24 @@ mod tests {
                 ..
             })
         ));
+
+        let head = parse_resource_uri(
+            "proxima://memory/018f0000-0000-7000-8000-000000000001?version=head",
+        )
+        .expect("head resource");
+        assert!(matches!(
+            head,
+            ParsedResource::Memory(GetMemoryArgs {
+                version: VersionSelector::Head,
+                ..
+            })
+        ));
+        assert!(
+            parse_resource_uri(
+                "proxima://memory/018f0000-0000-7000-8000-000000000001?version=newest"
+            )
+            .is_err()
+        );
 
         let lineage =
             parse_resource_uri("proxima://memory/018f0000-0000-7000-8000-000000000001/lineage?direction=descendants&depth=2&limit=7")

@@ -888,3 +888,29 @@ async fn unassigned_operator_goals_allow_empty_evidence_through_successors() {
     let _ = drop_db(&fx.db_name).await;
     result.expect("unassigned goals allow optional evidence throughout their lifecycle");
 }
+
+/// #526: only a read of another store's memory, witnessed by the other-stores
+/// service, lets a Goal name it; a bare foreign id is a memory this store does
+/// not hold, as for any unknown id.
+#[tokio::test]
+async fn evidence_of_another_store_without_a_read_is_refused() {
+    let fx = fixture().await.expect("fixture");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let foreign = proxima_core::MemoryId::new(proxima_core::new_memory_uuid(7));
+        let refused = fx
+            .create(&registry, "g526-foreign", operator_authorship(), &[foreign])
+            .await;
+        match refused {
+            Err(StorageError::ConstraintViolation(message)) => assert_eq!(
+                message,
+                proxima_core::verbs::goal_write::EVIDENCE_DOES_NOT_EXIST
+            ),
+            other => panic!("expected ConstraintViolation, got {other:?}"),
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&fx.db_name).await;
+    result.expect("foreign evidence without a read refused");
+}

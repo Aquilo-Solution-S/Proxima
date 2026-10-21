@@ -122,7 +122,7 @@ pub use proxima_core::storage_ports::HostStatePayloadOwners;
 /// [`Proxima::other_stores`], with every request, answer and bounded-service
 /// result nameable by hosts implementing or wiring the port.
 pub use proxima_core::storage_ports::other_stores::{
-    OtherStores, OtherStoresError, OtherStoresService, ReadOrigin, RemoteHit, RemoteMemory,
+    OtherStores, OtherStoresError, OtherStoresService, ReadAt, ReadOrigin, RemoteHit, RemoteMemory,
     RemoteOriginRead, RemoteRead, RemoteSearch, RemoteSearchResult, StoreCaller, StoreInfo,
     StoreInventory,
 };

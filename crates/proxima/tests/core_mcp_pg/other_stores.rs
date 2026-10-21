@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use proxima::host::{
-    OtherStores, OtherStoresError, OtherStoresService, RemoteHit, RemoteMemory, RemoteRead,
+    OtherStores, OtherStoresError, OtherStoresService, ReadAt, RemoteHit, RemoteMemory, RemoteRead,
     RemoteSearch, RemoteSearchResult, StoreCaller, StoreInfo,
 };
 use proxima::{FlavorServices, Proxima};
@@ -25,6 +25,8 @@ enum Entry {
     Readable(RemoteMemory),
     Denied,
     Erased,
+    /// The store fails the read instead of answering it.
+    Unavailable,
 }
 
 #[derive(Default)]
@@ -54,6 +56,7 @@ fn remote_id(store: u16, key: &str) -> Uuid {
 fn fact(handle: Uuid, body: &str) -> RemoteMemory {
     RemoteMemory {
         handle,
+        series: handle,
         writer: proxima_core::WriterAttribution {
             by: Uuid::now_v7(),
             via: None,
@@ -114,6 +117,16 @@ impl FakeStores {
             .get_mut(&store)
             .expect("store")
             .name = name.into();
+    }
+
+    fn put(&self, store: u16, handle: Uuid, entry: Entry) {
+        self.stores
+            .lock()
+            .expect("lock")
+            .get_mut(&store)
+            .expect("store")
+            .entries
+            .insert(handle, entry);
     }
 
     fn erase(&self, store: u16, handle: Uuid) {
@@ -204,16 +217,34 @@ impl OtherStores for FakeStores {
         &'a self,
         _caller: StoreCaller<'a>,
         handle: Uuid,
+        at: ReadAt,
     ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
         Box::pin(async move {
             let stores = self.stores.lock().expect("lock");
-            let entry = stores
-                .get(&proxima_core::memory_store_number(handle))
-                .and_then(|fake| fake.entries.get(&handle).cloned());
+            let fake = stores.get(&proxima_core::memory_store_number(handle));
+            let entry = fake.and_then(|fake| fake.entries.get(&handle).cloned());
+            if matches!(entry, Some(Entry::Unavailable)) {
+                return Err(OtherStoresError::Unavailable("store is down".into()));
+            }
             Ok(match entry {
-                Some(Entry::Readable(memory)) => RemoteRead::Found(memory),
+                Some(Entry::Readable(memory)) => RemoteRead::Found(match at {
+                    ReadAt::Version => memory,
+                    // The newest version of the series the caller may read.
+                    ReadAt::SeriesHead => fake
+                        .into_iter()
+                        .flat_map(|fake| fake.entries.values())
+                        .filter_map(|entry| match entry {
+                            Entry::Readable(version) if version.series == memory.series => {
+                                Some(version)
+                            }
+                            _ => None,
+                        })
+                        .max_by_key(|version| (version.created_at, version.handle))
+                        .cloned()
+                        .unwrap_or(memory),
+                }),
                 Some(Entry::Erased) => RemoteRead::Erased,
-                Some(Entry::Denied) | None => RemoteRead::NotFound,
+                Some(Entry::Denied | Entry::Unavailable) | None => RemoteRead::NotFound,
             })
         })
     }
@@ -1347,6 +1378,7 @@ impl OtherStores for DownInventory {
         &'a self,
         _caller: StoreCaller<'a>,
         _id: Uuid,
+        _at: ReadAt,
     ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
         Box::pin(async { Ok(RemoteRead::NotFound) })
     }
@@ -1419,4 +1451,187 @@ async fn a_failed_store_list_is_reported_on_search_and_refuses_named_stores() {
     }
     .await;
     result.expect("failed inventory search test failed");
+}
+
+/// Number of `memory` rows this store holds under `t`, as the platform role.
+async fn local_rows_named(platform_url: &str, t: Uuid) -> i64 {
+    let pool = sqlx::PgPool::connect(platform_url)
+        .await
+        .expect("platform pool");
+    let mut tx = pool.begin().await.expect("tx");
+    sqlx::query("SELECT set_config('app.proxima_scope', 'platform', true)")
+        .execute(&mut *tx)
+        .await
+        .expect("platform scope");
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE t = $1")
+        .bind(t)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("count memory");
+    tx.rollback().await.expect("rollback");
+    pool.close().await;
+    rows
+}
+
+/// #526: a goal names evidence held only in another store; the store revises
+/// it; reading the named evidence at its head returns the newest version the
+/// caller may read, and exact reads still return the version as written. An
+/// unreadable memory and an unavailable store are refused before any write,
+/// and nothing of the remote memory is stored locally.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one end-to-end story: name, revise, read, refuse
+async fn goal_evidence_in_another_store_resolves_to_its_series_head() {
+    let split_db = clone_split_core_db("proxima_other_stores_goal_evidence")
+        .await
+        .expect("PG required for tests");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let (v1, v2) = (remote_id(1, "basis-v1"), remote_id(1, "basis-v2"));
+        let (secret, down) = (remote_id(1, "secret"), remote_id(2, "down"));
+        let fake = Arc::new(
+            FakeStores::default()
+                .with(
+                    1,
+                    v1,
+                    Entry::Readable(dated_fact(v1, "basis as written", 1)),
+                )
+                .with(1, secret, Entry::Denied)
+                .with(2, down, Entry::Unavailable),
+        );
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(runtime_url.clone())
+            .store_number(0)
+            .platform_database_url(platform_url.clone())
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .other_stores(fake.clone())
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let goal = |evidence: Vec<String>, key: &str| {
+            call_test_model_tool(
+                &tools,
+                authz.clone(),
+                owner,
+                "core_goal",
+                serde_json::json!({
+                    "action": "set", "schema_id": "core/simple-text-v1",
+                    "title": key, "text": key, "body": {},
+                    "evidence": evidence, "idempotency_key": key,
+                }),
+            )
+        };
+
+        // Unreadable and unavailable evidence refuse the goal before it lands.
+        let before = row_counts(&platform_url).await;
+        let unreadable = goal(vec![secret.to_string()], "goal-unreadable")
+            .await
+            .expect_err("unreadable evidence refuses");
+        assert_eq!(unreadable.kind(), proxima::CoreMcpErrorKind::NotFound);
+        assert!(unreadable.to_string().contains(&secret.to_string()));
+        let unavailable = goal(vec![down.to_string()], "goal-unavailable")
+            .await
+            .expect_err("an unavailable store refuses");
+        assert_eq!(
+            unavailable.kind(),
+            proxima::CoreMcpErrorKind::StoreUnavailable,
+            "{unavailable:?}"
+        );
+        assert_eq!(row_counts(&platform_url).await, before, "zero rows written");
+
+        // The goal names the remote version; the memory is not copied.
+        let set = goal(vec![v1.to_string()], "goal-remote").await?;
+        assert_eq!(local_rows_named(&platform_url, v1).await, 0);
+        let goals =
+            read_test_model_resource(&tools, authz.clone(), owner, "proxima://goals").await?;
+        let named: Vec<&str> = goals["goals"][0]["evidence"]
+            .as_array()
+            .expect("evidence")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert_eq!(named, [v1.to_string()], "{goals}");
+
+        // A modify that omits evidence carries the remote id unchanged.
+        let modified = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner,
+            "core_goal",
+            serde_json::json!({
+                "action": "modify", "goal": set["handle"],
+                "schema_id": "core/simple-text-v1", "title": "goal-remote-2",
+                "text": "goal-remote-2", "body": {}, "idempotency_key": "goal-remote-2",
+            }),
+        )
+        .await?;
+        let goals =
+            read_test_model_resource(&tools, authz.clone(), owner, "proxima://goals").await?;
+        let carried = goals["goals"]
+            .as_array()
+            .expect("goals")
+            .iter()
+            .find(|item| item["goal"] == modified["handle"])
+            .expect("the modified goal version");
+        assert_eq!(carried["evidence"], serde_json::json!([v1.to_string()]));
+
+        // The store revises the memory: a newer version of the same series.
+        let series = fake_series(&fake, v1);
+        fake.put(
+            1,
+            v2,
+            Entry::Readable(RemoteMemory {
+                series,
+                ..dated_fact(v2, "basis revised", 2)
+            }),
+        );
+        let memory = |query: &str| format!("proxima://memory/{v1}{query}");
+        let exact = read_test_model_resource(&tools, authz.clone(), owner, &memory("")).await?;
+        assert_eq!(exact["handle"], v1.to_string());
+        assert_eq!(exact["body"], "basis as written");
+        let head = read_test_model_resource(&tools, authz.clone(), owner, &memory("?version=head"))
+            .await?;
+        assert_eq!(head["handle"], v2.to_string(), "{head}");
+        assert_eq!(head["body"], "basis revised");
+        assert_eq!(head["series"], exact["series"], "one series, two versions");
+        assert_eq!(local_rows_named(&platform_url, v2).await, 0);
+
+        // The head of an unreadable memory or of a store that is down is a
+        // refusal, not an answer from some other version.
+        for (id, kind) in [
+            (secret, proxima::CoreMcpErrorKind::NotFound),
+            (down, proxima::CoreMcpErrorKind::StoreUnavailable),
+        ] {
+            let refused = read_test_model_resource(
+                &tools,
+                authz.clone(),
+                owner,
+                &format!("proxima://memory/{id}?version=head"),
+            )
+            .await
+            .expect_err("head read refuses");
+            assert_eq!(refused.kind(), kind, "{refused:?}");
+        }
+
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("goal evidence in another store test failed");
+}
+
+fn fake_series(fake: &FakeStores, handle: Uuid) -> Uuid {
+    let stores = fake.stores.lock().expect("lock");
+    match stores
+        .get(&proxima_core::memory_store_number(handle))
+        .and_then(|store| store.entries.get(&handle))
+    {
+        Some(Entry::Readable(memory)) => memory.series,
+        _ => panic!("{handle} is not a readable version"),
+    }
 }

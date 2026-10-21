@@ -254,6 +254,7 @@ async fn resolve_note_identity(
             &crate::GetMemoryReadRequest {
                 memory_id: prior_id,
                 include_neighbor_edges: false,
+                at: crate::storage_ports::other_stores::ReadAt::Version,
             },
         )
         .await?;

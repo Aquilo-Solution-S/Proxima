@@ -335,7 +335,13 @@ impl Engine {
                 .await
                 .map_err(|err| super::errors::internal_storage_error("load_goal_evidence", &err))?;
             if let Some(ids) = carried {
-                let evidence: Vec<_> = ids.into_iter().map(GoalEvidenceRef::new).collect();
+                // A carried id of another store was read when it was named;
+                // this store neither holds nor can re-authorize it.
+                let evidence: Vec<_> = ids
+                    .into_iter()
+                    .filter(|id| crate::memory_store_number(id.into_inner()) == self.store_number())
+                    .map(GoalEvidenceRef::new)
+                    .collect();
                 self.validate_goal_evidence_authorized(authz, &evidence)
                     .await?;
             }
@@ -508,7 +514,7 @@ impl Engine {
                 .await?;
         }
         for item in topology.evidence() {
-            if written.contains(&item.memory_id()) {
+            if item.remote_origin().is_some() || written.contains(&item.memory_id()) {
                 continue;
             }
             self.authorize_entry_read(authz, crate::access::EntityId::Memory(item.memory_id()))
@@ -588,15 +594,20 @@ impl Engine {
         Ok(())
     }
 
-    /// Read-admit each evidence target. Kind ∈ {F, A} is the in-tx
-    /// TOCTOU (`validate_evidence_in_owner`); a second pre-tx kind
-    /// load here is the overlapping walk.
+    /// Read-admit each evidence target held by this store; one held by
+    /// another store carries the other-stores read that proved the caller
+    /// may see it. Kind ∈ {F, A} is the in-tx TOCTOU
+    /// (`validate_evidence_in_owner`); a second pre-tx kind load here is the
+    /// overlapping walk.
     async fn validate_goal_evidence_authorized(
         &self,
         authz: &AuthzContext,
         evidence: &[GoalEvidenceRef],
     ) -> Result<(), ProtocolError> {
-        for item in evidence {
+        for item in evidence
+            .iter()
+            .filter(|item| item.remote_origin().is_none())
+        {
             self.authorize_entry_read(authz, EntityId::Memory(item.memory_id()))
                 .await?;
         }
@@ -803,7 +814,7 @@ mod tests {
     }
 
     fn memory_id() -> MemoryId {
-        MemoryId::new(uuid::Uuid::now_v7())
+        MemoryId::new(crate::new_memory_uuid(0))
     }
 
     fn request_id(label: &str) -> IdempotencyKey {

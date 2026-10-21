@@ -576,6 +576,7 @@ mod other_stores {
             &'a self,
             _caller: StoreCaller<'a>,
             _handle: uuid::Uuid,
+            _at: crate::storage_ports::other_stores::ReadAt,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             Box::pin(async { Ok(RemoteRead::NotFound) })
         }
@@ -765,6 +766,7 @@ mod other_stores {
             &'a self,
             _caller: StoreCaller<'a>,
             _handle: uuid::Uuid,
+            _at: crate::storage_ports::other_stores::ReadAt,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             Box::pin(async { Ok(RemoteRead::NotFound) })
         }

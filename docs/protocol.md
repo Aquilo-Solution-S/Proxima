@@ -209,6 +209,17 @@ ones included; in `core_think` such a memory is a leaf visit with `store`, its
 `edge` kind, and the same `status`/`unavailable_reason` when it could not be
 read.
 
+Goal evidence (`core_goal` set, modify, decompose children, `mark_achieved`)
+may name a memory on another store. The write reads it there as the caller
+first, so an unreadable memory is `not_found` and an unanswering store is
+`store_unavailable`, both before any write; nothing of the memory is copied.
+A modify that omits evidence keeps a remote id as written. `proxima://goals`
+lists each version's `evidence`. `proxima://memory/{id}` reads the version
+named (`version=exact`, the default); `?version=head` returns the newest
+version of its series the caller may read, from this store or from the store
+that issued the UUID, and the output's `handle` and `series` say which version
+and series that is.
+
 Operation-specific schema and error variants remain in code. Retry only when
 the operation and its idempotency contract allow it; a transport disconnect
 does not prove that a write rolled back.

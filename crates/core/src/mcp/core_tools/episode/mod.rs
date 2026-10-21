@@ -585,7 +585,7 @@ impl EpisodeWrite<'_> {
         let mut goals = Vec::new();
         for (idx, item) in items.iter().enumerate() {
             let payload = encode_goal_payload(ctx, item.payload.clone())?;
-            let evidence = resolve_goal_evidence(ctx, &self.slots, &item.evidence)?;
+            let evidence = resolve_goal_evidence(ctx, &self.slots, &item.evidence).await?;
             let assignment =
                 resolve_goal_assignment(ctx, &self.slots, item.target_perspective.as_deref())?;
             let topology = GoalTopologyWrite::new(assignment, Vec::new(), evidence)
@@ -696,7 +696,7 @@ async fn resolve_stance_subject(
     interpret::resolve_subject(ctx, handle).await
 }
 
-fn resolve_goal_evidence(
+async fn resolve_goal_evidence(
     ctx: &McpToolCtx,
     slots: &EpisodeSlots,
     evidence: &[String],
@@ -717,10 +717,10 @@ fn resolve_goal_evidence(
                 }
             }
         } else {
-            resolved.extend(super::goal::resolve_goal_evidence_handles(
-                ctx,
-                std::slice::from_ref(handle),
-            )?);
+            resolved.extend(
+                super::goal::resolve_goal_evidence_handles(ctx, std::slice::from_ref(handle))
+                    .await?,
+            );
         }
     }
     Ok(resolved)

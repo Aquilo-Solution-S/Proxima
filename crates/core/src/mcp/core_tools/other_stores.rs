@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use crate::mcp::{McpToolCtx, McpToolError, MemoryHandleClass};
 use crate::storage_ports::other_stores::{
-    OtherStoresError, OtherStoresService, ReadOrigin, RemoteMemory, RemoteOriginRead, RemoteSearch,
-    RemoteSearchResult, StoreCaller, StoreInventory, StoreRoute, route_stores,
+    OtherStoresError, OtherStoresService, ReadAt, ReadOrigin, RemoteMemory, RemoteOriginRead,
+    RemoteRead, RemoteSearch, RemoteSearchResult, StoreCaller, StoreInventory, StoreRoute,
+    route_stores,
 };
 
 pub(crate) fn service(ctx: &McpToolCtx) -> Option<Arc<OtherStoresService>> {
@@ -53,6 +54,24 @@ pub(crate) async fn read_origin(
     match service.read_origin(caller(ctx), id).await {
         Ok(Some(read)) => Ok(read),
         Ok(None) => Err(not_found(id)),
+        Err(error) => Err(remote_read_error(id, &error)),
+    }
+}
+
+/// The newest version of the series `id` belongs to, read through its issuing
+/// store as the caller. A memory the caller cannot read, or an erased one, is
+/// not found; an unavailable store is refused as such.
+pub(crate) async fn read_head(
+    ctx: &McpToolCtx,
+    id: uuid::Uuid,
+) -> Result<RemoteMemory, McpToolError> {
+    let service = service(ctx).ok_or_else(|| not_found(id))?;
+    match service
+        .read_bounded(caller(ctx), id, ReadAt::SeriesHead)
+        .await
+    {
+        Ok(RemoteRead::Found(memory)) => Ok(memory),
+        Ok(RemoteRead::NotFound | RemoteRead::Erased) => Err(not_found(id)),
         Err(error) => Err(remote_read_error(id, &error)),
     }
 }
@@ -337,6 +356,7 @@ mod tests {
             &'a self,
             _caller: StoreCaller<'a>,
             _id: uuid::Uuid,
+            _at: crate::storage_ports::other_stores::ReadAt,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             Box::pin(async { Ok(RemoteRead::NotFound) })
         }
@@ -560,22 +580,11 @@ mod tests {
             &'a self,
             _caller: StoreCaller<'a>,
             id: uuid::Uuid,
+            _at: crate::storage_ports::other_stores::ReadAt,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             Box::pin(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(1_900)).await;
-                Ok(RemoteRead::Found(RemoteMemory {
-                    handle: id,
-                    writer: crate::WriterAttribution {
-                        by: uuid::Uuid::from_u128(3),
-                        via: None,
-                    },
-                    kind: crate::EntityKind::Fact,
-                    schema_id: "test/fact-v1".into(),
-                    title: None,
-                    body: String::new(),
-                    created_at: time::OffsetDateTime::UNIX_EPOCH,
-                    tags: Vec::new(),
-                }))
+                Ok(RemoteRead::Found(RemoteMemory::fixture(id)))
             })
         }
     }
@@ -642,6 +651,7 @@ mod tests {
             &'a self,
             _caller: StoreCaller<'a>,
             _id: uuid::Uuid,
+            _at: crate::storage_ports::other_stores::ReadAt,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             let reply = self.0;
             Box::pin(async move {
@@ -650,19 +660,9 @@ mod tests {
                     ReadReply::Unavailable => {
                         Err(OtherStoresError::Unavailable("remote internals".into()))
                     }
-                    ReadReply::Mismatched => Ok(RemoteRead::Found(RemoteMemory {
-                        handle: crate::new_memory_uuid(1),
-                        writer: crate::WriterAttribution {
-                            by: uuid::Uuid::from_u128(3),
-                            via: None,
-                        },
-                        kind: crate::EntityKind::Fact,
-                        schema_id: "test/fact-v1".into(),
-                        title: None,
-                        body: String::new(),
-                        created_at: time::OffsetDateTime::UNIX_EPOCH,
-                        tags: Vec::new(),
-                    })),
+                    ReadReply::Mismatched => Ok(RemoteRead::Found(RemoteMemory::fixture(
+                        crate::new_memory_uuid(1),
+                    ))),
                     ReadReply::NotFound => Ok(RemoteRead::NotFound),
                     ReadReply::Erased => Ok(RemoteRead::Erased),
                 }
