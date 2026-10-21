@@ -569,11 +569,21 @@ async fn search_local(
         body_max_chars: effective_body_max_chars(args.body_max_chars),
         limit: args.limit.min(50),
     };
+    // The lanes read independent spaces, each in its own store transaction:
+    // they run together and the search takes the slowest lane, not the sum.
+    // The results keep lane order, so the first failing lane is the error.
+    let results = futures::future::join_all(
+        lanes
+            .iter()
+            .zip(&positions)
+            .map(|(lane, position)| search_one_space(ctx, args, &prepared, lane, position.after)),
+    )
+    .await;
     let mut lists = Vec::with_capacity(lanes.len());
     let mut all_neighbor_edges = Vec::new();
     let mut any_space_has_more = false;
-    for (lane, position) in lanes.into_iter().zip(positions) {
-        let result = search_one_space(ctx, args, &prepared, &lane, position.after).await?;
+    for ((lane, position), result) in lanes.into_iter().zip(positions).zip(results) {
+        let result = result?;
         degraded_to_lexical |= result.degraded_to_lexical;
         any_space_has_more |= result.has_more;
         all_neighbor_edges.extend(result.neighbor_edges);

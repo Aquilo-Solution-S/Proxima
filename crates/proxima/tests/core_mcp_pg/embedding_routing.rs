@@ -2082,3 +2082,115 @@ async fn a_store_keeps_its_vectors_in_a_host_index_over_the_wire() {
     .await;
     result.expect("remote index test failed");
 }
+
+/// A host index that, once armed, answers a search only after another search
+/// has also reached it: the lanes of a search over two spaces must be reading
+/// at the same time. Sequential lanes leave the first waiting until it gives
+/// up, and the semantic search fails.
+#[derive(Debug)]
+struct RendezvousIndex {
+    inner: Arc<InMemoryVectorIndex>,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+    meeting: Arc<tokio::sync::Barrier>,
+}
+
+#[async_trait::async_trait]
+impl VectorIndex for RendezvousIndex {
+    async fn put(
+        &self,
+        entity: proxima_core::EmbeddableEntityRef,
+        owner: OwnerId,
+        version: i32,
+        vectors: &[proxima_core::SpaceVector],
+    ) -> Result<(), proxima_core::StorageError> {
+        self.inner.put(entity, owner, version, vectors).await
+    }
+
+    async fn delete(
+        &self,
+        keys: &[proxima_core::storage_ports::VectorKey],
+    ) -> Result<(), proxima_core::StorageError> {
+        self.inner.delete(keys).await
+    }
+
+    async fn set_owner(
+        &self,
+        keys: &[proxima_core::storage_ports::VectorKey],
+        owner: OwnerId,
+    ) -> Result<(), proxima_core::StorageError> {
+        self.inner.set_owner(keys, owner).await
+    }
+
+    async fn nearest(
+        &self,
+        owners: &[OwnerId],
+        query: &proxima_core::SpaceVector,
+        window: u32,
+    ) -> Result<Vec<proxima_core::storage_ports::VectorCandidate>, proxima_core::StorageError> {
+        if self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::timeout(std::time::Duration::from_secs(5), self.meeting.wait())
+                .await
+                .map_err(|_| {
+                    proxima_core::StorageError::Internal("the other lane never arrived".to_owned())
+                })?;
+        }
+        self.inner.nearest(owners, query, window).await
+    }
+
+    async fn entries(
+        &self,
+        after: Option<&proxima_core::storage_ports::VectorKey>,
+        limit: u32,
+    ) -> Result<Vec<proxima_core::storage_ports::VectorEntry>, proxima_core::StorageError> {
+        self.inner.entries(after, limit).await
+    }
+}
+
+/// A search over two spaces reads both at once, so it takes the slower space
+/// and not the sum of the two.
+#[tokio::test]
+async fn a_search_over_two_spaces_reads_them_at_once() {
+    use proxima_core::llm::EmbeddingDim;
+    let split_db = clone_split_core_db("proxima_core_lane_concurrent")
+        .await
+        .expect("PG required for tests");
+    let db_name = split_db.name().to_owned();
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let index = Arc::new(RendezvousIndex {
+            inner: Arc::new(InMemoryVectorIndex::default()),
+            armed: armed.clone(),
+            meeting: Arc::new(tokio::sync::Barrier::new(2)),
+        });
+        let fixture = TwoOwnerFixture::boot_with(
+            &db_name,
+            proxima_core::EmbeddingRuntimePolicy::default(),
+            Some(index),
+        )
+        .await?;
+        let embedding = RecordingRouteEmbedding::new("route-lanes", EmbeddingDim::D768);
+        for owner in [fixture.personal, fixture.shared] {
+            fixture.router.set_owner(owner, Some(embedding.bound()));
+        }
+        fixture.remember("current", "personal needle near").await?;
+        fixture
+            .remember(&fixture.shared_space, "shared needle near")
+            .await?;
+        let drained = fixture
+            .built
+            .host()
+            .engine()
+            .drain_embedding_jobs(10)
+            .await?;
+        assert_eq!((drained.processed, drained.failed), (2, 0));
+
+        armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let found = fixture.search("semantic", 10, None).await?;
+        assert_eq!(found["memories"].as_array().expect("memories").len(), 2);
+
+        fixture.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("concurrent lane search test failed");
+}
