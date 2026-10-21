@@ -70,17 +70,31 @@ impl McpToolCtx {
         &self,
         memory_id: MemoryId,
     ) -> Result<(MemoryId, MemoryHandleClass), McpToolError> {
-        let (_, kind) = self
-            .require_engine()?
-            .memory_kinds(&self.authz, &[memory_id])
+        self.resolve_memory_ids_with_kind(&[memory_id])
             .await?
             .into_iter()
             .next()
             .ok_or_else(|| {
                 McpToolError::NotFound(format!("memory {} not found", memory_id.into_inner()))
-            })?;
-        let class = MemoryHandleClass::from_entity_kind(kind)
-            .ok_or_else(|| McpToolError::InvalidInput("expected a memory".into()))?;
-        Ok((memory_id, class))
+            })
+    }
+
+    /// [`Self::resolve_memory_id_with_kind`] for each of `ids`, in order, with
+    /// one authorization lookup for all of them; the first unreadable id is
+    /// the error.
+    pub(crate) async fn resolve_memory_ids_with_kind(
+        &self,
+        ids: &[MemoryId],
+    ) -> Result<Vec<(MemoryId, MemoryHandleClass)>, McpToolError> {
+        self.require_engine()?
+            .memory_kinds(&self.authz, ids)
+            .await?
+            .into_iter()
+            .map(|(id, kind)| {
+                MemoryHandleClass::from_entity_kind(kind)
+                    .map(|class| (id, class))
+                    .ok_or_else(|| McpToolError::InvalidInput("expected a memory".into()))
+            })
+            .collect()
     }
 }

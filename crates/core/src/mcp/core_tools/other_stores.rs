@@ -109,23 +109,30 @@ pub(crate) async fn resolve_references(
             ids.push(id);
         }
     }
-    let remote_ids = ids
+    let (local_ids, remote_ids): (Vec<_>, Vec<_>) = ids
         .iter()
         .copied()
-        .filter(|id| crate::memory_store_number(*id) != local_number)
-        .collect::<Vec<_>>();
+        .partition(|id| crate::memory_store_number(*id) == local_number);
     let mut remote = resolve_remote_origins(ctx, &remote_ids).await?.into_iter();
-    let mut resolved = Vec::with_capacity(ids.len());
-    for id in ids {
-        resolved.push(if crate::memory_store_number(id) == local_number {
-            let (id, kind) = ctx
-                .resolve_memory_id_with_kind(crate::MemoryId::new(id))
-                .await?;
-            ResolvedMemory::Local(id, kind)
-        } else {
-            ResolvedMemory::Remote(remote.next().expect("one bounded result per remote UUID"))
-        });
-    }
+    let local_ids = local_ids
+        .into_iter()
+        .map(crate::MemoryId::new)
+        .collect::<Vec<_>>();
+    let mut local = ctx
+        .resolve_memory_ids_with_kind(&local_ids)
+        .await?
+        .into_iter();
+    let resolved = ids
+        .into_iter()
+        .map(|id| {
+            if crate::memory_store_number(id) == local_number {
+                let (id, kind) = local.next().expect("one classified memory per local UUID");
+                ResolvedMemory::Local(id, kind)
+            } else {
+                ResolvedMemory::Remote(remote.next().expect("one bounded result per remote UUID"))
+            }
+        })
+        .collect::<Vec<_>>();
     Ok(resolved)
 }
 
