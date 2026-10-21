@@ -25,8 +25,8 @@
 use std::fmt;
 use std::future::Future;
 use std::ops::Deref;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use sqlx::postgres::PgPoolOptions;
@@ -79,7 +79,7 @@ pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 pub const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 static PROCESS_START: OnceLock<OffsetDateTime> = OnceLock::new();
-static SWEEP_DONE: Mutex<bool> = Mutex::new(false);
+static SWEEP_DONE: AtomicBool = AtomicBool::new(false);
 static CATALOG_READY: AtomicBool = AtomicBool::new(false);
 
 /// `PROXIMA_TEST_PG_URL`, trimmed; `None` when it is unset, empty or
@@ -1362,25 +1362,15 @@ async fn connect_admin() -> Result<PgConnection, sqlx::Error> {
 }
 
 async fn maybe_sweep(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
-    if sweep_is_done() {
+    if SWEEP_DONE.load(Ordering::Acquire) {
         return Ok(());
     }
     let dropped = sweep_stale_on(conn).await?;
     if dropped > 0 {
         tracing::info!(dropped, "swept leftover test databases");
     }
-    mark_sweep_done();
+    SWEEP_DONE.store(true, Ordering::Release);
     Ok(())
-}
-
-fn sweep_is_done() -> bool {
-    SWEEP_DONE.lock().is_ok_and(|guard| *guard)
-}
-
-fn mark_sweep_done() {
-    if let Ok(mut guard) = SWEEP_DONE.lock() {
-        *guard = true;
-    }
 }
 
 async fn process_start(conn: &mut PgConnection) -> Result<OffsetDateTime, sqlx::Error> {
