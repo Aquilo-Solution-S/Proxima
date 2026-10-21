@@ -1321,3 +1321,49 @@ async fn an_owner_erase_does_not_scan_other_owners_tables() {
     let _ = drop_db(&db_name).await;
     result.expect("owner erase scan test failed");
 }
+
+/// Every table a forget deletes from by key has an index led by that key
+/// (#3596).
+///
+/// The legs come from the declarations, so a table declared later is held to
+/// the same rule. A plan cannot show this: with an index that merely contains
+/// the column, the planner reads the whole index.
+#[tokio::test]
+async fn every_forget_leg_has_an_index_led_by_its_key() {
+    use proxima_core::owner_inverse::OwnerSurfaces;
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let surfaces = OwnerSurfaces::for_registry(
+            &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+        );
+        let legs = surfaces.generated_forget_legs();
+        assert!(!legs.is_empty(), "the shipped flavor declares forget legs");
+        for (table, key_column) in legs {
+            let led: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1 FROM pg_index i
+                       JOIN pg_attribute a
+                         ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+                      WHERE i.indrelid = $1::regclass AND i.indpred IS NULL
+                        AND a.attname = $2)",
+            )
+            .bind(table)
+            .bind(key_column)
+            .fetch_one(pg.pool_for_tests())
+            .await?;
+            assert!(
+                led,
+                "{table} needs an index led by {key_column} for its forget leg"
+            );
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("forget leg index check failed");
+}
