@@ -6,14 +6,12 @@ use proxima_core::flavor::flavor0::resource as core_resource;
 use proxima_core::mcp::core_tools::{
     get_graph::{GetGraphArgs, get_graph},
     get_memories::{GetMemoriesArgs, get_memories},
-    get_memory::{GetMemoryArgs, VersionSelector, get_memory},
+    get_memory::{GetMemoryArgs, get_memory},
     goal_reads::{ListGoalsArgs, get_goal, list_goals},
     list_schemas::{ListSchemasArgs, get_schema, list_schemas},
     list_substrate_tools::{ListSubstrateToolsArgs, list_substrate_tools},
     memory_counts::memory_counts,
-    walk_memory_lineage::{
-        WalkMemoryLineageArgs, WalkMemoryLineageDirectionArg, walk_memory_lineage,
-    },
+    walk_memory_lineage::{WalkMemoryLineageArgs, walk_memory_lineage},
 };
 use proxima_core::mcp::{
     McpAuthorContext, McpHostToolCall, McpToolCtx, McpToolDescriptor, McpToolError,
@@ -708,10 +706,29 @@ enum ResourceUriError {
     MissingParam { param: &'static str },
     /// A query parameter failed to parse.
     InvalidParam {
-        param: &'static str,
+        param: String,
         value: String,
-        expected: &'static str,
+        expected: String,
     },
+    /// The query as a whole does not fit the resource's arguments (a
+    /// repeated parameter, or one the path already supplies).
+    InvalidQuery(String),
+}
+
+impl std::fmt::Display for ResourceUriError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl std::error::Error for ResourceUriError {}
+
+/// Lets core's argument types report their own deserialization failures
+/// (a repeated field) through the resource error.
+impl serde::de::Error for ResourceUriError {
+    fn custom<T: std::fmt::Display>(message: T) -> Self {
+        Self::InvalidQuery(message.to_string())
+    }
 }
 
 impl ResourceUriError {
@@ -733,6 +750,9 @@ impl ResourceUriError {
             } => invalid(format!(
                 "resource {uri}: invalid parameter `{param}`: expected {expected}, got '{value}'"
             )),
+            Self::InvalidQuery(reason) => {
+                invalid(format!("resource {uri}: invalid query: {reason}"))
+            }
         }
     }
 }
@@ -860,9 +880,9 @@ fn parse_id_resource(
             version
                 .parse::<u32>()
                 .map_err(|_| ResourceUriError::InvalidParam {
-                    param: "schema_version",
+                    param: "schema_version".into(),
                     value: version.to_string(),
-                    expected: "a non-negative integer",
+                    expected: "a non-negative integer".into(),
                 })?;
         return Ok(ParsedResource::Schema {
             schema_id: schema_id.to_string(),
@@ -890,24 +910,12 @@ fn parse_memory_resource_path(
         if id.is_empty() || id.contains('/') {
             return Err(ResourceUriError::UnknownPath);
         }
-        return Ok(ParsedResource::MemoryLineage(WalkMemoryLineageArgs {
-            memory: id.to_string(),
-            direction: query_lineage_direction(query)?,
-            depth: query_parse(query, "depth", "a non-negative integer (clamped to 1..=8)")?
-                .unwrap_or(3),
-            limit: query_parse(query, "limit", "a non-negative integer")?.unwrap_or(50),
-            cursor: query_value(query, "cursor").map(ToOwned::to_owned),
-        }));
+        return query_args(id, query).map(ParsedResource::MemoryLineage);
     }
     if rest.is_empty() || rest.contains('/') {
         return Err(ResourceUriError::UnknownPath);
     }
-    Ok(ParsedResource::Memory(GetMemoryArgs {
-        memory: rest.to_string(),
-        expand_neighbors: query_bool(query, "expand_neighbors"),
-        space: None,
-        version: query_version(query)?,
-    }))
+    query_args(rest, query).map(ParsedResource::Memory)
 }
 
 fn parse_query(query: Option<&str>) -> Result<Vec<(&str, &str)>, ResourceUriError> {
@@ -935,10 +943,6 @@ fn query_value<'a>(query: &'a [(&str, &str)], key: &str) -> Option<&'a str> {
         .find_map(|(candidate, value)| (*candidate == key).then_some(*value))
 }
 
-fn query_bool(query: &[(&str, &str)], key: &str) -> bool {
-    query_value(query, key) == Some("true")
-}
-
 fn query_parse<T>(
     query: &[(&str, &str)],
     key: &'static str,
@@ -952,36 +956,109 @@ where
             .parse::<T>()
             .map(Some)
             .map_err(|_| ResourceUriError::InvalidParam {
-                param: key,
+                param: key.into(),
                 value: value.to_string(),
-                expected,
+                expected: expected.into(),
             })
     })
 }
 
-fn query_lineage_direction(
+/// The arguments of a memory resource: its id from the path, then the query
+/// pairs, deserialized into core's own argument type. Core owns the fields,
+/// their defaults and enum spellings, so `resources/read` and `tools/call`
+/// cannot disagree about any of them.
+fn query_args<T: serde::de::DeserializeOwned>(
+    memory: &str,
     query: &[(&str, &str)],
-) -> Result<WalkMemoryLineageDirectionArg, ResourceUriError> {
-    match query_value(query, "direction") {
-        None | Some("ancestors") => Ok(WalkMemoryLineageDirectionArg::Ancestors),
-        Some("descendants") => Ok(WalkMemoryLineageDirectionArg::Descendants),
-        Some(other) => Err(ResourceUriError::InvalidParam {
-            param: "direction",
-            value: other.to_string(),
-            expected: "'ancestors' or 'descendants'",
-        }),
+) -> Result<T, ResourceUriError> {
+    let pairs = std::iter::once(("memory", memory))
+        .chain(query.iter().copied())
+        .map(|(key, value)| (key, QueryValue { key, value }));
+    T::deserialize(serde::de::value::MapDeserializer::new(pairs))
+}
+
+/// One query value, read as the type the field asks for: a number is parsed,
+/// a boolean is `true` or `false`, an enum names one of its variants. A value
+/// of the wrong shape is an [`ResourceUriError::InvalidParam`] naming the
+/// parameter, as every other bad parameter is.
+struct QueryValue<'a> {
+    key: &'a str,
+    value: &'a str,
+}
+
+impl QueryValue<'_> {
+    fn invalid(&self, expected: impl Into<String>) -> ResourceUriError {
+        ResourceUriError::InvalidParam {
+            param: self.key.to_owned(),
+            value: self.value.to_owned(),
+            expected: expected.into(),
+        }
     }
 }
 
-fn query_version(query: &[(&str, &str)]) -> Result<VersionSelector, ResourceUriError> {
-    match query_value(query, "version") {
-        None | Some("exact") => Ok(VersionSelector::Exact),
-        Some("head") => Ok(VersionSelector::Head),
-        Some(other) => Err(ResourceUriError::InvalidParam {
-            param: "version",
-            value: other.to_string(),
-            expected: "'exact' or 'head'",
-        }),
+impl serde::de::IntoDeserializer<'_, ResourceUriError> for QueryValue<'_> {
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
+    }
+}
+
+impl<'de> serde::de::Deserializer<'de> for QueryValue<'_> {
+    type Error = ResourceUriError;
+
+    fn deserialize_any<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_str(self.value)
+    }
+
+    fn deserialize_u32<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        let number = self
+            .value
+            .parse()
+            .map_err(|_| self.invalid("a non-negative integer"))?;
+        visitor.visit_u32(number)
+    }
+
+    fn deserialize_bool<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        match self.value {
+            "true" => visitor.visit_bool(true),
+            "false" => visitor.visit_bool(false),
+            _ => Err(self.invalid("`true` or `false`")),
+        }
+    }
+
+    fn deserialize_option<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_some(self)
+    }
+
+    fn deserialize_enum<V: serde::de::Visitor<'de>>(
+        self,
+        _name: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        if !variants.contains(&self.value) {
+            return Err(self.invalid(format!("one of {}", variants.join(", "))));
+        }
+        visitor.visit_enum(serde::de::IntoDeserializer::into_deserializer(self.value))
+    }
+
+    serde::forward_to_deserialize_any! {
+        i8 i16 i32 i64 i128 u8 u16 u64 u128 f32 f64 char str string bytes
+        byte_buf unit unit_struct newtype_struct seq tuple tuple_struct map
+        struct identifier ignored_any
     }
 }
 
@@ -999,6 +1076,8 @@ mod tests {
 
     use super::*;
     use crate::auth::McpAuthContext;
+    use proxima_core::mcp::core_tools::get_memory::VersionSelector;
+    use proxima_core::mcp::core_tools::walk_memory_lineage::WalkMemoryLineageDirectionArg;
     use proxima_core::mcp::{McpAuthorContext, ToolContent};
     use proxima_core::{
         AuthzContext, FlavorRegistry, OwnerId, ScopeKey, ServedSurface, ToolScope, UserId,
@@ -1502,6 +1581,73 @@ mod tests {
         );
     }
 
+    const MEMORY: &str = "018f0000-0000-7000-8000-000000000001";
+
+    /// A resource read with no query is the tool call with no optional
+    /// arguments: core's defaults apply to both, none is restated here.
+    #[test]
+    fn a_memory_resource_without_a_query_takes_the_tools_defaults() {
+        let lineage = parse_resource_uri(&format!("proxima://memory/{MEMORY}/lineage"))
+            .expect("lineage resource");
+        let ParsedResource::MemoryLineage(args) = lineage else {
+            panic!("expected a lineage resource");
+        };
+        let tool: WalkMemoryLineageArgs =
+            serde_json::from_value(serde_json::json!({ "memory": MEMORY })).expect("tool args");
+        assert_eq!(format!("{args:?}"), format!("{tool:?}"));
+
+        let memory =
+            parse_resource_uri(&format!("proxima://memory/{MEMORY}")).expect("memory resource");
+        let ParsedResource::Memory(args) = memory else {
+            panic!("expected a memory resource");
+        };
+        let tool: GetMemoryArgs =
+            serde_json::from_value(serde_json::json!({ "memory": MEMORY })).expect("tool args");
+        assert_eq!(format!("{args:?}"), format!("{tool:?}"));
+    }
+
+    #[test]
+    fn expand_neighbors_is_true_or_false_and_nothing_else() {
+        for (value, expected) in [("true", true), ("false", false)] {
+            let parsed = parse_resource_uri(&format!(
+                "proxima://memory/{MEMORY}?expand_neighbors={value}"
+            ))
+            .expect("memory resource");
+            assert!(
+                matches!(&parsed, ParsedResource::Memory(args) if args.expand_neighbors == expected),
+                "{value}: {parsed:?}"
+            );
+        }
+        for value in ["1", "True", "yes", ""] {
+            assert!(
+                matches!(
+                    parse_resource_uri(&format!(
+                        "proxima://memory/{MEMORY}?expand_neighbors={value}"
+                    )),
+                    Err(ResourceUriError::InvalidParam { param, .. }) if param == "expand_neighbors"
+                ),
+                "{value:?} must name the parameter"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_lineage_number_names_its_parameter_and_the_path_id_cannot_be_overridden() {
+        assert_eq!(
+            parse_resource_uri(&format!("proxima://memory/{MEMORY}/lineage?depth=deep"))
+                .unwrap_err(),
+            ResourceUriError::InvalidParam {
+                param: "depth".into(),
+                value: "deep".into(),
+                expected: "a non-negative integer".into(),
+            }
+        );
+        assert!(matches!(
+            parse_resource_uri(&format!("proxima://memory/{MEMORY}?memory=other")),
+            Err(ResourceUriError::InvalidQuery(_))
+        ));
+    }
+
     /// Each parse-failure class carries its own wire shape: unknown paths
     /// surface as resource-not-found, while bad or missing parameters on a
     /// known template name the parameter (backed by `invalid_params` at
@@ -1533,9 +1679,9 @@ mod tests {
             )
             .unwrap_err(),
             ResourceUriError::InvalidParam {
-                param: "direction",
+                param: "direction".into(),
                 value: "sideways".into(),
-                expected: "'ancestors' or 'descendants'",
+                expected: "one of ancestors, descendants".into(),
             }
         );
         assert_eq!(
