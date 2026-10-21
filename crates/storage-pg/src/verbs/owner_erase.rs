@@ -559,16 +559,28 @@ async fn delete_owned_surfaces(
 /// `proxima_core.sketch` is keyed on a memory `t` OR a goal `t` — one
 /// column, two home tables, which is also why it carries no foreign key.
 /// No generated statement spans two selection sets, so this leg is named.
+///
+/// One join per selection set, not one `DELETE` with an `OR` of two `EXISTS`:
+/// the `OR` cannot become a join, so it reads the whole table of every owner
+/// to erase a few rows.
 async fn delete_selected_sketches(tx: &mut Tx<'_>) -> Result<u64, StorageError> {
-    Ok(sqlx::query(
-        "DELETE FROM proxima_core.sketch s
-          WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = s.t)
-             OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = s.t)",
+    let memories = delete_fixed_by_selected(
+        tx,
+        "proxima_core.sketch",
+        "t",
+        KeyedSet::Memories.table(),
+        KeyedSet::Memories.column(),
     )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?
-    .rows_affected())
+    .await?;
+    let goals = delete_fixed_by_selected(
+        tx,
+        "proxima_core.sketch",
+        "t",
+        KeyedSet::Goals.table(),
+        KeyedSet::Goals.column(),
+    )
+    .await?;
+    Ok(memories.saturating_add(goals))
 }
 
 async fn erase_selected(
@@ -988,6 +1000,21 @@ async fn open_erase_bookkeeping(
     Ok(())
 }
 
+/// The `t` of every publication record an erase reaches: the physical Facts
+/// it selected, and the records whose immutable original owner (and source,
+/// when narrowed) is the erased one. Bound `$1` = owner, `$2` = source or NULL.
+///
+/// A `t IN (..)` over the union, not an `OR` of two conditions per row: the
+/// `OR` cannot become a join and reads the whole outbox of every owner.
+macro_rules! selected_origin_ts_sql {
+    () => {
+        "SELECT sm.memory_id FROM selected_memories sm WHERE sm.kind = 'fact'
+         UNION ALL
+         SELECT o.t FROM proxima_core.publication_origin o
+          WHERE o.original_owner_id = $1 AND ($2::text IS NULL OR o.source_id = $2)"
+    };
+}
+
 /// Serialize origin revocation with the typed owner/Fact eligibility check.
 /// Lock origins selected either by physical Fact `t` or by immutable
 /// original owner/source, covering both transferred Facts outside the live
@@ -998,17 +1025,14 @@ async fn lock_selected_publication_origins(
     scope: SelectionScope<'_>,
 ) -> Result<(), StorageError> {
     let owner_id = owner.into_inner();
-    let ids = sqlx::query_scalar::<_, uuid::Uuid>(
+    let ids = sqlx::query_scalar::<_, uuid::Uuid>(concat!(
         "SELECT origin.t
            FROM proxima_core.publication_origin origin
-          WHERE EXISTS (
-                    SELECT 1 FROM selected_memories sm
-                     WHERE sm.kind = 'fact' AND sm.memory_id = origin.t
-                )
-             OR (origin.original_owner_id = $1
-                 AND ($2::text IS NULL OR origin.source_id = $2))
-          ORDER BY origin.t",
-    )
+          WHERE origin.t IN (",
+        selected_origin_ts_sql!(),
+        ")
+          ORDER BY origin.t"
+    ))
     .bind(owner_id)
     .bind(scope.source_bind())
     .fetch_all(&mut **tx)
@@ -1031,34 +1055,24 @@ async fn revoke_original_publications(
 ) -> Result<(u64, u64), StorageError> {
     let owner_id = owner.into_inner();
     let source = scope.source_bind();
-    let publications = sqlx::query(
+    let publications = sqlx::query(concat!(
         "DELETE FROM proxima_core.publication_outbox outbox
-          WHERE EXISTS (
-                    SELECT 1 FROM selected_memories sm
-                     WHERE sm.kind = 'fact' AND sm.memory_id = outbox.t
-                )
-             OR EXISTS (
-                    SELECT 1 FROM proxima_core.publication_origin origin
-                     WHERE origin.t = outbox.t
-                       AND origin.original_owner_id = $1
-                       AND ($2::text IS NULL OR origin.source_id = $2)
-                )",
-    )
+          WHERE outbox.t IN (",
+        selected_origin_ts_sql!(),
+        ")"
+    ))
     .bind(owner_id)
     .bind(source)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?
     .rows_affected();
-    let origins = sqlx::query(
+    let origins = sqlx::query(concat!(
         "DELETE FROM proxima_core.publication_origin origin
-          WHERE EXISTS (
-                    SELECT 1 FROM selected_memories sm
-                     WHERE sm.kind = 'fact' AND sm.memory_id = origin.t
-                )
-             OR (origin.original_owner_id = $1
-                 AND ($2::text IS NULL OR origin.source_id = $2))",
-    )
+          WHERE origin.t IN (",
+        selected_origin_ts_sql!(),
+        ")"
+    ))
     .bind(owner_id)
     .bind(source)
     .execute(&mut **tx)
@@ -1567,21 +1581,26 @@ async fn selected_content_ids(
     .map_err(map_err)
 }
 
+/// The embedding rows of the selected memories and goals, one join per
+/// selection set (see [`delete_selected_sketches`]).
 async fn delete_embeddings(tx: &mut Tx<'_>, table: &str) -> Result<u64, StorageError> {
-    let table = PgIdent::table(table)?;
-    // SQL-POLICY: PgIdent
-    let sql = format!(
-        "DELETE FROM {table} e
-          WHERE EXISTS (SELECT 1 FROM selected_memories sm WHERE sm.memory_id = e.entity_id)
-             OR EXISTS (SELECT 1 FROM selected_goals sg WHERE sg.goal_id = e.entity_id)",
-        table = table.as_str()
-    );
-    // SQL-POLICY: PgIdent
-    let result = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    Ok(result.rows_affected())
+    let memories = delete_fixed_by_selected(
+        tx,
+        table,
+        "entity_id",
+        KeyedSet::Memories.table(),
+        KeyedSet::Memories.column(),
+    )
+    .await?;
+    let goals = delete_fixed_by_selected(
+        tx,
+        table,
+        "entity_id",
+        KeyedSet::Goals.table(),
+        KeyedSet::Goals.column(),
+    )
+    .await?;
+    Ok(memories.saturating_add(goals))
 }
 
 /// Delegations are owner-level authority, never source-attributable data.

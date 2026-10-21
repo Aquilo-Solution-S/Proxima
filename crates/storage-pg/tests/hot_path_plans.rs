@@ -1192,3 +1192,132 @@ async fn a_blob_erase_reads_its_uploads_through_the_blob_index() {
     let _ = drop_db(&db_name).await;
     result.expect("blob erase EXPLAIN failed");
 }
+
+/// Sequential scans started, and rows deleted, per erased table.
+async fn erase_counts(
+    pool: &sqlx::PgPool,
+) -> Result<std::collections::BTreeMap<String, (i64, i64)>, sqlx::Error> {
+    sqlx::query("SELECT pg_stat_clear_snapshot()")
+        .execute(pool)
+        .await?;
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT relname::text, seq_scan, n_tup_del FROM pg_stat_user_tables
+          WHERE schemaname = 'proxima_core'
+            AND relname IN ('sketch', 'embedding_heads', 'embeddings',
+                            'publication_outbox', 'publication_origin')",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(n, s, d)| (n, (s, d))).collect())
+}
+
+/// An owner erase reaches the rows it deletes through their keys, not by
+/// reading every owner's table (#3596).
+///
+/// A small group beside a bystander with 5,000 memories, each with a sketch,
+/// an embedding, a publication record and its origin. Erasing the small group
+/// must not start a sequential scan of those tables: each table's statistics
+/// say how many scans the erase started.
+#[tokio::test]
+async fn an_owner_erase_does_not_scan_other_owners_tables() {
+    use proxima_core::GroupId;
+    use proxima_core::owner_inverse::{
+        EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerSurfaces,
+    };
+    use proxima_core::storage_ports::OwnerInversePort;
+    use proxima_storage_pg::test_fixtures::register_group_for_tests;
+
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let pool = pg.pool_for_tests();
+        let target = GroupId::new(Uuid::now_v7());
+        let bystander = GroupId::new(Uuid::now_v7());
+        register_group_for_tests(pool, target).await?;
+        register_group_for_tests(pool, bystander).await?;
+        for (owner, count) in [(target, 40_i32), (bystander, 5_000_i32)] {
+            sqlx::query(
+                "WITH s AS (SELECT uuidv7() AS handle, uuidv7() AS t FROM generate_series(1, $2::int)),
+                 memory AS (
+                     INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\")
+                     SELECT handle, t, 'fact', $1, 'erase/x', now(), '00000000-0000-0000-0000-000000000509'::uuid FROM s),
+                 head AS (
+                     INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                     SELECT handle, 'fact', 'erase/x', $1, t FROM s),
+                 sketch AS (
+                     INSERT INTO proxima_core.sketch (t, owner_id, kind, text)
+                     SELECT t, $1, 'fact', 'sketch' FROM s),
+                 origin AS (
+                     INSERT INTO proxima_core.publication_origin (t, original_owner_id, source_id)
+                     SELECT t, $1, NULL FROM s),
+                 outbox AS (
+                     INSERT INTO proxima_core.publication_outbox
+                         (t, owner_id, schema_id, schema_version, event_type, event_id,
+                          envelope, envelope_digest, state, published_at)
+                     SELECT t, $1, 'core/x', 1, 'type', 'e-' || t, '\\x00'::bytea,
+                            decode(repeat('00', 32), 'hex'), 'published', now() FROM s),
+                 heads AS (
+                     INSERT INTO proxima_core.embedding_heads (entity_id, model_id, embedding_version, owner_id, dim)
+                     SELECT t, 'm', 1, $1, 384 FROM s)
+                 INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, embedding_version, vec, owner_id)
+                 SELECT t, 'm', 384, 1, array_fill(0.5::real, ARRAY[384])::vector, $1 FROM s",
+            )
+            .bind(owner.into_inner())
+            .bind(count)
+            .execute(pool)
+            .await?;
+        }
+        // SQL-POLICY: fixed-fragment
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "ANALYZE proxima_core.memory; ANALYZE proxima_core.sketch;
+             ANALYZE proxima_core.publication_origin; ANALYZE proxima_core.publication_outbox;
+             ANALYZE proxima_core.embedding_heads; ANALYZE proxima_core.embeddings",
+        ))
+        .execute(pool)
+        .await?;
+
+        // Sequential scans started, and rows deleted, per table, as the
+        // statistics collector has them (`erase_counts`). Another backend's
+        // counts arrive when it goes idle, so the deletes are the event to wait for.
+        let before = erase_counts(pool).await?;
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::GroupOwner {
+            group_id: target,
+        });
+        let outcome = pg
+            .erase_group_owner(
+                &auth,
+                target,
+                &OwnerSurfaces::for_registry(
+                    &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+                ),
+            )
+            .await?;
+        assert!(matches!(outcome, OwnerEraseOutcome::Completed { .. }));
+        let mut after = erase_counts(pool).await?;
+        for _ in 0..100 {
+            if after.iter().all(|(table, (_, deleted))| *deleted > before[table].1) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            after = erase_counts(pool).await?;
+        }
+        for (table, (scans, deleted)) in &after {
+            assert!(
+                *deleted > before[table].1,
+                "the statistics never showed the erase's deletes from {table}"
+            );
+            assert_eq!(
+                *scans, before[table].0,
+                "the erase scanned {table} sequentially"
+            );
+        }
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("owner erase scan test failed");
+}
