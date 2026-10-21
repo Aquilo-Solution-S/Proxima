@@ -1635,3 +1635,93 @@ fn fake_series(fake: &FakeStores, handle: Uuid) -> Uuid {
         _ => panic!("{handle} is not a readable version"),
     }
 }
+
+/// Another store that answers a read only once a second read has also
+/// reached it: the reads of a goal's evidence must be in flight together.
+/// Sequential reads leave the first waiting until it gives up.
+struct RendezvousStore {
+    meeting: tokio::sync::Barrier,
+}
+
+impl OtherStores for RendezvousStore {
+    fn stores<'a>(
+        &'a self,
+        _caller: StoreCaller<'a>,
+    ) -> BoxFuture<'a, Result<Vec<StoreInfo>, OtherStoresError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn search<'a>(
+        &'a self,
+        _caller: StoreCaller<'a>,
+        store: u16,
+        _args: &'a RemoteSearch,
+    ) -> BoxFuture<'a, Result<RemoteSearchResult, OtherStoresError>> {
+        Box::pin(async move { panic!("store {store} searched") })
+    }
+
+    fn read<'a>(
+        &'a self,
+        _caller: StoreCaller<'a>,
+        handle: Uuid,
+        _at: ReadAt,
+    ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
+        Box::pin(async move {
+            tokio::time::timeout(Duration::from_secs(1), self.meeting.wait())
+                .await
+                .map_err(|_| {
+                    OtherStoresError::Unavailable("the other read never arrived".into())
+                })?;
+            Ok(RemoteRead::Found(fact(handle, "remote basis")))
+        })
+    }
+}
+
+/// A goal that names several memories of another store reads them at once,
+/// so it takes the slowest read and not the sum of them.
+#[tokio::test]
+async fn goal_evidence_in_another_store_is_read_all_at_once() {
+    let split_db = clone_split_core_db("proxima_other_stores_evidence_concurrent")
+        .await
+        .expect("PG required for tests");
+    let (runtime_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let built = Proxima::<AgentMemoryApp>::app()
+            .database_url(runtime_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .served_surface(proxima_core::ServedSurface::All)
+            .other_stores(Arc::new(RendezvousStore {
+                meeting: tokio::sync::Barrier::new(2),
+            }))
+            .build()
+            .await?;
+        let tools = built.host().core_mcp_tools();
+        let authz = space_authz(owner, vec![owner], Role::admin());
+        let evidence = vec![
+            remote_id(1, "basis-a").to_string(),
+            remote_id(1, "basis-b").to_string(),
+        ];
+        call_test_model_tool(
+            &tools,
+            authz,
+            owner,
+            "core_goal",
+            serde_json::json!({
+                "action": "set", "schema_id": "core/simple-text-v1",
+                "title": "two remote", "text": "two remote", "body": {},
+                "evidence": evidence, "idempotency_key": "two-remote",
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+    .await;
+    drop(split_db);
+    result.expect("concurrent evidence read test failed");
+}

@@ -136,7 +136,7 @@ pub(crate) async fn resolve_references(
     Ok(resolved)
 }
 
-async fn resolve_remote_origins(
+pub(crate) async fn resolve_remote_origins(
     ctx: &McpToolCtx,
     ids: &[uuid::Uuid],
 ) -> Result<Vec<ReadOrigin>, McpToolError> {

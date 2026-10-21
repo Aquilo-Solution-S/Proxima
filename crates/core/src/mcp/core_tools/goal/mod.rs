@@ -618,19 +618,31 @@ pub(crate) async fn resolve_goal_evidence_handles(
     ctx: &McpToolCtx,
     evidence: &[String],
 ) -> Result<Vec<GoalEvidenceRef>, McpToolError> {
-    let mut resolved = Vec::with_capacity(evidence.len());
-    for handle in evidence {
-        let id = ctx.resolve_memory(handle)?;
-        resolved.push(
-            if crate::memory_store_number(id.into_inner()) == ctx.require_engine()?.store_number() {
+    let ids = evidence
+        .iter()
+        .map(|handle| ctx.resolve_memory(handle))
+        .collect::<Result<Vec<_>, _>>()?;
+    let store_number = ctx.require_engine()?.store_number();
+    // The remote reads run together under one call-wide deadline, so a goal
+    // naming several memories of other stores takes the slowest read.
+    let remote_ids: Vec<uuid::Uuid> = ids
+        .iter()
+        .map(|id| id.into_inner())
+        .filter(|id| crate::memory_store_number(*id) != store_number)
+        .collect();
+    let mut remote = super::other_stores::resolve_remote_origins(ctx, &remote_ids)
+        .await?
+        .into_iter();
+    Ok(ids
+        .into_iter()
+        .map(|id| {
+            if crate::memory_store_number(id.into_inner()) == store_number {
                 GoalEvidenceRef::new(id)
             } else {
-                let (origin, _) = super::other_stores::read_origin(ctx, id.into_inner()).await?;
-                GoalEvidenceRef::remote(origin)
-            },
-        );
-    }
-    Ok(resolved)
+                GoalEvidenceRef::remote(remote.next().expect("one origin per remote evidence"))
+            }
+        })
+        .collect())
 }
 
 fn target_perspective(
