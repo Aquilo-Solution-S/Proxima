@@ -1156,6 +1156,17 @@ const UNAUTHENTICATED_SCOPE_ALLOWS: bool = false;
 #[cfg(test)]
 const UNAUTHENTICATED_SCOPE_ALLOWS: bool = true;
 
+/// The reserved call-context argument that names the operator label. The REST surface
+/// reserves the same names, and [`strip_call_context_args`] removes them.
+pub const MODEL_ID_ARG: &str = "model_id";
+/// The reserved call-context arguments that name the caller's own Self Perspective, in the
+/// order they are read.
+pub const SELF_PERSPECTIVE_ARGS: [&str; 3] = [
+    "_proxima_caller_self_perspective",
+    "caller_self_perspective",
+    "current_root_perspective_memory_id",
+];
+
 /// Author context for one `tools/call`.
 ///
 /// The reserved `model_id` argument is a caller *claim*. When the token
@@ -1176,11 +1187,18 @@ pub fn author_from_args(
     client_version: &str,
 ) -> Result<McpAuthorContext, ErrorData> {
     let trusted = trusted_model_id(auth);
-    let model_id = resolve_operator_label(
-        trusted.as_deref(),
-        args.get("model_id").and_then(serde_json::Value::as_str),
-    )
-    .map_err(|conflict| ErrorData::invalid_params(conflict.detail("model_id"), None))?;
+    let claimed = match args.get(MODEL_ID_ARG) {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(label)) => Some(label.as_str()),
+        Some(_) => {
+            return Err(ErrorData::invalid_params(
+                format!("{MODEL_ID_ARG} must be a string"),
+                None,
+            ));
+        }
+    };
+    let model_id = resolve_operator_label(trusted.as_deref(), claimed)
+        .map_err(|conflict| ErrorData::invalid_params(conflict.detail("model_id"), None))?;
     let caller_self_perspective = caller_self_perspective_from_args(args)?;
     Ok(McpAuthorContext {
         model_id,
@@ -1194,13 +1212,10 @@ pub fn author_from_args(
 fn caller_self_perspective_from_args(
     args: &serde_json::Value,
 ) -> Result<Option<MemoryId>, ErrorData> {
-    let Some((field, raw)) = [
-        "_proxima_caller_self_perspective",
-        "caller_self_perspective",
-        "current_root_perspective_memory_id",
-    ]
-    .into_iter()
-    .find_map(|field| args.get(field).map(|raw| (field, raw))) else {
+    let Some((field, raw)) = SELF_PERSPECTIVE_ARGS
+        .into_iter()
+        .find_map(|field| args.get(field).map(|raw| (field, raw)))
+    else {
         return Ok(None);
     };
     let Some(raw) = raw.as_str() else {
@@ -1222,15 +1237,15 @@ pub fn strip_call_context_args(args: &mut serde_json::Value) {
     let Some(obj) = args.as_object_mut() else {
         return;
     };
-    obj.remove("_proxima_caller_self_perspective");
-    obj.remove("caller_self_perspective");
-    obj.remove("current_root_perspective_memory_id");
+    for field in SELF_PERSPECTIVE_ARGS {
+        obj.remove(field);
+    }
     // `model_id` is the reserved operator label: `author_from_args` has already
     // captured it into the author context, so strip it as a context field. This
     // lets any dispatcher tool (whose per-action specs do not list `model_id`)
     // accept it without a spurious unexpected-field rejection; flat tools that
     // want it (e.g. core_derive) read it from `ctx.author.model_id`.
-    obj.remove("model_id");
+    obj.remove(MODEL_ID_ARG);
 }
 
 /// Whether `scope` admits a host tool, which is flat: its key is its name as
@@ -1604,6 +1619,33 @@ mod tests {
         strip_call_context_args(&mut args);
         assert!(args.get("model_id").is_none(), "model_id stripped: {args}");
         assert_eq!(args["action"], "set");
+    }
+
+    #[test]
+    fn a_model_id_that_is_not_a_string_is_invalid_params() {
+        for claimed in [
+            serde_json::json!(123),
+            serde_json::json!({}),
+            serde_json::json!(["a"]),
+        ] {
+            let err = author_from_args(
+                &serde_json::json!({ "model_id": claimed }),
+                None,
+                "unknown",
+                "0",
+            )
+            .expect_err("a label that is not a string is refused, not read as absent");
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("model_id"), "{}", err.message);
+        }
+        let author = author_from_args(
+            &serde_json::json!({ "model_id": null }),
+            None,
+            "unknown",
+            "0",
+        )
+        .expect("null is an absent label");
+        assert_eq!(author.model_id, "unknown");
     }
 
     #[test]

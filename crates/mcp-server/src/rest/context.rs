@@ -15,6 +15,7 @@ use proxima_core::mcp::{McpAuthorContext, resolve_operator_label};
 use proxima_core::{MemoryId, RELEASE_VERSION};
 
 use crate::auth::McpAuthContext;
+use crate::handler::{MODEL_ID_ARG, SELF_PERSPECTIVE_ARGS};
 use crate::rest::error::Problem;
 
 /// Model label for the write's provenance.
@@ -41,13 +42,10 @@ const ADAPTER_CLIENT_NAME: &str = "proxima-rest";
 /// move of a field between header and body cannot be mistaken for a schema
 /// change.
 pub const RESERVED_ARGUMENTS: &[(&str, &str)] = &[
-    ("model_id", MODEL_ID_HEADER),
-    ("caller_self_perspective", SELF_PERSPECTIVE_HEADER),
-    ("_proxima_caller_self_perspective", SELF_PERSPECTIVE_HEADER),
-    (
-        "current_root_perspective_memory_id",
-        SELF_PERSPECTIVE_HEADER,
-    ),
+    (MODEL_ID_ARG, MODEL_ID_HEADER),
+    (SELF_PERSPECTIVE_ARGS[1], SELF_PERSPECTIVE_HEADER),
+    (SELF_PERSPECTIVE_ARGS[0], SELF_PERSPECTIVE_HEADER),
+    (SELF_PERSPECTIVE_ARGS[2], SELF_PERSPECTIVE_HEADER),
 ];
 
 /// The full [`McpAuthContext`] — owner and authz — as injected by the
