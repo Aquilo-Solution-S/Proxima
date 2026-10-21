@@ -3,7 +3,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::AccessKind;
 use crate::mcp::{
     McpToolAnnotations, McpToolCtx, McpToolDescriptor, McpToolError, McpToolOrigin,
     ToolDescriptorView, core_action_meta,
@@ -135,7 +134,9 @@ pub(super) fn substrate_tool_actions(
 /// narrows.
 fn action_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor, action: &str) -> bool {
     tool.action_advertised_by(ctx.authz.capabilities(), action)
-        && owner_role_permits(ctx, tool.action_is_read_only(action))
+        && ctx
+            .authz
+            .may_run_tool(&ctx.owner, tool.action_is_read_only(action))
         && ctx.behaviors_show(&ToolDescriptorView::registry(tool, Some(action)))
 }
 
@@ -157,16 +158,8 @@ fn tool_visible(ctx: &McpToolCtx, tool: &McpToolDescriptor) -> bool {
             .iter()
             .any(|spec| action_visible(ctx, tool, spec.action))
     } else {
-        owner_role_permits(ctx, tool.is_read_only())
+        ctx.authz.may_run_tool(&ctx.owner, tool.is_read_only())
             && ctx.behaviors_show(&ToolDescriptorView::registry(tool, None))
-    }
-}
-
-fn owner_role_permits(ctx: &McpToolCtx, read_only: bool) -> bool {
-    if read_only {
-        ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
-    } else {
-        ctx.authz.may_write(&ctx.owner, AccessKind::Fact)
     }
 }
 

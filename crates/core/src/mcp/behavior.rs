@@ -3,8 +3,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 
-use crate::AccessKind;
-
 use super::core_tools::memory_spaces::{ResolvedMemorySpace, SpaceDefault, resolve_space_owner};
 use super::{
     KeyDeclaration, McpToolCtx, McpToolDescriptor, McpToolError, Replay, ToolEffect, ToolReply,
@@ -420,12 +418,7 @@ impl ScopeGateBehavior {
         owner: crate::OwnerId,
         ctx: &McpToolCtx,
     ) -> Result<(), McpToolError> {
-        let allowed = if declared.is_read() {
-            ctx.authz.may_read(&owner, AccessKind::Fact)
-        } else {
-            ctx.authz.may_write(&owner, AccessKind::Fact)
-        };
-        if allowed {
+        if ctx.authz.may_run_tool(&owner, declared.is_read()) {
             Ok(())
         } else {
             Err(McpToolError::NotAuthorized(tool.to_string()))
@@ -837,10 +830,10 @@ mod tests {
             AuthPath::HostBearer,
         )
         .with_tool_scope(ToolScope::All);
-        assert!(authz.may_read(&owner, AccessKind::Fact), "viewer reads");
+        assert!(authz.may_run_tool(&owner, true), "viewer runs a read");
         assert!(
-            !authz.may_write(&owner, AccessKind::Fact),
-            "viewer does not write"
+            !authz.may_run_tool(&owner, false),
+            "viewer does not run a write"
         );
         test_ctx_with_authz(owner, authz)
     }

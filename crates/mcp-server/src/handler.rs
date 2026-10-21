@@ -16,7 +16,7 @@ use proxima_core::mcp::{
     normalize_mcp_output_schema, provider_safe_tool_name, tool_name_matches,
 };
 use proxima_core::{
-    AccessKind, FlavorRegistryFrozen, McpAuthorContext, MemoryId, UNKNOWN_OPERATOR_LABEL,
+    FlavorRegistryFrozen, McpAuthorContext, MemoryId, UNKNOWN_OPERATOR_LABEL,
     resolve_operator_label,
 };
 use rmcp::ServerHandler;
@@ -1127,11 +1127,7 @@ fn owner_role_allows(auth: Option<&McpAuthContext>, read_only: bool) -> bool {
     let Some(ctx) = auth else {
         return UNAUTHENTICATED_SCOPE_ALLOWS;
     };
-    if read_only {
-        ctx.authz.may_read(&ctx.owner, AccessKind::Fact)
-    } else {
-        ctx.authz.may_write(&ctx.owner, AccessKind::Fact)
-    }
+    ctx.authz.may_run_tool(&ctx.owner, read_only)
 }
 
 /// MCP/REST tool-level projection for the actions visible to one caller:

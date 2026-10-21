@@ -803,6 +803,19 @@ impl AuthzContext {
             .is_some_and(|roles| roles.may_write(owner, kind))
     }
 
+    /// The owner-role rule for a tool call: a declared read needs read
+    /// access to the selected owner, anything else write access. The
+    /// call-time gate and every advertisement of a tool ask this, so they
+    /// cannot answer differently.
+    #[must_use]
+    pub fn may_run_tool(&self, owner: &OwnerId, read_only: bool) -> bool {
+        if read_only {
+            self.may_read(owner, AccessKind::Fact)
+        } else {
+            self.may_write(owner, AccessKind::Fact)
+        }
+    }
+
     #[must_use]
     pub fn may_manage(&self, owner: &OwnerId) -> bool {
         self.owner_roles
