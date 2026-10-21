@@ -635,6 +635,95 @@ async fn each_owner_embeds_and_searches_through_its_own_route() {
     result.expect("per-owner routing test failed");
 }
 
+/// A client that, once armed, answers only after another client has also been
+/// asked: the two queries of a search over two spaces must be in flight at the
+/// same time. Sequential embedding leaves the first waiting until it gives up,
+/// and the search degrades to lexical.
+#[derive(Debug)]
+struct RendezvousEmbedding {
+    inner: Arc<RecordingRouteEmbedding>,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+    meeting: Arc<tokio::sync::Barrier>,
+}
+
+#[async_trait::async_trait]
+impl proxima_core::llm::EmbeddingClient for RendezvousEmbedding {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, proxima_core::llm::LlmError> {
+        if self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::timeout(std::time::Duration::from_secs(5), self.meeting.wait())
+                .await
+                .map_err(|_| {
+                    proxima_core::llm::LlmError::Internal(
+                        "the other query never arrived".to_owned(),
+                    )
+                })?;
+        }
+        self.inner.embed(text).await
+    }
+
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+
+    fn dim(&self) -> usize {
+        self.inner.dim()
+    }
+}
+
+/// A search over two spaces on two routes embeds its query once per route,
+/// both at once: the providers' latencies overlap instead of adding up.
+#[tokio::test]
+async fn a_search_over_two_routes_embeds_its_query_on_both_at_once() {
+    use proxima_core::llm::EmbeddingDim;
+    let split_db = clone_split_core_db("proxima_core_route_concurrent")
+        .await
+        .expect("PG required for tests");
+    let db_name = split_db.name().to_owned();
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let fixture = TwoOwnerFixture::boot(&db_name).await?;
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let meeting = Arc::new(tokio::sync::Barrier::new(2));
+        let client = |model, dim| {
+            let inner = RecordingRouteEmbedding::new(model, dim);
+            let rendezvous = Arc::new(RendezvousEmbedding {
+                inner,
+                armed: armed.clone(),
+                meeting: meeting.clone(),
+            });
+            proxima_core::llm::BoundEmbeddingClient::bind(rendezvous).expect("lane width")
+        };
+        fixture.router.set_owner(
+            fixture.personal,
+            Some(client("route-a", EmbeddingDim::D768)),
+        );
+        fixture
+            .router
+            .set_owner(fixture.shared, Some(client("route-b", EmbeddingDim::D1024)));
+        fixture.remember("current", "personal needle near").await?;
+        fixture
+            .remember(&fixture.shared_space, "shared needle near")
+            .await?;
+        let drained = fixture
+            .built
+            .host()
+            .engine()
+            .drain_embedding_jobs(10)
+            .await?;
+        assert_eq!((drained.processed, drained.failed), (2, 0));
+
+        armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let found = fixture.search("hybrid", 10, None).await?;
+        assert_eq!(found["degraded_to_lexical"], false, "{found}");
+        assert_eq!(found["ranking"], "rank", "{found}");
+        assert_eq!(found["memories"].as_array().expect("memories").len(), 2);
+
+        fixture.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("concurrent query embedding test failed");
+}
+
 /// One Owner's refused route refuses that Owner's writes and parks its
 /// queued jobs, while the other Owner keeps writing and draining. An Owner
 /// routed to no client writes without queuing anything.

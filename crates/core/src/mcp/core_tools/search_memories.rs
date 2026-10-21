@@ -685,24 +685,37 @@ async fn plan_owner_lanes(
             .collect());
     }
     let engine = ctx.require_engine()?;
-    let mut embedded: Vec<(BoundEmbeddingClient, Result<crate::SpaceVector, String>)> = Vec::new();
+    let mut routes = Vec::with_capacity(spaces.len());
+    for space in &spaces {
+        routes.push(engine.search_route(&space.owner).await);
+    }
+    // One query embedding per distinct client, all in flight together: the
+    // providers' latencies overlap instead of adding up. `slots[n]` is the
+    // embedding the n-th space reads.
+    let mut clients: Vec<&BoundEmbeddingClient> = Vec::new();
+    let mut slots = Vec::with_capacity(routes.len());
+    for route in &routes {
+        slots.push(route.current_client().map(|client| {
+            clients
+                .iter()
+                .position(|seen| seen.same_client(client) && seen.space() == client.space())
+                .unwrap_or_else(|| {
+                    clients.push(client);
+                    clients.len() - 1
+                })
+        }));
+    }
+    let embedded = futures::future::join_all(
+        clients
+            .iter()
+            .map(|client| embed_query_for_search(client, query)),
+    )
+    .await;
     let mut lanes = Vec::with_capacity(spaces.len());
-    for space in spaces {
-        let route = engine.search_route(&space.owner).await;
-        let semantic = match route.current_client() {
+    for (space, slot) in spaces.into_iter().zip(slots) {
+        let semantic = match slot {
             None => Err(format!("{SEMANTIC_SEARCH_UNAVAILABLE} {}", space.key)),
-            Some(client) => {
-                let cached = embedded
-                    .iter()
-                    .find(|(seen, _)| seen.same_client(client) && seen.space() == client.space());
-                if let Some((_, result)) = cached {
-                    result.clone()
-                } else {
-                    let result = embed_query_for_search(client, query).await;
-                    embedded.push((client.clone(), result.clone()));
-                    result
-                }
-            }
+            Some(at) => embedded[at].clone(),
         };
         let arm = match (semantic, requested) {
             (Ok(semantic), SearchMode::Hybrid) => LaneArm::Hybrid(semantic),
