@@ -836,51 +836,56 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
             limit: query_parse(&query, "limit", "a non-negative integer")?,
             cursor: query_value(&query, "cursor").map(ToOwned::to_owned),
         })),
-        // A schema id carries its own `/` separators (`core/note`), so the
-        // version is split off the END of the tail, not the start.
-        path if resource_path::tail(path, resource_path::SCHEMA).is_some() => {
-            let tail = resource_path::tail(path, resource_path::SCHEMA).unwrap_or_default();
-            let (schema_id, version) =
-                tail.rsplit_once('/')
-                    .ok_or(ResourceUriError::MissingParam {
-                        param: "schema_version",
-                    })?;
-            if schema_id.is_empty() {
-                return Err(ResourceUriError::UnknownPath);
-            }
-            let schema_version =
-                version
-                    .parse::<u32>()
-                    .map_err(|_| ResourceUriError::InvalidParam {
-                        param: "schema_version",
-                        value: version.to_string(),
-                        expected: "a non-negative integer",
-                    })?;
-            Ok(ParsedResource::Schema {
-                schema_id: schema_id.to_string(),
-                schema_version,
-            })
-        }
-        path if resource_path::tail(path, resource_path::MEMORY).is_some() => {
-            parse_memory_resource_path(path, &query)
-        }
-        path if resource_path::tail(path, resource_path::GOAL).is_some() => {
-            let id = resource_path::tail(path, resource_path::GOAL).unwrap_or_default();
-            if id.is_empty() || id.contains('/') {
-                return Err(ResourceUriError::UnknownPath);
-            }
-            Ok(ParsedResource::Goal(id.to_string()))
-        }
-        _ => Err(ResourceUriError::UnknownPath),
+        path => parse_id_resource(path, &query),
     }
 }
 
-fn parse_memory_resource_path(
+/// The resources whose path carries an id after `<declared path>/`.
+fn parse_id_resource(
     path: &str,
     query: &[(&str, &str)],
 ) -> Result<ParsedResource, ResourceUriError> {
-    let rest =
-        resource_path::tail(path, resource_path::MEMORY).ok_or(ResourceUriError::UnknownPath)?;
+    // A schema id carries its own `/` separators (`core/note`), so the
+    // version is split off the END of the tail, not the start.
+    if let Some(tail) = resource_path::tail(path, resource_path::SCHEMA) {
+        let (schema_id, version) = tail
+            .rsplit_once('/')
+            .ok_or(ResourceUriError::MissingParam {
+                param: "schema_version",
+            })?;
+        if schema_id.is_empty() {
+            return Err(ResourceUriError::UnknownPath);
+        }
+        let schema_version =
+            version
+                .parse::<u32>()
+                .map_err(|_| ResourceUriError::InvalidParam {
+                    param: "schema_version",
+                    value: version.to_string(),
+                    expected: "a non-negative integer",
+                })?;
+        return Ok(ParsedResource::Schema {
+            schema_id: schema_id.to_string(),
+            schema_version,
+        });
+    }
+    if let Some(rest) = resource_path::tail(path, resource_path::MEMORY) {
+        return parse_memory_resource_path(rest, query);
+    }
+    if let Some(id) = resource_path::tail(path, resource_path::GOAL) {
+        if id.is_empty() || id.contains('/') {
+            return Err(ResourceUriError::UnknownPath);
+        }
+        return Ok(ParsedResource::Goal(id.to_string()));
+    }
+    Err(ResourceUriError::UnknownPath)
+}
+
+/// `rest` is the path after `<memory path>/`.
+fn parse_memory_resource_path(
+    rest: &str,
+    query: &[(&str, &str)],
+) -> Result<ParsedResource, ResourceUriError> {
     if let Some(id) = rest.strip_suffix("/lineage") {
         if id.is_empty() || id.contains('/') {
             return Err(ResourceUriError::UnknownPath);
