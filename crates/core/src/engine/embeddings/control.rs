@@ -13,6 +13,9 @@ use crate::llm::{
 };
 
 const MAX_BACKOFF: Duration = Duration::from_mins(15);
+/// The longest a provider's `Retry-After` hint holds a client back. A hint beyond a day (or one
+/// that overflows a duration) would otherwise stall the route until the process restarts.
+const MAX_RETRY_AFTER: Duration = Duration::from_hours(24);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -94,7 +97,7 @@ impl ClientState {
         let backoff = next_backoff(previous, base);
         *self = Self::Waiting(Wait {
             since: now,
-            delay: backoff.max(retry_after.unwrap_or_default()),
+            delay: backoff.max(retry_after.unwrap_or_default().min(MAX_RETRY_AFTER)),
             backoff,
             status,
         });
@@ -628,17 +631,26 @@ mod tests {
             .embed("first")
             .await
             .expect_err("huge retry delay");
-        tokio::time::advance(Duration::from_hours(24)).await;
-        let remaining = Duration::MAX
-            .checked_sub(Duration::from_hours(24))
-            .expect("one day is below the maximum duration");
+        tokio::time::advance(MAX_RETRY_AFTER.saturating_sub(Duration::from_secs(1))).await;
         assert!(
-            matches!(route.current_client().expect("current").embed("still waiting").await, Err(LlmError::Retryable { retry_after: Some(delay), .. }) if delay == remaining)
+            matches!(route.current_client().expect("current").embed("still waiting").await, Err(LlmError::Retryable { retry_after: Some(delay), .. }) if delay == Duration::from_secs(1))
         );
         assert_eq!(
             huge.calls.load(Ordering::SeqCst),
             1,
             "no deadline overflow or early retry"
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        route
+            .current_client()
+            .expect("current")
+            .embed("at the cap")
+            .await
+            .expect_err("the provider still answers busy");
+        assert_eq!(
+            huge.calls.load(Ordering::SeqCst),
+            2,
+            "a hint beyond the cap holds the client back for the cap only"
         );
     }
 
