@@ -155,7 +155,7 @@ pub async fn walk_memory_lineage(
     args: WalkMemoryLineageArgs,
 ) -> Result<WalkMemoryLineageOutput, McpToolError> {
     let start = ctx.resolve_memory(&args.memory)?;
-    crate::reject_zero_limit(Some(args.limit))?;
+    let limit = super::resolve_page_limit(Some(args.limit))?;
     let direction = MemoryLineageDirection::from(args.direction);
     let depth = u8::try_from(args.depth.clamp(1, MAX_LINEAGE_DEPTH)).unwrap_or(8);
     let fingerprint = lineage_fingerprint(&args.memory, direction, depth);
@@ -165,7 +165,6 @@ pub async fn walk_memory_lineage(
         .map(|raw| LINEAGE_CURSOR.decode(&fingerprint, raw))
         .transpose()?;
     let engine = ctx.require_engine()?;
-    let limit = args.limit.min(super::MAX_PAGE_LIMIT);
     if matches!(direction, MemoryLineageDirection::Ancestors) {
         let page = walk_ancestors(&ctx, engine, start, depth, limit, after).await?;
         let Some(page) = page else {
@@ -307,7 +306,7 @@ async fn walk_ancestors(
     limit: u32,
     after: Option<MemoryLineageCursor>,
 ) -> Result<Option<AncestorPage>, McpToolError> {
-    let page_len = usize::try_from(limit.min(super::MAX_PAGE_LIMIT)).unwrap_or(usize::MAX);
+    let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
     if engine.lineage_nodes(&ctx.authz, &[start]).await?.is_empty() {
         return Ok(None);
     }

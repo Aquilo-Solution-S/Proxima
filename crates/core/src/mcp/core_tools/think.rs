@@ -114,14 +114,13 @@ impl McpTool for ThinkTool {
 
 async fn think(ctx: McpToolCtx, args: ThinkArgs) -> Result<ThinkOutput, McpToolError> {
     require_seeds(&args.seeds)?;
-    crate::reject_zero_limit(Some(args.limit))?;
+    let limit = super::resolve_page_limit(Some(args.limit))?;
     let seeds: Vec<MemoryId> = args
         .seeds
         .iter()
         .map(|raw| ctx.resolve_memory(raw))
         .collect::<Result<Vec<_>, _>>()?;
     let engine = ctx.require_engine()?;
-    let limit = args.limit.min(super::MAX_PAGE_LIMIT);
     match args.direction {
         ThinkDirection::Ancestors | ThinkDirection::Descendants => {
             pin_bfs(
