@@ -382,11 +382,7 @@ pub async fn create_db(name: &str) -> Result<(), sqlx::Error> {
     )))
     .execute(&mut conn)
     .await?;
-    if let Err(error) = record_db(&mut conn, name).await {
-        let _ = drop_db_on(&mut conn, name).await;
-        conn.close().await?;
-        return Err(error);
-    }
+    record_new_db(&mut conn, name).await?;
     conn.close().await?;
     Ok(())
 }
@@ -1194,7 +1190,7 @@ where
         )))
         .execute(&mut conn)
         .await?;
-        record_db(&mut conn, &staging).await?;
+        record_new_db(&mut conn, &staging).await?;
 
         let build_result: Result<(), sqlx::Error> = async {
             let pool = PgPoolOptions::new()
@@ -1306,11 +1302,7 @@ pub async fn create_named_db_from_template(name: &str, template: &str) -> Result
             .await
         {
             Ok(_) => {
-                if let Err(error) = record_db(&mut conn, name).await {
-                    let _ = drop_db_on(&mut conn, name).await;
-                    conn.close().await?;
-                    return Err(error);
-                }
+                record_new_db(&mut conn, name).await?;
                 conn.close().await?;
                 return Ok(());
             }
@@ -1472,6 +1464,17 @@ async fn record_db(conn: &mut PgConnection, name: &str) -> Result<(), sqlx::Erro
         .execute(&mut target)
         .await?;
     target.close().await?;
+    Ok(())
+}
+
+/// [`record_db`] for a database this call just created: when it cannot be
+/// recorded it is dropped again, so no created database is left outside the
+/// catalog the sweep reads.
+async fn record_new_db(conn: &mut PgConnection, name: &str) -> Result<(), sqlx::Error> {
+    if let Err(error) = record_db(conn, name).await {
+        let _ = drop_db_on(conn, name).await;
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -1982,6 +1985,36 @@ mod tests {
 
         assert!(!busy.expect("a busy drop is not an error"), "kept");
         assert!(idle.expect("an idle drop"), "dropped once nobody is on it");
+    }
+
+    /// A database that was created and cannot be recorded (here: it accepts no
+    /// connection, so the grant on it fails) is dropped again.
+    #[tokio::test]
+    async fn a_created_database_that_cannot_be_recorded_is_dropped() {
+        use sqlx::Connection;
+
+        let name = unique_db_name("record_fails");
+        let mut admin = connect_admin().await.expect("admin");
+        // SQL-POLICY: fixed-fragment — a quoted generated database identifier.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "CREATE DATABASE {name} ALLOW_CONNECTIONS false",
+            name = quoted_ident(&name)
+        )))
+        .execute(&mut admin)
+        .await
+        .expect("create");
+
+        let recorded = super::record_new_db(&mut admin, &name).await;
+        let left: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+                .bind(&name)
+                .fetch_one(&mut admin)
+                .await
+                .expect("exists");
+        admin.close().await.expect("close admin");
+
+        recorded.expect_err("a database that accepts no connection cannot be recorded");
+        assert!(!left, "the unrecorded database was dropped");
     }
 
     #[tokio::test]
