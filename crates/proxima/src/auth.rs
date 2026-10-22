@@ -32,6 +32,7 @@ const JWKS_URI: &str = "PROXIMA_OIDC_JWKS_URI";
 const JWKS_JSON: &str = "PROXIMA_OIDC_JWKS_JSON";
 
 /// Complete-request timeout for OIDC discovery and JWKS HTTP requests.
+const ALLOWED_SUBJECTS: &str = "PROXIMA_OIDC_ALLOWED_SUBJECTS";
 const OIDC_HTTP_TIMEOUT_SECONDS: &str = "PROXIMA_OIDC_HTTP_TIMEOUT_SECONDS";
 const OIDC_REQUIRE_ACCESS_TOKEN_TYP: &str = "PROXIMA_OIDC_REQUIRE_ACCESS_TOKEN_TYP";
 
@@ -47,7 +48,7 @@ pub(crate) const OIDC_ENV_KEYS: [&str; 9] = [
     "PROXIMA_PUBLIC_URL",
     JWKS_URI,
     JWKS_JSON,
-    "PROXIMA_OIDC_ALLOWED_SUBJECTS",
+    ALLOWED_SUBJECTS,
     OIDC_HTTP_TIMEOUT_SECONDS,
     SUBJECT_MAP_JSON,
     OIDC_REQUIRE_ACCESS_TOKEN_TYP,
@@ -130,13 +131,7 @@ pub(crate) fn oidc_from_lookup(
             "{JWKS_JSON} and {JWKS_URI} are mutually exclusive"
         )));
     }
-    let allowed_subjects = env_value(lookup, "PROXIMA_OIDC_ALLOWED_SUBJECTS").map(|raw| {
-        raw.split(',')
-            .map(str::trim)
-            .filter(|subject| !subject.is_empty())
-            .map(ToOwned::to_owned)
-            .collect::<HashSet<String>>()
-    });
+    let allowed_subjects = allowed_subjects(lookup)?;
 
     let config = proxima_auth_oidc::OidcAuthConfig {
         issuer: issuer.clone(),
@@ -215,6 +210,28 @@ fn public_url(raw: &str) -> Result<String, ProximaError> {
     Ok(raw.to_owned())
 }
 
+/// `PROXIMA_OIDC_ALLOWED_SUBJECTS`: comma-separated subjects, absent when unset. A value that
+/// names none (`,`) is refused, since an empty allowlist would refuse every token without a word.
+fn allowed_subjects(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<HashSet<String>>, ProximaError> {
+    let Some(raw) = env_value(lookup, ALLOWED_SUBJECTS) else {
+        return Ok(None);
+    };
+    let subjects = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|subject| !subject.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<HashSet<String>>();
+    if subjects.is_empty() {
+        return Err(ProximaError::Config(format!(
+            "{ALLOWED_SUBJECTS} is set but names no subject"
+        )));
+    }
+    Ok(Some(subjects))
+}
+
 fn oidc_require_access_token_typ(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<bool, ProximaError> {
@@ -261,7 +278,10 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use super::{oidc_from_lookup, oidc_http_timeout, oidc_require_access_token_typ, public_url};
+    use super::{
+        allowed_subjects, oidc_from_lookup, oidc_http_timeout, oidc_require_access_token_typ,
+        public_url,
+    };
     use crate::ProximaError;
 
     /// A lookup over a fixed map, so none of this touches the process
@@ -351,6 +371,29 @@ mod tests {
         ] {
             assert_eq!(public_url(good).expect(good), good);
         }
+    }
+
+    #[test]
+    fn an_allowed_subjects_value_that_names_no_subject_is_refused() {
+        let lookup = |value: &'static str| env(&[("PROXIMA_OIDC_ALLOWED_SUBJECTS", value)]);
+        assert_eq!(allowed_subjects(&lookup("")).expect("blank is unset"), None);
+        for bad in [",", ", ,"] {
+            let Err(ProximaError::Config(message)) = allowed_subjects(&lookup(bad)) else {
+                panic!("{bad:?} must be refused");
+            };
+            assert!(
+                message.contains("PROXIMA_OIDC_ALLOWED_SUBJECTS"),
+                "{message}"
+            );
+        }
+        let kept = allowed_subjects(&lookup(" a, b ,")).expect("two subjects");
+        assert_eq!(
+            kept,
+            Some(std::collections::HashSet::from([
+                "a".to_owned(),
+                "b".to_owned()
+            ]))
+        );
     }
 
     #[test]
