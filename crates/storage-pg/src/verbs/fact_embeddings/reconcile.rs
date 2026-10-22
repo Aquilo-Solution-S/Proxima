@@ -2,6 +2,7 @@ use proxima_core::{OwnerId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
+use crate::sidecars::int_to_u64;
 
 use super::{ensure_nonnegative_limit, reclaim_stale_embedding_jobs};
 
@@ -220,14 +221,11 @@ async fn reconcile_page(
         .await
         .map_err(map_err)?;
 
-    let count = |value: i64, what: &str| {
-        u64::try_from(value)
-            .map_err(|_| StorageError::Internal(format!("{what} count is negative")))
-    };
     Ok(ReconcilePage {
-        scanned: count(row.0, "scanned")?,
-        enqueued: count(row.1, "enqueued")?,
-        next: if count(row.2, "examined")? == u64::try_from(RECONCILE_PAGE).unwrap_or(u64::MAX) {
+        scanned: int_to_u64(row.0, "scanned")?,
+        enqueued: int_to_u64(row.1, "enqueued")?,
+        next: if int_to_u64(row.2, "examined")? == u64::try_from(RECONCILE_PAGE).unwrap_or(u64::MAX)
+        {
             row.3
         } else {
             None

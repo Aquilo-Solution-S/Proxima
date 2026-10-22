@@ -9,7 +9,8 @@ use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
 
-use super::{ensure_nonnegative_limit, nonnegative_count};
+use super::ensure_nonnegative_limit;
+use crate::sidecars::int_to_u64;
 
 /// The spaces an Owner's route names now, with the registry's per-schema
 /// veto: what a hydrate or a transfer queues a memory for.
@@ -121,16 +122,13 @@ pub(crate) async fn embedding_coverage(
             Ok((
                 space,
                 EmbeddingSpaceCounts {
-                    embeddable: nonnegative_count(row.embeddable, "embeddable")?,
-                    embedded: nonnegative_count(row.embedded, "embedded")?,
-                    vectors: nonnegative_count(row.vectors, "vector")?,
-                    pending: nonnegative_count(row.pending, "pending job")?,
-                    processing: nonnegative_count(row.processing, "processing job")?,
-                    failed: nonnegative_count(row.failed, "failed job")?,
-                    failed_permanent: nonnegative_count(
-                        row.failed_permanent,
-                        "failed permanent job",
-                    )?,
+                    embeddable: int_to_u64(row.embeddable, "embeddable")?,
+                    embedded: int_to_u64(row.embedded, "embedded")?,
+                    vectors: int_to_u64(row.vectors, "vector")?,
+                    pending: int_to_u64(row.pending, "pending job")?,
+                    processing: int_to_u64(row.processing, "processing job")?,
+                    failed: int_to_u64(row.failed, "failed job")?,
+                    failed_permanent: int_to_u64(row.failed_permanent, "failed permanent job")?,
                 },
             ))
         })
@@ -265,9 +263,9 @@ pub(crate) async fn purge_series_embedding_spaces_in_tx(
         .await
         .map_err(map_err)?;
     Ok(EmbeddingPurgeOutcome {
-        vectors: nonnegative_count(vectors, "purged vector")?,
-        heads: nonnegative_count(heads, "purged head")?,
-        jobs: nonnegative_count(jobs, "purged job")?,
+        vectors: int_to_u64(vectors, "purged vector")?,
+        heads: int_to_u64(heads, "purged head")?,
+        jobs: int_to_u64(jobs, "purged job")?,
     })
 }
 
@@ -289,9 +287,9 @@ async fn purge_in_tx(
         .await
         .map_err(map_err)?;
     Ok(EmbeddingPurgeOutcome {
-        vectors: nonnegative_count(vectors, "purged vector")?,
-        heads: nonnegative_count(heads, "purged head")?,
-        jobs: nonnegative_count(jobs, "purged job")?,
+        vectors: int_to_u64(vectors, "purged vector")?,
+        heads: int_to_u64(heads, "purged head")?,
+        jobs: int_to_u64(jobs, "purged job")?,
     })
 }
 

@@ -8,7 +8,8 @@ use sqlx::{PgConnection, PgExecutor, PgPool};
 use crate::error::map_err;
 use crate::pg_enums::PgMemoryKind;
 
-use super::{ensure_nonnegative_limit, nonnegative_count};
+use super::ensure_nonnegative_limit;
+use crate::sidecars::int_to_u64;
 
 /// Claim pending jobs across every embedding space, ordered by `job_id`.
 ///
@@ -617,8 +618,8 @@ pub async fn count_embedding_job_status<'e>(
     .await
     .map_err(map_err)?;
     Ok(EmbeddingJobStatusCounts {
-        pending: nonnegative_count(row.0, "pending embedding job")?,
-        failed: nonnegative_count(row.1, "failed embedding job")?,
+        pending: int_to_u64(row.0, "pending embedding job")?,
+        failed: int_to_u64(row.1, "failed embedding job")?,
     })
 }
 

@@ -53,10 +53,6 @@ fn ensure_nonnegative_limit(limit: i64) -> Result<i64, StorageError> {
     Ok(limit)
 }
 
-fn nonnegative_count(value: i64, name: &str) -> Result<u64, StorageError> {
-    u64::try_from(value).map_err(|_| StorageError::Internal(format!("{name} count is negative")))
-}
-
 fn usize_count(value: usize, name: &str) -> Result<u64, StorageError> {
     u64::try_from(value).map_err(|_| StorageError::Internal(format!("{name} count too large")))
 }

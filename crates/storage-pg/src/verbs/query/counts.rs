@@ -6,8 +6,9 @@ use proxima_core::{EntityKind, OwnerId, StorageError};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::error::{internal, map_err};
+use crate::error::map_err;
 use crate::pg_enums::PgMemoryKind;
+use crate::sidecars::int_to_u64;
 
 /// One row per `memory_head` handle, so a stateful series counts once
 /// however many versions it has, and one row per `goal_head` handle in any
@@ -41,7 +42,7 @@ pub(crate) async fn count_memories_on_connection(
     .await
     .map_err(map_err)?;
     for (kind, count) in heads {
-        *counts.slot(EntityKind::from(kind)) += as_count(count)?;
+        *counts.slot(EntityKind::from(kind)) += int_to_u64(count, "row count")?;
     }
 
     let goals: i64 = sqlx::query_scalar(
@@ -53,25 +54,6 @@ pub(crate) async fn count_memories_on_connection(
     .fetch_one(&mut *connection)
     .await
     .map_err(map_err)?;
-    *counts.slot(EntityKind::Goal) += as_count(goals)?;
+    *counts.slot(EntityKind::Goal) += int_to_u64(goals, "goal count")?;
     Ok(counts)
-}
-
-fn as_count(count: i64) -> Result<u64, StorageError> {
-    u64::try_from(count).map_err(|_| internal(format!("negative row count {count}")))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::as_count;
-    use proxima_core::StorageError;
-
-    /// `count(*)` arrives as a signed `bigint`; a negative one is refused as
-    /// a backend fault rather than wrapped into a huge count.
-    #[test]
-    fn a_negative_row_count_is_refused_not_wrapped() {
-        assert_eq!(as_count(0).expect("zero"), 0);
-        assert_eq!(as_count(412).expect("positive"), 412);
-        assert!(matches!(as_count(-1), Err(StorageError::Internal(_))));
-    }
 }

@@ -16,7 +16,8 @@ const ANN_CANARY_SESSION_SQL: &str = concat!(
     "SET LOCAL hnsw.iterative_scan = relaxed_order"
 );
 
-use super::{nonnegative_count, ratio_count, usize_count};
+use super::{ratio_count, usize_count};
+use crate::sidecars::int_to_u64;
 
 #[derive(sqlx::FromRow)]
 struct EmbeddingAnnObservabilityRow {
@@ -177,31 +178,28 @@ fn observability_from_row(
     recall_canary: Option<EmbeddingRecallCanary>,
 ) -> Result<EmbeddingAnnObservability, StorageError> {
     Ok(EmbeddingAnnObservability {
-        embedding_rows: nonnegative_count(row.embedding_rows, "embedding rows")?,
-        embedding_head_rows: nonnegative_count(row.embedding_head_rows, "embedding head rows")?,
-        embedding_job_rows: nonnegative_count(row.embedding_job_rows, "embedding job rows")?,
-        embedding_table_bytes: nonnegative_count(
-            row.embedding_table_bytes,
-            "embedding table bytes",
-        )?,
-        embedding_total_relation_bytes: nonnegative_count(
+        embedding_rows: int_to_u64(row.embedding_rows, "embedding rows")?,
+        embedding_head_rows: int_to_u64(row.embedding_head_rows, "embedding head rows")?,
+        embedding_job_rows: int_to_u64(row.embedding_job_rows, "embedding job rows")?,
+        embedding_table_bytes: int_to_u64(row.embedding_table_bytes, "embedding table bytes")?,
+        embedding_total_relation_bytes: int_to_u64(
             row.embedding_total_relation_bytes,
             "embedding total relation bytes",
         )?,
-        hnsw_index_bytes: nonnegative_count(row.hnsw_index_bytes, "hnsw index bytes")?,
+        hnsw_index_bytes: int_to_u64(row.hnsw_index_bytes, "hnsw index bytes")?,
         backlog: EmbeddingJobBacklog {
-            pending: nonnegative_count(row.pending_jobs, "pending embedding jobs")?,
-            processing: nonnegative_count(row.processing_jobs, "processing embedding jobs")?,
-            failed: nonnegative_count(row.failed_jobs, "failed embedding jobs")?,
+            pending: int_to_u64(row.pending_jobs, "pending embedding jobs")?,
+            processing: int_to_u64(row.processing_jobs, "processing embedding jobs")?,
+            failed: int_to_u64(row.failed_jobs, "failed embedding jobs")?,
         },
-        stale_processing_jobs: nonnegative_count(
+        stale_processing_jobs: int_to_u64(
             row.stale_processing_jobs,
             "stale processing embedding jobs",
         )?,
         orphan_rows: EmbeddingOrphanCounts {
-            embeddings: nonnegative_count(row.orphan_embeddings, "orphan embeddings")?,
-            heads: nonnegative_count(row.orphan_heads, "orphan embedding heads")?,
-            jobs: nonnegative_count(row.orphan_jobs, "orphan embedding jobs")?,
+            embeddings: int_to_u64(row.orphan_embeddings, "orphan embeddings")?,
+            heads: int_to_u64(row.orphan_heads, "orphan embedding heads")?,
+            jobs: int_to_u64(row.orphan_jobs, "orphan embedding jobs")?,
         },
         recall_canary,
     })
@@ -269,7 +267,7 @@ async fn embedding_recall_canary(
     Ok(Some(EmbeddingRecallCanary {
         model_id: sample.model_id,
         dim: crate::pgvector::stored_dim(sample.dim)?.width(),
-        k: nonnegative_count(k, "recall canary k")?,
+        k: int_to_u64(k, "recall canary k")?,
         exact_count,
         ann_count,
         overlap_count,
@@ -414,8 +412,8 @@ pub(crate) async fn sweep_orphan_embedding_rows(
 
     tx.commit().await.map_err(map_err)?;
     Ok(EmbeddingOrphanSweepOutcome {
-        embeddings_deleted: nonnegative_count(row.embeddings, "deleted embeddings")?,
-        heads_deleted: nonnegative_count(row.heads, "deleted embedding heads")?,
-        jobs_deleted: nonnegative_count(row.jobs, "deleted embedding jobs")?,
+        embeddings_deleted: int_to_u64(row.embeddings, "deleted embeddings")?,
+        heads_deleted: int_to_u64(row.heads, "deleted embedding heads")?,
+        jobs_deleted: int_to_u64(row.jobs, "deleted embedding jobs")?,
     })
 }

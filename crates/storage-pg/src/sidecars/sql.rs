@@ -162,3 +162,27 @@ pub fn memory_select_batch_owner_pinned_sql(
     .expect("writing SQL into String cannot fail");
     Ok(sql)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{int_to_u32, int_to_u64};
+    use proxima_core::StorageError;
+
+    /// `count(*)` arrives as a signed `bigint`; a negative one is refused as
+    /// a backend fault, naming the column, rather than wrapped or clamped.
+    #[test]
+    fn a_negative_database_count_is_refused_not_wrapped() {
+        assert_eq!(int_to_u64(0, "rows").expect("zero"), 0);
+        assert_eq!(int_to_u64(412, "rows").expect("positive"), 412);
+        assert_eq!(int_to_u32(7, "attempts").expect("positive"), 7);
+        for error in [
+            int_to_u64(-1, "rows").expect_err("negative"),
+            int_to_u32(-1, "rows").map(u64::from).expect_err("negative"),
+        ] {
+            assert!(
+                matches!(&error, StorageError::Internal(message) if message.contains("rows")),
+                "{error:?}"
+            );
+        }
+    }
+}
