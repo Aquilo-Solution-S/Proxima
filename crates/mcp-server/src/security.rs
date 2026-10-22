@@ -26,7 +26,7 @@ use crate::oauth::{ResourceChallenges, ResourceServerMetadata};
 use crate::session::{McpSessionBindings, parse_owner_key};
 
 const MCP_SESSION_ID_HEADER: &str = "Mcp-Session-Id";
-const PROXIMA_OWNER_HEADER: &str = "X-Proxima-Owner";
+pub(crate) const PROXIMA_OWNER_HEADER: &str = "X-Proxima-Owner";
 const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 
 #[derive(Clone, Debug)]

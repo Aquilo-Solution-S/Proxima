@@ -28,6 +28,8 @@ use crate::handler::{
     Caller, action_allowed_for_auth, annotations_for_auth, how_to_allowed_for_auth,
     project_dispatcher_actions_for_auth, resource_allowed_for_auth, tool_allowed_for_auth,
 };
+use crate::rest::context::{MODEL_ID_HEADER, SELF_PERSPECTIVE_HEADER};
+use crate::security::PROXIMA_OWNER_HEADER;
 
 /// The `query` Path Item fixed field arrives in 3.2; the 2020-12 dialect is
 /// unchanged from 3.1, so `args_schema` embeds verbatim.
@@ -45,19 +47,19 @@ const BEARER_SCHEME: &str = "bearerAuth";
 /// `(header, required, description)`.
 const CONTEXT_HEADERS: &[(&str, bool, &str)] = &[
     (
-        "X-Proxima-Owner",
+        PROXIMA_OWNER_HEADER,
         true,
         "Selects the owner for this call. REST is stateless: send it on every \
          request rather than relying on a bound session id.",
     ),
     (
-        "X-Proxima-Model-Id",
+        MODEL_ID_HEADER,
         false,
         "Authoring model id recorded on writes. Falls back to the token's \
          model id, then `unknown`. Sending it in the request body is a `400`.",
     ),
     (
-        "X-Proxima-Self-Perspective",
+        SELF_PERSPECTIVE_HEADER,
         false,
         "Bare UUID for the caller's self perspective. Sending it in the \
          request body is a `400`.",
