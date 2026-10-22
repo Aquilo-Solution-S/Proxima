@@ -993,23 +993,14 @@ impl<'a> UnitOfWork<'a> {
             .validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
             .engine
-            .embedding_spaces_for_write(
-                authorized.owner_write_permit().owner(),
-                authorized.draft().schema_id.as_str(),
-            )
+            .embedding_spaces_for_fact(authorized.owner_write_permit(), authorized.draft())
             .await?;
         let outcome = self
             .ensure_session()
             .await?
             .ingest_fact_with_typed_sidecar(&authorized, &embedding_spaces)
             .await
-            .map_err(|err| {
-                super::errors::map_write_storage_error(
-                    err,
-                    "fact",
-                    "fact ingest referenced row not found",
-                )
-            })?;
+            .map_err(super::errors::map_fact_ingest_error)?;
         if !outcome.idempotent_replay {
             self.written.push(outcome.memory_id);
             self.written_kinds

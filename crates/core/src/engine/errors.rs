@@ -35,6 +35,12 @@ pub(crate) fn map_publication_error(err: &PublicationError) -> ProtocolError {
 /// `field` labels the caller-fixable `ConstraintViolation`/`Conflict`
 /// messages (`invalid_argument`); `not_found_message` names the missing
 /// row without echoing storage internals.
+/// [`map_write_storage_error`] for a Fact ingest: the field and the not-found message every Fact
+/// write path answers with.
+pub(in crate::engine) fn map_fact_ingest_error(err: StorageError) -> ProtocolError {
+    map_write_storage_error(err, "fact", "fact ingest referenced row not found")
+}
+
 pub(in crate::engine) fn map_write_storage_error(
     err: StorageError,
     field: &str,

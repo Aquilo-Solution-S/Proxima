@@ -5,6 +5,7 @@ use crate::authz::EngineAuthority;
 use crate::edge::EdgeEndpoint;
 use crate::error::ProtocolError;
 use crate::llm::EmbeddingSpace;
+use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::fact_ingest::{
     AuthorizedFactCore, AuthorizedFactWithCitation, AuthorizedFactWithCitationRef,
     AuthorizedFactWrite, AuthorizedInlineCitedObject, AuthorizedNodeLinks, FactIngestOutcome,
@@ -94,10 +95,7 @@ impl Engine {
         let authorized = self.authorize_fact_ingest(authority, draft, &[]).await?;
         self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
-            .embedding_spaces_for_write(
-                authorized.owner_write_permit().owner(),
-                authorized.draft().schema_id.as_str(),
-            )
+            .embedding_spaces_for_fact(authorized.owner_write_permit(), authorized.draft())
             .await?;
         let outcome = self
             .storage
@@ -105,13 +103,7 @@ impl Engine {
             .fact_ingest
             .ingest_authorized_fact_atomic(&authorized, &embedding_spaces)
             .await
-            .map_err(|err| {
-                super::errors::map_write_storage_error(
-                    err,
-                    "fact",
-                    "fact ingest referenced row not found",
-                )
-            })?;
+            .map_err(super::errors::map_fact_ingest_error)?;
         Ok(outcome)
     }
 
@@ -575,6 +567,16 @@ impl Engine {
     ///
     /// `Internal` when the host cannot route `owner`: the write fails
     /// rather than landing without the job that would make it searchable.
+    /// [`Self::embedding_spaces_for_write`] for the owner and schema an authorized Fact write names.
+    pub(in crate::engine) async fn embedding_spaces_for_fact(
+        &self,
+        permit: &OwnerWritePermit,
+        draft: &FactWriteCommand,
+    ) -> Result<Vec<EmbeddingSpace>, ProtocolError> {
+        self.embedding_spaces_for_write(permit.owner(), draft.schema_id.as_str())
+            .await
+    }
+
     pub(in crate::engine) async fn embedding_spaces_for_write(
         &self,
         owner: &OwnerId,
@@ -599,23 +601,14 @@ impl Engine {
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
-            .embedding_spaces_for_write(
-                authorized.owner_write_permit().owner(),
-                authorized.draft().schema_id.as_str(),
-            )
+            .embedding_spaces_for_fact(authorized.owner_write_permit(), authorized.draft())
             .await?;
         self.storage()
             .ingest
             .fact_ingest
             .ingest_fact_with_typed_sidecar(authorized, &embedding_spaces)
             .await
-            .map_err(|err| {
-                super::errors::map_write_storage_error(
-                    err,
-                    "fact",
-                    "fact ingest referenced row not found",
-                )
-            })
+            .map_err(super::errors::map_fact_ingest_error)
     }
 
     /// Persist an already-authorized typed-sidecar Fact with inline citation.
@@ -630,23 +623,14 @@ impl Engine {
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
-            .embedding_spaces_for_write(
-                authorized.owner_write_permit().owner(),
-                authorized.draft().schema_id.as_str(),
-            )
+            .embedding_spaces_for_fact(authorized.owner_write_permit(), authorized.draft())
             .await?;
         self.storage()
             .ingest
             .fact_ingest
             .ingest_fact_with_citation_and_typed_sidecar(authorized, &embedding_spaces)
             .await
-            .map_err(|err| {
-                super::errors::map_write_storage_error(
-                    err,
-                    "fact",
-                    "fact ingest referenced row not found",
-                )
-            })
+            .map_err(super::errors::map_fact_ingest_error)
     }
 
     /// Persist an already-authorized typed-sidecar Fact citing an
@@ -663,23 +647,14 @@ impl Engine {
     ) -> Result<FactIngestOutcome, ProtocolError> {
         self.validate_write_permit(authorized.owner_write_permit())?;
         let embedding_spaces = self
-            .embedding_spaces_for_write(
-                authorized.owner_write_permit().owner(),
-                authorized.draft().schema_id.as_str(),
-            )
+            .embedding_spaces_for_fact(authorized.owner_write_permit(), authorized.draft())
             .await?;
         self.storage()
             .ingest
             .fact_ingest
             .ingest_fact_with_citation_ref_and_typed_sidecar(authorized, &embedding_spaces)
             .await
-            .map_err(|err| {
-                super::errors::map_write_storage_error(
-                    err,
-                    "fact",
-                    "fact ingest referenced row not found",
-                )
-            })
+            .map_err(super::errors::map_fact_ingest_error)
     }
 
     fn authorize_inline_citation(
