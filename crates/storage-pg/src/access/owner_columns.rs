@@ -10,7 +10,7 @@ use proxima_core::{
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
 #[sqlx(type_name = "proxima_core.access_ceiling", rename_all = "lowercase")]
 pub(crate) enum PgAccessCeiling {
     None,
@@ -18,6 +18,18 @@ pub(crate) enum PgAccessCeiling {
     Abstraction,
     Perspective,
     Goal,
+}
+
+impl From<proxima_core::AccessCeiling> for PgAccessCeiling {
+    fn from(value: proxima_core::AccessCeiling) -> Self {
+        match value {
+            proxima_core::AccessCeiling::None => Self::None,
+            proxima_core::AccessCeiling::Fact => Self::Fact,
+            proxima_core::AccessCeiling::Abstraction => Self::Abstraction,
+            proxima_core::AccessCeiling::Perspective => Self::Perspective,
+            proxima_core::AccessCeiling::Goal => Self::Goal,
+        }
+    }
 }
 
 impl From<PgAccessCeiling> for proxima_core::AccessCeiling {

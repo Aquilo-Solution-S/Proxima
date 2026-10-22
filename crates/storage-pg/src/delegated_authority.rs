@@ -7,45 +7,12 @@ use proxima_core::storage_ports::{
     DelegationGrant, DelegationGrantStorage, DelegationId, DelegationMutationPermit,
     DelegationStorePort,
 };
-use proxima_core::{AccessCeiling, ActionName, OwnerId, Role, StorageError, UserId};
+use proxima_core::{ActionName, OwnerId, Role, StorageError, UserId};
 use sqlx::Row as _;
 use time::OffsetDateTime;
 
+use crate::access::owner_columns::PgAccessCeiling;
 use crate::error::{internal, map_err};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.access_ceiling", rename_all = "lowercase")]
-enum PgAccessCeiling {
-    None,
-    Fact,
-    Abstraction,
-    Perspective,
-    Goal,
-}
-
-impl From<AccessCeiling> for PgAccessCeiling {
-    fn from(value: AccessCeiling) -> Self {
-        match value {
-            AccessCeiling::None => Self::None,
-            AccessCeiling::Fact => Self::Fact,
-            AccessCeiling::Abstraction => Self::Abstraction,
-            AccessCeiling::Perspective => Self::Perspective,
-            AccessCeiling::Goal => Self::Goal,
-        }
-    }
-}
-
-impl From<PgAccessCeiling> for AccessCeiling {
-    fn from(value: PgAccessCeiling) -> Self {
-        match value {
-            PgAccessCeiling::None => Self::None,
-            PgAccessCeiling::Fact => Self::Fact,
-            PgAccessCeiling::Abstraction => Self::Abstraction,
-            PgAccessCeiling::Perspective => Self::Perspective,
-            PgAccessCeiling::Goal => Self::Goal,
-        }
-    }
-}
 
 /// Backend adapter used by the runtime-composed delegated-authority service.
 #[doc(hidden)]
