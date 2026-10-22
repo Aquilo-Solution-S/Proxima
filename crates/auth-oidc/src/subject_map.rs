@@ -207,25 +207,12 @@ impl OidcSubjectMap {
             .map_err(|err| OidcSubjectMapError::InvalidJson(err.to_string()))?;
         let mut map = Self::new();
         for (index, entry) in raw_entries.into_iter().enumerate() {
-            if entry.user_id.trim().is_empty() {
-                return Err(OidcSubjectMapError::EmptyField {
-                    index,
-                    field: "user_id",
-                });
-            }
-            let uuid = uuid::Uuid::parse_str(entry.user_id.trim()).map_err(|err| {
-                OidcSubjectMapError::InvalidUserId {
-                    index,
-                    value: entry.user_id.clone(),
-                    reason: err.to_string(),
-                }
-            })?;
             map.insert_at(
                 index,
                 entry.iss,
                 entry.sub,
                 SubjectBinding {
-                    user_id: UserId::new(uuid),
+                    user_id: parse_user_id(index, &entry.user_id)?,
                     trusted_model_id: entry.trusted_model_id,
                 },
             )?;
@@ -268,28 +255,33 @@ impl OidcSubjectMap {
                     raw: raw_entry.to_string(),
                 }
             })?;
-            if user_id_raw.trim().is_empty() {
-                return Err(OidcSubjectMapError::EmptyField {
-                    index,
-                    field: "user_id",
-                });
-            }
-            let uuid = uuid::Uuid::parse_str(user_id_raw.trim()).map_err(|err| {
-                OidcSubjectMapError::InvalidUserId {
-                    index,
-                    value: user_id_raw.to_string(),
-                    reason: err.to_string(),
-                }
-            })?;
             map.insert_at(
                 index,
                 issuer.clone(),
                 subject.to_string(),
-                SubjectBinding::new(UserId::new(uuid)),
+                SubjectBinding::new(parse_user_id(index, user_id_raw)?),
             )?;
         }
         Ok(map)
     }
+}
+
+/// The user id of entry `index`, as the text of either format holds it: trimmed, not blank, a UUID.
+fn parse_user_id(index: usize, raw: &str) -> Result<UserId, OidcSubjectMapError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(OidcSubjectMapError::EmptyField {
+            index,
+            field: "user_id",
+        });
+    }
+    uuid::Uuid::parse_str(trimmed)
+        .map(UserId::new)
+        .map_err(|err| OidcSubjectMapError::InvalidUserId {
+            index,
+            value: raw.to_string(),
+            reason: err.to_string(),
+        })
 }
 
 /// Trim, then bound. The label lands in append-only provenance and is
