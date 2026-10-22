@@ -900,9 +900,6 @@ fn flavor_sdk_exposes_the_payload_reference_lane() {
     let references = referrer.references();
     assert_eq!(references.len(), 1);
     assert_eq!(references[0].binding, ReferenceBinding::Pin);
-    for reference in &references {
-        reference.validate().expect("binding matches address form");
-    }
 
     // A kind is read, never written: it is what an edge IS, decided by the
     // write that produced the row.

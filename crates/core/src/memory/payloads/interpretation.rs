@@ -128,8 +128,5 @@ mod tests {
                 .map(crate::MemoryId::into_inner),
             Some(subject)
         );
-        references[0]
-            .validate()
-            .expect("a pinned memory reference is well formed");
     }
 }

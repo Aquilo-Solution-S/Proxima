@@ -78,16 +78,6 @@ impl PayloadReference {
             target: EdgeEndpoint::goal(goal_id),
         }
     }
-
-    /// Pins always address a memory or Goal row.
-    ///
-    /// # Errors
-    ///
-    /// Never fails: the only remaining binding is [`ReferenceBinding::Pin`].
-    pub fn validate(&self) -> Result<(), String> {
-        let _ = self;
-        Ok(())
-    }
 }
 
 /// Builds the schema-owned identity bytes a payload's `receipt_key` (or

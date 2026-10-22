@@ -776,11 +776,6 @@ impl Engine {
         session_kinds: &[(MemoryId, EntityKind)],
     ) -> Result<Vec<EdgeEndpoint>, ProtocolError> {
         let declared = memory.sidecar_payload.references();
-        for reference in &declared {
-            reference
-                .validate()
-                .map_err(|err| ProtocolError::invalid_argument("references", err))?;
-        }
         let ids = declared
             .iter()
             .filter_map(|reference| reference.target.memory_id())

@@ -1111,7 +1111,6 @@ fn facade_flavor_authoring_symbols_are_reachable() {
         MemoryId::new(Uuid::nil()),
     );
     assert_eq!(reference.binding, ReferenceBinding::Pin);
-    reference.validate().expect("Pin addresses a memory row");
     assert_eq!(EdgeKind::Origin.as_str(), "origin");
     assert_eq!(
         EdgeEndpoint::memory(EntityKind::Abstraction, MemoryId::new(Uuid::nil())).layer(),

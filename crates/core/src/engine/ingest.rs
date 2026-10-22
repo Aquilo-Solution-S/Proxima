@@ -343,11 +343,6 @@ impl Engine {
             .iter()
             .flat_map(SidecarPayload::references)
             .collect();
-        for reference in &declared {
-            reference
-                .validate()
-                .map_err(|err| ProtocolError::invalid_argument("references", err))?;
-        }
         let typed_references: Vec<EdgeEndpoint> = declared
             .into_iter()
             .map(|reference| reference.target)
