@@ -244,11 +244,11 @@ fn create_key(path: &std::path::Path) -> Result<RsaKeyPair, String> {
     Ok(key)
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+/// Whole seconds since the Unix epoch at `time`; a clock before the epoch is refused, not read as 0.
+fn epoch_secs(time: SystemTime) -> Result<u64, String> {
+    time.duration_since(UNIX_EPOCH)
         .map(|since| since.as_secs())
-        .unwrap_or_default()
+        .map_err(|_| "the system clock is before 1970-01-01; set it before minting a token".into())
 }
 
 /// The JWKS this issuer publishes: one RSA key, by `n`/`e`, exactly the shape
@@ -268,9 +268,8 @@ fn jwks(key: &RsaKeyPair) -> String {
     .to_string()
 }
 
-/// Mint an RS256 bearer for `config`'s subject.
-fn mint(key: &RsaKeyPair, issuer: &str, config: &Config) -> Result<String, String> {
-    let now = now_secs();
+/// Mint an RS256 bearer for `config`'s subject, issued at `now` (seconds since the epoch).
+fn mint(key: &RsaKeyPair, issuer: &str, config: &Config, now: u64) -> Result<String, String> {
     let header = serde_json::json!({ "alg": "RS256", "kid": KID, "typ": "JWT" });
     let claims = serde_json::json!({
         "iss": issuer,
@@ -401,7 +400,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let key = load_or_create_key(config.key_file.as_ref())?;
     let issuer = format!("http://{}", config.bind);
-    let token = mint(&key, &issuer, &config)?;
+    let token = mint(&key, &issuer, &config, epoch_secs(SystemTime::now())?)?;
 
     let discovery = Arc::new(
         serde_json::json!({
@@ -538,7 +537,7 @@ mod tests {
     fn minted_token_carries_the_validated_claims() {
         let key = RsaKeyPair::generate(KeySize::Rsa2048).expect("generate");
         let config = args(&["--subject", "alice", "--audience", "proxima-test"]).expect("parse");
-        let token = mint(&key, "http://127.0.0.1:31416", &config).expect("mint");
+        let token = mint(&key, "http://127.0.0.1:31416", &config, 1_800_000_000).expect("mint");
 
         let parts: Vec<&str> = token.split('.').collect();
         assert_eq!(parts.len(), 3, "compact JWS serialization");
@@ -554,7 +553,16 @@ mod tests {
         assert_eq!(claims["iss"], "http://127.0.0.1:31416");
         assert_eq!(claims["aud"], "proxima-test");
         assert_eq!(claims["sub"], "alice");
-        assert!(claims["exp"].as_u64().expect("exp") > now_secs());
-        assert!(claims["nbf"].as_u64().expect("nbf") <= now_secs());
+        assert_eq!(claims["iat"], 1_800_000_000_u64);
+        assert_eq!(claims["nbf"], 1_800_000_000_u64);
+        assert_eq!(claims["exp"], 1_800_000_000_u64 + 30 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn a_clock_before_the_epoch_is_refused() {
+        let before = UNIX_EPOCH - std::time::Duration::from_secs(1);
+        assert!(epoch_secs(before).is_err());
+        let at = UNIX_EPOCH + std::time::Duration::from_secs(42);
+        assert_eq!(epoch_secs(at), Ok(42));
     }
 }
