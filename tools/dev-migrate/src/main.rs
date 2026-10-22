@@ -53,12 +53,9 @@ const RESET_CONFIRM_VALUE: &str = "reset-my-dev-db";
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args(std::env::args().skip(1))?;
     let missing_policy =
-        missing_migration_policy_from_lookup(&|key| std::env::var(key).ok())?.unwrap_or_default();
-    let url = resolve_database_url(&args)?;
-    let store_number = proxima::parse_store_number(
-        &std::env::var("PROXIMA_STORE_NUMBER")
-            .map_err(|_| "PROXIMA_STORE_NUMBER is required to initialize the store")?,
-    )?;
+        missing_migration_policy_from_lookup(&proxima_core::process_env)?.unwrap_or_default();
+    let url = resolve_database_url(&args, &proxima_core::process_env)?;
+    let store_number = store_number(&proxima_core::process_env)?;
     print_target(&url)?;
 
     let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
@@ -189,15 +186,27 @@ fn parse_args(command_line: impl IntoIterator<Item = String>) -> Result<Args, St
 
 /// Resolve the target database URL: `--database-url <URL>` (or
 /// `--database-url=<URL>`) first, then the `DATABASE_URL` env var.
-fn resolve_database_url(args: &Args) -> Result<String, Box<dyn std::error::Error>> {
+fn resolve_database_url(
+    args: &Args,
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<String, Box<dyn std::error::Error>> {
     if let Some(url) = &args.database_url {
         return Ok(url.clone());
     }
-    std::env::var("DATABASE_URL").map_err(|_| {
+    proxima_core::env_value(lookup, "DATABASE_URL").ok_or_else(|| {
         "database URL required: pass --database-url <URL> or set DATABASE_URL, \
          e.g. postgres://proxima:proxima@localhost/proxima"
             .into()
     })
+}
+
+/// `PROXIMA_STORE_NUMBER`, which initializes the store.
+fn store_number(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<u16, Box<dyn std::error::Error>> {
+    let raw = proxima_core::env_value(lookup, "PROXIMA_STORE_NUMBER")
+        .ok_or("PROXIMA_STORE_NUMBER is required to initialize the store")?;
+    Ok(proxima::parse_store_number(&raw)?)
 }
 
 /// Print the resolved target host/database before any migration or
@@ -564,6 +573,49 @@ mod tests {
 
     fn parsed(argv: &[&str]) -> Result<Args, String> {
         parse_args(argv.iter().map(|arg| (*arg).to_string()))
+    }
+
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    }
+
+    #[test]
+    fn a_blank_variable_is_unset_and_a_padded_one_is_trimmed() {
+        let args = Args::default();
+        for blank in ["", "  \t "] {
+            let error = resolve_database_url(&args, &env(&[("DATABASE_URL", blank)]))
+                .expect_err("blank is unset");
+            assert!(
+                error.to_string().contains("database URL required"),
+                "{error}"
+            );
+            let error =
+                store_number(&env(&[("PROXIMA_STORE_NUMBER", blank)])).expect_err("blank is unset");
+            assert!(error.to_string().contains("is required"), "{error}");
+        }
+        assert_eq!(
+            resolve_database_url(&args, &env(&[("DATABASE_URL", " postgres://u@h/d ")]))
+                .expect("padded url"),
+            "postgres://u@h/d"
+        );
+        assert_eq!(
+            store_number(&env(&[("PROXIMA_STORE_NUMBER", " 3 ")])).expect("padded number"),
+            3
+        );
+        let flag = Args {
+            database_url: Some("postgres://flag@h/d".into()),
+            ..Args::default()
+        };
+        assert_eq!(
+            resolve_database_url(&flag, &env(&[("DATABASE_URL", "postgres://env@h/d")]))
+                .expect("flag wins"),
+            "postgres://flag@h/d"
+        );
     }
 
     #[test]
