@@ -1815,6 +1815,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use async_trait::async_trait;
+    use proxima_core::env_from_pairs as lookup;
     use proxima_core::{AuthError, AuthzContext, Credentials, GroupId, OwnerId};
 
     use super::*;
@@ -2020,15 +2021,6 @@ mod tests {
     }
 
     use crate::company_owner;
-
-    fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |key| {
-            pairs
-                .iter()
-                .find(|(candidate, _)| *candidate == key)
-                .map(|(_, value)| (*value).to_string())
-        }
-    }
 
     fn owner(id: uuid::Uuid) -> OwnerId {
         OwnerId::from(GroupId::new(id))

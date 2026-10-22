@@ -67,7 +67,7 @@ pub use cursor::*;
 pub use edge::*;
 pub use engine::*;
 pub use entity::*;
-pub use env::{env_value, parse_bool_word, process_env};
+pub use env::{env_from_pairs, env_value, parse_bool_word, process_env};
 pub use error::*;
 pub use flavor::*;
 pub use goal::{SimpleTextGoalV1, TaskGoalV1, TaskPriority};

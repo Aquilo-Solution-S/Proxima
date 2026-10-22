@@ -554,18 +554,10 @@ mod tests {
         embed_in_chunks, embed_in_chunks_after_failure, embed_in_chunks_after_failure_with_timeout,
         embed_in_chunks_with_timeout, embed_many_with_timeout, embed_with_timeout,
     };
+    use crate::env_from_pairs as lookup;
     use async_trait::async_trait;
     use std::sync::Mutex;
     use std::time::Duration;
-
-    fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |key| {
-            pairs
-                .iter()
-                .find(|(candidate, _)| *candidate == key)
-                .map(|(_, value)| (*value).to_string())
-        }
-    }
 
     #[test]
     fn embedding_runtime_policy_has_finite_defaults() {

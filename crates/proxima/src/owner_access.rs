@@ -243,6 +243,7 @@ impl OwnerAccessPort for LateOwnerAccess {
 
 #[cfg(test)]
 mod tests {
+    use proxima_core::env_from_pairs as lookup;
     use proxima_core::{OwnerId, OwnerRoles};
 
     use super::*;
@@ -280,15 +281,6 @@ mod tests {
     impl OwnerRegistry for Unavailable {
         async fn is_registered_owner(&self, _owner: OwnerId) -> Result<bool, AccessError> {
             Err(AccessError::Resolution("owner registry unavailable".into()))
-        }
-    }
-
-    fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |key| {
-            pairs
-                .iter()
-                .find(|(candidate, _)| *candidate == key)
-                .map(|(_, value)| (*value).to_string())
         }
     }
 

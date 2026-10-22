@@ -187,15 +187,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |key| {
-            pairs
-                .iter()
-                .find(|(candidate, _)| *candidate == key)
-                .map(|(_, value)| (*value).to_string())
-        }
-    }
+    use proxima_core::env_from_pairs as env;
 
     #[test]
     fn a_malformed_value_names_the_variable_it_came_from() {

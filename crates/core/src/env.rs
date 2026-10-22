@@ -69,6 +69,27 @@ pub fn process_env(key: &str) -> Option<String> {
     std::env::var(key).ok()
 }
 
+/// An environment lookup over fixed `pairs`, for a host that supplies its
+/// configuration by value instead of from the process environment, and for
+/// tests. When a key appears more than once, the later pair wins.
+///
+/// ```
+/// use proxima_core::{env_from_pairs, env_value};
+///
+/// let env = env_from_pairs(&[("MODE", "a"), ("MODE", "b")]);
+/// assert_eq!(env_value(&env, "MODE").as_deref(), Some("b"));
+/// assert_eq!(env_value(&env, "MISSING"), None);
+/// ```
+pub fn env_from_pairs<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+    move |key| {
+        pairs
+            .iter()
+            .rev()
+            .find(|(candidate, _)| *candidate == key)
+            .map(|(_, value)| (*value).to_owned())
+    }
+}
+
 /// The boolean a setting's value spells: `1`, `true`, `yes` or `on` is true;
 /// `0`, `false`, `no` or `off` is false; case and surrounding whitespace do
 /// not matter. Anything else is `None`, and the caller names the setting in
@@ -93,16 +114,7 @@ pub fn parse_bool_word(raw: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{env_value, parse_bool_word};
-
-    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |key| {
-            pairs
-                .iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, v)| (*v).to_string())
-        }
-    }
+    use super::{env_from_pairs as env, env_value, parse_bool_word};
 
     #[test]
     fn boolean_words_are_the_documented_set() {

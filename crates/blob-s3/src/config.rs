@@ -335,17 +335,7 @@ pub(crate) fn validate_endpoint_url(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A later pair overrides an earlier one with the same key.
-    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |key| {
-            pairs
-                .iter()
-                .rev()
-                .find(|(k, _)| *k == key)
-                .map(|(_, v)| (*v).to_string())
-        }
-    }
+    use proxima_core::env_from_pairs as env;
 
     fn bucketed<'a>(extra: &'a [(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
         let mut pairs = vec![

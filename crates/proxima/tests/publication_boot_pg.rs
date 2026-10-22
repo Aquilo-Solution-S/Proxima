@@ -21,6 +21,7 @@ use proxima::flavor::{
     FlavorRegistryError, NamedMigrator,
 };
 use proxima::{AppInfo, FlavorApp, Proxima, ServedSurface, company_owner};
+use proxima_core::env_from_pairs as env;
 use proxima_core::flavor::{
     EmbeddingRecipe, FlavorContract, ProjectionDecl, Provenance, SchemaContract, SchemaRef,
     SearchProjectionDecl, TransferRule,
@@ -219,15 +220,6 @@ fn probe(note: &str) -> PubProbeV1 {
     PubProbeV1 {
         probe_id: Uuid::now_v7(),
         note: note.to_owned(),
-    }
-}
-
-fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-    move |key| {
-        pairs
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map(|(_, v)| (*v).to_string())
     }
 }
 

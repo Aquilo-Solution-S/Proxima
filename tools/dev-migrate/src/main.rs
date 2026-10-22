@@ -568,20 +568,12 @@ async fn delete_dependent_lane_rows(
 mod tests {
     use super::*;
     use proxima::run_core_and_flavor_migrations;
+    use proxima_core::env_from_pairs as env;
     use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
     use sqlx::migrate::MigrateError;
 
     fn parsed(argv: &[&str]) -> Result<Args, String> {
         parse_args(argv.iter().map(|arg| (*arg).to_string()))
-    }
-
-    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |key| {
-            pairs
-                .iter()
-                .find(|(name, _)| *name == key)
-                .map(|(_, value)| (*value).to_owned())
-        }
     }
 
     #[test]

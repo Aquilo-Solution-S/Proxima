@@ -194,15 +194,7 @@ pub(crate) fn parse_bool_value(key: &str, raw: &str) -> Result<bool, ProximaErro
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |key| {
-            pairs
-                .iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, v)| (*v).to_string())
-        }
-    }
+    use proxima_core::env_from_pairs as env;
 
     /// The retention knob leaves the default when unset, spells "off" as `0`,
     /// and refuses a horizon so short that delivery and deletion would be the
