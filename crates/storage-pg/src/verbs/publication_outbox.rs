@@ -797,7 +797,7 @@ impl PublicationConsumerPort for PgStorage {
         } else {
             settle_records(&mut tx, &owed).await?;
             RetireOutcome::Retired {
-                undelivered: owed.len().try_into().unwrap_or(u64::MAX),
+                undelivered: proxima_core::count_u64(owed.len()),
             }
         };
         crate::owner_scope::finish_transaction(tx, Ok(outcome)).await

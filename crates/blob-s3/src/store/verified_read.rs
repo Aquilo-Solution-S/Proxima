@@ -1,5 +1,6 @@
 //! Bounded in-process reads that return bytes only after integrity verification.
 
+use proxima_core::count_u64;
 use std::num::NonZeroU64;
 
 use proxima_core::storage_ports::{
@@ -77,7 +78,7 @@ async fn verify_body(
             break;
         }
         byte_len = byte_len
-            .checked_add(u64::try_from(read).unwrap_or(u64::MAX))
+            .checked_add(count_u64(read))
             .ok_or(CitedBlobReadError::TooLarge {
                 byte_len: u64::MAX,
                 max_bytes: max_bytes.get(),

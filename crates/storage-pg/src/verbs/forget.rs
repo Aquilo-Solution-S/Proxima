@@ -1,6 +1,7 @@
 //! Forget / erase.
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
+use proxima_core::count_u64;
 use std::collections::BTreeSet;
 
 use proxima_core::flavor::{EraseLeg, ForgetLeg, KeyShape};
@@ -196,7 +197,7 @@ pub(crate) async fn purge_cold_objects_with_backoff(
     backoff: PurgeBackoff,
 ) -> ColdPurgeOutcome {
     let mut outcome = ColdPurgeOutcome {
-        attempted: u64::try_from(plan.entries().len()).unwrap_or(u64::MAX),
+        attempted: count_u64(plan.entries().len()),
         ..ColdPurgeOutcome::default()
     };
     for entry in plan.entries() {

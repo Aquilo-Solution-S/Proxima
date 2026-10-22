@@ -2,6 +2,7 @@
 //! from that single pass: the content address, the audit digest, and the
 //! true byte length.
 
+use proxima_core::count_u64;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
@@ -106,7 +107,7 @@ pub(super) async fn hash_uploaded_object(
         blake3_hasher.update(chunk);
         sha256_hasher.update(chunk);
         byte_len = byte_len
-            .checked_add(u64::try_from(n).unwrap_or(u64::MAX))
+            .checked_add(count_u64(n))
             .ok_or_else(|| BlobError::State("uploaded object is too large".into()))?;
         // Abort as soon as the streamed length crosses the cap so a client that
         // under-declared `byte_len` cannot force us to buffer/hash an oversized

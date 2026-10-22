@@ -12,6 +12,7 @@
 //! wired `ColdObjectStore` drains that queue after the commit. There is no
 //! second, owner-enumerating pass here.
 
+use proxima_core::count_u64;
 use std::collections::{HashMap, HashSet};
 
 use aws_sdk_s3::operation::list_object_versions::ListObjectVersionsOutput;
@@ -120,8 +121,7 @@ async fn purge_versions(
                 )));
             }
             validate_delete_acknowledgements(&identifiers, response.deleted(), listing_prefix)?;
-            deleted =
-                deleted.saturating_add(u64::try_from(response.deleted().len()).unwrap_or(u64::MAX));
+            deleted = deleted.saturating_add(count_u64(response.deleted().len()));
         }
 
         if page.is_truncated() != Some(true) {

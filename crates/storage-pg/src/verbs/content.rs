@@ -1,5 +1,6 @@
 //! Owner-scoped Content upsert.
 
+use proxima_core::count_u64;
 use proxima_core::{SidecarPayload, StorageError, canonical_json_bytes};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -29,7 +30,7 @@ pub fn hash_sidecar_payloads(payloads: &[SidecarPayload]) -> Result<[u8; 32], St
     for (schema, bytes) in &parts {
         hasher.update(schema.as_bytes());
         hasher.update(b"\0");
-        hasher.update(&(u64::try_from(bytes.len()).unwrap_or(0)).to_le_bytes());
+        hasher.update(&(count_u64(bytes.len())).to_le_bytes());
         hasher.update(bytes);
         hasher.update(b"\0");
     }

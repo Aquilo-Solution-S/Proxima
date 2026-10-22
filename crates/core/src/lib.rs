@@ -15,6 +15,7 @@ pub mod canonical_json;
 pub mod capability;
 pub mod citations;
 pub mod cold;
+pub mod count;
 pub mod cursor;
 pub mod edge;
 pub mod engine;
@@ -63,6 +64,7 @@ pub use cold::{
     ColdObjectStore, MAX_OBJECT_STORE_ID_BYTES, MAX_OPERATOR_STORE_ID_BYTES, ObjectStoreId,
     ObjectStoreIdError, PurgeDeleted,
 };
+pub use count::count_u64;
 pub use cursor::*;
 pub use edge::*;
 pub use engine::*;

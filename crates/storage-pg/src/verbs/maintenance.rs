@@ -12,6 +12,7 @@
 //! delete each key, then clear the debt or record the failed attempt. Nothing
 //! in it is specific to S3, so another kind of target can share the queue.
 
+use proxima_core::count_u64;
 use std::time::Duration;
 
 use crate::platform_scope::PgPlatformScope;
@@ -342,7 +343,7 @@ pub(crate) async fn retry_cold_object_purges(
     .await
     .map_err(map_err)?;
     tx.commit().await.map_err(map_err)?;
-    let selected = u64::try_from(keys.len()).unwrap_or(u64::MAX);
+    let selected = count_u64(keys.len());
     let mut outcome = ColdPurgeRetryOutcome {
         selected,
         dry_run: options.dry_run,

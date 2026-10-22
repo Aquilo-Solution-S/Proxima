@@ -4,6 +4,7 @@ use super::Engine;
 use super::memory_authoring::PreparedDerived;
 use crate::access::AccessKind;
 use crate::authz::{AuthzContext, SystemAuthority, SystemAuthorityBinding};
+use crate::count_u64;
 use crate::error::ProtocolError;
 use crate::mcp::ToolEffect;
 use crate::storage_ports::{
@@ -1346,7 +1347,7 @@ impl<'a> UnitOfWork<'a> {
             owner: *permit.owner(),
             mode,
             series_erased: report.series_erased,
-            versions_erased: u64::try_from(report.versions.len()).unwrap_or(u64::MAX),
+            versions_erased: count_u64(report.versions.len()),
             versions: report.versions,
             referencing_series: report.referencing_series,
             blobs_removed: report.blobs_removed,

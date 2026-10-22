@@ -8,6 +8,7 @@
 //! `const SCHEMA_ID: SchemaId = ...` shape: that requires
 //! const-construction of `String`, which Rust does not allow.
 
+use crate::count_u64;
 use crate::edge::EdgeEndpoint;
 use crate::scope::{ScopeKind, ScopeRef};
 use crate::{EntityKind, GoalId, MemoryId, SchemaId};
@@ -289,7 +290,7 @@ impl PayloadKeyBuilder {
     }
 
     pub fn field_usize(&mut self, name: &str, value: usize) {
-        self.field_u64(name, u64::try_from(value).unwrap_or(u64::MAX));
+        self.field_u64(name, count_u64(value));
     }
 
     pub fn field_uuid(&mut self, name: &str, value: uuid::Uuid) {
@@ -423,10 +424,7 @@ impl PayloadKeyBuilder {
     /// [`field_usize`](Self::field_usize)'s saturating conversion, so a
     /// count spells the same whichever width the caller holds it in.
     pub fn field_option_usize(&mut self, name: &str, value: Option<usize>) {
-        self.field_option_u64(
-            name,
-            value.map(|value| u64::try_from(value).unwrap_or(u64::MAX)),
-        );
+        self.field_option_u64(name, value.map(count_u64));
     }
 
     /// A byte string that may not have been observed. `None`,
@@ -480,8 +478,7 @@ impl PayloadKeyBuilder {
     }
 
     fn raw_len(&mut self, len: usize) {
-        self.bytes
-            .extend_from_slice(&u64::try_from(len).unwrap_or(u64::MAX).to_be_bytes());
+        self.bytes.extend_from_slice(&count_u64(len).to_be_bytes());
     }
 }
 

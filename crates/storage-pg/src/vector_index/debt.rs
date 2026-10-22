@@ -6,6 +6,7 @@
 //! it commits. The sweep repairs what the debt cannot reach: an entry no head
 //! names, an entry under the wrong owner, a head the index lost.
 
+use proxima_core::count_u64;
 use std::collections::BTreeMap;
 
 use proxima_core::storage_ports::{VectorEntry, VectorIndex, VectorKey};
@@ -149,7 +150,7 @@ pub(crate) async fn drain_debt(
     .fetch_all(&mut *tx)
     .await
     .map_err(map_err)?;
-    let paid = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+    let paid = count_u64(rows.len());
     match vectors {
         StoreVectors::Local => {}
         StoreVectors::Remote(index) => apply(index.as_ref(), rows).await?,
@@ -282,7 +283,7 @@ async fn repair(
         }
     }
     delete_keys(index, &stale).await?;
-    swept.entries_deleted += u64::try_from(stale.len()).unwrap_or(u64::MAX);
+    swept.entries_deleted += count_u64(stale.len());
     move_keys(index, moves).await?;
     if !lost.is_empty() {
         let mut columns = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
