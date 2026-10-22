@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         DependentLanes::Refuse
     };
     if args.reset {
-        reset_local_dev_database(&pg, &url, dependent_lanes).await?;
+        reset_local_dev_database(&pg, &url, dependent_lanes, &proxima_core::process_env).await?;
     } else if dependent_lanes == DependentLanes::Reset {
         return Err(format!("{RESET_DEPENDENT_LANES_FLAG} only qualifies {RESET_FLAG}").into());
     }
@@ -303,18 +303,27 @@ SELECT DISTINCT
  ORDER BY 1, 2"
 );
 
+/// The reset token, spelled exactly: unlike a setting, a confirmation is not
+/// trimmed into shape.
+fn require_reset_confirmation(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if lookup(RESET_CONFIRM_ENV).as_deref() == Some(RESET_CONFIRM_VALUE) {
+        return Ok(());
+    }
+    Err(format!(
+        "set {RESET_CONFIRM_ENV}={RESET_CONFIRM_VALUE} to reset a local development database"
+    )
+    .into())
+}
+
 async fn reset_local_dev_database(
     pg: &PgMigrationStorage,
     url: &str,
     dependent_lanes: DependentLanes,
+    lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let confirmed = std::env::var(RESET_CONFIRM_ENV).as_deref() == Ok(RESET_CONFIRM_VALUE);
-    if !confirmed {
-        return Err(format!(
-            "set {RESET_CONFIRM_ENV}={RESET_CONFIRM_VALUE} to reset a local development database"
-        )
-        .into());
-    }
+    require_reset_confirmation(lookup)?;
     reset_local_dev_database_confirmed(pg, url, dependent_lanes).await
 }
 
@@ -608,6 +617,18 @@ mod tests {
                 .expect("flag wins"),
             "postgres://flag@h/d"
         );
+    }
+
+    #[test]
+    fn a_reset_runs_only_on_the_exact_confirmation_token() {
+        let token = RESET_CONFIRM_VALUE;
+        require_reset_confirmation(&env(&[(RESET_CONFIRM_ENV, token)])).expect("exact token");
+        for refused in [None, Some(""), Some("yes"), Some(" reset-my-dev-db")] {
+            let pairs = refused.map(|value| [(RESET_CONFIRM_ENV, value)]);
+            let lookup = env(pairs.as_ref().map_or(&[], |pairs| pairs.as_slice()));
+            let error = require_reset_confirmation(&lookup).expect_err("not the token");
+            assert!(error.to_string().contains(RESET_CONFIRM_ENV), "{error}");
+        }
     }
 
     #[test]
