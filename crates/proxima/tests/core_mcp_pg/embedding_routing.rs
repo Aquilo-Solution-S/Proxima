@@ -1738,7 +1738,12 @@ async fn retryable_job_case(
     );
     let engine = fixture.built.host().engine();
     let first = engine.drain_embedding_jobs(10).await?;
-    assert_eq!((first.processed, first.failed), (0, 0));
+    assert_eq!(
+        (first.processed, first.failed),
+        (0, 0),
+        "{stage:?}/{failure:?}: first drain {first:?}; provider calls {:?}",
+        client.calls()
+    );
     assert!(first.configuration_faults.is_empty());
     client.assert_failed_attempt();
     assert_retry_jobs_pending(fixture, &handles).await?;
