@@ -176,34 +176,19 @@ fn relation_of(sidecar_table: &str) -> Result<(&str, &str), StorageError> {
     })
 }
 
-/// The name of the `BEFORE INSERT` declaration trigger on `sidecar_table`.
+/// The name of a trigger on `sidecar_table` itself: the relation's own name,
+/// suffixed. The `BEFORE INSERT` and `BEFORE UPDATE OF <key>` declaration
+/// triggers and the `AFTER DELETE` orphan guard are named this way.
 ///
 /// # Errors
 ///
 /// [`StorageError::Internal`] when the table is not schema-qualified, or when
 /// the derived name exceeds `PostgreSQL`'s 63-byte identifier limit.
-fn declaration_trigger_name(sidecar_table: &str) -> Result<String, StorageError> {
+fn sidecar_trigger_name(sidecar_table: &str, suffix: &str) -> Result<String, StorageError> {
     let (_, relation) = relation_of(sidecar_table)?;
-    Ok(
-        PgIdent::column(&format!("{relation}_{DECLARATION_TRIGGER_SUFFIX}"))?
-            .as_str()
-            .to_owned(),
-    )
-}
-
-/// The name of the `BEFORE UPDATE OF <key>` declaration trigger on
-/// `sidecar_table`.
-///
-/// # Errors
-///
-/// As [`declaration_trigger_name`].
-fn key_repoint_trigger_name(sidecar_table: &str) -> Result<String, StorageError> {
-    let (_, relation) = relation_of(sidecar_table)?;
-    Ok(
-        PgIdent::column(&format!("{relation}_{KEY_REPOINT_TRIGGER_SUFFIX}"))?
-            .as_str()
-            .to_owned(),
-    )
+    Ok(PgIdent::column(&format!("{relation}_{suffix}"))?
+        .as_str()
+        .to_owned())
 }
 
 /// The name of the presence constraint trigger guarding `sidecar_table`.
@@ -211,25 +196,11 @@ fn key_repoint_trigger_name(sidecar_table: &str) -> Result<String, StorageError>
 ///
 /// # Errors
 ///
-/// As [`declaration_trigger_name`].
+/// As [`sidecar_trigger_name`].
 fn presence_trigger_name(sidecar_table: &str) -> Result<String, StorageError> {
     let (schema, relation) = relation_of(sidecar_table)?;
     Ok(
         PgIdent::column(&format!("{PRESENCE_TRIGGER_PREFIX}_{schema}_{relation}"))?
-            .as_str()
-            .to_owned(),
-    )
-}
-
-/// The name of the `AFTER DELETE` orphan guard on `sidecar_table`.
-///
-/// # Errors
-///
-/// As [`declaration_trigger_name`].
-fn delete_guard_trigger_name(sidecar_table: &str) -> Result<String, StorageError> {
-    let (_, relation) = relation_of(sidecar_table)?;
-    Ok(
-        PgIdent::column(&format!("{relation}_{DELETE_GUARD_TRIGGER_SUFFIX}"))?
             .as_str()
             .to_owned(),
     )
@@ -262,7 +233,7 @@ pub fn declaration_trigger(
     memory_key_column: &str,
 ) -> Result<Artifact, StorageError> {
     let table = PgIdent::table(sidecar_table)?;
-    let trigger = declaration_trigger_name(sidecar_table)?;
+    let trigger = sidecar_trigger_name(sidecar_table, DECLARATION_TRIGGER_SUFFIX)?;
     let key = PgIdent::column(memory_key_column)?;
 
     // SQL-POLICY: PgIdent
@@ -388,7 +359,7 @@ pub fn delete_guard_trigger(
     memory_key_column: &str,
 ) -> Result<Artifact, StorageError> {
     let table = PgIdent::table(sidecar_table)?;
-    let trigger = delete_guard_trigger_name(sidecar_table)?;
+    let trigger = sidecar_trigger_name(sidecar_table, DELETE_GUARD_TRIGGER_SUFFIX)?;
     let key = PgIdent::column(memory_key_column)?;
 
     // SQL-POLICY: PgIdent
@@ -572,7 +543,7 @@ pub fn key_repoint_trigger(
     memory_key_column: &str,
 ) -> Result<Artifact, StorageError> {
     let table = PgIdent::table(sidecar_table)?;
-    let trigger = key_repoint_trigger_name(sidecar_table)?;
+    let trigger = sidecar_trigger_name(sidecar_table, KEY_REPOINT_TRIGGER_SUFFIX)?;
     let key = PgIdent::column(memory_key_column)?;
 
     // SQL-POLICY: PgIdent
@@ -626,7 +597,7 @@ fn expected_declaration_triggers(
                  KeyShape::MemoryT {{ column }}"
             ))
         })?;
-        let declaration = declaration_trigger_name(table)?;
+        let declaration = sidecar_trigger_name(table, DECLARATION_TRIGGER_SUFFIX)?;
         declared.push(ExpectedTrigger {
             definition: format!(
                 "CREATE TRIGGER {declaration} BEFORE INSERT ON {table} FOR EACH ROW \
@@ -635,7 +606,7 @@ fn expected_declaration_triggers(
             relation: table.to_owned(),
             name: declaration,
         });
-        let repoint = key_repoint_trigger_name(table)?;
+        let repoint = sidecar_trigger_name(table, KEY_REPOINT_TRIGGER_SUFFIX)?;
         declared.push(ExpectedTrigger {
             definition: format!(
                 "CREATE TRIGGER {repoint} BEFORE UPDATE OF {key} ON {table} FOR EACH ROW \
@@ -645,7 +616,7 @@ fn expected_declaration_triggers(
             name: repoint,
         });
         if !registry.is_owner_pinned_memory_sidecar_table(table) {
-            let orphan = delete_guard_trigger_name(table)?;
+            let orphan = sidecar_trigger_name(table, DELETE_GUARD_TRIGGER_SUFFIX)?;
             declared.push(ExpectedTrigger {
                 definition: format!(
                     "CREATE CONSTRAINT TRIGGER {orphan} AFTER DELETE ON {table} DEFERRABLE \
