@@ -115,7 +115,7 @@ impl OpenAiCompatEmbeddingClient {
     /// `config.base_url` is invalid, contains a fragment, or is a plaintext
     /// `http://` endpoint on a host that is neither loopback nor named in
     /// `config.plaintext_hosts` (which would leak the bearer token in
-    /// transit), or if
+    /// transit), if `config.timeout` is zero, or if
     /// [`EmbedCaps::max_input_chars`] is set below
     /// [`proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS`].
     pub fn new(
@@ -124,6 +124,11 @@ impl OpenAiCompatEmbeddingClient {
         config: OpenAiCompatConfig,
     ) -> Result<Self, LlmError> {
         let endpoint = embedding_endpoint(&config.base_url, &config.plaintext_hosts)?;
+        if config.timeout.is_zero() {
+            return Err(LlmError::Internal(
+                "embedding request timeout must be greater than zero".into(),
+            ));
+        }
         // Rejected at construction rather than tolerated at call time: a cap
         // under the floor makes over-long input terminal instead of chunked,
         // and it does so invisibly — every component behaves as documented
@@ -750,6 +755,21 @@ mod tests {
         assert!(
             matches!(err, LlmError::Internal(ref m) if m.contains("terminal")),
             "the refusal must say what goes wrong, not just that it did: {err:?}",
+        );
+    }
+
+    #[test]
+    fn a_zero_timeout_is_refused_at_construction() {
+        let err = super::OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            probe_caps(),
+            super::OpenAiCompatConfig::new(UNREACHABLE, None)
+                .with_timeout(std::time::Duration::ZERO),
+        )
+        .expect_err("a zero timeout must not build a client");
+        assert!(
+            matches!(err, LlmError::Internal(ref m) if m.contains("timeout")),
+            "{err:?}"
         );
     }
 
