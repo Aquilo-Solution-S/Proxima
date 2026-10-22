@@ -1,7 +1,6 @@
-// The erase entry points take (pool, cold store, authorization, owner parts,
-// source scope) — every argument is a distinct authority the erase has to be
-// handed, and bundling them into a struct would only move the arity to its
-// constructor.
+// The erase entry point takes (pool, platform scope, cold store, vectors, authorization, plan,
+// surfaces, lifecycle) — every argument is a distinct authority the erase has to be handed, and
+// bundling them into a struct would only move the arity to its constructor.
 
 use crate::access::owner_columns::{other_upload_implies_key_sql, upload_implied_keys_sql};
 use std::collections::BTreeMap;
@@ -14,7 +13,7 @@ use proxima_core::storage_ports::{
     HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope, HostStateEraseSelection,
     HostStateFactCopyLocator,
 };
-use proxima_core::{ColdObjectStore, GroupId, OwnerId, SourceId, StorageError, UserId};
+use proxima_core::{ColdObjectStore, GroupId, OwnerId, SourceId, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::access::owner_columns::{
@@ -133,162 +132,62 @@ where
     }
 }
 
-#[allow(clippy::too_many_arguments)] // each scope names its store's pools, object store and vectors
-pub(crate) async fn erase_group_owner_with_lifecycle(
-    pool: &PgPool,
-    platform: &crate::PgPlatformScope,
-    cold: &dyn ColdObjectStore,
-    vectors: &crate::vector_index::StoreVectors,
-    auth: &EraseAuthorization,
-    group_id: GroupId,
-    surfaces: &OwnerSurfaces,
-    lifecycle: Option<crate::RegisteredHostStateLifecycle>,
-) -> Result<OwnerEraseOutcome, StorageError> {
-    let owner = OwnerId::from(group_id);
-    validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
-    erase_with_retry(pool, platform, cold, |pool| {
-        let lifecycle = lifecycle.clone();
-        async move {
-            let mut tx = begin_bulk_erase_tx(pool, platform).await?;
-            if let Some(reason) =
-                erase_precondition(&mut tx, auth, owner, OwnerEraseRefusal::OwnerNotAbandoned)
-                    .await?
-            {
-                return Ok(EraseAttempt::Refused(refused(auth, reason)));
-            }
-            let cold_purge = erase_selected(
-                &mut tx,
-                owner,
-                SelectionScope::Owner,
-                surfaces,
-                lifecycle.as_ref(),
-            )
-            .await?;
-            let outcome = complete(auth, &mut tx, &cold_purge, vectors, owner).await?;
-            tx.commit().await.map_err(map_err)?;
-            Ok(EraseAttempt::Completed(cold_purge, outcome))
-        }
-    })
-    .await
+/// What one erase takes: whose rows, which refusal answers a live owner, and how the statements
+/// are narrowed. The four scopes of the port are these two shapes.
+#[derive(Debug, Clone)]
+pub(crate) struct ErasePlan<'a> {
+    owner: OwnerId,
+    refusal: OwnerEraseRefusal,
+    selection: SelectionScope<'a>,
 }
 
-#[allow(clippy::too_many_arguments)] // each scope names its store's pools, object store and vectors
-pub(crate) async fn erase_personal_owner_with_lifecycle(
-    pool: &PgPool,
-    platform: &crate::PgPlatformScope,
-    cold: &dyn ColdObjectStore,
-    vectors: &crate::vector_index::StoreVectors,
-    auth: &EraseAuthorization,
-    user_id: UserId,
-    surfaces: &OwnerSurfaces,
-    lifecycle: Option<crate::RegisteredHostStateLifecycle>,
-) -> Result<OwnerEraseOutcome, StorageError> {
-    let owner = OwnerId::from(user_id);
-    validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
-    erase_with_retry(pool, platform, cold, |pool| {
-        let lifecycle = lifecycle.clone();
-        async move {
-            let mut tx = begin_bulk_erase_tx(pool, platform).await?;
-            if let Some(reason) =
-                erase_precondition(&mut tx, auth, owner, OwnerEraseRefusal::OwnerNotAbandoned)
-                    .await?
-            {
-                return Ok(EraseAttempt::Refused(refused(auth, reason)));
-            }
-            let cold_purge = erase_selected(
-                &mut tx,
-                owner,
-                SelectionScope::Owner,
-                surfaces,
-                lifecycle.as_ref(),
-            )
-            .await?;
-            let outcome = complete(auth, &mut tx, &cold_purge, vectors, owner).await?;
-            tx.commit().await.map_err(map_err)?;
-            Ok(EraseAttempt::Completed(cold_purge, outcome))
+impl<'a> ErasePlan<'a> {
+    /// Every row of `owner`, which must be abandoned.
+    pub(crate) fn owner(owner: OwnerId) -> Self {
+        Self {
+            owner,
+            refusal: OwnerEraseRefusal::OwnerNotAbandoned,
+            selection: SelectionScope::Owner,
         }
-    })
-    .await
+    }
+
+    /// The rows of `source_id` under the owner `auth` is sealed for, which must be gone.
+    pub(crate) fn source_scope(auth: &EraseAuthorization, source_id: &'a SourceId) -> Self {
+        Self {
+            owner: auth.audit().owner(),
+            refusal: OwnerEraseRefusal::SourceScopeOwnerStillLive,
+            selection: SelectionScope::Source(source_id),
+        }
+    }
 }
 
-#[allow(clippy::too_many_arguments)] // each scope names its store's pools, object store and vectors
-pub(crate) async fn erase_group_source_scope_with_lifecycle(
+#[allow(clippy::too_many_arguments)] // each erase names its store's pools, object store and vectors
+pub(crate) async fn erase_with_lifecycle(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,
     cold: &dyn ColdObjectStore,
     vectors: &crate::vector_index::StoreVectors,
     auth: &EraseAuthorization,
-    source_id: &SourceId,
+    plan: ErasePlan<'_>,
     surfaces: &OwnerSurfaces,
     lifecycle: Option<crate::RegisteredHostStateLifecycle>,
 ) -> Result<OwnerEraseOutcome, StorageError> {
-    let owner = auth.audit().owner();
+    let ErasePlan {
+        owner,
+        refusal,
+        selection,
+    } = plan;
     validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
     erase_with_retry(pool, platform, cold, |pool| {
         let lifecycle = lifecycle.clone();
+        let refusal = refusal.clone();
         async move {
             let mut tx = begin_bulk_erase_tx(pool, platform).await?;
-            if let Some(reason) = erase_precondition(
-                &mut tx,
-                auth,
-                owner,
-                OwnerEraseRefusal::SourceScopeOwnerStillLive,
-            )
-            .await?
-            {
+            if let Some(reason) = erase_precondition(&mut tx, auth, owner, refusal).await? {
                 return Ok(EraseAttempt::Refused(refused(auth, reason)));
             }
-            let cold_purge = erase_selected(
-                &mut tx,
-                owner,
-                SelectionScope::Source(source_id),
-                surfaces,
-                lifecycle.as_ref(),
-            )
-            .await?;
-            let outcome = complete(auth, &mut tx, &cold_purge, vectors, owner).await?;
-            tx.commit().await.map_err(map_err)?;
-            Ok(EraseAttempt::Completed(cold_purge, outcome))
-        }
-    })
-    .await
-}
-
-#[allow(clippy::too_many_arguments)] // each scope names its store's pools, object store and vectors
-pub(crate) async fn erase_personal_source_scope_with_lifecycle(
-    pool: &PgPool,
-    platform: &crate::PgPlatformScope,
-    cold: &dyn ColdObjectStore,
-    vectors: &crate::vector_index::StoreVectors,
-    auth: &EraseAuthorization,
-    source_id: &SourceId,
-    surfaces: &OwnerSurfaces,
-    lifecycle: Option<crate::RegisteredHostStateLifecycle>,
-) -> Result<OwnerEraseOutcome, StorageError> {
-    let owner = auth.audit().owner();
-    validate_lifecycle_dispatch(surfaces, lifecycle.as_ref())?;
-    erase_with_retry(pool, platform, cold, |pool| {
-        let lifecycle = lifecycle.clone();
-        async move {
-            let mut tx = begin_bulk_erase_tx(pool, platform).await?;
-            if let Some(reason) = erase_precondition(
-                &mut tx,
-                auth,
-                owner,
-                OwnerEraseRefusal::SourceScopeOwnerStillLive,
-            )
-            .await?
-            {
-                return Ok(EraseAttempt::Refused(refused(auth, reason)));
-            }
-            let cold_purge = erase_selected(
-                &mut tx,
-                owner,
-                SelectionScope::Source(source_id),
-                surfaces,
-                lifecycle.as_ref(),
-            )
-            .await?;
+            let cold_purge =
+                erase_selected(&mut tx, owner, selection, surfaces, lifecycle.as_ref()).await?;
             let outcome = complete(auth, &mut tx, &cold_purge, vectors, owner).await?;
             tx.commit().await.map_err(map_err)?;
             Ok(EraseAttempt::Completed(cold_purge, outcome))

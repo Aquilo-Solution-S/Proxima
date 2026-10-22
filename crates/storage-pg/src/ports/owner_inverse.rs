@@ -2,7 +2,7 @@ use proxima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerExportBundle,
 };
 use proxima_core::storage_ports::OwnerInversePort;
-use proxima_core::{GroupId, SourceId, StorageError, UserId};
+use proxima_core::{GroupId, OwnerId, SourceId, StorageError, UserId};
 
 use crate::{PgStorage, verbs};
 
@@ -21,13 +21,13 @@ impl OwnerInversePort for PgStorage {
             ));
         }
         let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
-        verbs::owner_erase::erase_group_owner_with_lifecycle(
+        verbs::owner_erase::erase_with_lifecycle(
             &self.pool,
             &self.platform_scope,
             self.cold.as_ref(),
             &self.vectors,
             auth,
-            group_id,
+            verbs::owner_erase::ErasePlan::owner(OwnerId::from(group_id)),
             tables,
             lifecycle,
         )
@@ -47,13 +47,13 @@ impl OwnerInversePort for PgStorage {
             ));
         }
         let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
-        verbs::owner_erase::erase_personal_owner_with_lifecycle(
+        verbs::owner_erase::erase_with_lifecycle(
             &self.pool,
             &self.platform_scope,
             self.cold.as_ref(),
             &self.vectors,
             auth,
-            user_id,
+            verbs::owner_erase::ErasePlan::owner(OwnerId::from(user_id)),
             tables,
             lifecycle,
         )
@@ -74,13 +74,13 @@ impl OwnerInversePort for PgStorage {
             ));
         }
         let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
-        verbs::owner_erase::erase_group_source_scope_with_lifecycle(
+        verbs::owner_erase::erase_with_lifecycle(
             &self.pool,
             &self.platform_scope,
             self.cold.as_ref(),
             &self.vectors,
             auth,
-            source_id,
+            verbs::owner_erase::ErasePlan::source_scope(auth, source_id),
             tables,
             lifecycle,
         )
@@ -101,13 +101,13 @@ impl OwnerInversePort for PgStorage {
             ));
         }
         let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
-        verbs::owner_erase::erase_personal_source_scope_with_lifecycle(
+        verbs::owner_erase::erase_with_lifecycle(
             &self.pool,
             &self.platform_scope,
             self.cold.as_ref(),
             &self.vectors,
             auth,
-            source_id,
+            verbs::owner_erase::ErasePlan::source_scope(auth, source_id),
             tables,
             lifecycle,
         )
