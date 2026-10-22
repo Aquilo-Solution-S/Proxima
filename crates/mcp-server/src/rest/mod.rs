@@ -26,9 +26,11 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
+use proxima_core::FlavorServices;
 use proxima_core::flavor::ResourceContract;
 use proxima_core::mcp::{
-    McpToolCtx, McpToolDescriptor, McpToolOrigin, all_core_resources, tool_name_matches,
+    McpAuthorContext, McpToolCtx, McpToolDescriptor, McpToolOrigin, all_core_resources,
+    tool_name_matches,
 };
 
 use crate::handler::{
@@ -136,15 +138,27 @@ fn listing_ctx(
     (headers, extensions): (&axum::http::HeaderMap, &axum::http::Extensions),
     instance: &str,
 ) -> Result<McpToolCtx, Problem> {
+    let (author, request) = request_parts(state, auth, (headers, extensions), instance)?;
+    state
+        .host
+        .ctx_for_request(author, auth, request)
+        .map_err(|err| problem_for(&err.into(), instance))
+}
+
+/// Who is calling and what services this request brings: the two steps every REST path starts
+/// with, each failing as the `Problem` for `instance`.
+fn request_parts(
+    state: &RestState,
+    auth: &crate::McpAuthContext,
+    (headers, extensions): (&axum::http::HeaderMap, &axum::http::Extensions),
+    instance: &str,
+) -> Result<(McpAuthorContext, FlavorServices), Problem> {
     let author = author_from_headers(headers, auth, instance)?;
     let request = state
         .host
         .request_services(headers, extensions)
         .map_err(|err| problem_for(&err.into(), instance))?;
-    state
-        .host
-        .ctx_for_request(author, auth, request)
-        .map_err(|err| problem_for(&err.into(), instance))
+    Ok((author, request))
 }
 
 #[allow(clippy::unused_async, reason = "axum handlers must be futures")]
@@ -372,13 +386,9 @@ async fn dispatch(
     args: serde_json::Value,
     instance: &str,
 ) -> Response {
-    let author = match author_from_headers(headers, auth, instance) {
-        Ok(author) => author,
+    let (author, request) = match request_parts(state, auth, (headers, extensions), instance) {
+        Ok(parts) => parts,
         Err(problem) => return problem.into_response(),
-    };
-    let request = match state.host.request_services(headers, extensions) {
-        Ok(request) => request,
-        Err(err) => return problem_for(&err.into(), instance).into_response(),
     };
     match state
         .host
@@ -415,13 +425,9 @@ async fn read_resource(
         target.push('?');
         target.push_str(query);
     }
-    let author = match author_from_headers(&headers, &auth, &instance) {
-        Ok(author) => author,
+    let (author, request) = match request_parts(&state, &auth, (&headers, &extensions), &instance) {
+        Ok(parts) => parts,
         Err(problem) => return problem.into_response(),
-    };
-    let request = match state.host.request_services(&headers, &extensions) {
-        Ok(request) => request,
-        Err(err) => return problem_for(&err.into(), &instance).into_response(),
     };
     match state
         .host
