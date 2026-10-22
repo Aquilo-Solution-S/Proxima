@@ -165,6 +165,12 @@ fn parse_args(argv: impl IntoIterator<Item = String>) -> Result<Config, ArgError
             "--bind must be loopback; {bind} would expose a token-minting issuer on the network"
         )));
     }
+    if bind.port() == 0 {
+        return Err(ArgError::Message(
+            "--bind needs a fixed port: the issuer URL, the token and the discovery document name it"
+                .into(),
+        ));
+    }
     if subject.trim().is_empty() {
         return Err(ArgError::Message("--subject must not be empty".into()));
     }
@@ -522,6 +528,7 @@ mod tests {
             3650
         );
         assert!(args(&["--bind", "not-an-address"]).is_err());
+        assert!(args(&["--bind", "127.0.0.1:0"]).is_err());
         assert!(args(&["--nonsense"]).is_err());
         assert!(args(&["--bind"]).is_err());
     }
