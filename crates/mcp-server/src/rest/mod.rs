@@ -271,25 +271,15 @@ async fn tool_route(
         } else {
             descriptor.is_read_only()
         };
-        let allow = if admits_query {
-            "GET, POST, QUERY"
-        } else {
-            "GET, POST"
-        };
-        return gate_method(&method, false, allow, &instance)
+        return gate_method(&method, Allow::tool(admits_query), &instance)
             .expect_err("non-invocation method is rejected")
             .into_response();
     }
-    if !dispatches_actions {
-        let read_only = descriptor.is_read_only();
-        let allow = if read_only {
-            "GET, POST, QUERY"
-        } else {
-            "GET, POST"
-        };
-        if let Err(problem) = gate_method(&method, read_only, allow, &instance) {
-            return problem.into_response();
-        }
+    if !dispatches_actions
+        && let Err(problem) =
+            gate_method(&method, Allow::tool(descriptor.is_read_only()), &instance)
+    {
+        return problem.into_response();
     }
     let args = match request_arguments(&body, &instance) {
         Ok(args) => args,
@@ -307,12 +297,7 @@ async fn tool_route(
             args.get("action").and_then(serde_json::Value::as_str)
         };
         let read_only = action.is_some_and(|action| descriptor.action_is_read_only(action));
-        let allow = if read_only {
-            "GET, POST, QUERY"
-        } else {
-            "GET, POST"
-        };
-        if let Err(problem) = gate_method(&method, read_only, allow, &instance) {
+        if let Err(problem) = gate_method(&method, Allow::tool(read_only), &instance) {
             return problem.into_response();
         }
     }
@@ -354,9 +339,8 @@ async fn action_route(
         return Problem::not_found(format!("tool {tool} has no action {action}"), &instance)
             .into_response();
     }
-    let read_only = descriptor.action_is_read_only(&action);
-    let allow = if read_only { "POST, QUERY" } else { "POST" };
-    if let Err(problem) = gate_method(&method, read_only, allow, &instance) {
+    let allow = Allow::action(descriptor.action_is_read_only(&action));
+    if let Err(problem) = gate_method(&method, allow, &instance) {
         return problem.into_response();
     }
     let args = match request_arguments(&body, &instance) {
@@ -466,15 +450,11 @@ fn find_descriptor<'a>(state: &'a RestState, tool: &str) -> Option<&'a McpToolDe
 /// `POST` is retained alongside `QUERY` rather than replaced: middleboxes
 /// routinely reject unrecognized methods, and a read that is unreachable
 /// through a customer proxy is worse than a read with imprecise semantics.
-fn gate_method(
-    method: &Method,
-    read_only: bool,
-    allow: &'static str,
-    instance: &str,
-) -> Result<(), Problem> {
-    if *method == Method::POST || (read_only && *method == Method::QUERY) {
+fn gate_method(method: &Method, allow: Allow, instance: &str) -> Result<(), Problem> {
+    if *method == Method::POST || (allow.admits_query() && *method == Method::QUERY) {
         return Ok(());
     }
+    let allow = allow.header();
     Err(Problem::new(
         StatusCode::METHOD_NOT_ALLOWED,
         "method-not-allowed",
@@ -483,6 +463,51 @@ fn gate_method(
         instance,
     )
     .with_allow(allow))
+}
+
+/// The methods one route answers. The `Allow` header and the `QUERY` gate both read it, so the
+/// header cannot say what the gate refuses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Allow {
+    /// `/v1/tools/{tool}/{action}` for a write.
+    Post,
+    /// `/v1/tools/{tool}/{action}` for a read.
+    PostQuery,
+    /// `/v1/tools/{tool}` for a write.
+    GetPost,
+    /// `/v1/tools/{tool}` for a read.
+    GetPostQuery,
+}
+
+impl Allow {
+    const fn tool(read_only: bool) -> Self {
+        if read_only {
+            Self::GetPostQuery
+        } else {
+            Self::GetPost
+        }
+    }
+
+    const fn action(read_only: bool) -> Self {
+        if read_only {
+            Self::PostQuery
+        } else {
+            Self::Post
+        }
+    }
+
+    const fn admits_query(self) -> bool {
+        matches!(self, Self::PostQuery | Self::GetPostQuery)
+    }
+
+    const fn header(self) -> &'static str {
+        match self {
+            Self::Post => "POST",
+            Self::PostQuery => "POST, QUERY",
+            Self::GetPost => "GET, POST",
+            Self::GetPostQuery => "GET, POST, QUERY",
+        }
+    }
 }
 
 /// Parse the request body into the tool's arguments object.
@@ -587,11 +612,11 @@ mod tests {
 
     #[test]
     fn method_gate_admits_query_only_for_reads() {
-        assert!(gate_method(&Method::POST, false, "GET, POST", "/v1/tools/x").is_ok());
-        assert!(gate_method(&Method::POST, true, "GET, POST, QUERY", "/v1/tools/x").is_ok());
-        assert!(gate_method(&Method::QUERY, true, "GET, POST, QUERY", "/v1/tools/x").is_ok());
+        assert!(gate_method(&Method::POST, Allow::tool(false), "/v1/tools/x").is_ok());
+        assert!(gate_method(&Method::POST, Allow::tool(true), "/v1/tools/x").is_ok());
+        assert!(gate_method(&Method::QUERY, Allow::tool(true), "/v1/tools/x").is_ok());
 
-        let denied = gate_method(&Method::QUERY, false, "POST", "/v1/tools/x/y")
+        let denied = gate_method(&Method::QUERY, Allow::action(false), "/v1/tools/x/y")
             .expect_err("QUERY on a write must be refused");
         let json = denied.to_json();
         assert_eq!(json["status"], 405);
@@ -600,7 +625,24 @@ mod tests {
             "https://proxima.dev/errors/method-not-allowed"
         );
 
-        assert!(gate_method(&Method::DELETE, true, "GET, POST, QUERY", "/v1/tools/x").is_err());
+        assert!(gate_method(&Method::DELETE, Allow::tool(true), "/v1/tools/x").is_err());
+    }
+
+    /// The header says `QUERY` exactly when the gate admits it.
+    #[test]
+    fn allow_names_query_exactly_when_the_gate_admits_it() {
+        for allow in [
+            Allow::Post,
+            Allow::PostQuery,
+            Allow::GetPost,
+            Allow::GetPostQuery,
+        ] {
+            assert_eq!(allow.header().contains("QUERY"), allow.admits_query());
+            assert_eq!(
+                gate_method(&Method::QUERY, allow, "/v1/tools/x").is_ok(),
+                allow.admits_query()
+            );
+        }
     }
 
     #[test]
