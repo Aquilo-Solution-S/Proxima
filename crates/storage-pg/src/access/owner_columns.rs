@@ -1081,18 +1081,26 @@ async fn group_has_manager(
     .map_err(map_err)
 }
 
-/// # Errors
-///
-/// Returns `Internal` on sqlx failure.
-pub(crate) async fn remove_group_member(
+/// One membership change of a group, made as a caller who manages it: an owner-scoped
+/// transaction under the group-membership write lock, retried whole on a transient conflict. A
+/// group that has a stored manager must still have one afterwards, and the caller must still be
+/// one of them when the lock is held; `change` is the one statement that differs.
+async fn manager_preserving_change<C>(
     pool: &PgPool,
     owner_scope: Option<&proxima_core::OwnerScope>,
     group_id: GroupId,
     member: OwnerId,
-    member_authority: MembershipMemberAuthority,
-    endpoint_authority: MembershipEndpointAuthority,
     caller: Option<UserId>,
-) -> Result<(), StorageError> {
+    change: C,
+) -> Result<(), StorageError>
+where
+    C: for<'c> Fn(
+        &'c mut PgConnection,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'c>,
+    >,
+{
+    let change = &change;
     with_bounded_retry(move || async move {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             pool,
@@ -1108,14 +1116,7 @@ pub(crate) async fn remove_group_member(
             if had_manager {
                 recheck_caller_manages(&mut tx, group_id, caller).await?;
             }
-            remove_group_member_on_connection_authorized(
-                &mut tx,
-                group_id,
-                member,
-                member_authority,
-                endpoint_authority,
-            )
-            .await?;
+            change(&mut tx).await?;
             if had_manager && !group_has_manager(&mut tx, group_id).await? {
                 return Err(StorageError::Conflict(
                     "the change would leave the group without a manager".into(),
@@ -1125,6 +1126,30 @@ pub(crate) async fn remove_group_member(
         }
         .await;
         crate::owner_scope::finish_transaction(tx, result).await
+    })
+    .await
+}
+
+/// # Errors
+///
+/// Returns `Internal` on sqlx failure.
+pub(crate) async fn remove_group_member(
+    pool: &PgPool,
+    owner_scope: Option<&proxima_core::OwnerScope>,
+    group_id: GroupId,
+    member: OwnerId,
+    member_authority: MembershipMemberAuthority,
+    endpoint_authority: MembershipEndpointAuthority,
+    caller: Option<UserId>,
+) -> Result<(), StorageError> {
+    manager_preserving_change(pool, owner_scope, group_id, member, caller, move |conn| {
+        Box::pin(remove_group_member_on_connection_authorized(
+            conn,
+            group_id,
+            member,
+            member_authority,
+            endpoint_authority,
+        ))
     })
     .await
 }
@@ -1220,39 +1245,15 @@ pub(crate) async fn remove_group_member_relation(
     endpoint_authority: MembershipEndpointAuthority,
     caller: Option<UserId>,
 ) -> Result<(), StorageError> {
-    with_bounded_retry(move || async move {
-        let mut tx = crate::owner_scope::begin_owner_transaction(
-            pool,
-            crate::owner_scope::require_owner_scope(owner_scope)?,
-        )
-        .await?;
-        let result = async {
-            #[cfg(test)]
-            crate::pause_point::reach(crate::pause_point::BEFORE_GROUP_LOCK, group_id.into_inner())
-                .await;
-            lock_group_membership_write_tx(&mut tx, group_id, member).await?;
-            let had_manager = group_has_manager(&mut tx, group_id).await?;
-            if had_manager {
-                recheck_caller_manages(&mut tx, group_id, caller).await?;
-            }
-            remove_group_member_relation_on_connection_authorized(
-                &mut tx,
-                group_id,
-                member,
-                relation,
-                member_authority,
-                endpoint_authority,
-            )
-            .await?;
-            if had_manager && !group_has_manager(&mut tx, group_id).await? {
-                return Err(StorageError::Conflict(
-                    "the change would leave the group without a manager".into(),
-                ));
-            }
-            Ok(())
-        }
-        .await;
-        crate::owner_scope::finish_transaction(tx, result).await
+    manager_preserving_change(pool, owner_scope, group_id, member, caller, move |conn| {
+        Box::pin(remove_group_member_relation_on_connection_authorized(
+            conn,
+            group_id,
+            member,
+            relation,
+            member_authority,
+            endpoint_authority,
+        ))
     })
     .await
 }
@@ -1348,7 +1349,6 @@ async fn remove_group_member_relation_on_connection_authorized(
 /// Returns `Conflict`, with nothing changed, when the member does not hold
 /// `from` (including a row the owner scope cannot see), and `Internal` on sqlx
 /// failure.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn replace_group_member_relation(
     pool: &PgPool,
     owner_scope: Option<&proxima_core::OwnerScope>,
@@ -1356,35 +1356,12 @@ pub(crate) async fn replace_group_member_relation(
     member: OwnerId,
     from: Relation,
     to: Relation,
-    _granted_by: uuid::Uuid,
     caller: Option<UserId>,
 ) -> Result<(), StorageError> {
-    with_bounded_retry(move || async move {
-        let mut tx = crate::owner_scope::begin_owner_transaction(
-            pool,
-            crate::owner_scope::require_owner_scope(owner_scope)?,
-        )
-        .await?;
-        let result = async {
-            #[cfg(test)]
-            crate::pause_point::reach(crate::pause_point::BEFORE_GROUP_LOCK, group_id.into_inner())
-                .await;
-            lock_group_membership_write_tx(&mut tx, group_id, member).await?;
-            let had_manager = group_has_manager(&mut tx, group_id).await?;
-            if had_manager {
-                recheck_caller_manages(&mut tx, group_id, caller).await?;
-            }
-            replace_group_member_relation_on_connection(&mut tx, group_id, member, from, to)
-                .await?;
-            if had_manager && !group_has_manager(&mut tx, group_id).await? {
-                return Err(StorageError::Conflict(
-                    "the change would leave the group without a manager".into(),
-                ));
-            }
-            Ok(())
-        }
-        .await;
-        crate::owner_scope::finish_transaction(tx, result).await
+    manager_preserving_change(pool, owner_scope, group_id, member, caller, move |conn| {
+        Box::pin(replace_group_member_relation_on_connection(
+            conn, group_id, member, from, to,
+        ))
     })
     .await
 }

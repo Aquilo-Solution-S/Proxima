@@ -219,7 +219,7 @@ impl OwnerMembershipAdminPort for PgStorage {
         member: OwnerId,
         from: Relation,
         to: Relation,
-        granted_by: uuid::Uuid,
+        _granted_by: uuid::Uuid,
     ) -> Result<(), StorageError> {
         validate_parent_membership_permit(permit, group_id)?;
         access::owner_columns::replace_group_member_relation(
@@ -229,7 +229,6 @@ impl OwnerMembershipAdminPort for PgStorage {
             member,
             from,
             to,
-            granted_by,
             permit.caller(),
         )
         .await
