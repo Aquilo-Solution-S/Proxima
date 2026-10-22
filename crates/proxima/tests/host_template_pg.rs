@@ -7,7 +7,7 @@ use std::sync::{Arc, LazyLock};
 
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::host::MigrationError;
-use proxima::testkit::{HostTemplate, SplitRoleDb, TemplateFamily, admin_url, drop_db};
+use proxima::testkit::{HostTemplate, SplitRoleDb, TemplateFamily, database_exists, drop_db};
 use proxima::{AppInfo, BuiltProxima, FlavorApp, Proxima, ServedSurface};
 use proxima_core::{OwnerId, UserId};
 use proxima_storage_pg::PgPoolConfig;
@@ -182,16 +182,7 @@ async fn clone() -> SplitRoleDb {
 }
 
 async fn exists(name: &str) -> bool {
-    let mut conn = PgConnection::connect(&admin_url()).await.expect("admin");
-    let found = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
-    )
-    .bind(name)
-    .fetch_one(&mut conn)
-    .await
-    .expect("exists");
-    conn.close().await.expect("close");
-    found
+    database_exists(name).await.expect("exists")
 }
 
 /// Every ledger row, as the database spells it, for comparing before and

@@ -1173,12 +1173,7 @@ where
             .bind(lease_key(template))
             .execute(&mut conn)
             .await?;
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
-        )
-        .bind(template)
-        .fetch_one(&mut conn)
-        .await?;
+        let exists = database_exists_on(&mut conn, template).await?;
 
         if exists {
             return Ok(());
@@ -1321,6 +1316,25 @@ pub async fn create_named_db_from_template(name: &str, template: &str) -> Result
             "create_db_from_template exhausted retries with no recorded error".into(),
         )
     }))
+}
+
+/// Whether the server holds a database named `name`.
+///
+/// # Errors
+///
+/// Returns admin connection or query errors.
+pub async fn database_exists(name: &str) -> Result<bool, sqlx::Error> {
+    let mut conn = connect_admin().await?;
+    let exists = database_exists_on(&mut conn, name).await?;
+    conn.close().await?;
+    Ok(exists)
+}
+
+async fn database_exists_on(conn: &mut PgConnection, name: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+        .bind(name)
+        .fetch_one(conn)
+        .await
 }
 
 /// Drop one test database, terminating leftover backends.
@@ -1997,12 +2011,9 @@ mod tests {
         .expect("create");
 
         let recorded = super::record_new_db(&mut admin, &name).await;
-        let left: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
-                .bind(&name)
-                .fetch_one(&mut admin)
-                .await
-                .expect("exists");
+        let left = super::database_exists_on(&mut admin, &name)
+            .await
+            .expect("exists");
         admin.close().await.expect("close admin");
 
         recorded.expect_err("a database that accepts no connection cannot be recorded");

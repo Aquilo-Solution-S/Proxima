@@ -1,20 +1,9 @@
-use sqlx::{Connection, PgConnection};
-
-use proxima_pg_testkit::{DbGuard, admin_url, create_db, drop_db, unique_db_name};
+use proxima_pg_testkit::{DbGuard, create_db, drop_db, unique_db_name};
 
 async fn exists(name: &str) -> bool {
-    let mut conn = PgConnection::connect(&admin_url())
+    proxima_pg_testkit::database_exists(name)
         .await
-        .expect("admin connect");
-    let found = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
-    )
-    .bind(name)
-    .fetch_one(&mut conn)
-    .await
-    .expect("exists");
-    conn.close().await.expect("close");
-    found
+        .expect("exists")
 }
 
 #[tokio::test]

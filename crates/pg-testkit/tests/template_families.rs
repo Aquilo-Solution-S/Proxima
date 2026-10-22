@@ -31,18 +31,9 @@ fn family(prefix: &str) -> TemplateFamily {
 }
 
 async fn exists(name: &str) -> bool {
-    let mut conn = PgConnection::connect(&proxima_pg_testkit::admin_url())
+    proxima_pg_testkit::database_exists(name)
         .await
-        .expect("admin connect");
-    let found = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
-    )
-    .bind(name)
-    .fetch_one(&mut conn)
-    .await
-    .expect("exists");
-    conn.close().await.expect("close");
-    found
+        .expect("exists")
 }
 
 /// Ensure the template and give the lease straight back: for a test of what
