@@ -160,19 +160,26 @@ pub(crate) async fn drain_debt(
 /// Index entries, and heads, compared per page by the sweep.
 const SWEEP_PAGE: u32 = 500;
 
-/// A key in the order both sides page in: entity, model id bytewise, width.
-type Key = (Uuid, String, usize);
+/// A key in the order both sides page in: entity, model id bytewise, dim as the column holds it.
+type Key = (Uuid, String, i16);
 
 /// What one head holds: its owner and version.
 type Head = (OwnerId, i32);
 
-fn key_of(key: &VectorKey) -> Key {
+/// The sweep key of an index entry's key; a width no column holds is a constraint violation.
+fn key_of(key: &VectorKey) -> Result<Key, StorageError> {
     let (entity, model, width) = key.order();
-    (entity, model.to_owned(), width)
+    let dim = i16::try_from(width).map_err(|_| {
+        StorageError::ConstraintViolation(format!("index entry names width {width}"))
+    })?;
+    Ok((entity, model.to_owned(), dim))
 }
 
-fn dim_of(width: usize) -> i16 {
-    i16::try_from(width).unwrap_or(i16::MAX)
+fn vector_key((entity_id, model_id, dim): &Key) -> Result<VectorKey, StorageError> {
+    Ok(VectorKey {
+        entity_id: *entity_id,
+        space: space_of(model_id.clone(), *dim)?,
+    })
 }
 
 /// What [`sweep_index`] repaired.
@@ -200,7 +207,7 @@ async fn heads_after(
     )
     .bind(after.map(|key| key.0))
     .bind(after.map(|key| key.1.clone()))
-    .bind(after.map(|key| dim_of(key.2)))
+    .bind(after.map(|key| key.2))
     .bind(i64::from(SWEEP_PAGE))
     .fetch_all(&mut *tx)
     .await
@@ -208,20 +215,19 @@ async fn heads_after(
     Ok(rows
         .into_iter()
         .map(|(entity, model, dim, owner, version)| {
-            let width = usize::try_from(dim).unwrap_or(0);
-            ((entity, model, width), (OwnerId::new(owner), version))
+            ((entity, model, dim), (OwnerId::new(owner), version))
         })
         .collect())
 }
 
 /// The keys where the index and the heads disagree, by what each side held.
 fn disagreements(
-    entries: &[VectorEntry],
+    entries: &[(Key, VectorEntry)],
     heads: &BTreeMap<Key, Head>,
 ) -> BTreeMap<Key, (Option<Head>, Option<Head>)> {
     let mut seen: BTreeMap<Key, (Option<Head>, Option<Head>)> = BTreeMap::new();
-    for entry in entries {
-        seen.entry(key_of(&entry.key)).or_default().0 = Some((entry.owner, entry.version));
+    for (key, entry) in entries {
+        seen.entry(key.clone()).or_default().0 = Some((entry.owner, entry.version));
     }
     for (key, head) in heads {
         seen.entry(key.clone()).or_default().1 = Some(*head);
@@ -249,7 +255,7 @@ async fn repair(
     let mut moves: BTreeMap<OwnerId, Vec<VectorKey>> = BTreeMap::new();
     let mut lost: Vec<(Key, i32)> = Vec::new();
     for (key, (entry, read)) in suspects.iter().cloned() {
-        if !try_lock_embedding_key(&mut *tx, key.0, &key.1, dim_of(key.2)).await? {
+        if !try_lock_embedding_key(&mut *tx, key.0, &key.1, key.2).await? {
             continue;
         }
         let now: Option<(Uuid, i32)> = sqlx::query_as(
@@ -259,23 +265,17 @@ async fn repair(
         )
         .bind(key.0)
         .bind(&key.1)
-        .bind(dim_of(key.2))
+        .bind(key.2)
         .fetch_optional(&mut *tx)
         .await
         .map_err(map_err)?;
         if now.map(|(owner, version)| (OwnerId::new(owner), version)) != read {
             continue;
         }
-        let vector_key = || -> Result<VectorKey, StorageError> {
-            Ok(VectorKey {
-                entity_id: key.0,
-                space: space_of(key.1.clone(), dim_of(key.2))?,
-            })
-        };
         match (entry, read) {
-            (Some(_), None) => stale.push(vector_key()?),
+            (Some(_), None) => stale.push(vector_key(&key)?),
             (Some((_, held)), Some((owner, version))) if held == version => {
-                moves.entry(owner).or_default().push(vector_key()?);
+                moves.entry(owner).or_default().push(vector_key(&key)?);
             }
             (_, Some((_, version))) => lost.push((key, version)),
             (None, None) => {}
@@ -286,10 +286,10 @@ async fn repair(
     move_keys(index, moves).await?;
     if !lost.is_empty() {
         let mut columns = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for ((entity, model, width), version) in lost {
+        for ((entity, model, dim), version) in lost {
             columns.0.push(entity);
             columns.1.push(model);
-            columns.2.push(dim_of(width));
+            columns.2.push(dim);
             columns.3.push(version);
         }
         swept.heads_deleted += sqlx::query(
@@ -332,18 +332,17 @@ pub(crate) async fn sweep_index(
         let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
         let heads = heads_after(tx.as_mut(), after.as_ref()).await?;
         tx.commit().await.map_err(map_err)?;
-        let after_key = match &after {
-            Some((entity, model, width)) => Some(VectorKey {
-                entity_id: *entity,
-                space: space_of(model.clone(), dim_of(*width))?,
-            }),
-            None => None,
-        };
-        let entries = index.entries(after_key.as_ref(), SWEEP_PAGE).await?;
+        let after_key = after.as_ref().map(vector_key).transpose()?;
+        let entries = index
+            .entries(after_key.as_ref(), SWEEP_PAGE)
+            .await?
+            .into_iter()
+            .map(|entry| Ok((key_of(&entry.key)?, entry)))
+            .collect::<Result<Vec<(Key, VectorEntry)>, StorageError>>()?;
         // Both sides are complete up to the smaller last key of a full page.
         let cutoff = [
             (entries.len() >= page)
-                .then(|| entries.last().map(|e| key_of(&e.key)))
+                .then(|| entries.last().map(|(key, _)| key.clone()))
                 .flatten(),
             (heads.len() >= page)
                 .then(|| heads.last().map(|(key, _)| key.clone()))
@@ -353,10 +352,8 @@ pub(crate) async fn sweep_index(
         .flatten()
         .min();
         let within = |key: &Key| cutoff.as_ref().is_none_or(|cutoff| key <= cutoff);
-        let entries: Vec<VectorEntry> = entries
-            .into_iter()
-            .filter(|entry| within(&key_of(&entry.key)))
-            .collect();
+        let entries: Vec<(Key, VectorEntry)> =
+            entries.into_iter().filter(|(key, _)| within(key)).collect();
         let heads: BTreeMap<Key, Head> = heads.into_iter().filter(|(key, _)| within(key)).collect();
         let suspects: Vec<Suspect> = disagreements(&entries, &heads).into_iter().collect();
         for suspects in suspects.chunks(REPAIRS_PER_TRANSACTION) {
