@@ -299,7 +299,7 @@ impl WriteSession for PgWriteSession {
         permit: &OwnerWritePermit,
         read: &SidecarSessionRead<'_>,
     ) -> Result<Vec<serde_json::Value>, StorageError> {
-        crate::sidecars::read_own_sidecar_in_tx(
+        crate::sidecars::read_own_sidecar(
             &mut self.tx,
             &self.sidecars,
             &self.surfaces,

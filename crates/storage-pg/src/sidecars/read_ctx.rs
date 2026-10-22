@@ -35,25 +35,16 @@ use super::{
 /// (`PgSidecarRegistryFrozen::memory_key_column`), so the refusal is a
 /// scope-of-this-builder decision rather than a missing carrier.
 ///
+/// An open session transaction derefs to the connection; no transaction is started or
+/// committed here.
+///
 /// # Errors
 ///
 /// `ConstraintViolation` when the table is not a registered memory sidecar,
 /// when it declares no `Surface` or no owner column, when the predicate list
 /// is empty, or when a table/column name is not a legal identifier.
 /// `Internal` on query failure.
-pub(crate) async fn read_own_sidecar_in_tx(
-    tx: &mut sqlx::Transaction<'_, Postgres>,
-    sidecars: &PgSidecarRegistryFrozen,
-    surfaces: &OwnerSurfaces,
-    permit: &OwnerWritePermit,
-    read: &SidecarSessionRead<'_>,
-) -> Result<Vec<serde_json::Value>, StorageError> {
-    read_own_sidecar_on_connection(tx, sidecars, surfaces, permit, read).await
-}
-
-/// Connection-backed form for callers that already own the surrounding
-/// request transaction. No transaction is started or committed here.
-pub(crate) async fn read_own_sidecar_on_connection(
+pub(crate) async fn read_own_sidecar(
     connection: &mut PgConnection,
     sidecars: &PgSidecarRegistryFrozen,
     surfaces: &OwnerSurfaces,
