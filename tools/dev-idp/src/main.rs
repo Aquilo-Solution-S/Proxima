@@ -168,10 +168,13 @@ fn parse_args(argv: impl IntoIterator<Item = String>) -> Result<Config, ArgError
     if subject.trim().is_empty() {
         return Err(ArgError::Message("--subject must not be empty".into()));
     }
+    if audience.trim().is_empty() {
+        return Err(ArgError::Message("--audience must not be empty".into()));
+    }
 
     Ok(Config {
         bind,
-        audience,
+        audience: audience.trim().to_string(),
         user_id: user_id
             .unwrap_or_else(|| Uuid::new_v5(&USER_ID_NAMESPACE, subject.trim().as_bytes())),
         subject: subject.trim().to_string(),
@@ -496,6 +499,15 @@ mod tests {
             "a restart keeps the key"
         );
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_blank_audience_is_refused_and_a_padded_one_is_trimmed() {
+        for blank in ["", "  "] {
+            assert!(args(&["--audience", blank]).is_err(), "{blank:?}");
+        }
+        let config = args(&["--audience", " proxima-test "]).expect("parse");
+        assert_eq!(config.audience, "proxima-test");
     }
 
     #[test]
