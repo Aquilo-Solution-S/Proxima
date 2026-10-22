@@ -187,27 +187,38 @@ fn parse_args(argv: impl IntoIterator<Item = String>) -> Result<Config, ArgError
 /// never leave a world-readable signing key behind.
 fn load_or_create_key(path: Option<&PathBuf>) -> Result<RsaKeyPair, String> {
     let Some(path) = path else {
-        return RsaKeyPair::generate(KeySize::Rsa2048)
-            .map_err(|_| "failed to generate an RSA key".to_string());
+        return generate_key();
     };
-
     // Only a missing file means "generate": any other failure to read an existing key must not
     // replace it, or every token already issued would stop verifying without a word.
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            return RsaKeyPair::from_pkcs8(&bytes).map_err(|err| {
-                format!(
-                    "{} is not a usable PKCS#8 RSA key ({err}); delete it to regenerate",
-                    path.display()
-                )
-            });
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
+    match read_key(path)? {
+        Some(key) => Ok(key),
+        None => create_key(path),
     }
+}
 
-    let key =
-        RsaKeyPair::generate(KeySize::Rsa2048).map_err(|_| "failed to generate an RSA key")?;
+fn generate_key() -> Result<RsaKeyPair, String> {
+    RsaKeyPair::generate(KeySize::Rsa2048).map_err(|_| "failed to generate an RSA key".to_string())
+}
+
+/// The key stored at `path`, or `None` when there is no such file.
+fn read_key(path: &std::path::Path) -> Result<Option<RsaKeyPair>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => RsaKeyPair::from_pkcs8(&bytes).map(Some).map_err(|err| {
+            format!(
+                "{} is not a usable PKCS#8 RSA key ({err}); delete it to regenerate",
+                path.display()
+            )
+        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("cannot read {}: {err}", path.display())),
+    }
+}
+
+/// Store a new key at `path`. The file is created exclusively, so a key another process wrote
+/// since the read is the key used, never one overwritten.
+fn create_key(path: &std::path::Path) -> Result<RsaKeyPair, String> {
+    let key = generate_key()?;
     let der = AsDer::<aws_lc_rs::encoding::Pkcs8V1Der<'_>>::as_der(&key)
         .map_err(|_| "failed to serialize the generated key")?;
     if let Some(parent) = path.parent() {
@@ -215,15 +226,19 @@ fn load_or_create_key(path: Option<&PathBuf>) -> Result<RsaKeyPair, String> {
             .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
     }
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    let mut file = options
-        .open(path)
-        .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            return read_key(path)?.ok_or_else(|| format!("{} vanished", path.display()));
+        }
+        Err(err) => return Err(format!("cannot write {}: {err}", path.display())),
+    };
     file.write_all(der.as_ref())
         .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
     Ok(key)
@@ -454,6 +469,19 @@ mod tests {
         let error = load_or_create_key(Some(&dir)).expect_err("must refuse");
         assert!(error.contains("cannot read"), "{error}");
         assert!(dir.is_dir(), "the path was left as it was");
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// A key that appeared after the read is the key used; the file is not truncated over it.
+    #[test]
+    fn a_key_created_meanwhile_is_kept() {
+        let dir = std::env::temp_dir().join(format!("dev-idp-key-{}", Uuid::new_v4()));
+        let path = dir.join("key.pkcs8");
+        let first = create_key(&path).expect("created");
+        let bytes = std::fs::read(&path).expect("stored");
+        let second = create_key(&path).expect("the stored key");
+        assert_eq!(first.public_key().as_ref(), second.public_key().as_ref());
+        assert_eq!(std::fs::read(&path).expect("stored"), bytes);
         std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
