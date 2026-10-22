@@ -214,7 +214,7 @@ async fn serving_storage_refuses_a_runtime_role_unsafe_on_a_flavor_schema() {
         &admin,
         &format!(
             "GRANT CREATE ON SCHEMA proxima_example TO {}",
-            super::quoted_identifier(&runtime_role)
+            super::quoted_ident(&runtime_role)
         ),
     )
     .await;

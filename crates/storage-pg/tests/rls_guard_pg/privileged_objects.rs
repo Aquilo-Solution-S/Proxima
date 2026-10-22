@@ -5,7 +5,7 @@ use proxima_storage_pg::{PgPlatformScope, assert_runtime_rls, begin_owner_transa
 use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
-use super::{SyntheticVerifier, cleanup, execute, quoted_identifier, runtime_pool, setup};
+use super::{SyntheticVerifier, cleanup, execute, quoted_ident, runtime_pool, setup};
 
 async fn assert_guards_refuse_named(
     runtime: &PgPool,
@@ -39,7 +39,7 @@ async fn assert_guards_accept(runtime: &PgPool, platform: &PgPool, schema: &str)
 #[tokio::test]
 async fn platform_guard_completes_with_one_connection() {
     let (database, admin, runtime, owner, runtime_role, schema, password) = setup().await;
-    let name = quoted_identifier(&schema);
+    let name = quoted_ident(&schema);
     for row_owner in [Uuid::now_v7(), Uuid::now_v7()] {
         // SQL-POLICY: fixed-fragment — fixture-generated, quoted schema identifier.
         sqlx::query(AssertSqlSafe(format!(
@@ -99,7 +99,7 @@ async fn platform_guard_completes_with_one_connection() {
 async fn platform_definer_view_leaks_forged_scope_but_invoker_view_is_owner_scoped() {
     let (database, admin, runtime, owner, runtime_role, schema, password) = setup().await;
     let platform = runtime_pool(&database, &owner, &password).await;
-    let name = quoted_identifier(&schema);
+    let name = quoted_ident(&schema);
     let owners = [Uuid::now_v7(), Uuid::now_v7()];
     for row_owner in owners {
         // SQL-POLICY: fixed-fragment — fixture-generated, quoted schema identifier.
@@ -122,7 +122,7 @@ async fn platform_definer_view_leaks_forged_scope_but_invoker_view_is_owner_scop
         &admin,
         &format!(
             "ALTER VIEW {name}.memory_view OWNER TO {}",
-            quoted_identifier(&owner)
+            quoted_ident(&owner)
         ),
     )
     .await;
@@ -130,7 +130,7 @@ async fn platform_definer_view_leaks_forged_scope_but_invoker_view_is_owner_scop
         &admin,
         &format!(
             "GRANT SELECT ON {name}.memory_view TO {}",
-            quoted_identifier(&runtime_role)
+            quoted_ident(&runtime_role)
         ),
     )
     .await;
@@ -225,7 +225,7 @@ async fn platform_definer_view_leaks_forged_scope_but_invoker_view_is_owner_scop
 async fn catalog_census_refuses_materialized_views_and_foreign_tables_without_runtime_grants() {
     let (database, admin, runtime, owner, runtime_role, schema, password) = setup().await;
     let platform = runtime_pool(&database, &owner, &password).await;
-    let name = quoted_identifier(&schema);
+    let name = quoted_ident(&schema);
     execute(
         &admin,
         // SQL-POLICY: fixed-fragment — quoted fixture identifiers and closed SQL clauses.
@@ -236,7 +236,7 @@ async fn catalog_census_refuses_materialized_views_and_foreign_tables_without_ru
         &admin,
         &format!(
             "ALTER MATERIALIZED VIEW {name}.cached_memory OWNER TO {}",
-            quoted_identifier(&owner)
+            quoted_ident(&owner)
         ),
     )
     .await;
@@ -272,7 +272,7 @@ async fn catalog_census_refuses_materialized_views_and_foreign_tables_without_ru
         &admin,
         &format!(
             "ALTER FOREIGN TABLE {name}.remote_memory OWNER TO {}",
-            quoted_identifier(&owner)
+            quoted_ident(&owner)
         ),
     )
     .await;
@@ -293,7 +293,7 @@ async fn catalog_census_refuses_materialized_views_and_foreign_tables_without_ru
 }
 
 async fn install_definer(admin: &PgPool, schema: &str, owner: &str, runtime_role: &str) {
-    let name = quoted_identifier(schema);
+    let name = quoted_ident(schema);
     execute(
         admin,
         // SQL-POLICY: fixed-fragment — quoted fixture identifiers and closed SQL clauses.
@@ -304,7 +304,7 @@ async fn install_definer(admin: &PgPool, schema: &str, owner: &str, runtime_role
         admin,
         &format!(
             "ALTER FUNCTION {name}.owner_reader() OWNER TO {}",
-            quoted_identifier(owner)
+            quoted_ident(owner)
         ),
     )
     .await;
@@ -312,7 +312,7 @@ async fn install_definer(admin: &PgPool, schema: &str, owner: &str, runtime_role
         admin,
         &format!(
             "REVOKE ALL ON FUNCTION {name}.owner_reader() FROM PUBLIC, {}",
-            quoted_identifier(runtime_role)
+            quoted_ident(runtime_role)
         ),
     )
     .await;
@@ -326,7 +326,7 @@ async fn install_definer(admin: &PgPool, schema: &str, owner: &str, runtime_role
 async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
     let (database, admin, runtime, owner, runtime_role, schema, password) = setup().await;
     let platform = runtime_pool(&database, &owner, &password).await;
-    let name = quoted_identifier(&schema);
+    let name = quoted_ident(&schema);
     let function = format!("{name}.owner_reader()");
     let bypass = format!("rls_definer_bypass_{}", Uuid::now_v7().simple());
     let inherited = format!("rls_definer_exec_{}", Uuid::now_v7().simple());
@@ -335,7 +335,7 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
         &admin,
         &format!(
             "CREATE ROLE {} NOSUPERUSER BYPASSRLS",
-            quoted_identifier(&bypass)
+            quoted_ident(&bypass)
         ),
     )
     .await;
@@ -344,8 +344,8 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
 
     for unsafe_owner in [
         "CURRENT_USER".to_owned(),
-        quoted_identifier(&bypass),
-        quoted_identifier(&runtime_role),
+        quoted_ident(&bypass),
+        quoted_ident(&runtime_role),
     ] {
         execute(
             &admin,
@@ -365,7 +365,7 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
             &admin,
             &format!(
                 "ALTER FUNCTION {function} OWNER TO {}",
-                quoted_identifier(&owner)
+                quoted_ident(&owner)
             ),
         )
         .await;
@@ -379,12 +379,12 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
     .await;
     assert_guards_refuse_named(&runtime, &platform, &schema, "owner_reader", "search_path").await;
     let writable = format!("writable_{}", Uuid::now_v7().simple());
-    let writable_name = quoted_identifier(&writable);
+    let writable_name = quoted_ident(&writable);
     execute(
         &admin,
         &format!(
             "CREATE SCHEMA {writable_name} AUTHORIZATION {}",
-            quoted_identifier(&owner)
+            quoted_ident(&owner)
         ),
     )
     .await;
@@ -392,7 +392,7 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
         &admin,
         &format!(
             "GRANT CREATE ON SCHEMA {writable_name} TO {}",
-            quoted_identifier(&runtime_role)
+            quoted_ident(&runtime_role)
         ),
     )
     .await;
@@ -419,7 +419,7 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
     .await;
     assert_guards_accept(&runtime, &platform, &schema).await;
 
-    for grantee in ["PUBLIC".to_owned(), quoted_identifier(&runtime_role)] {
+    for grantee in ["PUBLIC".to_owned(), quoted_ident(&runtime_role)] {
         execute(
             &admin,
             &format!("GRANT EXECUTE ON FUNCTION {function} TO {grantee}"),
@@ -438,7 +438,7 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
             // SQL-POLICY: fixed-fragment — quoted fixture identifiers and closed SQL clauses.
             &format!(
                 "CREATE ROLE {} NOSUPERUSER NOBYPASSRLS",
-                quoted_identifier(grantee)
+                quoted_ident(grantee)
             ),
         )
         .await;
@@ -447,8 +447,8 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
             &admin,
             &format!(
                 "GRANT {} TO {} WITH INHERIT {inherit_clause}, SET TRUE",
-                quoted_identifier(grantee),
-                quoted_identifier(&runtime_role)
+                quoted_ident(grantee),
+                quoted_ident(&runtime_role)
             ),
         )
         .await;
@@ -456,7 +456,7 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
             &admin,
             &format!(
                 "GRANT EXECUTE ON FUNCTION {function} TO {}",
-                quoted_identifier(grantee)
+                quoted_ident(grantee)
             ),
         )
         .await;
@@ -473,7 +473,7 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
             &admin,
             &format!(
                 "REVOKE EXECUTE ON FUNCTION {function} FROM {}",
-                quoted_identifier(grantee)
+                quoted_ident(grantee)
             ),
         )
         .await;
@@ -481,8 +481,8 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
             &admin,
             &format!(
                 "REVOKE {} FROM {}",
-                quoted_identifier(grantee),
-                quoted_identifier(&runtime_role)
+                quoted_ident(grantee),
+                quoted_ident(&runtime_role)
             ),
         )
         .await;
@@ -496,7 +496,7 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
         .unwrap();
     for role in [&bypass, &inherited, &set_only] {
         // SQL-POLICY: fixed-fragment — quoted fixture identifiers and closed SQL clauses.
-        execute(&control, &format!("DROP ROLE {}", quoted_identifier(role))).await;
+        execute(&control, &format!("DROP ROLE {}", quoted_ident(role))).await;
     }
     control.close().await;
 }
@@ -505,7 +505,7 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
 async fn trigger_definer_executes_without_a_direct_grant_and_exempts_only_execute_acl() {
     let (database, admin, runtime, owner, runtime_role, schema, password) = setup().await;
     let platform = runtime_pool(&database, &owner, &password).await;
-    let name = quoted_identifier(&schema);
+    let name = quoted_ident(&schema);
     let function = format!("{name}.owner_bridge()");
     execute(
         &admin,
@@ -517,7 +517,7 @@ async fn trigger_definer_executes_without_a_direct_grant_and_exempts_only_execut
         &admin,
         &format!(
             "ALTER FUNCTION {function} OWNER TO {}",
-            quoted_identifier(&owner)
+            quoted_ident(&owner)
         ),
     )
     .await;
@@ -527,7 +527,7 @@ async fn trigger_definer_executes_without_a_direct_grant_and_exempts_only_execut
         &admin,
         &format!(
             "REVOKE ALL ON FUNCTION {function} FROM PUBLIC, {}",
-            quoted_identifier(&runtime_role)
+            quoted_ident(&runtime_role)
         ),
     )
     .await;
@@ -567,7 +567,7 @@ async fn trigger_definer_executes_without_a_direct_grant_and_exempts_only_execut
         &admin,
         &format!(
             "GRANT EXECUTE ON FUNCTION {function} TO PUBLIC, {}",
-            quoted_identifier(&runtime_role)
+            quoted_ident(&runtime_role)
         ),
     )
     .await;
@@ -589,7 +589,7 @@ async fn trigger_definer_executes_without_a_direct_grant_and_exempts_only_execut
         &admin,
         &format!(
             "ALTER FUNCTION {function} OWNER TO {}",
-            quoted_identifier(&runtime_role)
+            quoted_ident(&runtime_role)
         ),
     )
     .await;
@@ -613,13 +613,13 @@ async fn definer_search_path_refuses_set_only_access_to_a_trusted_schema_owner()
     let suffix = Uuid::now_v7().simple().to_string();
     let schema_owner = format!("rls_namespace_owner_{suffix}");
     let external_schema = format!("rls_external_{suffix}");
-    let external_name = quoted_identifier(&external_schema);
-    let function = format!("{}.path_bridge()", quoted_identifier(&schema));
+    let external_name = quoted_ident(&external_schema);
+    let function = format!("{}.path_bridge()", quoted_ident(&schema));
     execute(
         &admin,
         &format!(
             "CREATE ROLE {} NOSUPERUSER NOBYPASSRLS",
-            quoted_identifier(&schema_owner)
+            quoted_ident(&schema_owner)
         ),
     )
     .await;
@@ -627,8 +627,8 @@ async fn definer_search_path_refuses_set_only_access_to_a_trusted_schema_owner()
         &admin,
         &format!(
             "GRANT {} TO {} WITH INHERIT TRUE, SET TRUE",
-            quoted_identifier(&schema_owner),
-            quoted_identifier(&owner)
+            quoted_ident(&schema_owner),
+            quoted_ident(&owner)
         ),
     )
     .await;
@@ -636,7 +636,7 @@ async fn definer_search_path_refuses_set_only_access_to_a_trusted_schema_owner()
         &admin,
         &format!(
             "CREATE SCHEMA {external_name} AUTHORIZATION {}",
-            quoted_identifier(&schema_owner)
+            quoted_ident(&schema_owner)
         ),
     )
     .await;
@@ -650,7 +650,7 @@ async fn definer_search_path_refuses_set_only_access_to_a_trusted_schema_owner()
         &admin,
         &format!(
             "ALTER FUNCTION {function} OWNER TO {}",
-            quoted_identifier(&owner)
+            quoted_ident(&owner)
         ),
     )
     .await;
@@ -658,7 +658,7 @@ async fn definer_search_path_refuses_set_only_access_to_a_trusted_schema_owner()
         &admin,
         &format!(
             "REVOKE ALL ON FUNCTION {function} FROM PUBLIC, {}",
-            quoted_identifier(&runtime_role)
+            quoted_ident(&runtime_role)
         ),
     )
     .await;
@@ -667,8 +667,8 @@ async fn definer_search_path_refuses_set_only_access_to_a_trusted_schema_owner()
         &admin,
         &format!(
             "GRANT {} TO {} WITH INHERIT FALSE, SET TRUE",
-            quoted_identifier(&schema_owner),
-            quoted_identifier(&runtime_role)
+            quoted_ident(&schema_owner),
+            quoted_ident(&runtime_role)
         ),
     )
     .await;
@@ -702,7 +702,7 @@ async fn definer_search_path_refuses_set_only_access_to_a_trusted_schema_owner()
     execute(
         &control,
         // SQL-POLICY: fixed-fragment — uniquely generated, quoted fixture role.
-        &format!("DROP ROLE {}", quoted_identifier(&schema_owner)),
+        &format!("DROP ROLE {}", quoted_ident(&schema_owner)),
     )
     .await;
     control.close().await;

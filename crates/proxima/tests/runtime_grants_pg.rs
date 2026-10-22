@@ -10,7 +10,7 @@ use proxima::{
 use proxima_core::{
     AgentNoteV1, AuthPath, AuthzContext, FlavorRegistry, FlavorRegistryError, OwnerId, Role, UserId,
 };
-use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, quoted_ident, unique_db_name};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{AssertSqlSafe, ConnectOptions, PgPool};
 use std::str::FromStr;
@@ -58,10 +58,6 @@ struct Fixture {
     password: String,
     runtime_url: String,
     platform_url: String,
-}
-
-fn ident(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 async fn exec(pool: &PgPool, sql: impl Into<String>) {
@@ -114,8 +110,8 @@ async fn setup() -> Fixture {
         format!(
             "CREATE ROLE {} LOGIN PASSWORD '{password}' NOSUPERUSER NOBYPASSRLS NOINHERIT; \
              CREATE ROLE {} LOGIN PASSWORD '{password}' NOSUPERUSER NOBYPASSRLS NOINHERIT",
-            ident(&platform),
-            ident(&runtime),
+            quoted_ident(&platform),
+            quoted_ident(&runtime),
         ),
     )
     .await;
@@ -126,8 +122,8 @@ async fn setup() -> Fixture {
             "GRANT CREATE ON DATABASE {} TO {p}; GRANT USAGE, CREATE ON SCHEMA public TO {p}; \
              GRANT USAGE ON SCHEMA public TO proxima_search; \
              GRANT proxima_search TO {p} WITH INHERIT FALSE, SET TRUE",
-            ident(&database),
-            p = ident(&platform),
+            quoted_ident(&database),
+            p = quoted_ident(&platform),
         ),
     )
     .await;
@@ -153,8 +149,8 @@ async fn cleanup(fixture: Fixture) {
         &control,
         format!(
             "DROP ROLE IF EXISTS {}; DROP ROLE IF EXISTS {}",
-            ident(&fixture.runtime),
-            ident(&fixture.platform)
+            quoted_ident(&fixture.runtime),
+            quoted_ident(&fixture.platform)
         ),
     )
     .await;
@@ -400,7 +396,7 @@ async fn boot_refuses_unsafe_runtime_privileges_in_a_composed_flavor_schema() {
         &fixture.admin,
         format!(
             "GRANT TRUNCATE ON proxima_example.notebooks TO {}",
-            ident(&fixture.runtime)
+            quoted_ident(&fixture.runtime)
         ),
     )
     .await;

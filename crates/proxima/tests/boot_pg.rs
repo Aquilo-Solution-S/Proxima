@@ -15,7 +15,9 @@ use proxima_core::{
     FlavorRegistry, FlavorRegistryError, MemoryId, OwnerId, Role, SchemaId, SchemaVersion,
     ServedSurface, UserId,
 };
-use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, split_role_urls, unique_db_name};
+use proxima_pg_testkit::{
+    admin_url, create_db, db_url, drop_db, quoted_ident, split_role_urls, unique_db_name,
+};
 use proxima_storage_pg::PgSidecarKey;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use sqlx::{Connection, SqlSafeStr};
@@ -133,10 +135,6 @@ impl FlavorApp for GoalTestApp {
             version: "1",
         }
     }
-}
-
-fn quoted_ident(input: &str) -> String {
-    format!("\"{}\"", input.replace('"', "\"\""))
 }
 
 #[derive(Debug)]

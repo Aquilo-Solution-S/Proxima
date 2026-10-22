@@ -12,7 +12,7 @@ use proxima_core::{
     AccessKind, AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
     ErrorCode, GroupId, OwnerId, OwnerRoles, UserId,
 };
-use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{admin_url, create_db, db_url, drop_db, quoted_ident, unique_db_name};
 use proxima_storage_pg::PgPoolConfig;
 use setup_error::expect_described;
 use sqlx::postgres::PgConnectOptions;
@@ -33,10 +33,6 @@ impl Authenticator for SyntheticAuthenticator {
             AuthPath::HostBearer,
         ))
     }
-}
-
-fn ident(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 async fn exec(pool: &PgPool, sql: impl Into<String>) {
@@ -66,8 +62,17 @@ async fn cleanup(database: &str, admin: PgPool, runtime: &str, platform: &str) {
     drop_db(database).await.expect("drop database");
     let control = expect_described("control connection", PgPool::connect(&admin_url()).await).await;
     // SQL-POLICY: fixed-fragment — uniquely generated fixture roles, quoted identifiers.
-    exec(&control, format!("DROP ROLE IF EXISTS {}", ident(runtime))).await;
-    exec(&control, format!("DROP ROLE IF EXISTS {}", ident(platform))).await;
+    exec(
+        &control,
+        format!("DROP ROLE IF EXISTS {}", quoted_ident(runtime)),
+    )
+    .await;
+    // SQL-POLICY: fixed-fragment — uniquely generated fixture roles, quoted identifiers.
+    exec(
+        &control,
+        format!("DROP ROLE IF EXISTS {}", quoted_ident(platform)),
+    )
+    .await;
     control.close().await;
 }
 
@@ -120,7 +125,7 @@ async fn setup_fresh() -> (String, PgPool, String, String, String, String) {
             &admin,
             format!(
                 "CREATE ROLE {} LOGIN PASSWORD '{}' NOSUPERUSER NOBYPASSRLS",
-                ident(role),
+                quoted_ident(role),
                 password
             ),
         )
@@ -130,8 +135,8 @@ async fn setup_fresh() -> (String, PgPool, String, String, String, String) {
         &admin,
         format!(
             "GRANT CREATE ON DATABASE {} TO {}; GRANT USAGE, CREATE ON SCHEMA public TO {}; ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE ON SCHEMAS TO {}; ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {}; ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE, SELECT ON SEQUENCES TO {}",
-            ident(&database), ident(&platform), ident(&platform), ident(&platform), ident(&runtime),
-            ident(&platform), ident(&runtime), ident(&platform), ident(&runtime)
+            quoted_ident(&database), quoted_ident(&platform), quoted_ident(&platform), quoted_ident(&platform), quoted_ident(&runtime),
+            quoted_ident(&platform), quoted_ident(&runtime), quoted_ident(&platform), quoted_ident(&runtime)
         ),
     )
     .await;
@@ -140,7 +145,7 @@ async fn setup_fresh() -> (String, PgPool, String, String, String, String) {
         &admin,
         format!(
             "GRANT proxima_search TO {} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE",
-            ident(&platform)
+            quoted_ident(&platform)
         ),
     )
     .await;
@@ -464,7 +469,7 @@ async fn split_role_boot_refuses_runtime_table_owner() {
         .await,
     )
     .await;
-    exec(&admin, format!("DO $$ DECLARE r record; BEGIN FOR r IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'proxima_core' AND c.relkind IN ('r','p') LOOP EXECUTE format('ALTER TABLE %I.%I OWNER TO {}', r.nspname, r.relname); END LOOP; END $$", ident(&runtime))).await;
+    exec(&admin, format!("DO $$ DECLARE r record; BEGIN FOR r IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'proxima_core' AND c.relkind IN ('r','p') LOOP EXECUTE format('ALTER TABLE %I.%I OWNER TO {}', r.nspname, r.relname); END LOOP; END $$", quoted_ident(&runtime))).await;
     assert!(
         boot(runtime_url, Some(platform_url), owner, true)
             .await
@@ -493,7 +498,11 @@ async fn split_role_boot_refuses_runtime_bypassrls() {
     )
     .await;
     // SQL-POLICY: fixed-fragment — the generated fixture role is identifier-quoted.
-    exec(&admin, format!("ALTER ROLE {} BYPASSRLS", ident(&runtime))).await;
+    exec(
+        &admin,
+        format!("ALTER ROLE {} BYPASSRLS", quoted_ident(&runtime)),
+    )
+    .await;
     assert!(
         boot(runtime_url, Some(platform_url), owner, true)
             .await

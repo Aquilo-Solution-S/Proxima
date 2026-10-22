@@ -1673,7 +1673,9 @@ fn name_is_stale_clone(name: &str, older_than: OffsetDateTime) -> bool {
     created < older_than
 }
 
-fn quoted_ident(input: &str) -> String {
+/// `input` as a quoted `PostgreSQL` identifier, embedded `"` doubled.
+#[must_use]
+pub fn quoted_ident(input: &str) -> String {
     format!("\"{}\"", input.replace('"', "\"\""))
 }
 

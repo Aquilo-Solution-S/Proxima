@@ -1,6 +1,6 @@
 use proxima_storage_pg::{PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
 
-use super::{cleanup, execute, quoted_identifier, setup_full_schema};
+use super::{cleanup, execute, quoted_ident, setup_full_schema};
 
 fn role_url(database: &str, role: &str, password: &str) -> String {
     let url = proxima_pg_testkit::db_url(database);
@@ -21,7 +21,7 @@ async fn storage_construction_refuses_unsafe_registered_schema_outside_scope() {
         &admin,
         &format!(
             "ALTER TABLE proxima_example.note_v1 OWNER TO {}",
-            quoted_identifier(&runtime_role)
+            quoted_ident(&runtime_role)
         ),
     )
     .await;

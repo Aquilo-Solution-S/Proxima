@@ -178,8 +178,8 @@ async fn predicates(
 fn relation(schema: &str, table: &str) -> String {
     format!(
         "{}.{}",
-        super::quoted_identifier(schema),
-        super::quoted_identifier(table)
+        super::quoted_ident(schema),
+        super::quoted_ident(table)
     )
 }
 
@@ -365,7 +365,7 @@ async fn core_rows(
     // SQL-POLICY: fixed-fragment — closed table keys and the trusted catalog generator's expression.
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {target}.{}, {target}.owner_id FROM {target} WHERE {expression} ORDER BY 1,2",
-        super::quoted_identifier(table.key)
+        super::quoted_ident(table.key)
     )))
     .fetch_all(connection)
     .await
@@ -509,7 +509,7 @@ async fn assert_core_writes(fixture: &Fixture, seed: &Seed, table: &CoreTable) {
     // SQL-POLICY: fixed-fragment — closed relation/key, bound owner values.
     let update = format!(
         "UPDATE {target} SET owner_id=$1 WHERE {}=$2",
-        super::quoted_identifier(table.key)
+        super::quoted_ident(table.key)
     );
     assert_eq!(
         // SQL-POLICY: fixed-fragment — the closed table/key template above; values stay bound.
@@ -593,12 +593,12 @@ async fn core_predicates_preserve_kinds_goals_effective_select_and_write_checks(
 }
 
 async fn create_flavor_tables(fixture: &Fixture, schema: &str) {
-    let schema_name = super::quoted_identifier(schema);
+    let schema_name = super::quoted_ident(schema);
     super::execute(
         &fixture.admin,
         &format!(
             "CREATE SCHEMA {schema_name} AUTHORIZATION {}",
-            super::quoted_identifier(&fixture.platform_role)
+            super::quoted_ident(&fixture.platform_role)
         ),
     )
     .await;
@@ -612,7 +612,7 @@ async fn create_flavor_tables(fixture: &Fixture, schema: &str) {
         &fixture.admin,
         &format!(
             "GRANT USAGE ON SCHEMA {schema_name} TO {}",
-            super::quoted_identifier(&fixture.runtime_role)
+            super::quoted_ident(&fixture.runtime_role)
         ),
     )
     .await;
@@ -620,7 +620,7 @@ async fn create_flavor_tables(fixture: &Fixture, schema: &str) {
         &fixture.admin,
         &format!(
             "GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA {schema_name} TO {}",
-            super::quoted_identifier(&fixture.runtime_role)
+            super::quoted_ident(&fixture.runtime_role)
         ),
     )
     .await;
@@ -677,7 +677,7 @@ async fn ids(
     let target = relation(schema, table);
     // The extra owner_id makes an accidentally unqualified owner column ambiguous.
     // SQL-POLICY: fixed-fragment — quoted identifiers and trusted generated expression.
-    sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT {target}.{} FROM {target} CROSS JOIN (SELECT NULL::uuid AS owner_id) other WHERE {expression} ORDER BY 1", super::quoted_identifier(key))))
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT {target}.{} FROM {target} CROSS JOIN (SELECT NULL::uuid AS owner_id) other WHERE {expression} ORDER BY 1", super::quoted_ident(key))))
         .fetch_all(connection).await.unwrap()
 }
 
@@ -823,7 +823,7 @@ async fn create_fk_tables(fixture: &Fixture) {
         &fixture.admin,
         &format!(
             "CREATE SCHEMA predicate_fk AUTHORIZATION {}",
-            super::quoted_identifier(&fixture.platform_role)
+            super::quoted_ident(&fixture.platform_role)
         ),
     )
     .await;
@@ -845,7 +845,7 @@ async fn create_fk_tables(fixture: &Fixture) {
         &fixture.admin,
         &format!(
             "GRANT USAGE ON SCHEMA predicate_fk TO {}",
-            super::quoted_identifier(&fixture.runtime_role)
+            super::quoted_ident(&fixture.runtime_role)
         ),
     )
     .await;
@@ -853,7 +853,7 @@ async fn create_fk_tables(fixture: &Fixture) {
         &fixture.admin,
         &format!(
             "GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA predicate_fk TO {}",
-            super::quoted_identifier(&fixture.runtime_role)
+            super::quoted_ident(&fixture.runtime_role)
         ),
     )
     .await;

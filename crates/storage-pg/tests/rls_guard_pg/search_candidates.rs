@@ -5,7 +5,7 @@ use proxima_storage_pg::search_candidates::ARGUMENT_TYPES;
 use proxima_storage_pg::test_fixtures::fresh_pg;
 use sqlx::{AssertSqlSafe, PgPool};
 
-use super::{assert_rls_refusal, execute, quoted_identifier};
+use super::{assert_rls_refusal, execute, quoted_ident};
 
 async fn assert_refused(runtime: &PgPool, reason: &str) {
     let error = assert_runtime_rls(runtime, &["proxima_core"])
@@ -110,7 +110,7 @@ async fn candidate_policy_is_read_only_and_requires_a_projection_shape() {
         admin,
         &format!(
             "ALTER TABLE proxima_core.document_search OWNER TO {}",
-            quoted_identifier(&platform)
+            quoted_ident(&platform)
         ),
     )
     .await;

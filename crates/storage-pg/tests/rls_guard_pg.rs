@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use proxima_core::{
     AuthPath, Authenticator, AuthzContext, Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_pg_testkit::{create_db, db_url, drop_db, quoted_ident, unique_db_name};
 use proxima_storage_pg::{
     PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgTuning, assert_runtime_rls,
     begin_owner_transaction,
@@ -67,10 +67,6 @@ impl Authenticator for SyntheticVerifier {
             AuthPath::HostBearer,
         ))
     }
-}
-
-fn quoted_identifier(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
 async fn execute(pool: &PgPool, statement: &str) {
@@ -156,7 +152,7 @@ async fn setup() -> (String, PgPool, PgPool, String, String, String, String) {
         &admin,
         &format!(
             "CREATE ROLE {} LOGIN PASSWORD '{}' NOSUPERUSER NOBYPASSRLS",
-            quoted_identifier(&owner),
+            quoted_ident(&owner),
             password
         ),
     )
@@ -166,7 +162,7 @@ async fn setup() -> (String, PgPool, PgPool, String, String, String, String) {
         &admin,
         &format!(
             "CREATE ROLE {} LOGIN PASSWORD '{}' NOSUPERUSER NOBYPASSRLS",
-            quoted_identifier(&runtime),
+            quoted_ident(&runtime),
             password
         ),
     )
@@ -177,8 +173,8 @@ async fn setup() -> (String, PgPool, PgPool, String, String, String, String) {
         &admin,
         &format!(
             "CREATE SCHEMA {} AUTHORIZATION {}",
-            quoted_identifier(&schema),
-            quoted_identifier(&owner)
+            quoted_ident(&schema),
+            quoted_ident(&owner)
         ),
     )
     .await;
@@ -187,8 +183,8 @@ async fn setup() -> (String, PgPool, PgPool, String, String, String, String) {
         &admin,
         &format!(
             "GRANT USAGE ON SCHEMA {} TO {}",
-            quoted_identifier(&schema),
-            quoted_identifier(&runtime)
+            quoted_ident(&schema),
+            quoted_ident(&runtime)
         ),
     )
     .await;
@@ -197,8 +193,8 @@ async fn setup() -> (String, PgPool, PgPool, String, String, String, String) {
             &admin,
             &format!(
                 "CREATE TABLE {}.{} (id uuid PRIMARY KEY, owner_id uuid NOT NULL)",
-                quoted_identifier(&schema),
-                quoted_identifier(table)
+                quoted_ident(&schema),
+                quoted_ident(table)
             ),
         )
         .await;
@@ -206,9 +202,9 @@ async fn setup() -> (String, PgPool, PgPool, String, String, String, String) {
             &admin,
             &format!(
                 "ALTER TABLE {}.{} OWNER TO {}",
-                quoted_identifier(&schema),
-                quoted_identifier(table),
-                quoted_identifier(&owner)
+                quoted_ident(&schema),
+                quoted_ident(table),
+                quoted_ident(&owner)
             ),
         )
         .await;
@@ -216,9 +212,9 @@ async fn setup() -> (String, PgPool, PgPool, String, String, String, String) {
             &admin,
             &format!(
                 "GRANT SELECT, INSERT, UPDATE, DELETE ON {}.{} TO {}",
-                quoted_identifier(&schema),
-                quoted_identifier(table),
-                quoted_identifier(&runtime)
+                quoted_ident(&schema),
+                quoted_ident(table),
+                quoted_ident(&runtime)
             ),
         )
         .await;
@@ -226,8 +222,8 @@ async fn setup() -> (String, PgPool, PgPool, String, String, String, String) {
             &admin,
             &format!(
                 "ALTER TABLE {}.{} ENABLE ROW LEVEL SECURITY",
-                quoted_identifier(&schema),
-                quoted_identifier(table)
+                quoted_ident(&schema),
+                quoted_ident(table)
             ),
         )
         .await;
@@ -235,22 +231,22 @@ async fn setup() -> (String, PgPool, PgPool, String, String, String, String) {
             &admin,
             &format!(
                 "ALTER TABLE {}.{} FORCE ROW LEVEL SECURITY",
-                quoted_identifier(&schema),
-                quoted_identifier(table)
+                quoted_ident(&schema),
+                quoted_ident(table)
             ),
         )
         .await;
         execute(&admin, &format!(
             "CREATE POLICY proxima_owner_read ON {}.{} FOR SELECT TO PUBLIC USING (owner_id = ANY(COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{{}}'::uuid[])))",
-            quoted_identifier(&schema), quoted_identifier(table)
+            quoted_ident(&schema), quoted_ident(table)
         )).await;
         execute(&admin, &format!(
             "CREATE POLICY proxima_owner_write ON {}.{} FOR ALL TO PUBLIC USING (owner_id = ANY(COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{{}}'::uuid[]))) WITH CHECK (owner_id = ANY(COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{{}}'::uuid[])))",
-            quoted_identifier(&schema), quoted_identifier(table)
+            quoted_ident(&schema), quoted_ident(table)
         )).await;
         execute(&admin, &format!(
             "CREATE POLICY proxima_platform ON {}.{} FOR ALL TO {} USING (current_setting('app.proxima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxima_scope', true) = 'platform')",
-            quoted_identifier(&schema), quoted_identifier(table), quoted_identifier(&owner)
+            quoted_ident(&schema), quoted_ident(table), quoted_ident(&owner)
         )).await;
     }
     let runtime_pool = runtime_pool(&database, &runtime, &password).await;
@@ -352,7 +348,7 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
             &admin,
             &format!(
                 "CREATE ROLE {} LOGIN PASSWORD '{}' NOSUPERUSER NOBYPASSRLS",
-                quoted_identifier(role),
+                quoted_ident(role),
                 password
             ),
         )
@@ -363,7 +359,7 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         // SQL-POLICY: fixed-fragment — fixture role identifier is quoted.
         &format!(
             "GRANT proxima_search TO {} WITH INHERIT FALSE, SET TRUE",
-            quoted_identifier(&platform)
+            quoted_ident(&platform)
         ),
     )
     .await;
@@ -376,8 +372,8 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         &admin,
         &format!(
             "GRANT CREATE ON DATABASE {} TO {}",
-            quoted_identifier(&database),
-            quoted_identifier(&platform)
+            quoted_ident(&database),
+            quoted_ident(&platform)
         ),
     )
     .await;
@@ -385,7 +381,7 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         &admin,
         &format!(
             "GRANT USAGE, CREATE ON SCHEMA public TO {}",
-            quoted_identifier(&platform)
+            quoted_ident(&platform)
         ),
     )
     .await;
@@ -418,8 +414,8 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         &admin,
         &format!(
             "GRANT USAGE ON SCHEMA proxima_core, proxima_example TO {}, {}",
-            quoted_identifier(&runtime),
-            quoted_identifier(&platform)
+            quoted_ident(&runtime),
+            quoted_ident(&platform)
         ),
     )
     .await;
@@ -427,7 +423,7 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         &admin,
         &format!(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA proxima_core, proxima_example TO {}",
-            quoted_identifier(&runtime)
+            quoted_ident(&runtime)
         ),
     )
     .await;
@@ -463,13 +459,13 @@ async fn cleanup(database: &str, admin: PgPool, owner: &str, runtime: &str) {
     execute(
         &control,
         // SQL-POLICY: fixed-fragment
-        &format!("DROP ROLE IF EXISTS {}", quoted_identifier(runtime)),
+        &format!("DROP ROLE IF EXISTS {}", quoted_ident(runtime)),
     )
     .await;
     execute(
         &control,
         // SQL-POLICY: fixed-fragment
-        &format!("DROP ROLE IF EXISTS {}", quoted_identifier(owner)),
+        &format!("DROP ROLE IF EXISTS {}", quoted_ident(owner)),
     )
     .await;
     control.close().await;
@@ -480,7 +476,7 @@ async fn restore_owner_read_policy(admin: &PgPool, schema: &str, table: &str) {
         admin,
         &format!(
             "CREATE POLICY proxima_owner_read ON {}.{} FOR SELECT TO PUBLIC USING (owner_id = ANY(COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{{}}'::uuid[])))",
-            quoted_identifier(schema), quoted_identifier(table)
+            quoted_ident(schema), quoted_ident(table)
         ),
     )
     .await;
@@ -502,8 +498,8 @@ async fn runtime_guard_accepts_complete_schema_and_refuses_structural_breaks() {
         &admin,
         &format!(
             "GRANT {} TO {}",
-            quoted_identifier(&owner),
-            quoted_identifier(&runtime_role)
+            quoted_ident(&owner),
+            quoted_ident(&runtime_role)
         ),
     )
     .await;
@@ -512,53 +508,48 @@ async fn runtime_guard_accepts_complete_schema_and_refuses_structural_breaks() {
         &admin,
         &format!(
             "REVOKE {} FROM {}",
-            quoted_identifier(&owner),
-            quoted_identifier(&runtime_role)
+            quoted_ident(&owner),
+            quoted_ident(&runtime_role)
         ),
     )
     .await;
     execute(
         &admin,
         // SQL-POLICY: fixed-fragment
-        &format!("ALTER ROLE {} BYPASSRLS", quoted_identifier(&runtime_role)),
+        &format!("ALTER ROLE {} BYPASSRLS", quoted_ident(&runtime_role)),
     )
     .await;
     assert!(assert_runtime_rls(&runtime, &[&schema]).await.is_err());
     execute(
         &admin,
-        &format!(
-            "ALTER ROLE {} NOBYPASSRLS",
-            quoted_identifier(&runtime_role)
-        ),
+        // SQL-POLICY: fixed-fragment
+        &format!("ALTER ROLE {} NOBYPASSRLS", quoted_ident(&runtime_role)),
     )
     .await;
     execute(
         &admin,
         // SQL-POLICY: fixed-fragment
-        &format!("ALTER ROLE {} SUPERUSER", quoted_identifier(&runtime_role)),
+        &format!("ALTER ROLE {} SUPERUSER", quoted_ident(&runtime_role)),
     )
     .await;
     assert!(assert_runtime_rls(&runtime, &[&schema]).await.is_err());
     execute(
         &admin,
-        &format!(
-            "ALTER ROLE {} NOSUPERUSER",
-            quoted_identifier(&runtime_role)
-        ),
+        &format!("ALTER ROLE {} NOSUPERUSER", quoted_ident(&runtime_role)),
     )
     .await;
 
     // SQL-POLICY: fixed-fragment
     let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT count(*) FROM {}.memory",
-        quoted_identifier(&schema)
+        quoted_ident(&schema)
     )))
     .fetch_one(&runtime)
     .await
     .unwrap();
     assert_eq!(count, 0);
     // SQL-POLICY: fixed-fragment
-    let missing_scope = sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {}.memory (id, owner_id) VALUES ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002')", quoted_identifier(&schema))))
+    let missing_scope = sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {}.memory (id, owner_id) VALUES ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002')", quoted_ident(&schema))))
         .execute(&runtime).await;
     assert_rls_refusal(&missing_scope.expect_err("missing app.owner must refuse writes"));
 
@@ -566,7 +557,7 @@ async fn runtime_guard_accepts_complete_schema_and_refuses_structural_breaks() {
         &admin,
         &format!(
             "DROP POLICY proxima_owner_read ON {}.memory",
-            quoted_identifier(&schema)
+            quoted_ident(&schema)
         ),
     )
     .await;
@@ -577,7 +568,7 @@ async fn runtime_guard_accepts_complete_schema_and_refuses_structural_breaks() {
         &admin,
         &format!(
             "ALTER TABLE {}.sidecar NO FORCE ROW LEVEL SECURITY",
-            quoted_identifier(&schema)
+            quoted_ident(&schema)
         ),
     )
     .await;
@@ -586,7 +577,7 @@ async fn runtime_guard_accepts_complete_schema_and_refuses_structural_breaks() {
         &admin,
         &format!(
             "ALTER TABLE {}.sidecar FORCE ROW LEVEL SECURITY",
-            quoted_identifier(&schema)
+            quoted_ident(&schema)
         ),
     )
     .await;
@@ -594,7 +585,7 @@ async fn runtime_guard_accepts_complete_schema_and_refuses_structural_breaks() {
         &admin,
         &format!(
             "CREATE TABLE {}.unprotected (id int)",
-            quoted_identifier(&schema)
+            quoted_ident(&schema)
         ),
     )
     .await;
@@ -608,7 +599,7 @@ async fn runtime_guard_accepts_complete_schema_and_refuses_structural_breaks() {
     // SQL-POLICY: fixed-fragment
     let bypass = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT count(*) FROM {}.memory",
-        quoted_identifier(&schema)
+        quoted_ident(&schema)
     )))
     .execute(&mut *transaction)
     .await;
@@ -644,7 +635,7 @@ async fn platform_scope_rejects_missing_force_and_policy() {
         &admin,
         &format!(
             "ALTER TABLE {}.memory NO FORCE ROW LEVEL SECURITY",
-            quoted_identifier(&schema)
+            quoted_ident(&schema)
         ),
     )
     .await;
@@ -658,7 +649,7 @@ async fn platform_scope_rejects_missing_force_and_policy() {
         &admin,
         &format!(
             "ALTER TABLE {}.memory FORCE ROW LEVEL SECURITY",
-            quoted_identifier(&schema)
+            quoted_ident(&schema)
         ),
     )
     .await;
@@ -667,7 +658,7 @@ async fn platform_scope_rejects_missing_force_and_policy() {
         &admin,
         &format!(
             "DROP POLICY proxima_platform ON {}.memory",
-            quoted_identifier(&schema)
+            quoted_ident(&schema)
         ),
     )
     .await;
@@ -682,8 +673,8 @@ async fn platform_scope_rejects_missing_force_and_policy() {
         &admin,
         &format!(
             "CREATE POLICY proxima_platform ON {}.memory FOR ALL TO {} USING (current_setting('app.proxima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxima_scope', true) = 'platform')",
-            quoted_identifier(&schema),
-            quoted_identifier(&owner)
+            quoted_ident(&schema),
+            quoted_ident(&owner)
         ),
     )
     .await;
