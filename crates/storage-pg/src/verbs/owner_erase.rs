@@ -23,6 +23,7 @@ use crate::access::owner_columns::{
 };
 use crate::error::{map_err, with_bounded_retry};
 use crate::pg_ident::PgIdent;
+use crate::sidecars::int_to_u64;
 use crate::verbs::forget::{ColdPurgeEntry, ColdPurgePlan};
 
 type Tx<'a> = Transaction<'a, Postgres>;
@@ -1512,7 +1513,7 @@ async fn assert_selection_fully_deleted(
         .fetch_one(&mut **tx)
         .await
         .map_err(map_err)?;
-    let selected = u64::try_from(selected).unwrap_or(0);
+    let selected = int_to_u64(selected, "selected rows")?;
     if deleted == selected {
         return Ok(());
     }

@@ -37,6 +37,7 @@ use uuid::Uuid;
 
 use crate::PgStorage;
 use crate::error::{internal, map_err};
+use crate::sidecars::int_to_u64;
 
 /// The next position in the series `handle`: its publication counter,
 /// incremented. The caller holds the series lock (every Fact admission takes
@@ -627,7 +628,7 @@ impl PublicationOutboxPort for PgStorage {
         .fetch_one(tx.as_mut())
         .await
         .map_err(map_err)?;
-        crate::owner_scope::finish_transaction(tx, Ok(count.try_into().unwrap_or(0))).await
+        crate::owner_scope::finish_transaction(tx, int_to_u64(count, "pending outbox rows")).await
     }
 }
 

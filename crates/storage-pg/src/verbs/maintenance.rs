@@ -20,6 +20,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::map_err;
+use crate::sidecars::{int_to_u32, int_to_u64};
 
 /// Most stuck debts an outcome names.
 pub const MAX_STUCK_PURGE_DEBTS: usize = 32;
@@ -452,33 +453,91 @@ pub(crate) async fn purge_queue_census(
         Vec::new()
     };
     tx.commit().await.map_err(map_err)?;
+    census_from_rows([due, deferred, foreign, stuck_count], stuck, foreign_stores)
+}
+
+/// The census as the queue reports it: `counts` are due, deferred, foreign and
+/// stuck. A negative count or attempt number is a fault in the database, not
+/// a number to report.
+fn census_from_rows(
+    counts: [i64; 4],
+    stuck: Vec<StuckRow>,
+    foreign_stores: Vec<(String, i64)>,
+) -> Result<PurgeQueueCensus, StorageError> {
+    let [due, deferred, foreign, stuck_count] = counts;
     let foreign_stores = foreign_stores
         .into_iter()
         .map(|(store, count)| {
-            ObjectStoreId::parse(&store)
-                .map(|store| (store, count.unsigned_abs()))
-                .map_err(|error| {
-                    StorageError::Internal(format!(
-                        "purge queue holds a malformed store id: {error}"
-                    ))
-                })
+            let store = ObjectStoreId::parse(&store).map_err(|error| {
+                StorageError::Internal(format!("purge queue holds a malformed store id: {error}"))
+            })?;
+            Ok((store, int_to_u64(count, "foreign purge debts")?))
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(PurgeQueueCensus {
-        due: due.unsigned_abs(),
-        deferred: deferred.unsigned_abs(),
-        foreign: foreign.unsigned_abs(),
-        stuck_count: stuck_count.unsigned_abs(),
-        stuck: stuck
-            .into_iter()
-            .map(|row| StuckPurgeDebt {
+        .collect::<Result<Vec<_>, StorageError>>()?;
+    let stuck = stuck
+        .into_iter()
+        .map(|row| {
+            Ok(StuckPurgeDebt {
                 object_key: row.object_key,
                 owner_id: row.owner_id.map(OwnerId::from),
-                attempts: u32::try_from(row.attempts).unwrap_or(0),
+                attempts: int_to_u32(row.attempts, "purge attempts")?,
                 last_error: row.last_error,
                 next_attempt_at: row.next_attempt_at,
             })
-            .collect(),
+        })
+        .collect::<Result<Vec<_>, StorageError>>()?;
+    Ok(PurgeQueueCensus {
+        due: int_to_u64(due, "due purge debts")?,
+        deferred: int_to_u64(deferred, "deferred purge debts")?,
+        foreign: int_to_u64(foreign, "foreign purge debts")?,
+        stuck_count: int_to_u64(stuck_count, "stuck purge debts")?,
+        stuck,
         foreign_stores,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StuckRow, census_from_rows};
+
+    fn stuck_row(attempts: i32) -> StuckRow {
+        StuckRow {
+            object_key: "objects/k".into(),
+            owner_id: None,
+            attempts,
+            last_error: None,
+            next_attempt_at: time::OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn the_census_reports_what_the_queue_counted() {
+        let census = census_from_rows(
+            [4, 3, 2, 1],
+            vec![stuck_row(9)],
+            vec![("s3:id/other".into(), 2)],
+        )
+        .expect("a census");
+        assert_eq!(
+            (
+                census.due,
+                census.deferred,
+                census.foreign,
+                census.stuck_count
+            ),
+            (4, 3, 2, 1)
+        );
+        assert_eq!(census.stuck[0].attempts, 9);
+        assert_eq!(census.foreign_stores[0].1, 2);
+    }
+
+    #[test]
+    fn a_negative_count_is_a_fault_not_a_count() {
+        for counts in [[-1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, -1]] {
+            census_from_rows(counts, Vec::new(), Vec::new()).expect_err("negative count");
+        }
+        census_from_rows([0; 4], vec![stuck_row(-1)], Vec::new()).expect_err("negative attempts");
+        census_from_rows([0; 4], Vec::new(), vec![("s3:id/other".into(), -1)])
+            .expect_err("negative foreign count");
+    }
 }

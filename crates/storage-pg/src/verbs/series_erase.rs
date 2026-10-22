@@ -30,7 +30,7 @@ use super::forget::{
 };
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use crate::sidecars::PgSidecarRegistryFrozen;
+use crate::sidecars::{PgSidecarRegistryFrozen, int_to_u64};
 
 /// One foreign key into `proxima_core.memory (t)` that makes a row depend on
 /// a memory OTHER than its own.
@@ -607,9 +607,9 @@ pub(crate) async fn erase_series(
         versions: ts.iter().copied().map(MemoryId::new).collect(),
         series_erased: count(footprint.handles().len()),
         referencing_series: count(footprint.referencing_series()),
-        blobs_removed: u64::try_from(blobs_removed).unwrap_or(0),
+        blobs_removed: int_to_u64(blobs_removed, "blobs removed")?,
         cold_objects_pending: count(cold_purge.entries().len()),
-        dangling_pins: u64::try_from(dangling_pins).unwrap_or(0),
+        dangling_pins: int_to_u64(dangling_pins, "dangling pins")?,
         more_remaining,
     };
     Ok((SeriesEraseOutcome::Erased(report), cold_purge))
