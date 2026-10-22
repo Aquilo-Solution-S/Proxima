@@ -169,7 +169,7 @@ async fn assert_policy_structure(
         .collect();
     let mut has_candidate_policy = false;
     for relation in relations.iter().filter(|relation| relation.is_table()) {
-        let relation_name = format!("{}.{}", relation.schema_name, relation.table_name);
+        let relation_name = relation.name();
         if !relation.row_security || !relation.force_row_security {
             return Err(refused(format!(
                 "{relation_name} does not have ENABLE and FORCE ROW LEVEL SECURITY"
@@ -667,10 +667,7 @@ pub(crate) async fn assert_platform_catalog(
     schemas: &[&str],
     enforcing: bool,
 ) -> Result<(), StorageError> {
-    if schemas.is_empty() || schemas.iter().any(|schema| schema.trim().is_empty()) {
-        return Err(refused("schema inventory is empty"));
-    }
-    let schema_names: Vec<String> = schemas.iter().map(|schema| (*schema).to_owned()).collect();
+    let schema_names = schema_inventory(schemas)?;
     let (_, superuser, bypass): (String, bool, bool) = sqlx::query_as(
         "SELECT current_user::text, r.rolsuper, r.rolbypassrls
            FROM pg_roles AS r WHERE r.rolname = current_user",
@@ -712,7 +709,7 @@ pub(crate) async fn assert_platform_catalog(
 pub async fn assert_runtime_rls(pool: &PgPool, schemas: &[&str]) -> Result<(), StorageError> {
     // An empty inventory is refused before a connection is acquired, as it
     // was before the checks moved onto one held connection.
-    assert_schema_inventory_named(schemas)?;
+    schema_inventory(schemas)?;
     let mut conn = pool
         .acquire()
         .await
@@ -720,12 +717,13 @@ pub async fn assert_runtime_rls(pool: &PgPool, schemas: &[&str]) -> Result<(), S
     assert_runtime_rls_on(&mut conn, schemas).await
 }
 
-/// Refuse an empty inventory, or one naming an empty schema.
-fn assert_schema_inventory_named(schemas: &[&str]) -> Result<(), StorageError> {
+/// The schema inventory as owned names; an empty inventory, or one naming an
+/// empty schema, is refused.
+fn schema_inventory(schemas: &[&str]) -> Result<Vec<String>, StorageError> {
     if schemas.is_empty() || schemas.iter().any(|schema| schema.trim().is_empty()) {
         return Err(refused("schema inventory is empty"));
     }
-    Ok(())
+    Ok(schemas.iter().map(|schema| (*schema).to_owned()).collect())
 }
 
 /// [`assert_runtime_rls`] on one held connection. Every check runs on it, so
@@ -735,8 +733,7 @@ pub(crate) async fn assert_runtime_rls_on(
     conn: &mut PgConnection,
     schemas: &[&str],
 ) -> Result<(), StorageError> {
-    assert_schema_inventory_named(schemas)?;
-    let schema_names: Vec<String> = schemas.iter().map(|schema| (*schema).to_owned()).collect();
+    let schema_names = schema_inventory(schemas)?;
 
     let (role_name, is_superuser, bypass_rls): (String, bool, bool) = sqlx::query_as(
         "SELECT current_user::text, r.rolsuper, r.rolbypassrls
@@ -758,7 +755,7 @@ pub(crate) async fn assert_runtime_rls_on(
     assert_inventory(&relations, &schema_names)?;
 
     for relation in &relations {
-        let relation_name = format!("{}.{}", relation.schema_name, relation.table_name);
+        let relation_name = relation.name();
         if relation.schema_create {
             return Err(refused(format!(
                 "runtime role can CREATE in {relation_name}"
