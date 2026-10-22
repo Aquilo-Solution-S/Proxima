@@ -8,7 +8,7 @@ use crate::owner_inverse::{
     OwnerEraseRefusal, OwnerEraseTarget, OwnerExportBundle, OwnerExportContext, OwnerExportTarget,
     OwnerSurfaces,
 };
-use crate::storage_ports::OperatorMaintenanceProof;
+use crate::storage_ports::{OperatorMaintenanceProof, OwnerEraseAuthorityHandle};
 use crate::{EmbeddingAnnObservability, EmbeddingOrphanSweepOutcome};
 use crate::{GroupId, SourceId, UserId};
 
@@ -19,6 +19,12 @@ enum EraseAdmission {
     /// Turned away, and already recorded against the operation id the caller
     /// is handed back.
     Refused(OwnerEraseOutcome),
+}
+
+/// The answer to an authority question, or the port that must give it.
+enum Authority<'a> {
+    Settled(bool),
+    Ask(&'a OwnerEraseAuthorityHandle),
 }
 
 impl Engine {
@@ -53,6 +59,22 @@ impl Engine {
         )
     }
 
+    /// What an authority question comes to before any port is asked: a delegated caller is
+    /// refused, a system caller is granted, and a store with no authority port refuses. Erase,
+    /// export and operator maintenance share it, so they cannot order these differently.
+    fn authority_for(&self, authz: &AuthzContext) -> Authority<'_> {
+        match authz.auth_path() {
+            AuthPath::Delegated => Authority::Settled(false),
+            AuthPath::System => Authority::Settled(true),
+            AuthPath::HostBearer | AuthPath::Denied => {
+                match &self.storage.owner_inverse.erase_authority {
+                    Some(port) => Authority::Ask(port),
+                    None => Authority::Settled(false),
+                }
+            }
+        }
+    }
+
     /// Whether the authority port grants this erase.
     ///
     /// A port FAILURE is not a verdict. Collapsing it into `false` published a
@@ -69,14 +91,9 @@ impl Engine {
         authz: &AuthzContext,
         target: &OwnerEraseTarget,
     ) -> Result<bool, ProtocolError> {
-        if authz.auth_path() == AuthPath::Delegated {
-            return Ok(false);
-        }
-        if authz.auth_path() == AuthPath::System {
-            return Ok(true);
-        }
-        let Some(port) = &self.storage.owner_inverse.erase_authority else {
-            return Ok(false);
+        let port = match self.authority_for(authz) {
+            Authority::Settled(verdict) => return Ok(verdict),
+            Authority::Ask(port) => port,
         };
         port.may_erase_owner(authz, target)
             .await
@@ -94,14 +111,9 @@ impl Engine {
         authz: &AuthzContext,
         target: &OwnerExportTarget,
     ) -> Result<bool, ProtocolError> {
-        if authz.auth_path() == AuthPath::Delegated {
-            return Ok(false);
-        }
-        if authz.auth_path() == AuthPath::System {
-            return Ok(true);
-        }
-        let Some(port) = &self.storage.owner_inverse.erase_authority else {
-            return Ok(false);
+        let port = match self.authority_for(authz) {
+            Authority::Settled(verdict) => return Ok(verdict),
+            Authority::Ask(port) => port,
         };
         port.may_export_owner(authz, target)
             .await
@@ -118,14 +130,9 @@ impl Engine {
         &self,
         authz: &AuthzContext,
     ) -> Result<bool, ProtocolError> {
-        if authz.auth_path() == AuthPath::Delegated {
-            return Ok(false);
-        }
-        if authz.auth_path() == AuthPath::System {
-            return Ok(true);
-        }
-        let Some(port) = &self.storage.owner_inverse.erase_authority else {
-            return Ok(false);
+        let port = match self.authority_for(authz) {
+            Authority::Settled(verdict) => return Ok(verdict),
+            Authority::Ask(port) => port,
         };
         port.may_perform_operator_maintenance(authz)
             .await
