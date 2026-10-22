@@ -115,7 +115,8 @@ impl OpenAiCompatEmbeddingClient {
     /// `config.base_url` is invalid, contains a fragment, or is a plaintext
     /// `http://` endpoint on a host that is neither loopback nor named in
     /// `config.plaintext_hosts` (which would leak the bearer token in
-    /// transit), if `config.timeout` is zero, or if
+    /// transit), if `config.timeout` is zero, if `config.bearer_token` is
+    /// blank, or if
     /// [`EmbedCaps::max_input_chars`] is set below
     /// [`proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS`].
     pub fn new(
@@ -124,6 +125,15 @@ impl OpenAiCompatEmbeddingClient {
         config: OpenAiCompatConfig,
     ) -> Result<Self, LlmError> {
         let endpoint = embedding_endpoint(&config.base_url, &config.plaintext_hosts)?;
+        if config
+            .bearer_token
+            .as_deref()
+            .is_some_and(|token| token.trim().is_empty())
+        {
+            return Err(LlmError::Internal(
+                "embedding bearer token must not be blank; pass None for no token".into(),
+            ));
+        }
         if config.timeout.is_zero() {
             return Err(LlmError::Internal(
                 "embedding request timeout must be greater than zero".into(),
@@ -771,6 +781,22 @@ mod tests {
             matches!(err, LlmError::Internal(ref m) if m.contains("timeout")),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn a_blank_bearer_token_is_refused_at_construction() {
+        for blank in ["", "  "] {
+            let err = super::OpenAiCompatEmbeddingClient::new(
+                "test-embed",
+                probe_caps(),
+                super::OpenAiCompatConfig::new(UNREACHABLE, Some(blank.to_owned())),
+            )
+            .expect_err("a blank token must not build a client");
+            assert!(
+                matches!(err, LlmError::Internal(ref m) if m.contains("bearer token")),
+                "{blank:?}: {err:?}"
+            );
+        }
     }
 
     #[test]
