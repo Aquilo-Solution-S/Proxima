@@ -1,7 +1,7 @@
 //! The example flavor's payloads: a stateful note Fact, a digest
 //! Abstraction, and a stamp Fact that follows its memory on transfer.
 
-use proxima::flavor::{AbstractionPayload, FactPayload, ScopeKind};
+use proxima::flavor::{AbstractionPayload, FactPayload, PayloadKeyBuilder, ScopeKind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -39,11 +39,11 @@ impl FactPayload for NoteV1 {
     const SCOPE_KIND: Option<ScopeKind> = Some(NOTEBOOK_SCOPE);
 
     fn receipt_key(&self) -> Vec<u8> {
-        let mut key = self.notebook_id.as_bytes().to_vec();
-        key.extend_from_slice(self.key.as_bytes());
-        key.push(0);
-        key.extend_from_slice(self.body.as_bytes());
-        key
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("notebook_id", self.notebook_id);
+        key.field_str("key", &self.key);
+        key.field_str("body", &self.body);
+        key.finish()
     }
 
     fn render(&self) -> String {
@@ -133,7 +133,9 @@ impl FactPayload for StampV1 {
     const SCHEMA_VERSION: u32 = 1;
 
     fn receipt_key(&self) -> Vec<u8> {
-        self.mark.as_bytes().to_vec()
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("mark", &self.mark);
+        key.finish()
     }
 
     fn render(&self) -> String {
@@ -163,4 +165,28 @@ proxima::flavor::pg_sidecar! {
     fields: {
         mark => mark: (text),
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(key: &str, body: &str) -> NoteV1 {
+        NoteV1 {
+            notebook_id: Uuid::from_u128(1),
+            key: key.to_owned(),
+            body: body.to_owned(),
+            written_at: time::OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    /// Notes whose key and body only differ in where a NUL byte sits are different notes.
+    #[test]
+    fn notes_that_move_a_nul_between_key_and_body_have_different_receipt_keys() {
+        assert_ne!(
+            note("a\0b", "x").receipt_key(),
+            note("a", "b\0x").receipt_key()
+        );
+        assert_eq!(note("a", "x").receipt_key(), note("a", "x").receipt_key());
+    }
 }
