@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_core::Authenticator;
+use proxima_core::{Authenticator, env_value};
 use proxima_mcp_server::ResourceServerMetadata;
 
 use crate::OwnerAccessPort;
@@ -112,17 +112,17 @@ pub(crate) fn oidc_from_lookup(
     lookup: &impl Fn(&str) -> Option<String>,
     owner_access: Arc<dyn OwnerAccessPort>,
 ) -> Result<Option<OidcBundle>, ProximaError> {
-    let Some(issuer) = non_empty(lookup, "PROXIMA_OIDC_ISSUER") else {
+    let Some(issuer) = env_value(lookup, "PROXIMA_OIDC_ISSUER") else {
         return Ok(None);
     };
-    let audience = non_empty(lookup, "PROXIMA_OIDC_AUDIENCE").ok_or_else(|| {
+    let audience = env_value(lookup, "PROXIMA_OIDC_AUDIENCE").ok_or_else(|| {
         ProximaError::Config("PROXIMA_OIDC_ISSUER set without PROXIMA_OIDC_AUDIENCE".into())
     })?;
-    let public_url = non_empty(lookup, "PROXIMA_PUBLIC_URL").ok_or_else(|| {
+    let public_url = env_value(lookup, "PROXIMA_PUBLIC_URL").ok_or_else(|| {
         ProximaError::Config("PROXIMA_OIDC_ISSUER set without PROXIMA_PUBLIC_URL".into())
     })?;
-    let jwks_uri = non_empty(lookup, JWKS_URI);
-    let jwks_json = non_empty(lookup, JWKS_JSON);
+    let jwks_uri = env_value(lookup, JWKS_URI);
+    let jwks_json = env_value(lookup, JWKS_JSON);
     // Both is an error rather than a precedence rule: one says fetch keys
     // from the issuer, the other says never contact it.
     if jwks_uri.is_some() && jwks_json.is_some() {
@@ -130,7 +130,7 @@ pub(crate) fn oidc_from_lookup(
             "{JWKS_JSON} and {JWKS_URI} are mutually exclusive"
         )));
     }
-    let allowed_subjects = non_empty(lookup, "PROXIMA_OIDC_ALLOWED_SUBJECTS").map(|raw| {
+    let allowed_subjects = env_value(lookup, "PROXIMA_OIDC_ALLOWED_SUBJECTS").map(|raw| {
         raw.split(',')
             .map(str::trim)
             .filter(|subject| !subject.is_empty())
@@ -199,7 +199,7 @@ fn oidc_require_access_token_typ(
 }
 
 fn oidc_http_timeout(lookup: &impl Fn(&str) -> Option<String>) -> Result<Duration, ProximaError> {
-    let Some(raw) = non_empty(lookup, OIDC_HTTP_TIMEOUT_SECONDS) else {
+    let Some(raw) = env_value(lookup, OIDC_HTTP_TIMEOUT_SECONDS) else {
         return Ok(proxima_auth_oidc::DEFAULT_HTTP_REQUEST_TIMEOUT);
     };
     let seconds = raw.parse::<u64>().map_err(|_| {
@@ -221,7 +221,7 @@ fn oidc_http_timeout(lookup: &impl Fn(&str) -> Option<String>) -> Result<Duratio
 fn subject_map(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<proxima_auth_oidc::OidcSubjectMap, ProximaError> {
-    let json = non_empty(lookup, SUBJECT_MAP_JSON).ok_or_else(|| {
+    let json = env_value(lookup, SUBJECT_MAP_JSON).ok_or_else(|| {
         ProximaError::Config(format!(
             "PROXIMA_OIDC_ISSUER set without {SUBJECT_MAP_JSON}"
         ))
@@ -230,18 +230,12 @@ fn subject_map(
         .map_err(|err| ProximaError::Config(format!("{SUBJECT_MAP_JSON}: {err}")))
 }
 
-fn non_empty(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
-    lookup(key)
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use super::{non_empty, oidc_from_lookup, oidc_http_timeout, oidc_require_access_token_typ};
+    use super::{oidc_from_lookup, oidc_http_timeout, oidc_require_access_token_typ};
 
     /// A lookup over a fixed map, so none of this touches the process
     /// environment — which is what lets these run in parallel with every
@@ -709,17 +703,5 @@ mod tests {
                 assert!(message.contains(JWKS_JSON), "{case}: {message}");
             }
         }
-    }
-
-    /// A variable set to whitespace is set to nothing. Otherwise an empty
-    /// value in a compose file or a k8s manifest reads as "configured" and
-    /// fails much later with a confusing message.
-    #[test]
-    fn whitespace_reads_as_absent() {
-        assert!(non_empty(&env(&[("KEY", "   ")]), "KEY").is_none());
-        assert_eq!(
-            non_empty(&env(&[("KEY", " value ")]), "KEY"),
-            Some("value".to_owned())
-        );
     }
 }
