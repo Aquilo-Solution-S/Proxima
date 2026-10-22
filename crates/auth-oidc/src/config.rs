@@ -11,6 +11,8 @@ pub enum OidcConfigError {
         field: &'static str,
         parse_error: String,
     },
+    #[error("{field} must not be blank")]
+    BlankField { field: &'static str },
     #[error("{field} must use https: {value}")]
     InsecureUrl { field: &'static str, value: String },
     #[error("{field} must be greater than zero and at most {max_seconds} seconds")]
@@ -50,9 +52,13 @@ impl OidcAuthConfig {
     ///
     /// Returns an error when the issuer or explicit JWKS endpoint is not a
     /// valid HTTPS URL, or a plaintext HTTP URL on a non-loopback host, or
-    /// when the issuer contains a query or fragment component.
+    /// when the issuer contains a query or fragment component, or when the
+    /// audience is blank.
     pub fn validate(&self) -> Result<(), OidcConfigError> {
         validate_issuer_url(&self.issuer)?;
+        if self.audience.trim().is_empty() {
+            return Err(OidcConfigError::BlankField { field: "audience" });
+        }
         if let Some(jwks_uri) = &self.jwks_uri {
             validate_jwks_url("jwks_uri", jwks_uri, &self.issuer)?;
         }
@@ -154,6 +160,19 @@ mod tests {
             audience: "proxima-api".to_string(),
             allowed_subjects: None,
             leeway_secs: 60,
+        }
+    }
+
+    #[test]
+    fn rejects_a_blank_audience() {
+        for blank in ["", " \t"] {
+            let mut config = config("https://issuer.example", None);
+            config.audience = blank.to_string();
+            assert_eq!(
+                config.validate(),
+                Err(OidcConfigError::BlankField { field: "audience" }),
+                "{blank:?}"
+            );
         }
     }
 
