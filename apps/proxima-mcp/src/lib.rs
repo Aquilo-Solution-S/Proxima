@@ -1013,11 +1013,7 @@ fn embedding_client_from_env(
     })?;
 
     let matryoshka = parse_bool_env(&lookup, PROXIMA_EMBED_MATRYOSHKA)?;
-    let dim = u32::try_from(embedding_dim_from_env(&lookup)?.width()).map_err(|_| {
-        CliError::Runtime(ProximaError::Config(
-            "embedding width does not fit u32".into(),
-        ))
-    })?;
+    let dim = embedding_dim_from_env(&lookup)?.width_u32();
 
     let max_input_chars = parse_positive_u32_env(&lookup, PROXIMA_EMBED_MAX_INPUT_CHARS)?
         .unwrap_or(DEFAULT_EMBED_MAX_INPUT_CHARS);

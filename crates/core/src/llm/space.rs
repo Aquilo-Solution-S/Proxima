@@ -35,6 +35,14 @@ macro_rules! embedding_dims {
                 }
             }
 
+            /// [`width`](Self::width) as the `u32` an `EmbedCaps` carries.
+            #[must_use]
+            pub const fn width_u32(self) -> u32 {
+                match self {
+                    $(Self::$variant => $width),+
+                }
+            }
+
             /// The supported width with exactly `width` components, if any.
             #[must_use]
             pub const fn from_width(width: usize) -> Option<Self> {
@@ -333,6 +341,7 @@ mod tests {
     fn every_width_round_trips_and_only_supported_widths_bind() {
         for dim in super::EmbeddingDim::ALL {
             assert_eq!(super::EmbeddingDim::try_from(dim.width()), Ok(dim));
+            assert_eq!(usize::try_from(dim.width_u32()), Ok(dim.width()));
         }
         for width in [0, 4, 383, 1023, 1025, 4096] {
             assert_eq!(
