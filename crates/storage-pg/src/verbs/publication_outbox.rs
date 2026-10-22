@@ -313,6 +313,25 @@ async fn refuse_when_full(
     }))
 }
 
+/// A record is deliverable only while it has an origin owned by the record's owner and is not an
+/// erased pin target. Spliced into every statement that claims, marks or renews a lane, so they
+/// cannot disagree about what is deliverable; each declares its outbox row as `record`.
+macro_rules! deliverable {
+    () => {
+        "AND EXISTS (
+                    SELECT 1 FROM proxima_core.publication_origin origin
+                    JOIN proxima_core.owners original_owner
+                      ON original_owner.owner_id = origin.original_owner_id
+                   WHERE origin.t = record.t
+                     AND origin.original_owner_id = record.owner_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM proxima_core.erased_pin_target erased
+                     WHERE erased.t = record.t
+                )"
+    };
+}
+
 /// Claim one consumer's deliverable lanes: fewest attempts first, then
 /// oldest `t`.
 ///
@@ -337,24 +356,17 @@ async fn refuse_when_full(
 /// undelivered lanes) serves both the predicate and the sort. `FOR UPDATE OF
 /// lane` locks the lane only: a record row stays free for the other
 /// consumers' marks.
-const CLAIM_SQL: &str = "WITH claimed AS (
+const CLAIM_SQL: &str = concat!(
+    "WITH claimed AS (
              SELECT lane.t
                FROM proxima_core.publication_delivery lane
                JOIN proxima_core.publication_outbox record ON record.t = lane.t
               WHERE lane.consumer = $4
                 AND (lane.state = 'pending'
                   OR (lane.state = 'claimed' AND lane.lease_expires_at < now()))
-                AND EXISTS (
-                    SELECT 1 FROM proxima_core.publication_origin origin
-                    JOIN proxima_core.owners original_owner
-                      ON original_owner.owner_id = origin.original_owner_id
-                   WHERE origin.t = record.t
-                     AND origin.original_owner_id = record.owner_id
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.erased_pin_target erased
-                     WHERE erased.t = record.t
-                )
+",
+    deliverable!(),
+    "
               ORDER BY lane.attempts ASC, lane.t ASC
               FOR UPDATE OF lane SKIP LOCKED
               LIMIT $1
@@ -389,7 +401,8 @@ const CLAIM_SQL: &str = "WITH claimed AS (
            FROM leased
            JOIN proxima_core.publication_outbox p ON p.t = leased.t
            JOIN proxima_core.owners o ON o.owner_id = p.owner_id
-          ORDER BY leased.attempts ASC, leased.t ASC";
+          ORDER BY leased.attempts ASC, leased.t ASC"
+);
 
 /// Shortest lease a claim may take.
 ///
@@ -456,7 +469,7 @@ impl PublicationOutboxPort for PgStorage {
         // record erased or taken over after the pre-accept renew is not
         // recorded as delivered. The consumer may already hold it; that
         // window is at-least-once delivery and no mark can close it.
-        let deliverable: Vec<Uuid> = sqlx::query_scalar(
+        let deliverable: Vec<Uuid> = sqlx::query_scalar(concat!(
             "SELECT lane.t
                FROM proxima_core.publication_delivery lane
                JOIN unnest($1::uuid[], $3::uuid[]) AS asked(t, claim_token)
@@ -465,20 +478,12 @@ impl PublicationOutboxPort for PgStorage {
               WHERE lane.consumer = $2
                 AND lane.state = 'claimed'
                 AND lane.lease_expires_at > now()
-                AND EXISTS (
-                    SELECT 1 FROM proxima_core.publication_origin origin
-                    JOIN proxima_core.owners original_owner
-                      ON original_owner.owner_id = origin.original_owner_id
-                   WHERE origin.t = record.t
-                     AND origin.original_owner_id = record.owner_id
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.erased_pin_target erased
-                     WHERE erased.t = record.t
-                )
+",
+            deliverable!(),
+            "
               ORDER BY lane.t
-                FOR UPDATE OF lane",
-        )
+                FOR UPDATE OF lane"
+        ))
         .bind(&ids)
         .bind(consumer.as_str())
         .bind(&tokens)
@@ -552,7 +557,7 @@ impl PublicationOutboxPort for PgStorage {
         let mut tx = self.platform_transaction().await?;
         // The same deliverability filter as CLAIM_SQL, so a record the claim
         // would no longer hand out is not delivered under an older claim.
-        let renewed = sqlx::query(
+        let renewed = sqlx::query(concat!(
             "UPDATE proxima_core.publication_delivery lane
                 SET lease_expires_at = now() + make_interval(secs => $4)
                FROM proxima_core.publication_outbox record
@@ -562,18 +567,9 @@ impl PublicationOutboxPort for PgStorage {
                 AND lane.state = 'claimed'
                 AND lane.claim_token = $3
                 AND lane.lease_expires_at > now()
-                AND EXISTS (
-                    SELECT 1 FROM proxima_core.publication_origin origin
-                    JOIN proxima_core.owners original_owner
-                      ON original_owner.owner_id = origin.original_owner_id
-                   WHERE origin.t = record.t
-                     AND origin.original_owner_id = record.owner_id
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.erased_pin_target erased
-                     WHERE erased.t = record.t
-                )",
-        )
+",
+            deliverable!(),
+        ))
         .bind(id)
         .bind(consumer.as_str())
         .bind(claim.into_inner())
