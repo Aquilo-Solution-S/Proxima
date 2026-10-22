@@ -64,10 +64,8 @@ pub async fn object_maintenance_pass(
     blobs: &CitedBlobStore,
     authority: &SystemAuthority,
 ) -> Result<ObjectMaintenanceOutcome, StorageError> {
-    let storage = storage.clone().with_cold(Arc::new(blobs.cold_store()));
     let options = ColdPurgeRetryOptions::default();
-    let census = storage.object_purge_census(options).await?;
-    refuse_foreign_debt(blobs.store_id(), &census)?;
+    let (storage, census) = wired_census(storage, blobs, options).await?;
     let Some(lock) = storage.try_storage_maintenance_lock().await? else {
         let mut purge = census;
         purge.skipped = true;
@@ -138,12 +136,22 @@ pub(crate) async fn refuse_foreign_purge_debt_at_boot(
     storage: &PgStorage,
     blobs: &CitedBlobStore,
 ) -> Result<(), StorageError> {
-    let census = storage
-        .clone()
-        .with_cold(Arc::new(blobs.cold_store()))
-        .object_purge_census(ColdPurgeRetryOptions::default())
-        .await?;
-    refuse_foreign_debt(blobs.store_id(), &census)
+    wired_census(storage, blobs, ColdPurgeRetryOptions::default())
+        .await
+        .map(drop)
+}
+
+/// `storage` wired to `blobs`' own object store, and its purge queue as that
+/// store sees it, once the queue is known to hold no debt for another store.
+async fn wired_census(
+    storage: &PgStorage,
+    blobs: &CitedBlobStore,
+    options: ColdPurgeRetryOptions,
+) -> Result<(PgStorage, ObjectPurgePassOutcome), StorageError> {
+    let storage = storage.clone().with_cold(Arc::new(blobs.cold_store()));
+    let census = storage.object_purge_census(options).await?;
+    refuse_foreign_debt(blobs.store_id(), &census)?;
+    Ok((storage, census))
 }
 
 /// The purge queue as the last pass left it, for the readiness answer.
