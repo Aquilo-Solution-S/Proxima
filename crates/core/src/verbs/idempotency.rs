@@ -147,40 +147,43 @@ impl ContentFingerprintBuilder {
         self.hasher.update(name);
     }
 
+    /// A field's name and the byte saying a value follows.
+    fn present(&mut self, field: &str) {
+        self.tag(field.as_bytes());
+        self.hasher.update(&[1]);
+    }
+
+    /// A field's name and the byte saying no value follows.
+    fn absent(mut self, field: &str) -> Self {
+        self.tag(field.as_bytes());
+        self.hasher.update(&[0]);
+        self
+    }
+
     /// Present trimmed text field.
     #[must_use]
-    pub fn text(mut self, field: &str, value: &str) -> Self {
-        self.tag(field.as_bytes());
-        self.hasher.update(&[1]); // present
-        let trimmed = value.trim();
-        self.hasher.update(&(trimmed.len() as u64).to_be_bytes());
-        self.hasher.update(trimmed.as_bytes());
-        self
+    pub fn text(self, field: &str, value: &str) -> Self {
+        self.bytes(field, value.trim().as_bytes())
     }
 
     /// Explicitly absent text field (distinct from empty).
     #[must_use]
-    pub fn absent_text(mut self, field: &str) -> Self {
-        self.tag(field.as_bytes());
-        self.hasher.update(&[0]); // absent
-        self
+    pub fn absent_text(self, field: &str) -> Self {
+        self.absent(field)
     }
 
     /// Present byte payload (schema id, version, canonical JSON, …).
     #[must_use]
     pub fn bytes(mut self, field: &str, value: &[u8]) -> Self {
-        self.tag(field.as_bytes());
-        self.hasher.update(&[1]);
+        self.present(field);
         self.hasher.update(&(value.len() as u64).to_be_bytes());
         self.hasher.update(value);
         self
     }
 
     #[must_use]
-    pub fn absent_bytes(mut self, field: &str) -> Self {
-        self.tag(field.as_bytes());
-        self.hasher.update(&[0]);
-        self
+    pub fn absent_bytes(self, field: &str) -> Self {
+        self.absent(field)
     }
 
     /// Schema-identified payload: schema id + version + canonical JSON bytes.
@@ -206,8 +209,7 @@ impl ContentFingerprintBuilder {
         let mut ids: Vec<Uuid> = ids.into_iter().collect();
         ids.sort_unstable();
         ids.dedup();
-        self.tag(field.as_bytes());
-        self.hasher.update(&[1]);
+        self.present(field);
         self.hasher.update(&(ids.len() as u64).to_be_bytes());
         for id in ids {
             self.hasher.update(id.as_bytes());
@@ -216,10 +218,8 @@ impl ContentFingerprintBuilder {
     }
 
     #[must_use]
-    pub fn absent_uuid_set(mut self, field: &str) -> Self {
-        self.tag(field.as_bytes());
-        self.hasher.update(&[0]);
-        self
+    pub fn absent_uuid_set(self, field: &str) -> Self {
+        self.absent(field)
     }
 
     /// Normalized lowercase tags, sorted and deduplicated.
@@ -236,8 +236,7 @@ impl ContentFingerprintBuilder {
             .collect();
         tags.sort_unstable();
         tags.dedup();
-        self.tag(b"tags");
-        self.hasher.update(&[1]);
+        self.present("tags");
         self.hasher.update(&(tags.len() as u64).to_be_bytes());
         for tag in tags {
             self.hasher.update(&(tag.len() as u64).to_be_bytes());
@@ -392,6 +391,31 @@ mod tests {
         let err = judge(Some((id, false)), &key).unwrap_err();
         assert_eq!(err.key, "k");
         assert_eq!(err.existing, id);
+    }
+
+    /// The encoding is frozen: this digest, taken before the framing was shared, must not move.
+    #[test]
+    fn the_fingerprint_encoding_does_not_move() {
+        let id = Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
+        let fingerprint = ContentFingerprint::builder(KeyScope::Perspective)
+            .text("text", "  padded  ")
+            .absent_text("no_text")
+            .bytes("bytes", b"\x00\x01")
+            .absent_bytes("no_bytes")
+            .schema_payload(
+                "payload",
+                "schema/v1",
+                3,
+                &serde_json::json!({"b": 1, "a": [2]}),
+            )
+            .uuid_set("ids", [id, Uuid::nil(), id])
+            .absent_uuid_set("no_ids")
+            .tags([" B ", "a", "b", ""])
+            .build();
+        assert_eq!(
+            fingerprint.to_hex(),
+            "939efb5d99a8cdcf34c60842cd71d988e2ec3d2c8b832b1b15d60967d8db5a26"
+        );
     }
 
     #[test]
