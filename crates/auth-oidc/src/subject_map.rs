@@ -258,7 +258,7 @@ impl OidcSubjectMap {
             map.insert_at(
                 index,
                 issuer.clone(),
-                subject.to_string(),
+                subject.trim().to_string(),
                 SubjectBinding::new(parse_user_id(index, user_id_raw)?),
             )?;
         }
@@ -635,6 +635,20 @@ mod tests {
             err,
             OidcSubjectMapError::AmbiguousIssuerForShorthand { count: 2 }
         );
+    }
+
+    #[test]
+    fn legacy_shorthand_trims_the_subject_as_it_trims_the_user_id() {
+        let user = uuid_str();
+        let issuers = [ISSUER_A.to_string()];
+        let map = OidcSubjectMap::from_legacy_shorthand(&format!(" alice : {user} "), &issuers)
+            .expect("padded entry");
+        assert!(map.resolve(ISSUER_A, "alice").is_some());
+        assert!(map.resolve(ISSUER_A, "alice ").is_none());
+        assert!(matches!(
+            OidcSubjectMap::from_legacy_shorthand(&format!(" : {user}"), &issuers),
+            Err(OidcSubjectMapError::EmptyField { field: "sub", .. })
+        ));
     }
 
     #[test]
