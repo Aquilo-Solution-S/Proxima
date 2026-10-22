@@ -108,11 +108,11 @@ struct EntriesBody {
     limit: u32,
 }
 
+/// An entry is its key's three fields beside its owner and version.
 #[derive(Serialize, Deserialize)]
 struct WireEntry {
-    entity_id: Uuid,
-    model_id: String,
-    dim: usize,
+    #[serde(flatten)]
+    key: WireKey,
     owner: Uuid,
     version: i32,
 }
@@ -157,6 +157,14 @@ fn key_from_wire(key: WireKey) -> Result<VectorKey, StorageError> {
         entity_id: key.entity_id,
         space: space(key.model_id, key.dim)?,
     })
+}
+
+fn keys_to_wire(keys: &[VectorKey]) -> Vec<WireKey> {
+    keys.iter().map(key_to_wire).collect()
+}
+
+fn keys_from_wire(keys: Vec<WireKey>) -> Result<Vec<VectorKey>, StorageError> {
+    keys.into_iter().map(key_from_wire).collect()
 }
 
 fn entity_from_wire(entity: &WireEntity) -> EmbeddableEntityRef {
@@ -312,14 +320,14 @@ impl VectorIndex for VectorIndexClient {
 
     async fn delete(&self, keys: &[VectorKey]) -> Result<(), StorageError> {
         let body = DeleteBody {
-            keys: keys.iter().map(key_to_wire).collect(),
+            keys: keys_to_wire(keys),
         };
         self.call::<_, Done>("delete", &body).await.map(drop)
     }
 
     async fn set_owner(&self, keys: &[VectorKey], owner: OwnerId) -> Result<(), StorageError> {
         let body = OwnerBody {
-            keys: keys.iter().map(key_to_wire).collect(),
+            keys: keys_to_wire(keys),
             owner: owner.into_inner(),
         };
         self.call::<_, Done>("owner", &body).await.map(drop)
@@ -376,12 +384,8 @@ impl VectorIndex for VectorIndexClient {
             .into_iter()
             .map(|entry| {
                 Ok(VectorEntry {
-                    key: key_from_wire(WireKey {
-                        entity_id: entry.entity_id,
-                        model_id: entry.model_id,
-                        dim: entry.dim,
-                    })
-                    .map_err(|error| StorageError::Unavailable(error.to_string()))?,
+                    key: key_from_wire(entry.key)
+                        .map_err(|error| StorageError::Unavailable(error.to_string()))?,
                     owner: OwnerId::new(entry.owner),
                     version: entry.version,
                 })
@@ -496,11 +500,7 @@ async fn delete(State(indexes): State<Indexes>, Path(store): Path<u16>, body: By
         store,
         &body,
         |index, body: DeleteBody| async move {
-            let keys = body
-                .keys
-                .into_iter()
-                .map(key_from_wire)
-                .collect::<Result<Vec<_>, _>>()?;
+            let keys = keys_from_wire(body.keys)?;
             index.delete(&keys).await.map(|()| Done {})
         },
     )
@@ -517,11 +517,7 @@ async fn set_owner(
         store,
         &body,
         |index, body: OwnerBody| async move {
-            let keys = body
-                .keys
-                .into_iter()
-                .map(key_from_wire)
-                .collect::<Result<Vec<_>, _>>()?;
+            let keys = keys_from_wire(body.keys)?;
             index
                 .set_owner(&keys, OwnerId::new(body.owner))
                 .await
@@ -565,15 +561,10 @@ async fn entries(State(indexes): State<Indexes>, Path(store): Path<u16>, body: B
             Ok(EntriesAnswer {
                 entries: entries
                     .into_iter()
-                    .map(|entry| {
-                        let key = key_to_wire(&entry.key);
-                        WireEntry {
-                            entity_id: key.entity_id,
-                            model_id: key.model_id,
-                            dim: key.dim,
-                            owner: entry.owner.into_inner(),
-                            version: entry.version,
-                        }
+                    .map(|entry| WireEntry {
+                        key: key_to_wire(&entry.key),
+                        owner: entry.owner.into_inner(),
+                        version: entry.version,
                     })
                     .collect(),
             })
