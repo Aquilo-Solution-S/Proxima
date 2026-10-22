@@ -118,9 +118,9 @@ pub(crate) fn oidc_from_lookup(
     let audience = env_value(lookup, "PROXIMA_OIDC_AUDIENCE").ok_or_else(|| {
         ProximaError::Config("PROXIMA_OIDC_ISSUER set without PROXIMA_OIDC_AUDIENCE".into())
     })?;
-    let public_url = env_value(lookup, "PROXIMA_PUBLIC_URL").ok_or_else(|| {
+    let public_url = public_url(&env_value(lookup, "PROXIMA_PUBLIC_URL").ok_or_else(|| {
         ProximaError::Config("PROXIMA_OIDC_ISSUER set without PROXIMA_PUBLIC_URL".into())
-    })?;
+    })?)?;
     let jwks_uri = env_value(lookup, JWKS_URI);
     let jwks_json = env_value(lookup, JWKS_JSON);
     // Both is an error rather than a precedence rule: one says fetch keys
@@ -189,6 +189,32 @@ pub(crate) fn oidc_from_lookup(
     )))
 }
 
+/// This server's own base URL, as clients are told it: `http` or `https`,
+/// with a host, and no credentials, query or fragment. The value is not
+/// echoed: a URL could carry a password.
+fn public_url(raw: &str) -> Result<String, ProximaError> {
+    let refused = |reason: &str| {
+        ProximaError::Config(format!(
+            "PROXIMA_PUBLIC_URL must be an http(s) URL with a host and no credentials, \
+             query or fragment: {reason}"
+        ))
+    };
+    let url = reqwest::Url::parse(raw).map_err(|_| refused("it does not parse"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(refused("the scheme is not http or https"));
+    }
+    if url.host_str().is_none() {
+        return Err(refused("it has no host"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(refused("it carries credentials"));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(refused("it carries a query or fragment"));
+    }
+    Ok(raw.to_owned())
+}
+
 fn oidc_require_access_token_typ(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<bool, ProximaError> {
@@ -235,7 +261,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use super::{oidc_from_lookup, oidc_http_timeout, oidc_require_access_token_typ};
+    use super::{oidc_from_lookup, oidc_http_timeout, oidc_require_access_token_typ, public_url};
+    use crate::ProximaError;
 
     /// A lookup over a fixed map, so none of this touches the process
     /// environment — which is what lets these run in parallel with every
@@ -297,6 +324,32 @@ mod tests {
                 super::OIDC_ENV_KEYS.contains(&key.as_str()),
                 "{key} is read but not in OIDC_ENV_KEYS"
             );
+        }
+    }
+
+    #[test]
+    fn a_public_url_that_is_not_a_base_url_is_refused_without_echoing_it() {
+        for bad in [
+            "proxima.example.com",
+            "ftp://proxima.example.com",
+            "https://user:secret@proxima.example.com",
+            "https://proxima.example.com/?a=1",
+            "https://proxima.example.com/#top",
+            "https://",
+        ] {
+            let Err(ProximaError::Config(message)) = public_url(bad) else {
+                panic!("{bad} must be refused");
+            };
+            assert!(message.contains("PROXIMA_PUBLIC_URL"), "{message}");
+            assert!(!message.contains("secret"), "{message}");
+        }
+        for good in [
+            "https://mcp.test",
+            "https://mcp.test/",
+            "http://127.0.0.1:31415",
+            "https://mcp.test/proxima",
+        ] {
+            assert_eq!(public_url(good).expect(good), good);
         }
     }
 
