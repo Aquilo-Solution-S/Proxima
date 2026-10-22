@@ -782,7 +782,7 @@ fn query_instruction_from_env(
     lookup: &impl Fn(&str) -> Option<String>,
     key: &'static str,
 ) -> Result<Option<QueryInstruction>, CliError> {
-    lookup_non_empty(lookup, key)
+    proxima_core::env_value(lookup, key)
         .map(|raw| {
             QueryInstruction::new(raw.replace("\\n", "\n"))
                 .map_err(|err| CliError::Runtime(ProximaError::Config(format!("{key}: {err}"))))
@@ -828,9 +828,9 @@ fn served_surface_from_env(
     registered: &RegisteredKeys,
 ) -> Result<ServedSurface, CliError> {
     resolve_served_surface(
-        lookup_non_empty(lookup, PROXIMA_TOOL_PROFILE).as_deref(),
-        lookup_non_empty(lookup, PROXIMA_TOOL_ALLOW).as_deref(),
-        lookup_non_empty(lookup, PROXIMA_TOOL_DENY).as_deref(),
+        proxima_core::env_value(lookup, PROXIMA_TOOL_PROFILE).as_deref(),
+        proxima_core::env_value(lookup, PROXIMA_TOOL_ALLOW).as_deref(),
+        proxima_core::env_value(lookup, PROXIMA_TOOL_DENY).as_deref(),
         registered,
     )
 }
@@ -981,14 +981,15 @@ fn embedding_client_from_env(
     // or not embeddings are configured.
     let plaintext_hosts = proxima_core::PlaintextHosts::from_lookup(&lookup)
         .map_err(|err| CliError::Runtime(ProximaError::Config(err.to_string())))?;
-    let api_key = lookup_non_empty(&lookup, PROXIMA_EMBED_API_KEY);
-    let base_url = lookup_non_empty(&lookup, PROXIMA_EMBED_BASE_URL);
+    let api_key = proxima_core::env_value(&lookup, PROXIMA_EMBED_API_KEY);
+    let base_url = proxima_core::env_value(&lookup, PROXIMA_EMBED_BASE_URL);
     let model = embedding_model_from_env(&lookup);
-    let matryoshka_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_MATRYOSHKA).is_some();
-    let dim_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_DIM).is_some();
-    let max_input_is_set = lookup_non_empty(&lookup, PROXIMA_EMBED_MAX_INPUT_CHARS).is_some();
+    let matryoshka_is_set = proxima_core::env_value(&lookup, PROXIMA_EMBED_MATRYOSHKA).is_some();
+    let dim_is_set = proxima_core::env_value(&lookup, PROXIMA_EMBED_DIM).is_some();
+    let max_input_is_set =
+        proxima_core::env_value(&lookup, PROXIMA_EMBED_MAX_INPUT_CHARS).is_some();
     let query_instruction_is_set =
-        lookup_non_empty(&lookup, PROXIMA_EMBED_QUERY_INSTRUCTION).is_some();
+        proxima_core::env_value(&lookup, PROXIMA_EMBED_QUERY_INSTRUCTION).is_some();
 
     if base_url.is_none()
         && model.is_none()
@@ -1039,7 +1040,7 @@ fn parse_positive_u32_env(
     lookup: &impl Fn(&str) -> Option<String>,
     key: &'static str,
 ) -> Result<Option<NonZeroU32>, CliError> {
-    let Some(raw) = lookup_non_empty(lookup, key) else {
+    let Some(raw) = proxima_core::env_value(lookup, key) else {
         return Ok(None);
     };
     raw.parse::<NonZeroU32>().map(Some).map_err(|_| {
@@ -1053,7 +1054,7 @@ fn parse_bool_env(
     lookup: &impl Fn(&str) -> Option<String>,
     key: &'static str,
 ) -> Result<bool, CliError> {
-    match lookup_non_empty(lookup, key) {
+    match proxima_core::env_value(lookup, key) {
         None => Ok(false),
         Some(raw) => proxima_core::parse_bool_word(&raw).ok_or_else(|| {
             CliError::Runtime(ProximaError::Config(format!(
@@ -1064,14 +1065,14 @@ fn parse_bool_env(
 }
 
 fn embedding_model_from_env(lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
-    lookup_non_empty(&lookup, PROXIMA_EMBED_MODEL)
+    proxima_core::env_value(&lookup, PROXIMA_EMBED_MODEL)
 }
 
 /// `PROXIMA_EMBED_DIM`, or 1024 when unset.
 fn embedding_dim_from_env(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<proxima_core::llm::EmbeddingDim, CliError> {
-    let Some(raw) = lookup_non_empty(lookup, PROXIMA_EMBED_DIM) else {
+    let Some(raw) = proxima_core::env_value(lookup, PROXIMA_EMBED_DIM) else {
         return Ok(proxima_core::llm::EmbeddingDim::D1024);
     };
     let width = raw.parse::<usize>().map_err(|_| {
@@ -1099,10 +1100,6 @@ fn maintenance_embedding_space(
             ))
         })?;
     Ok(proxima_core::EmbeddingSpace::new(model, dim))
-}
-
-fn lookup_non_empty(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
-    proxima_core::env_value(lookup, key)
 }
 
 #[derive(Debug, thiserror::Error)]
