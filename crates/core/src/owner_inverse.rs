@@ -77,6 +77,54 @@ pub struct CascadedDetail {
     pub key_column: &'static str,
 }
 
+/// The host-lifecycle surfaces of a set under construction: each recorded
+/// surface is lifecycle or generic, and a table may not be both.
+#[derive(Default)]
+struct HostLifecycleLedger {
+    host: BTreeMap<&'static str, HostStateLifecycleSurface>,
+    generic: std::collections::BTreeSet<&'static str>,
+}
+
+impl HostLifecycleLedger {
+    fn record(&mut self, surface: &Surface) -> Result<(), OwnerSurfacesError> {
+        let crate::flavor::EraseRule::HostState {
+            whole_owner,
+            source,
+            exact_fact,
+        } = surface.erase
+        else {
+            self.generic.insert(surface.table);
+            return Ok(());
+        };
+        let declared = HostStateLifecycleSurface {
+            table: StateSurfaceName::new(surface.table),
+            whole_owner_erase: whole_owner,
+            source_erase: source,
+            exact_fact_erase: exact_fact,
+            owner_export: surface.export,
+            counter: surface.counter,
+        };
+        if self.host.insert(surface.table, declared).is_some() {
+            return Err(OwnerSurfacesError::DuplicateHostLifecycleTable {
+                table: surface.table,
+            });
+        }
+        Ok(())
+    }
+
+    /// The lifecycle surfaces by table, unless one table is also generic.
+    fn finish(self) -> Result<Vec<HostStateLifecycleSurface>, OwnerSurfacesError> {
+        if let Some(table) = self
+            .host
+            .keys()
+            .find(|table| self.generic.contains(**table))
+        {
+            return Err(OwnerSurfacesError::HostLifecycleOverlapsGenericTable { table });
+        }
+        Ok(self.host.into_values().collect())
+    }
+}
+
 impl OwnerSurfaces {
     /// Read every flavor's declared surfaces off one frozen registry.
     ///
@@ -114,8 +162,7 @@ impl OwnerSurfaces {
         let mut legs = BTreeMap::new();
         let mut transfer_legs = BTreeMap::new();
         let mut forget_legs = BTreeMap::new();
-        let mut host_lifecycle = BTreeMap::new();
-        let mut generic_tables = std::collections::BTreeSet::new();
+        let mut ledger = HostLifecycleLedger::default();
         let mut state_tables = std::collections::BTreeSet::new();
         let mut cascaded_details: BTreeMap<String, Vec<CascadedDetail>> = BTreeMap::new();
         for contract in registry.contracts() {
@@ -140,57 +187,26 @@ impl OwnerSurfaces {
                 state_tables.insert(surface.table);
             }
             for surface in contract.all_surfaces() {
-                if let crate::flavor::EraseRule::HostState {
-                    whole_owner,
-                    source,
-                    exact_fact,
-                } = surface.erase
-                {
-                    if !contract
+                if matches!(surface.erase, crate::flavor::EraseRule::HostState { .. })
+                    && !contract
                         .state_surfaces
                         .iter()
                         .any(|declared| declared.table == surface.table)
-                    {
-                        return Err(OwnerSurfacesError::HostLifecycleOutsideStateSurfaces {
-                            table: surface.table,
-                        });
-                    }
-                    if host_lifecycle
-                        .insert(
-                            surface.table,
-                            HostStateLifecycleSurface {
-                                table: StateSurfaceName::new(surface.table),
-                                whole_owner_erase: whole_owner,
-                                source_erase: source,
-                                exact_fact_erase: exact_fact,
-                                owner_export: surface.export,
-                                counter: surface.counter,
-                            },
-                        )
-                        .is_some()
-                    {
-                        return Err(OwnerSurfacesError::DuplicateHostLifecycleTable {
-                            table: surface.table,
-                        });
-                    }
-                } else {
-                    generic_tables.insert(surface.table);
+                {
+                    return Err(OwnerSurfacesError::HostLifecycleOutsideStateSurfaces {
+                        table: surface.table,
+                    });
                 }
+                ledger.record(&surface)?;
                 legs.insert(surface.table, contract.erase_leg(&surface));
                 transfer_legs.insert(surface.table, contract.transfer_leg(&surface));
                 forget_legs.insert(surface.table, ForgetLeg::derive(&surface));
                 surfaces.push(surface);
             }
         }
-        if let Some(table) = host_lifecycle
-            .keys()
-            .find(|table| generic_tables.contains(**table))
-        {
-            return Err(OwnerSurfacesError::HostLifecycleOverlapsGenericTable { table });
-        }
+        let host_lifecycle = ledger.finish()?;
         surfaces.sort_by_key(|surface| surface.table);
         surfaces.dedup_by_key(|surface| surface.table);
-        let host_lifecycle = host_lifecycle.into_values().collect();
         for details in cascaded_details.values_mut() {
             details.sort_by_key(|detail| detail.table);
             details.dedup_by_key(|detail| detail.table);
@@ -234,43 +250,11 @@ impl OwnerSurfaces {
     /// Returns [`OwnerSurfacesError`] for duplicate lifecycle declarations
     /// or lifecycle/generic overlap.
     pub fn try_from_surfaces(mut surfaces: Vec<Surface>) -> Result<Self, OwnerSurfacesError> {
-        let mut host_lifecycle = BTreeMap::new();
-        let mut generic_tables = std::collections::BTreeSet::new();
+        let mut ledger = HostLifecycleLedger::default();
         for surface in &surfaces {
-            if let crate::flavor::EraseRule::HostState {
-                whole_owner,
-                source,
-                exact_fact,
-            } = surface.erase
-            {
-                if host_lifecycle
-                    .insert(
-                        surface.table,
-                        HostStateLifecycleSurface {
-                            table: StateSurfaceName::new(surface.table),
-                            whole_owner_erase: whole_owner,
-                            source_erase: source,
-                            exact_fact_erase: exact_fact,
-                            owner_export: surface.export,
-                            counter: surface.counter,
-                        },
-                    )
-                    .is_some()
-                {
-                    return Err(OwnerSurfacesError::DuplicateHostLifecycleTable {
-                        table: surface.table,
-                    });
-                }
-            } else {
-                generic_tables.insert(surface.table);
-            }
+            ledger.record(surface)?;
         }
-        if let Some(table) = host_lifecycle
-            .keys()
-            .find(|table| generic_tables.contains(**table))
-        {
-            return Err(OwnerSurfacesError::HostLifecycleOverlapsGenericTable { table });
-        }
+        let host_lifecycle = ledger.finish()?;
         surfaces.sort_by_key(|surface| surface.table);
         surfaces.dedup_by_key(|surface| surface.table);
         let legs = surfaces
@@ -291,7 +275,7 @@ impl OwnerSurfaces {
             legs,
             transfer_legs,
             forget_legs,
-            host_lifecycle: host_lifecycle.into_values().collect(),
+            host_lifecycle,
             cascaded_details: BTreeMap::new(),
         })
     }
