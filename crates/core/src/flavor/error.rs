@@ -41,6 +41,14 @@ pub enum FlavorRegistryError {
         expected_prefix: String,
         message: String,
     },
+    /// A tool's, or one of its actions', human title is empty, multi-line,
+    /// padded or too long ([`MAX_TITLE_CHARS`](crate::mcp::MAX_TITLE_CHARS)).
+    #[error("{key} has an invalid title {title:?}: it {problem}")]
+    InvalidTitle {
+        key: String,
+        title: &'static str,
+        problem: &'static str,
+    },
     #[error("tool {name} has invalid MCP output schema: {message}")]
     InvalidToolOutputSchema { name: &'static str, message: String },
     #[error("duplicate owner resolver registered")]

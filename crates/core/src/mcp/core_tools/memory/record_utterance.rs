@@ -60,6 +60,7 @@ pub struct RecordUtteranceTool;
 
 impl McpTool for RecordUtteranceTool {
     const NAME: &'static str = protocol_tool::CORE_RECORD_UTTERANCE;
+    const TITLE: &'static str = "Record an utterance";
     const DESCRIPTION: &'static str = "Append one raw conversation turn (utterance) as a Fact. Use `core_remember` for distilled observations rather than verbatim transcript.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
     type Args = RecordUtteranceArgs;

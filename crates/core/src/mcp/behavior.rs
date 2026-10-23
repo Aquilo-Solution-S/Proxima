@@ -238,6 +238,7 @@ impl ScopeGateBehavior {
         args: &serde_json::Value,
         ctx: &McpToolCtx,
     ) -> Result<(), McpToolError> {
+        ctx.judged.clear();
         let capabilities = ctx.authz.capabilities();
         // The request name is parsed once, here. A name that is no key is in
         // no palette (`All` holds everything, as ever), and every comparison
@@ -251,11 +252,17 @@ impl ScopeGateBehavior {
         // action would sail past this gate into the tool.
         let descriptor = ctx.registry.mcp_tool(tool);
         if descriptor.is_some_and(|descriptor| !descriptor.advertised_by(capabilities)) {
+            // Refused as a whole, so the key it was judged by is the tool's.
+            if let Ok(key) = key {
+                ctx.judged.record(key);
+            }
             return Err(McpToolError::NotAuthorized(tool.to_string()));
         }
         // Every branch ends with the declaration of exactly the key it judged
         // — a dispatcher's action, a flat tool's, a host tool's, a core
-        // resource's — and the owner-role gate reads that same value.
+        // resource's — and the owner-role gate reads that same value. Each
+        // records that key on the context before it decides on it, so a
+        // refusal carries the key too.
         let declared = match descriptor {
             Some(descriptor) if !descriptor.action_arg_specs.is_empty() => {
                 // A registered tool's name is a `ToolName`: `try_freeze` checked.
@@ -282,6 +289,7 @@ impl ScopeGateBehavior {
                         "unknown action {action:?} for tool {tool}"
                     )));
                 };
+                Self::record_action(tool_name, &action, ctx)?;
                 if !capabilities.admits_action(tool_name, &action, declared) {
                     return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
                 }
@@ -301,6 +309,7 @@ impl ScopeGateBehavior {
                 let Ok(action_name) = ActionName::parse(action) else {
                     return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
                 };
+                Self::record_action(tool_name, &action_name, ctx)?;
                 if !capabilities.admits_action(tool_name, &action_name, declared) {
                     return Err(McpToolError::NotAuthorized(format!("{tool}:{action}")));
                 }
@@ -308,6 +317,9 @@ impl ScopeGateBehavior {
             }
             _ => {
                 let declared = Self::flat_declaration(tool, key.as_ref().ok(), descriptor, ctx);
+                if let Ok(key) = &key {
+                    ctx.judged.record(key.clone());
+                }
                 let allowed = match &key {
                     Ok(key) => capabilities.admits(key, declared),
                     Err(_) => {
@@ -323,6 +335,18 @@ impl ScopeGateBehavior {
         };
         let owner = Self::resolve_scope_owner(tool, args, ctx)?;
         Self::enforce_owner_role(tool, declared, owner.owner, ctx)?;
+        Ok(())
+    }
+
+    /// Record `tool:action` as the key the gate judges this call by.
+    fn record_action(
+        tool: &crate::ToolName,
+        action: &ActionName,
+        ctx: &McpToolCtx,
+    ) -> Result<(), McpToolError> {
+        let key = ScopeKey::action(tool.clone(), action.clone())
+            .map_err(|_| McpToolError::NotAuthorized(format!("{tool}:{action}")))?;
+        ctx.judged.record(key);
         Ok(())
     }
 
@@ -597,6 +621,152 @@ mod tests {
             ScopeGateBehavior::enforce_scope(name, &args, &all_ctx)
                 .unwrap_or_else(|error| panic!("{name:?} under All: {error:?}"));
         }
+    }
+
+    fn judged(name: &str, args: &serde_json::Value, ctx: &McpToolCtx) -> Option<String> {
+        let _ = ScopeGateBehavior::enforce_scope(name, args, ctx);
+        ctx.judged.get().map(|key| key.to_string())
+    }
+
+    /// The gate is the one place the key is derived, and a host reads it
+    /// instead of deriving it a second time: a dispatcher's `tool:action`, a
+    /// flat tool's name, a core resource's key.
+    #[test]
+    fn the_gate_records_the_key_it_judged_for_each_kind_of_call() {
+        let ctx = test_ctx(ToolScope::All);
+        let none = serde_json::json!({});
+        assert_eq!(
+            judged(
+                protocol_tool::CORE_GOAL,
+                &serde_json::json!({ "action": "set" }),
+                &ctx
+            ),
+            Some("core_goal:set".into())
+        );
+        assert_eq!(
+            judged(protocol_tool::CORE_REMEMBER, &none, &ctx),
+            Some(protocol_tool::CORE_REMEMBER.into())
+        );
+        assert_eq!(
+            judged(crate::protocol::resource::MEMORY, &none, &ctx),
+            Some(crate::protocol::resource::MEMORY.into())
+        );
+    }
+
+    /// A call the gate refuses for its key carries that key, so a host that
+    /// records refusals names them as it names the calls it lets through.
+    #[test]
+    fn a_call_refused_for_its_key_carries_the_key() {
+        let ctx = test_ctx(palette(&["core_remember"]));
+        let set = serde_json::json!({ "action": "set" });
+        assert!(matches!(
+            ScopeGateBehavior::enforce_scope(protocol_tool::CORE_GOAL, &set, &ctx),
+            Err(McpToolError::NotAuthorized(_))
+        ));
+        // The palette holds no leaf of the dispatcher, so it is not even
+        // advertised: refused as a whole, on its bare name.
+        assert_eq!(
+            ctx.judged.get().map(|key| key.to_string()),
+            Some("core_goal".into())
+        );
+
+        let ctx = test_ctx(palette(&["core_goal:transition"]));
+        assert!(matches!(
+            ScopeGateBehavior::enforce_scope(protocol_tool::CORE_GOAL, &set, &ctx),
+            Err(McpToolError::NotAuthorized(ref key)) if key == "core_goal:set"
+        ));
+        assert_eq!(
+            ctx.judged.get().map(|key| key.to_string()),
+            Some("core_goal:set".into())
+        );
+
+        let ctx = test_ctx(palette(&["core_goal:set"]));
+        assert!(
+            ScopeGateBehavior::enforce_scope(
+                protocol_tool::CORE_REMEMBER,
+                &serde_json::json!({}),
+                &ctx
+            )
+            .is_err()
+        );
+        assert_eq!(
+            ctx.judged.get().map(|key| key.to_string()),
+            Some(protocol_tool::CORE_REMEMBER.into())
+        );
+    }
+
+    /// No key is derived for a call that names none: a dispatcher call
+    /// without an action, with an undeclared one, or a name that is no key.
+    #[test]
+    fn a_call_with_no_derivable_key_records_none() {
+        let ctx = test_ctx(ToolScope::All);
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({ "action": 7 }),
+            serde_json::json!({ "action": "undeclared" }),
+        ] {
+            assert_eq!(
+                judged(protocol_tool::CORE_GOAL, &args, &ctx),
+                None,
+                "{args}"
+            );
+        }
+        assert_eq!(judged("a:b:c", &serde_json::json!({}), &ctx), None);
+    }
+
+    /// A context serves one call at a time: the gate clears the key on
+    /// entry, so a call that derives none never shows the previous call's.
+    #[test]
+    fn a_context_reused_for_a_second_call_never_shows_the_first_calls_key() {
+        let ctx = test_ctx(ToolScope::All);
+        assert!(judged(protocol_tool::CORE_REMEMBER, &serde_json::json!({}), &ctx).is_some());
+        assert_eq!(judged("a:b:c", &serde_json::json!({}), &ctx), None);
+    }
+
+    #[derive(Debug)]
+    struct KeyReader {
+        seen: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    #[async_trait]
+    impl RequestBehavior for KeyReader {
+        async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<ToolReply, McpToolError> {
+            let ctx = call.ctx.clone();
+            let reply = next.run(call).await;
+            self.seen
+                .lock()
+                .expect("reader lock")
+                .push(ctx.judged.get().map(|key| key.to_string()));
+            reply
+        }
+    }
+
+    /// A behavior ahead of the gate reads the key from its own clone of the
+    /// context once the call returns, whether the gate let the call through
+    /// or refused it.
+    #[tokio::test]
+    async fn a_behavior_wrapping_the_gate_reads_the_key_after_the_call() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![
+            Arc::new(KeyReader { seen: seen.clone() }),
+            Arc::new(ScopeGateBehavior),
+        ];
+        for scope in [ToolScope::All, palette(&["core_goal:transition"])] {
+            let terminal: TerminalDispatch<'_> = Box::new(|_call| {
+                Box::pin(async { Ok(ToolReply::Structured(serde_json::json!({}))) })
+            });
+            let _ = Next::new(&behaviors, terminal)
+                .run(ToolCall {
+                    name: protocol_tool::CORE_GOAL.to_string(),
+                    args: serde_json::json!({ "action": "set" }),
+                    ctx: test_ctx(scope),
+                })
+                .await;
+        }
+        assert_eq!(
+            *seen.lock().expect("reader lock"),
+            vec![Some("core_goal:set".to_string()); 2]
+        );
     }
 
     /// A bare dispatcher key cannot grant one of its executable leaves.
@@ -896,6 +1066,7 @@ mod tests {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         }
     }
 }
@@ -939,6 +1110,7 @@ mod argv_scope_tests {
     struct ArgvTool;
 
     impl McpTool for ArgvTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "proxima-stub_cli";
         const DESCRIPTION: &'static str = "An argv-keyed fixture dispatcher.";
         const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = &[
@@ -947,12 +1119,14 @@ mod argv_scope_tests {
                 argv_prefix: &["approval"],
                 effect: ToolEffect::ReadOnly,
                 audience: McpToolAudience::Shared,
+                title: "Test action",
             },
             McpArgvActionSpec {
                 action: "approval-decide",
                 argv_prefix: &["approval", "decide"],
                 effect: ToolEffect::Additive(Replay::NonIdempotent),
                 audience: McpToolAudience::Shared,
+                title: "Test action",
             },
         ];
         type Args = ArgvArgs;
@@ -1003,6 +1177,7 @@ mod argv_scope_tests {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         }
     }
 
@@ -1035,6 +1210,31 @@ mod argv_scope_tests {
             matches!(err, McpToolError::NotAuthorized(ref key)
                 if key == &format!("{}:approval-decide", ArgvTool::NAME)),
             "got {err:?}",
+        );
+    }
+
+    /// An argv dispatcher's commands are titled like a tagged one's.
+    #[test]
+    fn the_descriptor_titles_an_argv_dispatchers_commands() {
+        let ctx = argv_ctx(ToolScope::All);
+        let descriptor = ctx.registry.mcp_tool(ArgvTool::NAME).expect("registered");
+        let key = ScopeKey::parse(&format!("{}:approval-decide", ArgvTool::NAME)).expect("a key");
+        assert_eq!(descriptor.title_of(&key), Some("Test action"));
+    }
+
+    /// The recorded key is the one the gate derived by longest prefix.
+    #[test]
+    fn the_gate_records_the_derived_argv_action() {
+        let ctx = argv_ctx(ToolScope::All);
+        ScopeGateBehavior::enforce_scope(
+            ArgvTool::NAME,
+            &serde_json::json!({ "argv": ["approval", "decide", "--id", "7"] }),
+            &ctx,
+        )
+        .expect("admitted");
+        assert_eq!(
+            ctx.judged.get().map(|key| key.to_string()),
+            Some(format!("{}:approval-decide", ArgvTool::NAME))
         );
     }
 
@@ -1195,6 +1395,7 @@ mod owner_role_tests {
     struct DeclaredReadTool;
 
     impl McpTool for DeclaredReadTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "proxima-stub_search";
         const DESCRIPTION: &'static str = "A flavor read tool that declares itself read-only.";
         const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
@@ -1215,6 +1416,7 @@ mod owner_role_tests {
     struct SilentTool;
 
     impl McpTool for SilentTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "proxima-stub_silent";
         const DESCRIPTION: &'static str = "A flavor tool that declares no annotations.";
         type Args = StubArgs;
@@ -1250,6 +1452,7 @@ mod owner_role_tests {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         }
     }
 
@@ -1346,6 +1549,7 @@ mod owner_role_tests {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         };
 
         let err = ScopeGateBehavior::enforce_scope(
@@ -1389,6 +1593,7 @@ mod owner_role_tests {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         };
 
         ScopeGateBehavior::enforce_scope(
@@ -1469,6 +1674,7 @@ mod visibility_tests {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         }
     }
 

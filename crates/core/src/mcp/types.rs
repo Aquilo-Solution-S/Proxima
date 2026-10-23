@@ -159,6 +159,49 @@ pub struct McpToolCtx {
     /// Tools that need to call engine verbs (CRUD-via-MCP) require this;
     /// pure read-only / projection tools can ignore it.
     pub engine: Option<Arc<crate::Engine>>,
+    /// The key the scope gate judged this call by. See [`JudgedKey`].
+    pub judged: JudgedKey,
+}
+
+/// The one [`ScopeKey`](crate::ScopeKey) the scope gate decided a call on, for a later
+/// behavior or the host to read: a dispatcher's `tool:action`, a flat tool's
+/// name, a core resource's key.
+///
+/// [`ScopeGateBehavior`](crate::mcp::ScopeGateBehavior) is the only writer,
+/// so the derivation stays in one place and a host that names what a call did
+/// reads that key instead of deriving it a second time. The gate writes it
+/// before it decides: a call it refuses for that key carries the key too,
+/// and a behavior that wraps the gate reads it from its own clone of the
+/// context once the call returns (clones share one cell). A tool the
+/// caller's palette does not advertise is refused as a whole, on its bare
+/// name. Empty until the gate has derived a key, and when it never does: a
+/// dispatcher call without a declared action, a name that is no key.
+///
+/// Every context starts empty and the gate clears it on entry, so a context
+/// reused for a second call never shows the first call's key.
+#[derive(Debug, Clone, Default)]
+pub struct JudgedKey(Arc<std::sync::Mutex<Option<crate::ScopeKey>>>);
+
+impl JudgedKey {
+    /// The key the gate judged this call by, if it derived one.
+    #[must_use]
+    pub fn get(&self) -> Option<crate::ScopeKey> {
+        self.cell().clone()
+    }
+
+    pub(crate) fn clear(&self) {
+        *self.cell() = None;
+    }
+
+    pub(crate) fn record(&self, key: crate::ScopeKey) {
+        *self.cell() = Some(key);
+    }
+
+    fn cell(&self) -> std::sync::MutexGuard<'_, Option<crate::ScopeKey>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 impl std::fmt::Debug for McpToolCtx {

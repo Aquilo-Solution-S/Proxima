@@ -83,6 +83,7 @@ pub struct ListNotebooksTool;
 
 impl Tool for ListNotebooksTool {
     const NAME: &'static str = LIST_NOTEBOOKS_TOOL;
+    const TITLE: &'static str = "List notebooks";
     const DESCRIPTION: &'static str =
         "List the current owner's notebooks (example flavor; a test fixture).";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);

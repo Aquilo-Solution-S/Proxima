@@ -55,13 +55,15 @@ pub use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
 /// Transport-neutral tool metadata.
 /// Implement [`Tool`] with [`ToolCtx`] / [`ToolError`]; MCP and REST adapt it.
 /// Declare what the tool does once, as a [`ToolEffect`]: `Tool::EFFECT` on a
-/// flat tool, `McpActionArgSpec::effect` per action of a dispatcher.
+/// flat tool, `McpActionArgSpec::effect` per action of a dispatcher. Name it
+/// for a person once too: `Tool::TITLE`, and `McpActionArgSpec::title` per
+/// action, each at most [`MAX_TITLE_CHARS`] characters.
 /// Resolve dependencies with `ctx.service::<T>()` and model labels with
 /// [`ToolCtx::operator_label`]. The authenticated model identity takes precedence.
 /// Read application-specific verified claims through
 /// `ctx.authz().verified_claims()`; interpretation belongs to the flavor.
 pub use proxima_core::mcp::{
-    KeyDeclaration, McpActionArgSpec, McpAuthorContext, Replay, ToolEffect,
+    KeyDeclaration, MAX_TITLE_CHARS, McpActionArgSpec, McpAuthorContext, Replay, ToolEffect,
 };
 /// Host-wired cited-blob lane, resolved by tools and workers from
 /// [`FlavorServices`]. Present only when the host configured S3; the concrete

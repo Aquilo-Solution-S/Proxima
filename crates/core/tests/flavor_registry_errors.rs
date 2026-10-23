@@ -20,6 +20,7 @@ impl<T> McpTool for OutputFixture<T>
 where
     T: serde::Serialize + schemars::JsonSchema + Send + 'static,
 {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = "proxima-test_output";
     const DESCRIPTION: &'static str = "output schema fixture";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
@@ -117,6 +118,7 @@ struct EmptyArgs {}
 struct DemoTool;
 
 impl McpTool for DemoTool {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = "proxima-test_demo";
     const DESCRIPTION: &'static str = "test";
     type Args = EmptyArgs;
@@ -133,6 +135,7 @@ impl McpTool for DemoTool {
 struct WrongPrefixTool;
 
 impl McpTool for WrongPrefixTool {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = "wrong_demo";
     const DESCRIPTION: &'static str = "test";
     type Args = EmptyArgs;
@@ -149,6 +152,7 @@ impl McpTool for WrongPrefixTool {
 struct ProviderUnsafeTool;
 
 impl McpTool for ProviderUnsafeTool {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = "proxima-test/demo";
     const DESCRIPTION: &'static str = "test";
     type Args = EmptyArgs;
@@ -258,6 +262,7 @@ macro_rules! stub_tool {
         struct $tool;
 
         impl McpTool for $tool {
+            const TITLE: &'static str = "Test tool";
             const NAME: &'static str = $name;
             const DESCRIPTION: &'static str = "test";
             const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = $specs;
@@ -314,6 +319,7 @@ stub_tool!(
         required_fields: &["value"],
         effect: ToolEffect::Additive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
+        title: "Test action",
     }]
 );
 
@@ -327,6 +333,7 @@ stub_tool!(
         required_fields: &["id"],
         effect: ToolEffect::Additive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
+        title: "Test action",
     }]
 );
 stub_tool!(
@@ -339,6 +346,7 @@ stub_tool!(
         required_fields: &["id"],
         effect: ToolEffect::Additive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
+        title: "Test action",
     }]
 );
 
@@ -352,6 +360,7 @@ stub_tool!(
         required_fields: &["id"],
         effect: ToolEffect::Additive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
+        title: "Test action",
     }]
 );
 stub_tool!(
@@ -364,6 +373,7 @@ stub_tool!(
         required_fields: &[],
         effect: ToolEffect::Additive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
+        title: "Test action",
     }]
 );
 stub_tool!(
@@ -376,6 +386,7 @@ stub_tool!(
         required_fields: &["id"],
         effect: ToolEffect::Additive(Replay::NonIdempotent),
         audience: McpToolAudience::Shared,
+        title: "Test action",
     }]
 );
 stub_tool!(
@@ -389,6 +400,7 @@ stub_tool!(
             required_fields: &["id"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
+            title: "Test action",
         },
         McpActionArgSpec {
             action: "touch",
@@ -396,6 +408,7 @@ stub_tool!(
             required_fields: &["id", "note"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
+            title: "Test action",
         },
     ]
 );
@@ -409,6 +422,7 @@ stub_tool!(
         required_fields: &["id"],
         effect: ToolEffect::ReadOnly,
         audience: McpToolAudience::Shared,
+        title: "Test action",
     }]
 );
 // Two specs for one action, with identical field lists so the field-set loop
@@ -424,6 +438,7 @@ stub_tool!(
             required_fields: &["id"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
+            title: "Test action",
         },
         McpActionArgSpec {
             action: "look",
@@ -431,6 +446,7 @@ stub_tool!(
             required_fields: &["id"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
+            title: "Test action",
         },
     ]
 );

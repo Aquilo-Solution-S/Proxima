@@ -296,6 +296,7 @@ mod tests {
     }
 
     impl McpTool for LabelEchoTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "test_label_echo";
         const DESCRIPTION: &'static str = "echo the resolved operator label";
         const EFFECT: Option<ToolEffect> = Some(proxima_core::ToolEffect::ReadOnly);
@@ -335,6 +336,7 @@ mod tests {
     }
 
     impl McpTool for MarkerTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "test_marker";
         const DESCRIPTION: &'static str = "test marker";
         const EFFECT: Option<ToolEffect> = Some(proxima_core::ToolEffect::ReadOnly);

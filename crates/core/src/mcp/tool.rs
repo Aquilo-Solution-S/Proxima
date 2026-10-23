@@ -4,6 +4,26 @@ use crate::{ActionName, CapabilitySet, ScopeKey, ScopeKeyError, ToolCaller, Tool
 
 use super::{McpToolCtx, McpToolError};
 
+/// The longest title ([`McpActionArgSpec::title`], [`McpToolDescriptor::title`]),
+/// in characters: a label beside a recorded call, not a description.
+pub const MAX_TITLE_CHARS: usize = 60;
+
+/// Why `title` is no title, or `None` when it is one: a single line of
+/// 1 to [`MAX_TITLE_CHARS`] characters with no edge whitespace.
+pub(crate) fn title_problem(title: &str) -> Option<&'static str> {
+    if title.is_empty() {
+        Some("is empty")
+    } else if title.trim() != title {
+        Some("has leading or trailing whitespace")
+    } else if title.chars().any(char::is_control) {
+        Some("spans lines or holds a control character")
+    } else if title.chars().count() > MAX_TITLE_CHARS {
+        Some("is longer than MAX_TITLE_CHARS")
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpToolOrigin {
     Substrate,
@@ -99,6 +119,9 @@ pub enum McpUnknownFieldPolicy {
 #[derive(Clone)]
 pub struct McpToolDescriptor {
     pub name: &'static str,
+    /// The short name a person reads for this tool ("Goals"); see
+    /// [`crate::Tool::TITLE`]. [`Self::title_of`] names one key of it.
+    pub title: &'static str,
     pub description: &'static str,
     pub origin: McpToolOrigin,
     pub produces_schema_ids: &'static [&'static str],
@@ -163,6 +186,27 @@ impl McpToolDescriptor {
                     .iter()
                     .map(|spec| (spec.action, spec.effect)),
             )
+    }
+
+    /// The title a person reads for one key of this tool: the tool's own for
+    /// its bare name, an action's for `tool:action`. `None` for a key of
+    /// another tool, an action the tool does not declare, and a resource.
+    #[must_use]
+    pub fn title_of(&self, key: &crate::ScopeKey) -> Option<&'static str> {
+        match key {
+            crate::ScopeKey::Tool(tool) if tool.as_str() == self.name => Some(self.title),
+            crate::ScopeKey::Action { tool, action } if tool.as_str() == self.name => self
+                .action_arg_specs
+                .iter()
+                .map(|spec| (spec.action, spec.title))
+                .chain(
+                    self.argv_action_specs
+                        .iter()
+                        .map(|spec| (spec.action, spec.title)),
+                )
+                .find_map(|(declared, title)| (declared == action.as_str()).then_some(title)),
+            _ => None,
+        }
     }
 
     /// The descriptor-owned contract for one dispatcher action.
@@ -459,6 +503,7 @@ impl std::fmt::Debug for McpToolDescriptor {
         formatter
             .debug_struct("McpToolDescriptor")
             .field("name", &self.name)
+            .field("title", &self.title)
             .field("description", &self.description)
             .field("origin", &self.origin)
             .field("produces_schema_ids", &self.produces_schema_ids)
@@ -477,6 +522,10 @@ impl std::fmt::Debug for McpToolDescriptor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct McpActionArgSpec {
     pub action: &'static str,
+    /// The short name a person reads for this action ("Create a goal"). A
+    /// sentence-case phrase of at most [`MAX_TITLE_CHARS`] characters on one
+    /// line; `FlavorRegistry::try_freeze` refuses anything else.
+    pub title: &'static str,
     pub allowed_fields: &'static [&'static str],
     pub required_fields: &'static [&'static str],
     /// What this action does. See [`crate::mcp::ToolEffect`].
@@ -501,6 +550,9 @@ pub struct McpActionArgSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct McpArgvActionSpec {
     pub action: &'static str,
+    /// The short name a person reads for this action. See
+    /// [`McpActionArgSpec::title`].
+    pub title: &'static str,
     pub argv_prefix: &'static [&'static str],
     /// What this action does. See [`crate::mcp::ToolEffect`]. Declared per
     /// command, so a dispatcher whose commands are mostly reads keeps those
@@ -742,6 +794,9 @@ pub type McpCallFn = &'static McpCall;
 
 pub trait McpTool: Send + Sync + 'static {
     const NAME: &'static str;
+    /// See [`crate::Tool::TITLE`]; forwarded from `Tool` by the blanket impl
+    /// below.
+    const TITLE: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
     /// The actions this tool dispatches, or `&[]` for a flat tool. See
@@ -789,6 +844,7 @@ where
     T: crate::Tool,
 {
     const NAME: &'static str = T::NAME;
+    const TITLE: &'static str = T::TITLE;
     const DESCRIPTION: &'static str = T::DESCRIPTION;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = T::PRODUCES_SCHEMA_IDS;
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = <T as crate::Tool>::ACTION_ARG_SPECS;
@@ -854,12 +910,14 @@ mod argv_action_tests {
             argv_prefix: &["approval"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
+            title: "Test action",
         },
         McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
+            title: "Test action",
         },
     ];
 
@@ -919,6 +977,7 @@ mod flat_tool_tests {
     struct CallerTool;
 
     impl Tool for CallerTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "proxima-test_caller";
         const DESCRIPTION: &'static str = "Echo generic caller context.";
 
@@ -963,6 +1022,7 @@ mod flat_tool_tests {
             caller_self_perspective: Some(caller_self_perspective),
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         };
 
         let output = <CallerTool as McpTool>::call(ctx, CallerArgs {})

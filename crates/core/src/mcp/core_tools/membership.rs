@@ -134,6 +134,7 @@ fn member_fingerprint(group: GroupId) -> String {
 
 impl McpTool for CoreMembershipTool {
     const NAME: &'static str = protocol_tool::CORE_MEMBERSHIP;
+    const TITLE: &'static str = "Memberships";
     const DESCRIPTION: &'static str =
         "Manage a group tree: add a person or subgroup, remove one, or list members.";
     /// Membership governs who can reach the owner's memory at all, so every
@@ -144,6 +145,7 @@ impl McpTool for CoreMembershipTool {
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "add_member",
+            title: "Add a member",
             allowed_fields: &["group", "member", "relation"],
             required_fields: &["group", "member"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
@@ -151,6 +153,7 @@ impl McpTool for CoreMembershipTool {
         },
         McpActionArgSpec {
             action: "remove_member",
+            title: "Remove a member",
             allowed_fields: &["group", "member"],
             required_fields: &["group", "member"],
             effect: ToolEffect::Destructive(Replay::NonIdempotent),
@@ -158,6 +161,7 @@ impl McpTool for CoreMembershipTool {
         },
         McpActionArgSpec {
             action: "list_members",
+            title: "List members",
             allowed_fields: &["group", "limit", "cursor"],
             required_fields: &["group"],
             effect: ToolEffect::ReadOnly,
@@ -467,6 +471,7 @@ mod tests {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         }
     }
 

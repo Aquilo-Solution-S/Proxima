@@ -21,6 +21,7 @@ pub struct ForgetTool;
 
 impl McpTool for ForgetTool {
     const NAME: &'static str = protocol_tool::CORE_FORGET;
+    const TITLE: &'static str = "Forget a memory";
     const DESCRIPTION: &'static str = "Hide a memory from search, recall, walks and other stores until core_restore; erase removes it.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Destructive(Replay::NonIdempotent));
     type Args = ForgetArgs;

@@ -180,6 +180,7 @@ pub struct DeriveTool;
 
 impl McpTool for DeriveTool {
     const NAME: &'static str = protocol_tool::CORE_DERIVE;
+    const TITLE: &'static str = "Derive a memory";
     const DESCRIPTION: &'static str = "Author a memory made from others: an Abstraction \
          over Facts or Abstractions (a pattern), or a Perspective over Abstractions (a stance or \
          self-model). `source_handles` become its provenance.";

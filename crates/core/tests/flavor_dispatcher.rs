@@ -56,6 +56,7 @@ enum DispatchArgs {
 struct DispatchTool;
 
 impl Tool for DispatchTool {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = DISPATCH;
     const DESCRIPTION: &'static str = "A flavor dispatcher declared through proxima_flavor!.";
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
@@ -65,6 +66,7 @@ impl Tool for DispatchTool {
             required_fields: &["id"],
             effect: ToolEffect::ReadOnly,
             audience: McpToolAudience::Shared,
+            title: "Test action",
         },
         McpActionArgSpec {
             action: "touch",
@@ -72,6 +74,7 @@ impl Tool for DispatchTool {
             required_fields: &["id"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
+            title: "Test action",
         },
     ];
     type Args = DispatchArgs;
@@ -140,6 +143,7 @@ fn ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpToolCtx {
         caller_self_perspective: None,
         services: FlavorServices::default(),
         engine: None,
+        judged: proxima_core::mcp::JudgedKey::default(),
     }
 }
 
@@ -164,6 +168,7 @@ fn viewer_ctx(registry: &Arc<FlavorRegistryFrozen>, scope: ToolScope) -> McpTool
         caller_self_perspective: None,
         services: FlavorServices::default(),
         engine: None,
+        judged: proxima_core::mcp::JudgedKey::default(),
     }
 }
 

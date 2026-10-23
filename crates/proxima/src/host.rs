@@ -2,7 +2,9 @@
 
 pub use proxima_core::mcp::parse_wire_uuid;
 /// Transport adapters for hosts; flavor implementations use `flavor::Tool`.
-pub use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError, McpToolErrorKind};
+/// [`JudgedKey`] is the key the scope gate judged a call by, read from
+/// [`McpToolCtx::judged`] by a behavior after the gate, or by one that wraps it.
+pub use proxima_core::mcp::{JudgedKey, McpTool, McpToolCtx, McpToolError, McpToolErrorKind};
 pub use proxima_core::operator_label;
 pub use proxima_core::{memory_store_number, new_memory_uuid};
 

@@ -109,6 +109,7 @@ struct OwnerOnlyOutput {
 }
 
 impl proxima::flavor::Tool for OwnerOnlyTool {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = "facade_owner_only";
     const DESCRIPTION: &'static str = "declare tool consts through the facade";
     const ARGV_ACTION_SPECS: &'static [proxima::flavor::McpArgvActionSpec] = &[];

@@ -712,6 +712,14 @@ pub enum ToolError {
 /// that drifts.
 pub trait Tool: Send + Sync + 'static {
     const NAME: &'static str;
+    /// The short name a person reads for this tool ("Goals", "Upload a
+    /// file"): what a host shows beside a call it records, and what
+    /// `tools/list` serves as the tool's title. A dispatcher's actions carry
+    /// their own ([`crate::mcp::McpActionArgSpec::title`]); this names the
+    /// tool as a whole. One line of at most
+    /// [`crate::mcp::MAX_TITLE_CHARS`] characters, checked by
+    /// `FlavorRegistry::try_freeze`.
+    const TITLE: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
     /// What this flat tool does — the one behaviour declaration every gate,

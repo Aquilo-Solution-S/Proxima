@@ -153,6 +153,15 @@ into the other. Replace deployment `.tool_scope(...)` calls with
 `.served_surface(ServedSurface::...)` and `tool_palette_excluding` with
 `served_surface_excluding`; retain `ToolScope` for caller scopes.
 
+A host that records what a call did reads the key the gate decided on from
+`McpToolCtx::judged`, set by the gate before it decides, so a refused call
+carries its key too; a behavior wrapping the gate reads it from its own clone
+of the context once the call returns. It names the key from the descriptor:
+`McpToolDescriptor::title_of(&key)` returns the tool's `Tool::TITLE` for a bare
+key and the action's `McpActionArgSpec::title` (`McpArgvActionSpec::title` for
+an argv dispatcher) for `tool:action`, so the host keeps no word list of its
+own.
+
 An embedded host may install an `OwnerAccessPort` and an optional forwarder
 policy. Reads are set-based and owner-scoped; writes pass through the engine's
 authorization and command ports. Do not recreate owner predicates in a flavor

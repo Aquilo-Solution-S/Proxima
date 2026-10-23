@@ -10,6 +10,7 @@ struct EmptyDemoArgs {}
 struct Demo;
 
 impl McpTool for Demo {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = "proxima-test_demo";
     const DESCRIPTION: &'static str = "test";
     // Required: `try_freeze` refuses to seal a flavor tool whose behaviour
@@ -186,6 +187,7 @@ fn add_mcp_tool_rejects_unprefixed_tool_name() {
     struct Bad;
 
     impl McpTool for Bad {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "wrong/demo";
         const DESCRIPTION: &'static str = "x";
         type Args = EmptyDemoArgs;

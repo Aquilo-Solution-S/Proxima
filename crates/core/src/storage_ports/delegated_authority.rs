@@ -821,6 +821,7 @@ mod tests {
     struct WorkerTool;
 
     impl McpTool for WorkerTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = TOOL_NAME;
         const DESCRIPTION: &'static str = "delegation test worker";
         const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
@@ -845,6 +846,7 @@ mod tests {
     struct DispatcherTool;
 
     impl McpTool for DispatcherTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = DISPATCHER_TOOL_NAME;
         const DESCRIPTION: &'static str = "delegation dispatcher test worker";
         const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
@@ -854,6 +856,7 @@ mod tests {
                 required_fields: &[],
                 effect: ToolEffect::Additive(Replay::NonIdempotent),
                 audience: McpToolAudience::Shared,
+                title: "Test action",
             },
             McpActionArgSpec {
                 action: "other",
@@ -861,6 +864,7 @@ mod tests {
                 required_fields: &[],
                 effect: ToolEffect::Additive(Replay::NonIdempotent),
                 audience: McpToolAudience::Shared,
+                title: "Test action",
             },
         ];
         type Args = DispatcherArgs;

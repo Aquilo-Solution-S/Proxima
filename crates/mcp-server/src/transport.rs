@@ -400,6 +400,7 @@ mod tests {
     }
 
     impl proxima_core::mcp::McpTool for StubTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "proxima-stub_ping";
         const DESCRIPTION: &'static str = "Answers with the calling client's name.";
         const EFFECT: Option<proxima_core::ToolEffect> = Some(proxima_core::ToolEffect::ReadOnly);

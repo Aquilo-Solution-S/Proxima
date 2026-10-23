@@ -45,11 +45,13 @@ pub use schema::{
     schema_bound_mismatches,
 };
 pub use tool::{
-    KeyDeclaration, McpActionArgSpec, McpArgvActionSpec, McpCallFn, McpTool, McpToolAudience,
-    McpToolDescriptor, McpToolOrigin, McpUnknownFieldPolicy,
+    KeyDeclaration, MAX_TITLE_CHARS, McpActionArgSpec, McpArgvActionSpec, McpCallFn, McpTool,
+    McpToolAudience, McpToolDescriptor, McpToolOrigin, McpUnknownFieldPolicy,
 };
-pub(crate) use tool::{prepare_flat_tool_args, resolve_argv_action, validate_action_args};
+pub(crate) use tool::{
+    prepare_flat_tool_args, resolve_argv_action, title_problem, validate_action_args,
+};
 pub use types::{
-    MAX_OPERATOR_LABEL_CHARS, McpAuthorContext, McpToolCtx, OperatorLabelConflict,
+    JudgedKey, MAX_OPERATOR_LABEL_CHARS, McpAuthorContext, McpToolCtx, OperatorLabelConflict,
     UNKNOWN_OPERATOR_LABEL, resolve_operator_label,
 };

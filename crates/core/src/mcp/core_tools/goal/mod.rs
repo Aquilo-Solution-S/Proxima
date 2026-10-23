@@ -164,6 +164,7 @@ pub enum CoreGoalOutput {
 
 impl McpTool for CoreGoalTool {
     const NAME: &'static str = protocol_tool::CORE_GOAL;
+    const TITLE: &'static str = "Goals";
     const DESCRIPTION: &'static str = "Write Goals: set or decompose, pause/resume/abandon, modify content, \
          or mark achieved. Use the returned head handle for the next write. Assignment and evidence \
          are optional; an omitted target uses the host caller Perspective if present. Pause requires \
@@ -173,6 +174,7 @@ impl McpTool for CoreGoalTool {
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "set",
+            title: "Create a goal",
             allowed_fields: &[
                 "schema_id",
                 "schema_version",
@@ -189,6 +191,7 @@ impl McpTool for CoreGoalTool {
         },
         McpActionArgSpec {
             action: "transition",
+            title: "Change a goal's state",
             allowed_fields: &["goal", "transition", "pending", "idempotency_key"],
             // `pending` is required for pause and refused for the other two:
             // `GoalTransitionArgs::transition_kind` decides, once.
@@ -198,6 +201,7 @@ impl McpTool for CoreGoalTool {
         },
         McpActionArgSpec {
             action: "modify",
+            title: "Edit a goal",
             allowed_fields: &[
                 "goal",
                 "schema_id",
@@ -214,6 +218,7 @@ impl McpTool for CoreGoalTool {
         },
         McpActionArgSpec {
             action: "mark_achieved",
+            title: "Mark a goal achieved",
             allowed_fields: &["goal", "evidence", "idempotency_key"],
             required_fields: &["goal"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
@@ -221,6 +226,7 @@ impl McpTool for CoreGoalTool {
         },
         McpActionArgSpec {
             action: "decompose",
+            title: "Break a goal into subgoals",
             allowed_fields: &[
                 "parent_goal",
                 "children",
@@ -736,6 +742,7 @@ mod tests {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         }
     }
 
@@ -780,6 +787,7 @@ mod tests {
             caller_self_perspective: Some(target),
             services: crate::FlavorServices::default(),
             engine: Some(engine),
+            judged: proxima_core::mcp::JudgedKey::default(),
         };
         (ctx, observed, target)
     }

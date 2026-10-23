@@ -100,3 +100,81 @@ fn dispatcher_argument_schema_freeze_rejects_malformed_metadata() {
     ));
     assert!(err.to_string().contains("declares allowed_fields"), "{err}");
 }
+
+fn goal_mut(registry: &mut FlavorRegistry) -> &mut crate::McpToolDescriptor {
+    registry
+        .mcp_tools
+        .iter_mut()
+        .find(|tool| tool.name == "core_goal")
+        .expect("core_goal is registered")
+}
+
+/// A title is what a person reads beside a recorded call: a tool's and an
+/// action's alike are refused at freeze when they are blank, padded, span
+/// lines or run past `MAX_TITLE_CHARS`.
+#[test]
+fn a_title_a_person_cannot_read_is_refused_at_freeze() {
+    let longest = "x".repeat(crate::mcp::MAX_TITLE_CHARS);
+    let too_long = "x".repeat(crate::mcp::MAX_TITLE_CHARS + 1);
+    let leak = |text: &str| -> &'static str { Box::leak(text.to_owned().into_boxed_str()) };
+
+    let mut registry = FlavorRegistry::default();
+    goal_mut(&mut registry).title = leak(&longest);
+    registry.try_freeze().expect("the longest title is a title");
+
+    for bad in [
+        "",
+        " Goals",
+        "Goals ",
+        "Go\nals",
+        "Go\tals",
+        too_long.as_str(),
+    ] {
+        let mut registry = FlavorRegistry::default();
+        goal_mut(&mut registry).title = leak(bad);
+        let err = registry
+            .try_freeze()
+            .expect_err("a tool title that is none");
+        assert!(
+            matches!(&err, FlavorRegistryError::InvalidTitle { key, .. } if key == "core_goal"),
+            "{bad:?}: {err:?}"
+        );
+
+        let mut registry = FlavorRegistry::default();
+        let goal = goal_mut(&mut registry);
+        let mut specs = goal.action_arg_specs.to_vec();
+        specs
+            .iter_mut()
+            .find(|spec| spec.action == "set")
+            .expect("core_goal declares `set`")
+            .title = leak(bad);
+        goal.action_arg_specs = Box::leak(specs.into_boxed_slice());
+        let err = registry
+            .try_freeze()
+            .expect_err("an action title that is none");
+        assert!(
+            matches!(&err, FlavorRegistryError::InvalidTitle { key, .. } if key == "core_goal:set"),
+            "{bad:?}: {err:?}"
+        );
+    }
+}
+
+/// A host names a recorded call from the descriptor: the tool's title for
+/// its bare key, the action's for `tool:action`, nothing for a key the
+/// descriptor does not declare.
+#[test]
+fn the_descriptor_titles_a_tool_and_each_of_its_actions() {
+    let registry = FlavorRegistry::default();
+    let goal = registry
+        .mcp_tools
+        .iter()
+        .find(|tool| tool.name == "core_goal")
+        .expect("core_goal is registered");
+    let title = |key: &str| goal.title_of(&crate::ScopeKey::parse(key).expect("a scope key"));
+    assert_eq!(title("core_goal"), Some("Goals"));
+    assert_eq!(title("core_goal:set"), Some("Create a goal"));
+    assert_eq!(title("core_goal:undeclared"), None);
+    assert_eq!(title("core_remember"), None);
+    assert_eq!(title("core_remember:set"), None);
+    assert_eq!(title("resource:memory"), None);
+}

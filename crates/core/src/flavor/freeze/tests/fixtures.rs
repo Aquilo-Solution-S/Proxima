@@ -266,6 +266,7 @@ pub(super) const FIXTURE_ACTIONS: &[crate::mcp::McpActionArgSpec] =
         required_fields: &[],
         effect: crate::mcp::ToolEffect::ReadOnly,
         audience: crate::mcp::McpToolAudience::Shared,
+        title: "Test action",
     }];
 
 /// An MCP tool registration under the fixture flavor, so a contract's tool
@@ -301,6 +302,7 @@ pub(super) fn register_fixture_tool(
         effect,
         audience: crate::mcp::McpToolAudience::Shared,
         call,
+        title: "Test tool",
     });
 }
 

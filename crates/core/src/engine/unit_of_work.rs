@@ -1802,6 +1802,7 @@ mod tests {
         struct WipeTool;
 
         impl Tool for WipeTool {
+            const TITLE: &'static str = "Test tool";
             const NAME: &'static str = "gate_fixture_wipe";
             const DESCRIPTION: &'static str = "A tool that declares it destroys data.";
             const EFFECT: Option<ToolEffect> = Some(ToolEffect::Destructive(Replay::NonIdempotent));
@@ -1819,6 +1820,7 @@ mod tests {
         struct TouchTool;
 
         impl Tool for TouchTool {
+            const TITLE: &'static str = "Test tool";
             const NAME: &'static str = "gate_fixture_touch";
             const DESCRIPTION: &'static str = "A tool that declares it destroys nothing.";
             const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));
@@ -1847,6 +1849,7 @@ mod tests {
         struct MixedTool;
 
         impl Tool for MixedTool {
+            const TITLE: &'static str = "Test tool";
             const NAME: &'static str = "gate_fixture_mixed";
             const DESCRIPTION: &'static str = "A dispatcher with one destructive action.";
             const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
@@ -1856,6 +1859,7 @@ mod tests {
                     required_fields: &[],
                     effect: ToolEffect::Destructive(Replay::NonIdempotent),
                     audience: McpToolAudience::Shared,
+                    title: "Test action",
                 },
                 McpActionArgSpec {
                     action: "touch",
@@ -1863,6 +1867,7 @@ mod tests {
                     required_fields: &[],
                     effect: ToolEffect::Additive(Replay::NonIdempotent),
                     audience: McpToolAudience::Shared,
+                    title: "Test action",
                 },
             ];
             type Args = MixedArgs;
@@ -1881,6 +1886,7 @@ mod tests {
         struct StrayTool;
 
         impl Tool for StrayTool {
+            const TITLE: &'static str = "Test tool";
             const NAME: &'static str = "gate_fixture_stray";
             const DESCRIPTION: &'static str = "A destructive tool the contract does not name.";
             const EFFECT: Option<ToolEffect> = Some(ToolEffect::Destructive(Replay::Idempotent));
@@ -1970,6 +1976,7 @@ mod tests {
                 caller_self_perspective: None,
                 services: FlavorServices::default(),
                 engine: Some(Arc::clone(engine)),
+                judged: proxima_core::mcp::JudgedKey::default(),
             };
             (descriptor.call)(ctx, args)
                 .await

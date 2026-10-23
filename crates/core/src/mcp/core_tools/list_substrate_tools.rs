@@ -188,6 +188,7 @@ mod tests {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         };
 
         let registry = ctx.registry.clone();

@@ -56,6 +56,34 @@ impl FlavorRegistry {
         Ok(())
     }
 
+    /// Cross-check: every tool and every action carries a title a person can
+    /// read ([`crate::mcp::MAX_TITLE_CHARS`]).
+    pub(super) fn validate_titles(&self) -> Result<(), FlavorRegistryError> {
+        for tool in &self.mcp_tools {
+            let actions = tool
+                .action_arg_specs
+                .iter()
+                .map(|spec| (spec.action, spec.title))
+                .chain(
+                    tool.argv_action_specs
+                        .iter()
+                        .map(|spec| (spec.action, spec.title)),
+                )
+                .map(|(action, title)| (format!("{}:{action}", tool.name), title));
+            for (key, title) in std::iter::once((tool.name.to_string(), tool.title)).chain(actions)
+            {
+                if let Some(problem) = crate::mcp::title_problem(title) {
+                    return Err(FlavorRegistryError::InvalidTitle {
+                        key,
+                        title,
+                        problem,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Cross-check: a dispatcher's declared actions and its derived schema
     /// describe the same dispatcher.
     ///

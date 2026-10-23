@@ -34,6 +34,7 @@ pub struct MemorySpacesTool;
 
 impl McpTool for MemorySpacesTool {
     const NAME: &'static str = protocol_tool::CORE_MEMORY_SPACES;
+    const TITLE: &'static str = "Memory spaces";
     const DESCRIPTION: &'static str = "List the memory spaces you can use and their keys (`current` or an owner's `<uuid>`) for other tools' space/spaces arguments.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = MemorySpacesArgs;
@@ -264,6 +265,7 @@ pub(crate) mod test_ctx {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         }
     }
 }

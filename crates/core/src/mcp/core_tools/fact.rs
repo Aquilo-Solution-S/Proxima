@@ -48,11 +48,13 @@ pub enum CoreFactOutput {
 
 impl McpTool for CoreFactTool {
     const NAME: &'static str = protocol_tool::CORE_FACT;
+    const TITLE: &'static str = "Facts";
     const DESCRIPTION: &'static str = "Read citations: the cited object behind one Fact, or \
          every Fact that cites one object.";
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "citation_of_fact",
+            title: "Find the citation of a fact",
             allowed_fields: &["fact"],
             required_fields: &["fact"],
             effect: ToolEffect::ReadOnly,
@@ -60,6 +62,7 @@ impl McpTool for CoreFactTool {
         },
         McpActionArgSpec {
             action: "facts_citing_object",
+            title: "Find the facts citing an object",
             allowed_fields: &["cited_object_id", "limit", "cursor"],
             required_fields: &["cited_object_id"],
             effect: ToolEffect::ReadOnly,

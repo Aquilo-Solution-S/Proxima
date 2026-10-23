@@ -203,6 +203,7 @@ pub enum CoreUploadOutput {
 
 impl McpTool for CoreUploadTool {
     const NAME: &'static str = protocol_tool::CORE_UPLOAD;
+    const TITLE: &'static str = "Uploads";
     const DESCRIPTION: &'static str = "Upload an artefact (document, image, transcript) \
          without sending its bytes through MCP: `prepare` returns a presigned `upload_url` and \
          `headers`; HTTP PUT the raw bytes there with exactly those headers before `expires_at`; \
@@ -212,6 +213,7 @@ impl McpTool for CoreUploadTool {
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
         McpActionArgSpec {
             action: "prepare",
+            title: "Prepare an upload",
             allowed_fields: &["filename", "mime", "byte_len", "space"],
             required_fields: &["filename", "mime", "byte_len"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
@@ -219,6 +221,7 @@ impl McpTool for CoreUploadTool {
         },
         McpActionArgSpec {
             action: "complete",
+            title: "Complete an upload",
             allowed_fields: &["upload_id", "space"],
             required_fields: &["upload_id"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
@@ -226,6 +229,7 @@ impl McpTool for CoreUploadTool {
         },
         McpActionArgSpec {
             action: "abort",
+            title: "Abort an upload",
             allowed_fields: &["upload_id", "space"],
             required_fields: &["upload_id"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
@@ -233,6 +237,7 @@ impl McpTool for CoreUploadTool {
         },
         McpActionArgSpec {
             action: "read_url",
+            title: "Get a read URL",
             allowed_fields: &["cited_object_id", "space"],
             required_fields: &["cited_object_id"],
             effect: ToolEffect::ReadOnly,

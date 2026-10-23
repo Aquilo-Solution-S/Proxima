@@ -76,14 +76,15 @@ pub use goal::{SimpleTextGoalV1, TaskGoalV1, TaskPriority};
 pub use ids::*;
 pub use llm::*;
 pub use mcp::{
-    CoreActionMeta, KeyDeclaration, MAX_OPERATOR_LABEL_CHARS, McpAuthorContext, McpCallFn,
-    McpHostToolCall, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx, McpToolDescriptor,
-    McpToolError, McpToolErrorKind, McpToolOrigin, McpUnknownFieldPolicy, MemoryHandleClass, Next,
-    OperatorLabelConflict, Replay, RequestBehavior, ScopeGateBehavior, TerminalDispatch,
-    ToolContent, ToolDescriptorView, ToolEffect, ToolReply, ToolSource, UNKNOWN_OPERATOR_LABEL,
-    all_core_actions, all_core_resources, canonical_scope_keys, canonical_scope_keys_excluding,
-    canonical_served_read_keys, core_action_meta, how_to_resource_declaration, how_to_resource_key,
-    operator_label, provider_safe_tool_name, resolve_operator_label, tool_name_matches,
+    CoreActionMeta, JudgedKey, KeyDeclaration, MAX_OPERATOR_LABEL_CHARS, McpAuthorContext,
+    McpCallFn, McpHostToolCall, McpTool, McpToolAnnotations, McpToolAudience, McpToolCtx,
+    McpToolDescriptor, McpToolError, McpToolErrorKind, McpToolOrigin, McpUnknownFieldPolicy,
+    MemoryHandleClass, Next, OperatorLabelConflict, Replay, RequestBehavior, ScopeGateBehavior,
+    TerminalDispatch, ToolContent, ToolDescriptorView, ToolEffect, ToolReply, ToolSource,
+    UNKNOWN_OPERATOR_LABEL, all_core_actions, all_core_resources, canonical_scope_keys,
+    canonical_scope_keys_excluding, canonical_served_read_keys, core_action_meta,
+    how_to_resource_declaration, how_to_resource_key, operator_label, provider_safe_tool_name,
+    resolve_operator_label, tool_name_matches,
 };
 pub use memory::*;
 pub use memory_uuid::{memory_store_number, new_memory_uuid, new_memory_uuid_after};

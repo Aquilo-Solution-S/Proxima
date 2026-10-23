@@ -42,10 +42,12 @@ pub struct TransferOutput {
 
 impl McpTool for CoreTransferTool {
     const NAME: &'static str = protocol_tool::CORE_TRANSFER;
+    const TITLE: &'static str = "Transfer ownership";
     const DESCRIPTION: &'static str =
         "Move a memory into a group you manage. Not a share: it leaves its current space.";
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[McpActionArgSpec {
         action: "transfer_to_owner",
+        title: "Transfer to an owner",
         allowed_fields: &["entity", "to_owner"],
         required_fields: &["entity", "to_owner"],
         effect: ToolEffect::Destructive(Replay::NonIdempotent),

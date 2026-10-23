@@ -34,6 +34,7 @@ struct EchoOutput {
 }
 
 impl McpTool for EchoTool {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = TOOL;
     const DESCRIPTION: &'static str = "Return the fixture argument without storage access.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);

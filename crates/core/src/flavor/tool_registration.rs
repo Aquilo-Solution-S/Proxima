@@ -179,6 +179,7 @@ impl FlavorRegistry {
         }));
         self.mcp_tools.push(McpToolDescriptor {
             name: T::NAME,
+            title: T::TITLE,
             description: T::DESCRIPTION,
             origin: if expected_prefix == "core" {
                 McpToolOrigin::Substrate
@@ -319,12 +320,14 @@ mod action_vocabulary_tests {
             argv_prefix: &["approval"],
             effect: ToolEffect::ReadOnly,
             audience: McpToolAudience::Shared,
+            title: "Test action",
         },
         McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Owner,
+            title: "Test action",
         },
     ];
 
@@ -333,6 +336,7 @@ mod action_vocabulary_tests {
     struct ArgvTool;
 
     impl McpTool for ArgvTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "proxima-stub_cli";
         const DESCRIPTION: &'static str = "An argv-keyed fixture dispatcher.";
         const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = ARGV_SPECS;
@@ -350,6 +354,7 @@ mod action_vocabulary_tests {
     struct BothVocabularies;
 
     impl McpTool for BothVocabularies {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "proxima-stub_both";
         const DESCRIPTION: &'static str = "A fixture declaring both spec kinds.";
         const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[McpActionArgSpec {
@@ -358,12 +363,14 @@ mod action_vocabulary_tests {
             required_fields: &["id"],
             effect: ToolEffect::ReadOnly,
             audience: McpToolAudience::Shared,
+            title: "Test action",
         }];
         const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = &[McpArgvActionSpec {
             action: "look",
             argv_prefix: &["look"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
+            title: "Test action",
         }];
         type Args = ArgvArgs;
         type Output = EmptyOutput;
@@ -382,6 +389,7 @@ mod action_vocabulary_tests {
     struct OwnerOnlyFlatTool;
 
     impl crate::Tool for OwnerOnlyFlatTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "proxima-stub_admin";
         const DESCRIPTION: &'static str = "A flat fixture in the owner-only class.";
         const AUDIENCE: McpToolAudience = McpToolAudience::Owner;
@@ -495,6 +503,7 @@ mod action_vocabulary_tests {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         }
     }
 
@@ -553,6 +562,7 @@ mod unknown_field_policy_tests {
     struct TolerantEcho;
 
     impl Tool for TolerantEcho {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "proxima-stub_tolerant";
         const DESCRIPTION: &'static str = "A flat fixture tolerating unknown argument fields.";
         const EFFECT: Option<ToolEffect> = READ_ONLY;
@@ -569,6 +579,7 @@ mod unknown_field_policy_tests {
     struct TolerantScalar;
 
     impl Tool for TolerantScalar {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "proxima-stub_tolerant_scalar";
         const DESCRIPTION: &'static str = "A tolerating flat fixture answering with a scalar.";
         const EFFECT: Option<ToolEffect> = READ_ONLY;
@@ -584,6 +595,7 @@ mod unknown_field_policy_tests {
     struct StrictEcho;
 
     impl Tool for StrictEcho {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "proxima-stub_strict";
         const DESCRIPTION: &'static str = "A flat fixture keeping the default guard.";
         const EFFECT: Option<ToolEffect> = READ_ONLY;

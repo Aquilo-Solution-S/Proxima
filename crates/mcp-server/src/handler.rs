@@ -1369,6 +1369,7 @@ mod tests {
             effect,
             audience: proxima_core::mcp::McpToolAudience::Shared,
             call: &|_, _| Box::pin(async { Ok(serde_json::json!({})) }),
+            title: "Test tool",
         }
     }
 
@@ -1379,6 +1380,7 @@ mod tests {
             required_fields: &["id"],
             effect: ToolEffect::ReadOnly,
             audience: proxima_core::mcp::McpToolAudience::Shared,
+            title: "Test action",
         },
         proxima_core::mcp::McpActionArgSpec {
             action: "touch",
@@ -1386,6 +1388,7 @@ mod tests {
             required_fields: &["id"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: proxima_core::mcp::McpToolAudience::Shared,
+            title: "Test action",
         },
     ];
 
@@ -1397,12 +1400,14 @@ mod tests {
             argv_prefix: &["approval"],
             effect: ToolEffect::ReadOnly,
             audience: proxima_core::mcp::McpToolAudience::Shared,
+            title: "Test action",
         },
         proxima_core::mcp::McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: proxima_core::mcp::McpToolAudience::Shared,
+            title: "Test action",
         },
     ];
 
@@ -1922,6 +1927,7 @@ mod tests {
         struct StubOutput {}
 
         impl McpTool for StubDispatchTool {
+            const TITLE: &'static str = "Test tool";
             const NAME: &'static str = "proxima-stub_dispatch";
             const DESCRIPTION: &'static str = "A flavor dispatcher.";
             const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
@@ -1931,6 +1937,7 @@ mod tests {
                     required_fields: &["id"],
                     effect: ToolEffect::Additive(Replay::NonIdempotent),
                     audience: proxima_core::mcp::McpToolAudience::Shared,
+                    title: "Test action",
                 },
                 McpActionArgSpec {
                     action: "touch",
@@ -1938,6 +1945,7 @@ mod tests {
                     required_fields: &["id"],
                     effect: ToolEffect::Additive(Replay::NonIdempotent),
                     audience: proxima_core::mcp::McpToolAudience::Shared,
+                    title: "Test action",
                 },
             ];
             type Args = StubArgs;
@@ -2347,6 +2355,7 @@ mod tests {
                 argv_prefix: &["approval"],
                 effect: ToolEffect::Additive(Replay::NonIdempotent),
                 audience: proxima_core::mcp::McpToolAudience::Shared,
+                title: "Test action",
             }];
 
         let tool = McpToolDescriptor {

@@ -86,6 +86,7 @@ mod mcp_tool_authoring {
     struct ExampleLookupTool;
 
     impl Tool for ExampleLookupTool {
+        const TITLE: &'static str = "Test tool";
         const NAME: &'static str = "conformance_lookup";
         const DESCRIPTION: &'static str = "Look up a conformance example row.";
 

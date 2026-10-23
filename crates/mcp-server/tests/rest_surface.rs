@@ -56,6 +56,7 @@ struct CallerContextOutput {
 struct CallerContextTool;
 
 impl proxima_core::Tool for CallerContextTool {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = CALLER_CONTEXT_TOOL;
     const DESCRIPTION: &'static str = "Echo transport-neutral caller context.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
@@ -115,6 +116,7 @@ struct StubDispatchTool;
 struct StubDispatchOutput {}
 
 impl proxima_core::mcp::McpTool for StubDispatchTool {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = FLAVOR_DISPATCH;
     const DESCRIPTION: &'static str = "A flavor dispatcher.";
     const ACTION_ARG_SPECS: &'static [proxima_core::mcp::McpActionArgSpec] = &[
@@ -124,6 +126,7 @@ impl proxima_core::mcp::McpTool for StubDispatchTool {
             required_fields: &["id"],
             effect: ToolEffect::ReadOnly,
             audience: proxima_core::mcp::McpToolAudience::Shared,
+            title: "Test action",
         },
         proxima_core::mcp::McpActionArgSpec {
             action: "touch",
@@ -131,6 +134,7 @@ impl proxima_core::mcp::McpTool for StubDispatchTool {
             required_fields: &["id"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: proxima_core::mcp::McpToolAudience::Shared,
+            title: "Test action",
         },
     ];
     type Args = StubDispatchArgs;
@@ -166,6 +170,7 @@ struct StubArgvOutput {
 }
 
 impl proxima_core::mcp::McpTool for StubArgvTool {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = FLAVOR_ARGV;
     const DESCRIPTION: &'static str = "An argv-keyed flavor dispatcher.";
     const ARGV_ACTION_SPECS: &'static [proxima_core::mcp::McpArgvActionSpec] = &[
@@ -174,12 +179,14 @@ impl proxima_core::mcp::McpTool for StubArgvTool {
             argv_prefix: &["approval"],
             effect: ToolEffect::ReadOnly,
             audience: proxima_core::mcp::McpToolAudience::Shared,
+            title: "Test action",
         },
         proxima_core::mcp::McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: proxima_core::mcp::McpToolAudience::Shared,
+            title: "Test action",
         },
     ];
     type Args = StubArgvArgs;

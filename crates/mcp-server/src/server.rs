@@ -279,6 +279,7 @@ impl McpToolHost {
             services,
             author,
             engine: self.engine.clone(),
+            judged: proxima_core::mcp::JudgedKey::default(),
         })
     }
 

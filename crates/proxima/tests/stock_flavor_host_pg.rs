@@ -95,6 +95,7 @@ struct ProbeOutput {
 struct Probe;
 
 impl Tool for Probe {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = PROBE_TOOL;
     const DESCRIPTION: &'static str =
         "Reports the request headers, owner, and role a forwarded call carries.";

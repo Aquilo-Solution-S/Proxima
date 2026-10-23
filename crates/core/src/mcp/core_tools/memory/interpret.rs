@@ -70,6 +70,7 @@ pub struct InterpretTool;
 
 impl McpTool for InterpretTool {
     const NAME: &'static str = protocol_tool::CORE_INTERPRET;
+    const TITLE: &'static str = "Interpret memories";
     const DESCRIPTION: &'static str = "Author a Perspective that interprets memories of any \
          layer: a claim with a confidence that points at its subjects rather than being made from \
          them. For a stance made from Abstractions, use core_derive kind=Perspective.";
@@ -286,6 +287,7 @@ mod tests {
             caller_self_perspective: None,
             services: FlavorServices::default(),
             engine: None,
+            judged: proxima_core::mcp::JudgedKey::default(),
         }
     }
 

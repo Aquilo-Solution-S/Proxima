@@ -100,6 +100,7 @@ pub struct RememberTool;
 
 impl McpTool for RememberTool {
     const NAME: &'static str = protocol_tool::CORE_REMEMBER;
+    const TITLE: &'static str = "Remember a fact";
     const DESCRIPTION: &'static str =
         "Save an observation as a Fact. For a raw conversation turn use core_record_utterance.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::Additive(Replay::NonIdempotent));

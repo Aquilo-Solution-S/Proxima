@@ -558,6 +558,7 @@ struct TierLabelledOutput {
 }
 
 impl proxima::flavor::Tool for TierLabelledTool {
+    const TITLE: &'static str = "Test tool";
     const NAME: &'static str = "tier_labelled";
     const DESCRIPTION: &'static str = "resolve an operator label from a flavor tool";
 
