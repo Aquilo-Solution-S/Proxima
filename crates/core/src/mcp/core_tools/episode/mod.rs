@@ -628,20 +628,24 @@ impl EpisodeWrite<'_> {
     }
 }
 
+/// The refusal for a bound write that came back as a replay of an existing
+/// `noun` (row or memory): a replay cannot pin this write-act.
+fn bound_replay_refusal(kind: &str, noun: &str) -> McpToolError {
+    McpToolError::InvalidInput(format!(
+        "bound {kind} replayed an existing {noun}; bind requires a new admission that pins this write-act"
+    ))
+}
+
 fn reject_bound_replay(pin: bool, replay: bool, kind: &str) -> Result<(), McpToolError> {
     if pin && replay {
-        return Err(McpToolError::InvalidInput(format!(
-            "bound {kind} replayed an existing row; bind requires a new admission that pins this write-act"
-        )));
+        return Err(bound_replay_refusal(kind, "row"));
     }
     Ok(())
 }
 
 fn map_bound_fact_error(err: crate::error::ProtocolError, kind: &str, pin: bool) -> McpToolError {
     if pin && err.code == ErrorCode::IdempotencyConflict {
-        return McpToolError::InvalidInput(format!(
-            "bound {kind} replayed an existing row; bind requires a new admission that pins this write-act"
-        ));
+        return bound_replay_refusal(kind, "row");
     }
     McpToolError::Protocol(err)
 }
@@ -652,9 +656,7 @@ fn map_bound_derived_error(
     pin: bool,
 ) -> McpToolError {
     if pin && err.code == ErrorCode::IdempotencyConflict {
-        return McpToolError::InvalidInput(format!(
-            "bound {kind} replayed an existing memory; bind requires a new admission that pins this write-act"
-        ));
+        return bound_replay_refusal(kind, "memory");
     }
     map_derive_authoring_error(err)
 }
