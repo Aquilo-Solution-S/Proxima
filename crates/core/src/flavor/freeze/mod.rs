@@ -133,6 +133,7 @@ impl FlavorRegistry {
         self.validate_dispatcher_action_specs()?;
         self.validate_scope_keys()?;
         self.validate_titles()?;
+        self.validate_argv_action_names()?;
         self.validate_contracts()?;
         self.validate_scope_declarations()?;
         self.validate_embedding_recipes_match_behavior()?;

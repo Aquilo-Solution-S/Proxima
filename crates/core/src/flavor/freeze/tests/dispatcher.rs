@@ -178,3 +178,29 @@ fn the_descriptor_titles_a_tool_and_each_of_its_actions() {
     assert_eq!(title("core_remember:set"), None);
     assert_eq!(title("resource:memory"), None);
 }
+
+/// Each action name of an argv-keyed dispatcher is declared once.
+#[test]
+fn an_argv_action_name_declared_twice_is_refused_at_freeze() {
+    use crate::mcp::{McpArgvActionSpec, McpToolAudience, ToolEffect};
+
+    let spec = |prefix: &'static [&'static str]| McpArgvActionSpec {
+        action: "approval",
+        argv_prefix: prefix,
+        effect: ToolEffect::ReadOnly,
+        audience: McpToolAudience::Shared,
+        title: "Approve",
+    };
+    let mut registry = FlavorRegistry::default();
+    let goal = goal_mut(&mut registry);
+    goal.action_arg_specs = &[];
+    goal.dispatcher_schema = None;
+    goal.effect = None;
+    goal.argv_action_specs = Box::leak(Box::new([spec(&["a"]), spec(&["a", "b"])]));
+    let err = registry.try_freeze().expect_err("a repeated action name");
+    assert!(
+        matches!(&err, FlavorRegistryError::InvalidActionSpecs { name, message }
+            if *name == "core_goal" && message.contains("declared once")),
+        "{err:?}"
+    );
+}

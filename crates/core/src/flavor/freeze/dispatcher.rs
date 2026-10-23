@@ -84,6 +84,29 @@ impl FlavorRegistry {
         Ok(())
     }
 
+    /// Cross-check: each action name of an argv-keyed dispatcher is declared
+    /// once, as `validate_dispatcher_action_specs` requires of a tagged one.
+    pub(super) fn validate_argv_action_names(&self) -> Result<(), FlavorRegistryError> {
+        for tool in &self.mcp_tools {
+            let mut declared = BTreeSet::new();
+            if let Some(spec) = tool
+                .argv_action_specs
+                .iter()
+                .find(|spec| !declared.insert(spec.action))
+            {
+                return Err(FlavorRegistryError::InvalidActionSpecs {
+                    name: tool.name,
+                    message: format!(
+                        "ARGV_ACTION_SPECS declares the action {:?} more than once; each \
+                         action name is declared once",
+                        spec.action
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Cross-check: a dispatcher's declared actions and its derived schema
     /// describe the same dispatcher.
     ///
