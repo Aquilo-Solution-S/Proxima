@@ -12,6 +12,9 @@ use super::ensure_nonnegative_limit;
 use crate::sidecars::int_to_u64;
 
 /// Claim pending jobs across every embedding space, ordered by `job_id`.
+/// The UPDATE returns rows in plan order, so the answer is ordered by an
+/// outer `SELECT`: a drain that groups the claims works through the Owners in
+/// queue order whatever plan the UPDATE ran under.
 ///
 /// One arm: `status = 'pending'`, minus failed-route Owners and exact
 /// Owner/space pairs whose clients are blocked. Rides `embedding_jobs_pending_claim_idx (job_id) WHERE status =
@@ -39,6 +42,7 @@ const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
               FOR UPDATE SKIP LOCKED
               LIMIT $1
          )
+         , settled AS (
          UPDATE proxima_core.embedding_jobs j
             SET status = 'processing',
                 claimed_at = now(),
@@ -54,7 +58,11 @@ const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
                   j.entity_id,
                   j.model_id,
                   j.dim,
-                  j.claim_token";
+                  j.claim_token
+         )
+         SELECT job_id, owner_id, entity_kind, entity_id, model_id, dim, claim_token
+           FROM settled
+          ORDER BY job_id";
 
 /// The claim statement, for EXPLAIN-based plan guards. Same cfg gate as
 /// `search.rs`'s `*_sql_for_tests` exports.

@@ -1055,6 +1055,65 @@ mod pg_tests {
         result
     }
 
+    /// The claim answers in queue order, whatever plan the UPDATE runs under
+    /// and wherever the rows sit in the heap: a drain that groups the claims
+    /// by Owner works through the Owners in the order their oldest job was
+    /// queued. The rows are laid out against the queue (the oldest job last
+    /// in the heap) and the join is forced off its nested loop, which makes
+    /// the planner return heap order unless the statement orders its result.
+    #[tokio::test]
+    async fn claims_come_back_in_queue_order_whatever_the_plan()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let _platform = pg.platform_scope_for_host();
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let owner = owner_fixture();
+            let permit = owner_fact_write_permit(&owner).await?;
+            for note in ["queued first", "queued second", "queued third"] {
+                pg.ingest_fact_atomic(&permit, &fact_draft(note), Some("stub-fact-embed"))
+                    .await?;
+            }
+            let pool = pg.pool_for_tests();
+            let queued: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT job_id FROM proxima_core.embedding_jobs ORDER BY job_id",
+            )
+            .fetch_all(pool)
+            .await?;
+            assert_eq!(queued.len(), 3);
+            // Re-insert the oldest job: same job_id, last in the heap.
+            sqlx::query(
+                "WITH moved AS (
+                     DELETE FROM proxima_core.embedding_jobs WHERE job_id = $1
+                     RETURNING job_id, entity_id, model_id, owner_id, dim
+                 )
+                 INSERT INTO proxima_core.embedding_jobs
+                     (job_id, entity_id, model_id, owner_id, dim)
+                 SELECT job_id, entity_id, model_id, owner_id, dim FROM moved",
+            )
+            .bind(queued[0])
+            .execute(pool)
+            .await?;
+            sqlx::raw_sql("ANALYZE proxima_core.embedding_jobs")
+                .execute(pool)
+                .await?;
+            let mut connection = pool.acquire().await?;
+            sqlx::raw_sql("SET enable_nestloop = off")
+                .execute(&mut *connection)
+                .await?;
+            let claims = claim_pending_embedding_jobs(&mut *connection, 3, &[], &[]).await?;
+            assert_eq!(
+                claims.iter().map(|claim| claim.job_id).collect::<Vec<_>>(),
+                queued,
+                "claims are in job_id order"
+            );
+            Ok(())
+        }
+        .await;
+        drop(pg);
+        drop_db(&db_name).await?;
+        result
+    }
+
     /// #488 S6: the drain does not claim a forgotten memory's pending job.
     #[tokio::test]
     async fn the_drain_does_not_claim_a_forgotten_memorys_job()
