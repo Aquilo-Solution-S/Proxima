@@ -34,12 +34,19 @@ async fn seed_notes(admin: &PgPool, owner: Uuid, count: i32) {
 }
 
 async fn seed(admin: &PgPool, owner: Uuid, count: i32, schema: &str, table: &str) {
+    // One coarse-locked transaction: a write otherwise takes one advisory
+    // lock per memory, so the corpus used to go in in 1_000-row batches.
+    let mut stamped = admin.begin().await.unwrap();
+    sqlx::query("LOCK TABLE proxima_core.memory, proxima_core.goal IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *stamped)
+        .await
+        .unwrap();
     sqlx::query(
         "INSERT INTO proxima_core.owners (owner_id, kind)
          VALUES ($1, 'group') ON CONFLICT DO NOTHING",
     )
     .bind(owner)
-    .execute(admin)
+    .execute(&mut *stamped)
     .await
     .unwrap();
     sqlx::query(
@@ -50,11 +57,9 @@ async fn seed(admin: &PgPool, owner: Uuid, count: i32, schema: &str, table: &str
     .bind(owner)
     .bind(count)
     .bind(schema)
-    .execute(admin)
+    .execute(&mut *stamped)
     .await
     .unwrap();
-    // The stamp and the rows it promises land in one transaction.
-    let mut stamped = admin.begin().await.unwrap();
     sqlx::query(
         "INSERT INTO proxima_core.memory
              (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
@@ -241,15 +246,12 @@ async fn substring_legs_read_only_memories_of_their_own_schemas() {
     let (database, admin, runtime, platform, platform_role, runtime_role, _) =
         super::setup_full_schema().await;
     let big = Uuid::now_v7();
-    // A write transaction takes one advisory lock per memory, so the corpus
-    // goes in in batches that fit the server's lock table.
-    for _ in 0..BIG_OWNER_NOTES / 1_000 {
-        seed_notes(&admin, big, 1_000).await;
-    }
+    seed_notes(&admin, big, BIG_OWNER_NOTES).await;
     let small = Uuid::now_v7();
     seed_utterances(&admin, small, 3).await;
     // The other sidecars are not empty either, so a leg is not cheap just
-    // because its table is.
+    // because its table is. Twenty owners keep the planner from treating
+    // `utterance_v1` as one fat relation of a single other owner.
     for _ in 0..20 {
         seed_utterances(&admin, Uuid::now_v7(), 500).await;
     }
@@ -321,9 +323,7 @@ async fn substring_arm_reads_the_sidecar_through_its_trigram_index() {
     let (database, admin, runtime, platform, platform_role, runtime_role, _) =
         super::setup_full_schema().await;
     let owner = Uuid::now_v7();
-    for _ in 0..BIG_OWNER_NOTES / 1_000 {
-        seed_notes(&admin, owner, 1_000).await;
-    }
+    seed_notes(&admin, owner, BIG_OWNER_NOTES).await;
     sqlx::query("VACUUM (ANALYZE) proxima_core.agent_note_v1, proxima_core.memory")
         .execute(&admin)
         .await
