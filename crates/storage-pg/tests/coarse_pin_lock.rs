@@ -63,29 +63,103 @@ async fn insert_facts(
     rows: i64,
 ) -> Result<(), sqlx::Error> {
     let handle = proxima_core::new_memory_uuid(1);
-    let ids: Vec<Uuid> = (0..rows)
-        .map(|_| proxima_core::new_memory_uuid(1))
-        .collect();
-    let head = ids
-        .last()
-        .copied()
-        .unwrap_or_else(|| proxima_core::new_memory_uuid(1));
     sqlx::query(
         "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, 'fact', 'core/test-fact-v1', $2, $3)",
+         VALUES ($1, 'fact', 'core/test-fact-v1', $2, uuidv7())",
     )
     .bind(handle)
     .bind(owner_id)
-    .bind(head)
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
-         SELECT $1, t, 'fact', $2, 'core/test-fact-v1', now(), '00000000-0000-0000-0000-000000000509'::uuid, NULL FROM unnest($3::uuid[]) AS t",
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+         SELECT $1, t, 'fact'::proxima_core.memory_kind, $2, 'core/test-fact-v1', now(),
+                '00000000-0000-0000-0000-000000000509'::uuid, NULL::uuid
+           FROM (
+                SELECT t FROM proxima_core.memory_head WHERE handle = $1
+                UNION ALL
+                SELECT uuidv7() FROM generate_series(1, $3 - 1)
+           ) AS versions(t)",
     )
     .bind(handle)
     .bind(owner_id)
-    .bind(&ids)
+    .bind(rows)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// `pairs` Abstractions, each pinning two Facts. Head is inserted before
+/// memory so `memory_align_head` sees the series.
+async fn insert_derived_pairs(
+    conn: &mut PgConnection,
+    owner_id: Uuid,
+    pairs: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "CREATE TEMP TABLE seed_derived (
+            handle uuid PRIMARY KEY,
+            mem_t uuid NOT NULL,
+            left_t uuid NOT NULL,
+            right_t uuid NOT NULL,
+            content_id uuid NOT NULL
+         ) ON COMMIT DROP",
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "WITH numbered AS (
+            SELECT t, row_number() OVER (ORDER BY t) AS n
+              FROM proxima_core.memory
+             WHERE owner_id = $1 AND kind = 'fact'
+             ORDER BY t
+             LIMIT ($2 * 2)
+         ),
+         pairs AS (
+            SELECT a.t AS left_t, b.t AS right_t,
+                   uuidv7() AS handle, uuidv7() AS mem_t
+              FROM numbered a
+              JOIN numbered b ON b.n = a.n + 1
+             WHERE a.n % 2 = 1
+         ),
+         ins_content AS (
+            INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+            SELECT $1, 'core/test-fact-v1',
+                   decode(md5(left_t::text || right_t::text), 'hex')
+                   || decode(md5(right_t::text || left_t::text), 'hex')
+              FROM pairs
+            RETURNING content_id, content_hash
+         )
+         INSERT INTO seed_derived (handle, mem_t, left_t, right_t, content_id)
+         SELECT p.handle, p.mem_t, p.left_t, p.right_t, c.content_id
+           FROM pairs p
+           JOIN ins_content c
+             ON c.content_hash
+              = decode(md5(p.left_t::text || p.right_t::text), 'hex')
+                || decode(md5(p.right_t::text || p.left_t::text), 'hex')",
+    )
+    .bind(owner_id)
+    .bind(pairs)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         SELECT handle, 'abstraction', 'core/test-fact-v1', $1, mem_t
+           FROM seed_derived",
+    )
+    .bind(owner_id)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at, \"by\", via)
+         SELECT handle, mem_t, 'abstraction', $1, 'core/test-fact-v1', content_id,
+                ARRAY[left_t, right_t], NULL,
+                '00000000-0000-0000-0000-000000000509'::uuid, NULL
+           FROM seed_derived",
+    )
+    .bind(owner_id)
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -653,15 +727,7 @@ async fn hundred_thousand_memories_commit_under_the_coarse_lock() {
         for _ in 0..10 {
             insert_facts(&mut tx, owner_id, 9_900).await?;
         }
-        let facts: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT t FROM proxima_core.memory WHERE owner_id = $1 ORDER BY t LIMIT 2000",
-        )
-        .bind(owner_id)
-        .fetch_all(&mut *tx)
-        .await?;
-        for pair in facts.chunks(2) {
-            insert_derived(&mut tx, owner_id, "abstraction", pair).await?;
-        }
+        insert_derived_pairs(&mut tx, owner_id, 1_000).await?;
         let (mode, advisory) = pin_lock_state(&mut tx).await?;
         assert_eq!(mode.as_deref(), Some("coarse"));
         assert_eq!(advisory, DECIDE_AFTER);
