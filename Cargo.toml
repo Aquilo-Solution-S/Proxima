@@ -67,8 +67,12 @@ sha2 = "0.11"
 # stack (aws-smithy-http-client/legacy-rustls-ring -> rustls-webpki 0.101.7,
 # RUSTSEC-2026-0098/0099/0104). `default-https-client` (kept) uses the modern
 # rustls 0.23 + aws-lc-rs client instead; aws-lc-sys is already in the tree.
+# Omit default `sigv4a`: it pulls crypto-bigint 0.5 (RUSTSEC-2026-0387) through
+# aws-sigv4 + p256, and aws-sigv4 still pins `crypto-bigint = "0.5.4"` with no
+# 0.5.x patch (fixed only in >=0.7.6). Cited-blob storage signs with SigV4
+# against a regional bucket; Multi-Region Access Points are not a supported
+# target.
 aws-sdk-s3 = { version = "1.79.0", default-features = false, features = [
-    "sigv4a",
     "default-https-client",
     "rt-tokio",
 ] }
