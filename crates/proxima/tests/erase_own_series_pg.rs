@@ -1,9 +1,9 @@
 //! `UnitOfWork::erase_own_series` against real Postgres, through the
 //! example flavor's note series (see `docs/data-and-erasure.md`).
 //!
-//! Every Fact here is admitted and forgotten through the Engine, so the rows
-//! the erase must reach — memory row, sidecar, head — are
-//! the ones production writes, not a fixture's idea of them.
+//! Forget and erase go through the Engine. Cap-sized pages seed the same
+//! rows in one coarse-locked SQL transaction so the suite is not 257
+//! engine admissions.
 #![allow(clippy::too_many_lines)]
 
 #[path = "fixtures/example_engine.rs"]
@@ -73,6 +73,80 @@ async fn ingest(
         .await
         .expect("the fixture note is admitted")
         .memory_id
+}
+
+/// `MAX_ERASE_SERIES_PER_CALL + 1` notes of one notebook, oldest `t` first.
+///
+/// When `written_at_base` is set, the first admission carries the newest
+/// declared time (`base + cap seconds`) so `DeclaredBefore` pages the later
+/// admissions first.
+async fn seed_notes(
+    pool: &sqlx::PgPool,
+    owner: OwnerId,
+    notebook_id: Uuid,
+    written_at_base: Option<time::OffsetDateTime>,
+) -> Vec<MemoryId> {
+    let owner_id = owner.into_inner();
+    let count =
+        i32::try_from(MAX_ERASE_SERIES_PER_CALL + 1).expect("the erase cap plus one fits i32");
+    let mut tx = pool.begin().await.expect("seed transaction");
+    sqlx::query("LOCK TABLE proxima_core.memory, proxima_core.goal IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await
+        .expect("coarse pin lock");
+    sqlx::query(
+        "INSERT INTO proxima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+    )
+    .bind(owner_id)
+    .execute(&mut *tx)
+    .await
+    .expect("owner row");
+    let mut ts: Vec<Uuid> = sqlx::query_scalar(
+        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         SELECT uuidv7(), 'fact', $2, $1, uuidv7()
+           FROM generate_series(1, $3)
+         RETURNING t",
+    )
+    .bind(owner_id)
+    .bind(NoteV1::SCHEMA_ID)
+    .bind(count)
+    .fetch_all(&mut *tx)
+    .await
+    .expect("heads");
+    ts.sort_unstable();
+    sqlx::query(
+        "INSERT INTO proxima_core.memory
+             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+         SELECT h.handle, h.t, 'fact', $1, $2, ARRAY['proxima_example.note_v1'],
+                uuid_extract_timestamp(h.t), $1, NULL
+           FROM proxima_core.memory_head h
+          WHERE h.t = ANY($3)",
+    )
+    .bind(owner_id)
+    .bind(NoteV1::SCHEMA_ID)
+    .bind(&ts)
+    .execute(&mut *tx)
+    .await
+    .expect("memory rows");
+    sqlx::query(
+        "INSERT INTO proxima_example.note_v1 (t, notebook_id, key, body, written_at)
+         SELECT u.t, $1, 'n' || (u.ord - 1), 'note n' || (u.ord - 1),
+                CASE
+                  WHEN $2::timestamptz IS NULL THEN now()
+                  ELSE $2 + make_interval(secs => ($3 - u.ord))
+                END
+           FROM unnest($4::uuid[]) WITH ORDINALITY AS u(t, ord)",
+    )
+    .bind(notebook_id)
+    .bind(written_at_base)
+    .bind(count)
+    .bind(&ts)
+    .execute(&mut *tx)
+    .await
+    .expect("sidecar rows");
+    tx.commit().await.expect("the seed commits");
+    ts.into_iter().map(MemoryId::new).collect()
 }
 
 async fn handle_of(pool: &sqlx::PgPool, t: MemoryId) -> SeriesHandle {
@@ -484,19 +558,7 @@ async fn the_cap_refuses_an_oversized_id_list_and_pages_a_cutoff() {
     run(async |h| {
         let (owner, authz) = personal();
         let notebook_id = h.notebook(&owner).await;
-        let mut ids = Vec::new();
-        for n in 0..=MAX_ERASE_SERIES_PER_CALL {
-            ids.push(
-                ingest(
-                    &h.engine,
-                    &authz,
-                    owner,
-                    &note(notebook_id, &format!("c{n}")),
-                    None,
-                )
-                .await,
-            );
-        }
+        let ids = seed_notes(&h.pool, owner, notebook_id, None).await;
         let before = footprint(&h.pool, &ids).await;
 
         assert_eq!(
@@ -953,17 +1015,8 @@ async fn sidecar_selections_page_at_the_cap_oldest_first() {
         let (owner, authz) = personal();
         let notebook = h.notebook(&owner).await;
         let base = time::OffsetDateTime::now_utc() - time::Duration::days(30);
-        let mut ids = Vec::new();
-        for n in 0..=MAX_ERASE_SERIES_PER_CALL {
-            // The first admitted carries the newest written time.
-            let offset = i64::try_from(MAX_ERASE_SERIES_PER_CALL - n)?;
-            let payload = note_at(
-                notebook,
-                &format!("p{n}"),
-                base + time::Duration::seconds(offset),
-            );
-            ids.push(ingest(&h.engine, &authz, owner, &payload, None).await);
-        }
+        // The first admitted carries the newest written time.
+        let ids = seed_notes(&h.pool, owner, notebook, Some(base)).await;
 
         let declared = erase(
             &h.engine,
