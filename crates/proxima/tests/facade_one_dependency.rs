@@ -426,3 +426,22 @@ async fn host_tier_builds_the_mcp_edge_layer_stack() {
     let _default_cap =
         axum::Router::<()>::new().layer(axum::middleware::from_fn(proxima::enforce_body_limit));
 }
+
+/// The in-process whole-reply observation needs only the facade dependency.
+#[allow(dead_code)]
+async fn observed_host_reply(
+    host: &proxima::McpToolHost,
+    author: proxima::McpAuthorContext,
+    auth: proxima::McpAuthContext,
+) -> Result<proxima::ToolReply, proxima::ToolInvocationError> {
+    let (judged, call) = host.call_tool_reply_observed_in_request(
+        "core_memory_spaces",
+        serde_json::json!({}),
+        author,
+        Some(auth),
+        proxima::FlavorServices::default(),
+    );
+    let reply = call.await;
+    let _: Option<proxima::ScopeKey> = judged.get();
+    reply
+}

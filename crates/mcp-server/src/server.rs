@@ -340,17 +340,43 @@ impl McpToolHost {
         auth: Option<McpAuthContext>,
         request: FlavorServices,
     ) -> Result<ToolReply, ToolInvocationError> {
-        let auth = auth.ok_or_else(|| ToolInvocationError::NotAuthorized(name.to_string()))?;
-        let target = self.resolve_tool(&auth, name).await?;
-        self.call_resolved(
-            target,
-            args,
-            author,
-            auth,
-            request,
-            proxima_core::mcp::JudgedKey::default(),
-        )
-        .await
+        self.call_tool_reply_observed_in_request(name, args, author, auth, request)
+            .1
+            .await
+    }
+
+    /// Start [`Self::call_tool_reply_in_request`] with a fresh observation of
+    /// the scope gate.
+    ///
+    /// Retain the returned [`JudgedKey`](proxima_core::mcp::JudgedKey), await
+    /// the future, then read the cell after success or refusal. It is the exact
+    /// cell used by the gate and stays empty if the request fails before the
+    /// gate derives a key. Each invocation creates its own cell; callers cannot
+    /// supply one shared with another call.
+    ///
+    /// # Errors
+    ///
+    /// The future returns the same errors as [`Self::call_tool_reply_in_request`].
+    pub fn call_tool_reply_observed_in_request<'a>(
+        &'a self,
+        name: &'a str,
+        args: serde_json::Value,
+        author: McpAuthorContext,
+        auth: Option<McpAuthContext>,
+        request: FlavorServices,
+    ) -> (
+        proxima_core::mcp::JudgedKey,
+        impl Future<Output = Result<ToolReply, ToolInvocationError>> + Send + use<'a>,
+    ) {
+        let judged = proxima_core::mcp::JudgedKey::default();
+        let observation = judged.clone();
+        let call = async move {
+            let auth = auth.ok_or_else(|| ToolInvocationError::NotAuthorized(name.to_string()))?;
+            let target = self.resolve_tool(&auth, name).await?;
+            self.call_resolved(target, args, author, auth, request, judged)
+                .await
+        };
+        (observation, Box::pin(call))
     }
 
     /// The tool `name` calls for `auth`: the registry's, else the host

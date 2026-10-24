@@ -164,6 +164,19 @@ let reply = call.await;
 let key = judged.get(); // Also available when reply is Err.
 ```
 
+An in-process host keeps the whole `ToolReply` and the same observation with
+`McpToolHost::call_tool_reply_observed_in_request`:
+
+```rust
+let (judged, call) = host.call_tool_reply_observed_in_request(
+    name, args, author, Some(auth), request_services,
+);
+let reply = call.await;
+let key = judged.get(); // Also available when reply is Err.
+```
+
+`call_tool_reply_in_request` awaits this same path without retaining the cell.
+
 Each invocation creates a fresh cell; a failure before the gate derives a key
 leaves it empty. Ordinary `ServerHandler::call_tool` uses the same path without
 retaining the observation. A behavior wrapping the gate can also read the cell
