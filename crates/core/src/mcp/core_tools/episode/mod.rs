@@ -32,7 +32,7 @@ use crate::{
     MemoryId, SeriesHandle, UnitOfWork,
 };
 
-use bind::{BindSet, parse_bind, reject_duplicate_keys};
+use bind::{BindSet, EpisodeKey, EpisodeKeyParseError, parse_bind, reject_duplicate_keys};
 
 const MAX_REMEMBER: usize = 16;
 const MAX_STANCE: usize = 16;
@@ -747,35 +747,38 @@ fn resolve_local_slot<'a>(
     slots: &'a EpisodeSlots,
     handle: &str,
 ) -> Result<Option<&'a Slot>, McpToolError> {
-    if let Some(idx) = handle.strip_prefix("remember:") {
-        let idx: usize = idx.parse().map_err(|_| {
-            McpToolError::InvalidInput(format!("local key {handle} is not remember:<index>"))
-        })?;
-        return slots.remember.get(idx).map(Some).ok_or_else(|| {
+    match EpisodeKey::parse(handle) {
+        Ok(EpisodeKey::Remember(idx)) => slots.remember.get(idx).map(Some).ok_or_else(|| {
             McpToolError::InvalidInput(format!("local key {handle} is out of range"))
-        });
-    }
-    if handle == "derive" {
-        return slots
-            .derive
-            .as_ref()
-            .map(Some)
-            .ok_or_else(|| McpToolError::InvalidInput("local key derive is out of range".into()));
-    }
-    if let Some(idx) = handle.strip_prefix("stance:") {
-        let idx: usize = idx.parse().map_err(|_| {
-            McpToolError::InvalidInput(format!("local key {handle} is not stance:<index>"))
-        })?;
-        return slots.stance.get(idx).map(Some).ok_or_else(|| {
+        }),
+        Ok(EpisodeKey::Derive) => {
+            slots.derive.as_ref().map(Some).ok_or_else(|| {
+                McpToolError::InvalidInput("local key derive is out of range".into())
+            })
+        }
+        Ok(EpisodeKey::Stance(idx)) => slots.stance.get(idx).map(Some).ok_or_else(|| {
             McpToolError::InvalidInput(format!("local key {handle} is out of range"))
-        });
-    }
-    if handle.starts_with("goal:") {
-        return Err(McpToolError::InvalidInput(
+        }),
+        Ok(EpisodeKey::Goal(_)) => Err(McpToolError::InvalidInput(
             "goal:<index> is not a memory handle".into(),
-        ));
+        )),
+        Err(EpisodeKeyParseError::NotIndex) => {
+            if handle.starts_with("goal:") {
+                Err(McpToolError::InvalidInput(
+                    "goal:<index> is not a memory handle".into(),
+                ))
+            } else if handle.starts_with("remember:") {
+                Err(McpToolError::InvalidInput(format!(
+                    "local key {handle} is not remember:<index>"
+                )))
+            } else {
+                Err(McpToolError::InvalidInput(format!(
+                    "local key {handle} is not stance:<index>"
+                )))
+            }
+        }
+        Err(EpisodeKeyParseError::Unknown) => Ok(None),
     }
-    Ok(None)
 }
 
 #[cfg(test)]
