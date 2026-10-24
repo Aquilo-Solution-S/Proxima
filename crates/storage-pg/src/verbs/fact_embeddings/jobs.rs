@@ -322,11 +322,11 @@ enum ClaimExit {
 }
 
 impl ClaimExit {
-    const fn status(self) -> &'static str {
+    const fn status(self) -> EmbeddingJobState {
         match self {
-            Self::Failed => "failed",
-            Self::FailedPermanent => "failed_permanent",
-            Self::Released => "pending",
+            Self::Failed => EmbeddingJobState::Failed { last_error: None },
+            Self::FailedPermanent => EmbeddingJobState::FailedPermanent { last_error: None },
+            Self::Released => EmbeddingJobState::Pending,
         }
     }
 }
@@ -661,7 +661,7 @@ pub(crate) async fn embedding_job_diagnostics<'e>(
                 j.entity_id,
                 j.model_id,
                 j.dim,
-                j.status::text AS status,
+                j.status AS status,
                 j.last_error,
                 CASE WHEN j.status = 'processing'
                      THEN floor(extract(epoch FROM (now() - j.claimed_at)))::bigint
@@ -690,7 +690,7 @@ struct EmbeddingJobDiagnosticRow {
     entity_id: uuid::Uuid,
     model_id: String,
     dim: i16,
-    status: String,
+    status: EmbeddingJobState,
     last_error: Option<String>,
     claim_age_seconds: Option<i64>,
 }
@@ -714,13 +714,13 @@ impl EmbeddingJobDiagnosticRow {
 }
 
 pub(crate) fn embedding_job_state(
-    status: &str,
+    status: &EmbeddingJobState,
     claim_age_seconds: Option<i64>,
     last_error: Option<String>,
 ) -> Result<EmbeddingJobState, StorageError> {
     match status {
-        "pending" => Ok(EmbeddingJobState::Pending),
-        "processing" => {
+        EmbeddingJobState::Pending => Ok(EmbeddingJobState::Pending),
+        EmbeddingJobState::Processing { .. } => {
             let seconds = claim_age_seconds.ok_or_else(|| {
                 StorageError::Internal("processing embedding job has no claim age".into())
             })?;
@@ -728,11 +728,10 @@ pub(crate) fn embedding_job_state(
                 claim_age: time::Duration::seconds(seconds.max(0)),
             })
         }
-        "failed" => Ok(EmbeddingJobState::Failed { last_error }),
-        "failed_permanent" => Ok(EmbeddingJobState::FailedPermanent { last_error }),
-        other => Err(StorageError::Internal(format!(
-            "unknown embedding job status {other}"
-        ))),
+        EmbeddingJobState::Failed { .. } => Ok(EmbeddingJobState::Failed { last_error }),
+        EmbeddingJobState::FailedPermanent { .. } => {
+            Ok(EmbeddingJobState::FailedPermanent { last_error })
+        }
     }
 }
 
@@ -743,20 +742,36 @@ mod diagnostic_state_tests {
     use proxima_core::StorageError;
 
     #[test]
-    fn an_unknown_status_is_refused() {
-        let err = embedding_job_state("bogus", None, None).expect_err("unknown status");
-        assert!(matches!(err, StorageError::Internal(message) if message.contains("bogus")));
+    fn an_unknown_status_is_refused_at_the_label() {
+        let err = "bogus"
+            .parse::<EmbeddingJobState>()
+            .expect_err("unknown status");
+        assert!(err.to_string().contains("bogus"));
     }
 
     #[test]
     fn a_processing_job_without_a_claim_age_is_refused() {
-        let err = embedding_job_state("processing", None, None).expect_err("no age");
+        let err = embedding_job_state(
+            &EmbeddingJobState::Processing {
+                claim_age: time::Duration::ZERO,
+            },
+            None,
+            None,
+        )
+        .expect_err("no age");
         assert!(matches!(err, StorageError::Internal(message) if message.contains("claim age")));
     }
 
     #[test]
     fn a_negative_claim_age_saturates_at_zero() {
-        let state = embedding_job_state("processing", Some(-3), None).expect("age");
+        let state = embedding_job_state(
+            &EmbeddingJobState::Processing {
+                claim_age: time::Duration::ZERO,
+            },
+            Some(-3),
+            None,
+        )
+        .expect("age");
         assert_eq!(
             state,
             EmbeddingJobState::Processing {
@@ -768,17 +783,27 @@ mod diagnostic_state_tests {
     #[test]
     fn pending_and_failed_carry_no_claim_age() {
         assert_eq!(
-            embedding_job_state("pending", Some(9), None).expect("pending"),
+            embedding_job_state(&EmbeddingJobState::Pending, Some(9), None).expect("pending"),
             EmbeddingJobState::Pending
         );
         assert_eq!(
-            embedding_job_state("failed", None, Some("provider refused".into())).expect("failed"),
+            embedding_job_state(
+                &EmbeddingJobState::Failed { last_error: None },
+                None,
+                Some("provider refused".into())
+            )
+            .expect("failed"),
             EmbeddingJobState::Failed {
                 last_error: Some("provider refused".into())
             }
         );
         assert_eq!(
-            embedding_job_state("failed_permanent", None, None).expect("permanent"),
+            embedding_job_state(
+                &EmbeddingJobState::FailedPermanent { last_error: None },
+                None,
+                None
+            )
+            .expect("permanent"),
             EmbeddingJobState::FailedPermanent { last_error: None }
         );
     }

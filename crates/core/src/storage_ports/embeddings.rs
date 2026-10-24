@@ -326,6 +326,11 @@ pub struct EmbeddingJobDiagnostic {
 }
 
 /// Where one embedding job sits, and the claim age when it is claimed.
+///
+/// The Postgres column is `proxima_core.embedding_job_status`. Associated
+/// data is not stored in that enum: claim age and `last_error` are extra
+/// columns, overlaid at the row boundary. [`std::fmt::Display`] /
+/// [`std::str::FromStr`] / `sqlx` speak only the four labels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmbeddingJobState {
     Pending,
@@ -340,6 +345,84 @@ pub enum EmbeddingJobState {
     FailedPermanent {
         last_error: Option<String>,
     },
+}
+
+impl EmbeddingJobState {
+    /// The `proxima_core.embedding_job_status` label this state occupies.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Processing { .. } => "processing",
+            Self::Failed { .. } => "failed",
+            Self::FailedPermanent { .. } => "failed_permanent",
+        }
+    }
+
+    /// Discriminant only. Claim age is zero and `last_error` is `None`;
+    /// overlay those from their columns at the row boundary.
+    #[must_use]
+    pub fn from_status_label(label: &str) -> Option<Self> {
+        match label {
+            "pending" => Some(Self::Pending),
+            "processing" => Some(Self::Processing {
+                claim_age: time::Duration::ZERO,
+            }),
+            "failed" => Some(Self::Failed { last_error: None }),
+            "failed_permanent" => Some(Self::FailedPermanent { last_error: None }),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for EmbeddingJobState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A label that is not one of `pending`, `processing`, `failed`,
+/// `failed_permanent`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingJobStateParseError(String);
+
+impl std::fmt::Display for EmbeddingJobStateParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown embedding job status {}", self.0)
+    }
+}
+
+impl std::error::Error for EmbeddingJobStateParseError {}
+
+impl std::str::FromStr for EmbeddingJobState {
+    type Err = EmbeddingJobStateParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Self::from_status_label(raw).ok_or_else(|| EmbeddingJobStateParseError(raw.to_owned()))
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for EmbeddingJobState {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        sqlx::postgres::PgTypeInfo::with_name("proxima_core.embedding_job_status")
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for EmbeddingJobState {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        <&str as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.as_str(), buf)
+    }
+}
+
+impl sqlx::Decode<'_, sqlx::Postgres> for EmbeddingJobState {
+    fn decode(value: sqlx::postgres::PgValueRef<'_>) -> Result<Self, sqlx::error::BoxDynError> {
+        let label = <&str as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Self::from_status_label(label)
+            .ok_or_else(|| format!("unknown embedding job status {label}").into())
+    }
 }
 
 /// Which memories a global embedding reconciliation scans.
