@@ -293,14 +293,14 @@ async fn database_lattice_equals_rust_for_all_relations_and_cap_chains() -> Test
             for cap1 in RELATIONS {
                 for cap2 in RELATIONS {
                     let person = OwnerId::new(Uuid::now_v7());
-                    h.remove(groups[0], OwnerId::from(groups[1])).await?;
-                    h.remove(groups[1], OwnerId::from(groups[2])).await?;
-                    h.add(groups[0], OwnerId::from(groups[1]), cap2).await?;
-                    h.add(groups[1], OwnerId::from(groups[2]), cap1).await?;
-                    h.add(groups[2], person, first).await?;
-                    h.add(groups[0], person, second).await?;
-                    let mut conn = h.pool.acquire().await?;
-                    let role = group_role(&mut conn, person.as_user(), groups[0]).await?;
+                    let mut tx = h.pool.begin().await?;
+                    remove_group_member(&mut tx, groups[0], OwnerId::from(groups[1])).await?;
+                    remove_group_member(&mut tx, groups[1], OwnerId::from(groups[2])).await?;
+                    add_group_member(&mut tx, groups[0], OwnerId::from(groups[1]), cap2).await?;
+                    add_group_member(&mut tx, groups[1], OwnerId::from(groups[2]), cap1).await?;
+                    add_group_member(&mut tx, groups[2], person, first).await?;
+                    add_group_member(&mut tx, groups[0], person, second).await?;
+                    let role = group_role(&mut tx, person.as_user(), groups[0]).await?;
                     assert_eq!(
                         role,
                         Some(
@@ -311,9 +311,9 @@ async fn database_lattice_equals_rust_for_all_relations_and_cap_chains() -> Test
                                 .join(second.role())
                         )
                     );
-                    drop(conn);
-                    h.remove(groups[2], person).await?;
-                    h.remove(groups[0], person).await?;
+                    remove_group_member(&mut tx, groups[2], person).await?;
+                    remove_group_member(&mut tx, groups[0], person).await?;
+                    tx.commit().await?;
                 }
             }
         }
