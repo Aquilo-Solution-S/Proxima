@@ -870,7 +870,11 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
 
     match path {
         resource_path::SCHEMAS => Ok(ParsedResource::Schemas(ListSchemasArgs {
-            kind: query_value(&query, "kind").map(ToOwned::to_owned),
+            kind: query_parse(
+                &query,
+                "kind",
+                "Fact, Abstraction, Perspective, Goal, or CitedObject",
+            )?,
         })),
         resource_path::TOOLS => Ok(ParsedResource::Tools(ListSubstrateToolsArgs {})),
         resource_path::GRAPH => Ok(ParsedResource::Graph(GetGraphArgs {})),

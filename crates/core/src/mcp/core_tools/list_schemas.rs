@@ -12,14 +12,14 @@ pub struct ListSchemasArgs {
     /// Optional filter. One of "Fact", "Abstraction", "Perspective",
     /// "Goal", "`CitedObject`" (case-insensitive). Omit to return all kinds.
     #[serde(default)]
-    pub kind: Option<String>,
+    pub kind: Option<PayloadKind>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SchemaItem {
     pub schema_id: String,
     pub schema_version: u32,
-    pub kind: String,
+    pub kind: PayloadKind,
     /// Whether an admitted Fact of this schema also captures a
     /// `CloudEvents` publication record in the same transaction (issue
     /// #305). Always `false` for the non-Fact kinds.
@@ -31,30 +31,6 @@ pub struct ListSchemasOutput {
     pub schemas: Vec<SchemaItem>,
 }
 
-// Case-insensitive: agents reading `kind` values back from output see
-// `CitedObject` but frequently send `citedobject`/`FACT`; casing is not
-// signal, so it must not turn a valid filter into an error.
-fn parse_kind(s: &str) -> Option<PayloadKind> {
-    match s.to_ascii_lowercase().as_str() {
-        "fact" => Some(PayloadKind::Fact),
-        "abstraction" => Some(PayloadKind::Abstraction),
-        "perspective" => Some(PayloadKind::Perspective),
-        "goal" => Some(PayloadKind::Goal),
-        "citedobject" => Some(PayloadKind::CitedObject),
-        _ => None,
-    }
-}
-
-fn kind_str(k: PayloadKind) -> &'static str {
-    match k {
-        PayloadKind::Fact => "Fact",
-        PayloadKind::Abstraction => "Abstraction",
-        PayloadKind::Perspective => "Perspective",
-        PayloadKind::Goal => "Goal",
-        PayloadKind::CitedObject => "CitedObject",
-    }
-}
-
 #[allow(clippy::unused_async)]
 /// # Errors
 ///
@@ -63,26 +39,15 @@ pub async fn list_schemas(
     ctx: McpToolCtx,
     args: ListSchemasArgs,
 ) -> Result<ListSchemasOutput, McpToolError> {
-    // Reject an unknown `kind` rather than silently returning all
-    // schemas (a typo like "Facts" must not look successful).
-    let filter = match args.kind.as_deref() {
-        Some(raw) => Some(parse_kind(raw).ok_or_else(|| {
-            McpToolError::InvalidInput(format!(
-                "unknown kind '{raw}'; expected one of: Fact, Abstraction, \
-                         Perspective, Goal, CitedObject"
-            ))
-        })?),
-        None => None,
-    };
     let schemas = ctx
         .registry
         .list()
         .into_iter()
-        .filter(|info| filter.is_none_or(|k| info.kind == k))
+        .filter(|info| args.kind.is_none_or(|k| info.kind == k))
         .map(|info| SchemaItem {
             schema_id: info.schema_id.as_str().to_string(),
             schema_version: info.schema_version.into_inner(),
-            kind: kind_str(info.kind).to_string(),
+            kind: info.kind,
             listenable: info.listenable,
         })
         .collect();
@@ -96,7 +61,7 @@ pub async fn list_schemas(
 pub struct GetSchemaOutput {
     pub schema_id: String,
     pub schema_version: u32,
-    pub kind: String,
+    pub kind: PayloadKind,
     pub listenable: bool,
     /// The registered `json_schema()` of the payload type.
     pub json_schema: serde_json::Value,
@@ -134,7 +99,7 @@ pub async fn get_schema(
     Ok(GetSchemaOutput {
         schema_id: info.schema_id.as_str().to_string(),
         schema_version: info.schema_version.into_inner(),
-        kind: kind_str(info.kind).to_string(),
+        kind: info.kind,
         listenable: info.listenable,
         json_schema,
     })
@@ -144,7 +109,7 @@ pub async fn get_schema(
 mod tests {
     use std::sync::Arc;
 
-    use super::{get_schema, parse_kind};
+    use super::get_schema;
     use crate::mcp::{McpAuthorContext, McpToolCtx, McpToolError};
 
     use crate::{AuthPath, AuthzContext, FlavorServices, OwnerId, UserId};
@@ -180,7 +145,17 @@ mod tests {
     #[test]
     fn unknown_kind_still_fails_closed() {
         // Case-insensitivity must not soften the typo guard.
-        assert_eq!(parse_kind("Facts"), None);
-        assert_eq!(parse_kind(""), None);
+        assert!(
+            "Facts"
+                .parse::<crate::verbs::schema::PayloadKind>()
+                .is_err()
+        );
+        assert!("".parse::<crate::verbs::schema::PayloadKind>().is_err());
+        assert_eq!(
+            "citedobject"
+                .parse::<crate::verbs::schema::PayloadKind>()
+                .ok(),
+            Some(crate::verbs::schema::PayloadKind::CitedObject)
+        );
     }
 }

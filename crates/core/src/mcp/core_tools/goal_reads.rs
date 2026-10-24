@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::GoalId;
 use crate::mcp::cursor as wire_cursor;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::verbs::goal_write::GoalState;
+use crate::verbs::goal_write::{GoalState, GoalStateParseError};
 use crate::verbs::query::{EntityKind, QueryCursor, QueryPage, QueryRequest, SupersessionStatus};
 
 /// Opaque cursor codec: the shared `{v, fp, c}` envelope with the goal
@@ -82,7 +82,7 @@ struct GoalCursorPos {
 fn goal_fingerprint(states: &BTreeSet<GoalState>) -> String {
     let canon = states
         .iter()
-        .map(|state| state_str(*state))
+        .map(|state| state.list_label())
         .collect::<Vec<_>>();
     let canon = serde_json::to_string(&canon).expect("fingerprint canon serializes");
     wire_cursor::fingerprint(&canon)
@@ -180,7 +180,7 @@ fn project_goals(rows: Vec<crate::verbs::query::GoalRow>) -> Vec<GoalItem> {
             via: row.writer.via,
             title: row.title,
             text: row.text,
-            state: state_str(row.state).to_string(),
+            state: row.state.list_label().to_string(),
             schema_id: row.schema_id.as_str().to_string(),
             set_at: row.set_at,
             changed_at: row.changed_at,
@@ -210,29 +210,12 @@ fn parse_goal_states(raw: Option<&str>) -> Result<BTreeSet<GoalState>, McpToolEr
                 "state must not contain empty members".into(),
             ));
         }
-        let state = match member.to_ascii_lowercase().as_str() {
-            "active" => GoalState::Active,
-            "paused" => GoalState::Paused,
-            "achieved" => GoalState::Achieved,
-            "abandoned" => GoalState::Abandoned,
-            _ => {
-                return Err(McpToolError::InvalidInput(format!(
-                    "state must be one of Active, Paused, Achieved, Abandoned; got '{member}'"
-                )));
-            }
-        };
+        let state = member
+            .parse()
+            .map_err(|err: GoalStateParseError| McpToolError::InvalidInput(err.to_string()))?;
         states.insert(state);
     }
     Ok(states)
-}
-
-fn state_str(state: GoalState) -> &'static str {
-    match state {
-        GoalState::Active => "Active",
-        GoalState::Paused => "Paused",
-        GoalState::Achieved => "Achieved",
-        GoalState::Abandoned => "Abandoned",
-    }
 }
 
 fn encode_goal_cursor(

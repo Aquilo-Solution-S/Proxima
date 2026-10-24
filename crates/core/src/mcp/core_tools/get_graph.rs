@@ -8,12 +8,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::engine::GetGraphReadRequest;
-use crate::mcp::{McpToolCtx, McpToolError};
-use crate::verbs::schema::PayloadKind;
-
 use super::list_schemas::SchemaItem;
 use super::list_substrate_tools::{SubstrateToolItem, scoped_substrate_tools};
+use crate::engine::GetGraphReadRequest;
+use crate::mcp::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GetGraphArgs {}
@@ -39,16 +37,6 @@ pub struct GetGraphOutput {
     pub schemas: Vec<SchemaItem>,
     /// Dispatchable substrate and flavor-registered MCP tool ids.
     pub substrate_tools: Vec<SubstrateToolItem>,
-}
-
-fn kind_str(k: PayloadKind) -> &'static str {
-    match k {
-        PayloadKind::Fact => "Fact",
-        PayloadKind::Abstraction => "Abstraction",
-        PayloadKind::Perspective => "Perspective",
-        PayloadKind::Goal => "Goal",
-        PayloadKind::CitedObject => "CitedObject",
-    }
 }
 
 /// # Errors
@@ -77,7 +65,7 @@ pub async fn get_graph(
         .map(|info| SchemaItem {
             schema_id: info.schema_id.as_str().to_string(),
             schema_version: info.schema_version.into_inner(),
-            kind: kind_str(info.kind).to_string(),
+            kind: info.kind,
             listenable: info.listenable,
         })
         .collect();

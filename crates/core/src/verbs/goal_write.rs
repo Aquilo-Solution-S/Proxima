@@ -40,6 +40,40 @@ pub enum GoalState {
 }
 
 impl GoalState {
+    /// Title Case label a goal list returns (`Active`, `Paused`, …).
+    #[must_use]
+    pub const fn list_label(self) -> &'static str {
+        match self {
+            Self::Active => "Active",
+            Self::Paused => "Paused",
+            Self::Achieved => "Achieved",
+            Self::Abandoned => "Abandoned",
+        }
+    }
+
+    /// Lowercase label a `state` filter member matches after folding case.
+    #[must_use]
+    pub const fn filter_label(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Achieved => "achieved",
+            Self::Abandoned => "abandoned",
+        }
+    }
+
+    /// Parse one filter member. Casing is not signal; unknown labels fail closed.
+    #[must_use]
+    pub fn from_filter_label(raw: &str) -> Option<Self> {
+        match raw.to_ascii_lowercase().as_str() {
+            "active" => Some(Self::Active),
+            "paused" => Some(Self::Paused),
+            "achieved" => Some(Self::Achieved),
+            "abandoned" => Some(Self::Abandoned),
+            _ => None,
+        }
+    }
+
     /// Legality of a plain lifecycle transition (the `GoalWrite` transition
     /// verb) from `self` to `next`.
     ///
@@ -71,6 +105,36 @@ impl GoalState {
     #[must_use]
     pub const fn may_achieve(self) -> bool {
         matches!(self, Self::Active)
+    }
+}
+
+impl std::fmt::Display for GoalState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.list_label())
+    }
+}
+
+/// A filter member that is not Active, Paused, Achieved, or Abandoned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalStateParseError(String);
+
+impl std::fmt::Display for GoalStateParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "state must be one of Active, Paused, Achieved, Abandoned; got '{}'",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for GoalStateParseError {}
+
+impl std::str::FromStr for GoalState {
+    type Err = GoalStateParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Self::from_filter_label(raw).ok_or_else(|| GoalStateParseError(raw.to_owned()))
     }
 }
 
@@ -724,6 +788,19 @@ mod goal_state_matrix_tests {
         assert!(!GoalState::Paused.may_achieve());
         assert!(!GoalState::Achieved.may_achieve());
         assert!(!GoalState::Abandoned.may_achieve());
+    }
+
+    #[test]
+    fn filter_and_list_labels_stay_paired() {
+        for state in ALL {
+            assert_eq!(
+                state.filter_label(),
+                state.list_label().to_ascii_lowercase()
+            );
+            assert_eq!(state.filter_label().parse::<GoalState>().ok(), Some(state));
+            assert_eq!(state.list_label().parse::<GoalState>().ok(), Some(state));
+            assert_eq!(state.to_string(), state.list_label());
+        }
     }
 }
 

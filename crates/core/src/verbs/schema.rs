@@ -44,13 +44,71 @@ pub(crate) struct ProtocolPayloadIngressEntry {
     pub json_schema: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
 pub enum PayloadKind {
     Fact,
     Abstraction,
     Perspective,
     Goal,
     CitedObject,
+}
+
+impl PayloadKind {
+    /// The catalog / list-schema spelling (`Fact`, `CitedObject`, …).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fact => "Fact",
+            Self::Abstraction => "Abstraction",
+            Self::Perspective => "Perspective",
+            Self::Goal => "Goal",
+            Self::CitedObject => "CitedObject",
+        }
+    }
+}
+
+impl std::fmt::Display for PayloadKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A kind filter that is not Fact, Abstraction, Perspective, Goal, or `CitedObject`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PayloadKindParseError(String);
+
+impl std::fmt::Display for PayloadKindParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown kind '{}'; expected one of: Fact, Abstraction, Perspective, Goal, CitedObject",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for PayloadKindParseError {}
+
+impl std::str::FromStr for PayloadKind {
+    type Err = PayloadKindParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.to_ascii_lowercase().as_str() {
+            "fact" => Ok(Self::Fact),
+            "abstraction" => Ok(Self::Abstraction),
+            "perspective" => Ok(Self::Perspective),
+            "goal" => Ok(Self::Goal),
+            "citedobject" => Ok(Self::CitedObject),
+            _ => Err(PayloadKindParseError(raw.to_owned())),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PayloadKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = <std::borrow::Cow<'de, str> as serde::Deserialize>::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 /// The memory kind a payload layer writes, or `None` for the layers that

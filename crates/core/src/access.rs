@@ -480,15 +480,25 @@ pub trait OwnerAccessPort: Send + Sync {
 
 /// The stored name of a membership preset. Authorization reads the preset's
 /// [`Role`] ([`Self::role`]), never the name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type)]
+///
+/// Wire spelling is lowercase (`admin`, `editor`, `viewer`, `ingest`).
+/// [`std::str::FromStr`] folds case so a tool arg is not casing-sensitive.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type, serde::Serialize, schemars::JsonSchema,
+)]
 #[sqlx(
     type_name = "proxima_core.membership_relation",
     rename_all = "lowercase"
 )]
+#[serde(rename_all = "lowercase")]
 pub enum Relation {
+    #[serde(alias = "Admin", alias = "ADMIN")]
     Admin,
+    #[serde(alias = "Editor", alias = "EDITOR")]
     Editor,
+    #[serde(alias = "Viewer", alias = "VIEWER")]
     Viewer,
+    #[serde(alias = "Ingest", alias = "INGEST")]
     Ingest,
 }
 
@@ -501,6 +511,56 @@ impl Relation {
             Self::Viewer => Role::viewer(),
             Self::Ingest => Role::ingest(),
         }
+    }
+
+    /// The wire / database label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Editor => "editor",
+            Self::Viewer => "viewer",
+            Self::Ingest => "ingest",
+        }
+    }
+}
+
+impl std::fmt::Display for Relation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A membership relation that is not `admin`, `editor`, `viewer`, or `ingest`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelationParseError;
+
+impl std::fmt::Display for RelationParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("relation must be one of: admin, editor, viewer, ingest")
+    }
+}
+
+impl std::error::Error for RelationParseError {}
+
+impl std::str::FromStr for Relation {
+    type Err = RelationParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.to_ascii_lowercase().as_str() {
+            "admin" => Ok(Self::Admin),
+            "editor" => Ok(Self::Editor),
+            "viewer" => Ok(Self::Viewer),
+            "ingest" => Ok(Self::Ingest),
+            _ => Err(RelationParseError),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Relation {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
     }
 }
 

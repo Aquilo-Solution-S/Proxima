@@ -68,7 +68,7 @@ pub struct AddMemberArgs {
     /// Membership relation (case-insensitive): `admin`, `editor`,
     /// `viewer`, or `ingest`; defaults to `viewer`.
     #[serde(default = "default_relation")]
-    pub relation: String,
+    pub relation: Relation,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -117,14 +117,14 @@ pub struct ListMembersOutput {
 #[derive(Debug, Serialize, PartialEq, Eq, JsonSchema)]
 pub struct MemberOutput {
     pub member: String,
-    pub relation: String,
+    pub relation: Relation,
 }
 
 /// Keyset resume point carried inside the opaque member cursor.
 #[derive(Debug, Serialize, Deserialize)]
 struct MemberCursorPos {
     member: uuid::Uuid,
-    relation: String,
+    relation: Relation,
 }
 
 fn member_fingerprint(group: GroupId) -> String {
@@ -251,9 +251,8 @@ async fn execute_membership(
         CoreMembershipArgs::AddMember(args) => {
             let group = resolve_group(ctx, &args.group)?;
             let member = parse_owner_id(&args.member)?;
-            let relation = parse_relation(&args.relation)?;
             engine
-                .add_member(&ctx.authz, group, member, relation)
+                .add_member(&ctx.authz, group, member, args.relation)
                 .await?;
             Ok(CoreMembershipOutput::AddMember(MutationOutput { ok: true }))
         }
@@ -274,10 +273,7 @@ async fn execute_membership(
                 .as_deref()
                 .map(|raw| {
                     let pos: MemberCursorPos = MEMBER_CURSOR.decode(&fingerprint, raw)?;
-                    Ok::<_, McpToolError>((
-                        OwnerId::new(pos.member),
-                        parse_relation(&pos.relation)?,
-                    ))
+                    Ok::<_, McpToolError>((OwnerId::new(pos.member), pos.relation))
                 })
                 .transpose()?;
             let page = engine.list_members(&ctx.authz, group, limit, after).await?;
@@ -287,7 +283,7 @@ async fn execute_membership(
                     &fingerprint,
                     &MemberCursorPos {
                         member: member.into_inner(),
-                        relation: format_relation(*relation).to_string(),
+                        relation: *relation,
                     },
                 )
             });
@@ -296,7 +292,7 @@ async fn execute_membership(
                 .into_iter()
                 .map(|(member, relation)| MemberOutput {
                     member: member.into_inner().to_string(),
-                    relation: format_relation(relation).to_string(),
+                    relation,
                 })
                 .collect();
             Ok(CoreMembershipOutput::ListMembers(ListMembersOutput {
@@ -347,32 +343,8 @@ fn parse_owner_id(raw: &str) -> Result<OwnerId, McpToolError> {
         .map_err(|err| McpToolError::InvalidInput(format!("member is not an owner uuid: {err}")))
 }
 
-/// Casing is not signal for enum-like string args anywhere on the tool
-/// surface (schema kinds, goal states, search modes all fold case), so
-/// the relation arg folds it too; unknown relations still fail closed.
-fn parse_relation(raw: &str) -> Result<Relation, McpToolError> {
-    match raw.to_ascii_lowercase().as_str() {
-        "admin" => Ok(Relation::Admin),
-        "editor" => Ok(Relation::Editor),
-        "viewer" => Ok(Relation::Viewer),
-        "ingest" => Ok(Relation::Ingest),
-        _ => Err(McpToolError::InvalidInput(
-            "relation must be one of: admin, editor, viewer, ingest".into(),
-        )),
-    }
-}
-
-fn default_relation() -> String {
-    "viewer".into()
-}
-
-fn format_relation(relation: Relation) -> &'static str {
-    match relation {
-        Relation::Admin => "admin",
-        Relation::Editor => "editor",
-        Relation::Viewer => "viewer",
-        Relation::Ingest => "ingest",
-    }
+fn default_relation() -> Relation {
+    Relation::Viewer
 }
 
 #[cfg(test)]
@@ -512,7 +484,7 @@ mod tests {
             CoreMembershipArgs::AddMember(AddMemberArgs {
                 group: "current".into(),
                 member: member.into_inner().to_string(),
-                relation: "viewer".into(),
+                relation: Relation::Viewer,
             }),
         )
         .await
@@ -523,21 +495,22 @@ mod tests {
 
     #[test]
     fn bad_relation_is_invalid_input() {
-        let err = parse_relation("owner").expect_err("bad relation rejected");
-
-        assert!(matches!(err, McpToolError::InvalidInput(message) if message.contains("relation")));
+        let err = "owner"
+            .parse::<Relation>()
+            .expect_err("bad relation rejected");
+        assert!(err.to_string().contains("relation"));
     }
 
     #[test]
     fn relation_parse_is_case_insensitive() {
         for spelling in ["editor", "Editor", "EDITOR"] {
-            assert!(matches!(
-                parse_relation(spelling).expect("valid relation"),
+            assert_eq!(
+                spelling.parse::<Relation>().expect("valid relation"),
                 Relation::Editor
-            ));
+            );
         }
         // Folding case must not widen the accepted set.
-        assert!(parse_relation("OWNER").is_err());
+        assert!("OWNER".parse::<Relation>().is_err());
     }
 
     #[test]
@@ -547,10 +520,7 @@ mod tests {
             "member": "00000000-0000-0000-0000-000000000002"
         }))
         .expect("relation has a viewer default");
-        assert!(matches!(
-            parse_relation(&args.relation),
-            Ok(Relation::Viewer)
-        ));
+        assert_eq!(args.relation, Relation::Viewer);
     }
 
     /// Pages walk the whole membership exactly once via the opaque
