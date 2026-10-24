@@ -19,9 +19,10 @@ use std::time::Duration;
 
 use proxima::{
     LedgerConflict, MigrationError, MissingMigrationPolicy, NamedMigrator, PendingMigration,
-    VectorStorage, pending_migrations, pending_migrations_with_policy,
-    preflight_without_migrations, preflight_without_migrations_with_policy,
-    run_core_and_flavor_migrations, run_core_and_flavor_migrations_with_policy,
+    VectorStorage, pending_migrations, pending_migrations_with_lock_timeout,
+    pending_migrations_with_policy, preflight_without_migrations,
+    preflight_without_migrations_with_policy, run_core_and_flavor_migrations,
+    run_core_and_flavor_migrations_with_policy,
 };
 use proxima_pg_testkit::{
     DbGuard, SplitRoleDb, create_db, db_url, split_role_urls, unique_db_name,
@@ -1094,6 +1095,7 @@ async fn a_plan_waits_for_a_run_mid_source_and_reports_the_state_after_it() {
 /// the session setting, does not go back to the pool.
 #[tokio::test]
 async fn a_plan_gives_up_on_the_lock_when_a_run_would() {
+    const LOCK_WAIT: Duration = Duration::from_millis(200);
     let db = Db::core_current().await;
     let mut holder = PgConnection::connect(&db_url(db.guard.name()))
         .await
@@ -1109,12 +1111,16 @@ async fn a_plan_gives_up_on_the_lock_when_a_run_would() {
         .expect("hold the migration lock");
 
     let started = std::time::Instant::now();
-    let refused = db
-        .plan(&[forge(&[F1])])
-        .await
-        .expect_err("the lock is not granted");
+    let refused = pending_migrations_with_lock_timeout(
+        &db.platform,
+        &[forge(&[F1])],
+        VectorStorage::Local,
+        LOCK_WAIT,
+    )
+    .await
+    .expect_err("the lock is not granted");
     assert!(
-        started.elapsed() >= Duration::from_secs(4),
+        started.elapsed() >= LOCK_WAIT.mul_f32(0.5),
         "the plan waited for the lock: {:?}",
         started.elapsed()
     );

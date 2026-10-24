@@ -598,6 +598,28 @@ pub async fn pending_migrations(
     pending_migrations_with_policy(pool, sources, MissingMigrationPolicy::Reject, vectors).await
 }
 
+/// [`pending_migrations`] that waits `lock_timeout` for the runner's
+/// advisory lock, then fails as a run would (`55P03`).
+///
+/// # Errors
+///
+/// The errors of [`pending_migrations`].
+pub async fn pending_migrations_with_lock_timeout(
+    pool: &PgPool,
+    sources: &[NamedMigrator],
+    vectors: VectorStorage,
+    lock_timeout: Duration,
+) -> Result<Vec<PendingMigration>, MigrationError> {
+    pending_migrations_with_policy_and_lock_timeout(
+        pool,
+        sources,
+        MissingMigrationPolicy::Reject,
+        vectors,
+        lock_timeout,
+    )
+    .await
+}
+
 /// [`pending_migrations`] with an explicit missing-version policy.
 ///
 /// # Errors
@@ -610,11 +632,28 @@ pub async fn pending_migrations_with_policy(
     policy: MissingMigrationPolicy,
     vectors: VectorStorage,
 ) -> Result<Vec<PendingMigration>, MigrationError> {
+    pending_migrations_with_policy_and_lock_timeout(
+        pool,
+        sources,
+        policy,
+        vectors,
+        Duration::from_secs(5),
+    )
+    .await
+}
+
+async fn pending_migrations_with_policy_and_lock_timeout(
+    pool: &PgPool,
+    sources: &[NamedMigrator],
+    policy: MissingMigrationPolicy,
+    vectors: VectorStorage,
+    lock_timeout: Duration,
+) -> Result<Vec<PendingMigration>, MigrationError> {
     let core = core_source(vectors);
     let lineup: Vec<&NamedMigrator> = std::iter::once(&core).chain(sources).collect();
     validate_sources(&lineup)?;
     let mut conn = acquire_session_connection(pool).await?;
-    plan_under_lock(&mut conn, &lineup, policy, vectors).await
+    plan_under_lock(&mut conn, &lineup, policy, vectors, lock_timeout).await
 }
 
 /// The lock wait and the snapshot's statements are a run's own, so their
@@ -628,8 +667,10 @@ async fn plan_under_lock(
     lineup: &[&NamedMigrator],
     policy: MissingMigrationPolicy,
     vectors: VectorStorage,
+    lock_timeout: Duration,
 ) -> Result<Vec<PendingMigration>, MigrationError> {
-    sqlx::query(MIGRATION_LOCK_TIMEOUT_SQL)
+    sqlx::query("SELECT set_config('lock_timeout', $1, false)")
+        .bind(format!("{}ms", lock_timeout.as_millis()))
         .execute(&mut *conn)
         .await
         .map_err(execute_error)?;

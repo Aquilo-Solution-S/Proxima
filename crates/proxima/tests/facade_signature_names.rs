@@ -321,7 +321,7 @@ facade_names! {
 
     // Needed by `pending_migrations`, the read-only plan beside the runner.
     pending_migrations {
-        host_only: [VectorStorage, missing_migration_policy_from_lookup, MissingMigrationPolicy, PendingMigration, pending_migrations, pending_migrations_with_policy, preflight_without_migrations_with_policy, run_core_and_flavor_migrations_with_policy],
+        host_only: [VectorStorage, missing_migration_policy_from_lookup, MissingMigrationPolicy, PendingMigration, pending_migrations, pending_migrations_with_lock_timeout, pending_migrations_with_policy, preflight_without_migrations_with_policy, run_core_and_flavor_migrations_with_policy],
         both_tiers: [],
     }
 
