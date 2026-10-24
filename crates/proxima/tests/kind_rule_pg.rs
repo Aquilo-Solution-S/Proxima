@@ -1216,7 +1216,9 @@ async fn assert_fact_scope_sql(
     topology.rollback().await?;
 
     // Index debt, held for the census: a drain pass skips a row it cannot
-    // lock, and the Fact scope's probes never see one to wait on.
+    // lock, and the Fact scope's probes never see one to wait on. Insert
+    // and snapshot in one open transaction so a live embedding worker cannot
+    // `FOR UPDATE SKIP LOCKED` the rows before the census reads them.
     let mut debt = admin.begin().await?;
     for (_, t) in seeded.ids()? {
         sqlx::query(
@@ -1228,8 +1230,6 @@ async fn assert_fact_scope_sql(
         .execute(&mut *debt)
         .await?;
     }
-    debt.commit().await?;
-    let mut debt = admin.begin().await?;
     sqlx::query("SELECT 1 FROM proxima_core.vector_index_debt FOR UPDATE")
         .execute(&mut *debt)
         .await?;
@@ -1240,8 +1240,10 @@ async fn assert_fact_scope_sql(
             continue;
         };
         // SQL-POLICY: fixed-fragment — names come from TABLES and pg_attribute.
+        // The open debt transaction sees its own uncommitted rows; every other
+        // table is already committed and visible here under READ COMMITTED.
         let above: Vec<String> = sqlx::query_scalar(AssertSqlSafe(query))
-            .fetch_all(admin)
+            .fetch_all(&mut *debt)
             .await?;
         if above.is_empty() {
             uncovered.push(*table);
@@ -1311,6 +1313,15 @@ async fn assert_fact_scope_sql(
         } else {
             above.clone()
         };
+        if *table == "vector_index_debt" {
+            // Copies of these rows must see the committed unique key, not wait
+            // on this transaction. The census already snapshotted the JSON.
+            debt.commit().await?;
+            debt = admin.begin().await?;
+            sqlx::query("SELECT 1 FROM proxima_core.vector_index_debt FOR UPDATE")
+                .execute(&mut *debt)
+                .await?;
+        }
         let mut probed = 0;
         for row in &inserts {
             // A scope that writes every kind is stopped at most by the
