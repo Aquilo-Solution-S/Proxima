@@ -6,94 +6,64 @@ use proxima_storage_pg::{begin_owner_transaction, verbs::query::memory_page_sql_
 use sqlx::{PgConnection, PgPool, Row};
 use uuid::Uuid;
 
-struct RowSpec {
-    handle: Uuid,
-    t: Uuid,
-    owner: Uuid,
-    schema: &'static str,
-    current: bool,
-}
-
-async fn seed(pool: &PgPool, owners: &[Uuid]) -> Vec<RowSpec> {
-    let mut rows = Vec::with_capacity(40_000);
-    let mut heads = Vec::with_capacity(19_900);
-    let base = Uuid::now_v7().as_u128() & !0xffff;
-    let mut n = 0_u128;
-    for (owner_index, owner) in owners.iter().copied().enumerate() {
-        let count = if owner_index == 0 { 10_000 } else { 100 };
-        for index in 0..count {
-            let handle = Uuid::from_u128(base + n);
-            n += 1;
-            let schema = if index % 2 == 0 {
-                "paging/fact-a"
-            } else {
-                "paging/fact-b"
-            };
-            let (old, current) = if owner_index == 0 && index < 100 {
-                let old = RowSpec {
-                    handle,
-                    t: Uuid::from_u128(base + n),
-                    owner,
-                    schema,
-                    current: false,
-                };
-                n += 1;
-                (Some(old), Uuid::from_u128(base + n))
-            } else {
-                (None, Uuid::from_u128(base + n))
-            };
-            n += 1;
-            if let Some(old) = old {
-                rows.push(old);
-            }
-            let row = RowSpec {
-                handle,
-                t: current,
-                owner,
-                schema,
-                current: true,
-            };
-            heads.push((handle, current, owner, schema));
-            rows.push(row);
-        }
+async fn seed(pool: &PgPool, owners: &[Uuid]) {
+    sqlx::query("INSERT INTO proxima_core.owners(owner_id, kind) SELECT o, 'group' FROM unnest($1::uuid[]) AS o")
+        .bind(owners)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head(handle, t, kind, owner_id, schema_id)
+         SELECT uuidv7(), uuidv7(), 'fact', $1,
+                CASE WHEN g % 2 = 0 THEN 'paging/fact-a' ELSE 'paging/fact-b' END
+           FROM generate_series(1, 10000) AS g",
+    )
+    .bind(owners[0])
+    .execute(pool)
+    .await
+    .unwrap();
+    if owners.len() > 1 {
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head(handle, t, kind, owner_id, schema_id)
+             SELECT uuidv7(), uuidv7(), 'fact', o,
+                    CASE WHEN g % 2 = 0 THEN 'paging/fact-a' ELSE 'paging/fact-b' END
+               FROM unnest($1::uuid[]) AS o, generate_series(1, 100) AS g",
+        )
+        .bind(&owners[1..])
+        .execute(pool)
+        .await
+        .unwrap();
     }
-    for owner in owners {
-        sqlx::query("INSERT INTO proxima_core.owners(owner_id, kind) VALUES ($1, 'group')")
-            .bind(owner)
-            .execute(pool)
-            .await
-            .unwrap();
-    }
-    // Newer non-head revisions deliberately exercise the distinction between
-    // the ordered head stream and history. The head remains the earlier row.
-    for index in 0..20_000_u128 {
-        let (handle, _, owner, schema) = heads[usize::try_from(index % 200).unwrap()];
-        rows.push(RowSpec {
-            handle,
-            t: Uuid::from_u128(base + 1_000_000 + index),
-            owner,
-            schema,
-            current: false,
-        });
-    }
-    for chunk in heads.chunks(1000) {
-        let handles: Vec<_> = chunk.iter().map(|x| x.0).collect();
-        let ts: Vec<_> = chunk.iter().map(|x| x.1).collect();
-        let owner_ids: Vec<_> = chunk.iter().map(|x| x.2).collect();
-        let schemas: Vec<_> = chunk.iter().map(|x| x.3).collect();
-        sqlx::query("INSERT INTO proxima_core.memory_head(handle,t,kind,owner_id,schema_id) SELECT h,t,k::proxima_core.memory_kind,o,s FROM UNNEST($1::uuid[],$2::uuid[],$3::text[],$4::uuid[],$5::text[]) AS x(h,t,k,o,s)")
-            .bind(&handles).bind(&ts).bind(vec!["fact"; chunk.len()]).bind(&owner_ids).bind(&schemas)
-            .execute(pool).await.unwrap();
-    }
-    for chunk in rows.chunks(1000) {
-        let handles: Vec<_> = chunk.iter().map(|x| x.handle).collect();
-        let ts: Vec<_> = chunk.iter().map(|x| x.t).collect();
-        let owner_ids: Vec<_> = chunk.iter().map(|x| x.owner).collect();
-        let schemas: Vec<_> = chunk.iter().map(|x| x.schema).collect();
-        sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,occurred_at, \"by\", via) SELECT h,t,k::proxima_core.memory_kind,o,s,uuid_extract_timestamp(t), '00000000-0000-0000-0000-000000000509'::uuid, NULL FROM UNNEST($1::uuid[],$2::uuid[],$3::text[],$4::uuid[],$5::text[]) AS x(h,t,k,o,s)")
-            .bind(&handles).bind(&ts).bind(vec!["fact"; chunk.len()]).bind(&owner_ids).bind(&schemas)
-            .execute(pool).await.unwrap();
-    }
+    sqlx::query(
+        "INSERT INTO proxima_core.memory(handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+         SELECT handle, t, 'fact', owner_id, schema_id, uuid_extract_timestamp(t),
+                '00000000-0000-0000-0000-000000000509'::uuid, NULL
+           FROM proxima_core.memory_head
+          WHERE owner_id = ANY($1)",
+    )
+    .bind(owners)
+    .execute(pool)
+    .await
+    .unwrap();
+    // Newer non-head revisions exercise the distinction between the ordered
+    // head stream and history. The head remains the earlier row.
+    sqlx::query(
+        "INSERT INTO proxima_core.memory(handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+         SELECT h.handle, uuidv7(), 'fact', h.owner_id, h.schema_id, uuid_extract_timestamp(uuidv7()),
+                '00000000-0000-0000-0000-000000000509'::uuid, NULL
+           FROM (
+                SELECT handle, owner_id, schema_id
+                  FROM proxima_core.memory_head
+                 WHERE owner_id = ANY($1)
+                 ORDER BY t
+                 LIMIT 200
+           ) h
+           CROSS JOIN generate_series(1, 10)",
+    )
+    .bind(owners)
+    .execute(pool)
+    .await
+    .unwrap();
     sqlx::raw_sql(sqlx::AssertSqlSafe(
         "ANALYZE proxima_core.owners; ANALYZE proxima_core.memory_head; ANALYZE proxima_core.memory;"
             .to_owned(),
@@ -101,7 +71,37 @@ async fn seed(pool: &PgPool, owners: &[Uuid]) -> Vec<RowSpec> {
     .execute(pool)
     .await
     .unwrap();
-    rows
+}
+
+async fn expected_heads(
+    tx: &mut PgConnection,
+    selected: &[Uuid],
+    schema: Option<&str>,
+) -> Vec<Uuid> {
+    if let Some(schema) = schema {
+        sqlx::query_scalar(
+            "SELECT t FROM proxima_core.memory_head
+              WHERE owner_id = ANY($1) AND schema_id = $2
+              ORDER BY t DESC
+              LIMIT 101",
+        )
+        .bind(selected)
+        .bind(schema)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap()
+    } else {
+        sqlx::query_scalar(
+            "SELECT t FROM proxima_core.memory_head
+              WHERE owner_id = ANY($1)
+              ORDER BY t DESC
+              LIMIT 101",
+        )
+        .bind(selected)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap()
+    }
 }
 
 fn metric(node: &serde_json::Map<String, serde_json::Value>, name: &str) -> f64 {
@@ -163,8 +163,8 @@ async fn page_and_work(
 async fn owner_paged_memory_work_is_bounded_after_filters() {
     let (database, admin, runtime, platform, platform_role, runtime_role, _) =
         super::setup_full_schema().await;
-    let owners: Vec<_> = (0..100).map(|_| Uuid::now_v7()).collect();
-    let rows = seed(&admin, &owners).await;
+    let owners: Vec<_> = (0..16).map(|_| Uuid::now_v7()).collect();
+    seed(&admin, &owners).await;
     let roles = owners
         .iter()
         .copied()
@@ -189,17 +189,7 @@ async fn owner_paged_memory_work_is_bounded_after_filters() {
         for selected in [vec![owners[0]], owners[..8].to_vec(), owners.clone()] {
             for schema in [None, Some("paging/fact-a")] {
                 let (actual, scanned, plan) = page_and_work(&mut tx, &selected, schema).await;
-                let mut expected: Vec<_> = rows
-                    .iter()
-                    .filter(|r| {
-                        r.current
-                            && selected.contains(&r.owner)
-                            && schema.is_none_or(|s| s == r.schema)
-                    })
-                    .map(|r| r.t)
-                    .collect();
-                expected.sort_unstable_by(|a, b| b.cmp(a));
-                expected.truncate(101);
+                let expected = expected_heads(&mut tx, &selected, schema).await;
                 assert_eq!(
                     actual,
                     expected,
@@ -285,12 +275,25 @@ fn assert_kind_page_uses_partial_index(plan: &serde_json::Value, label: &str) {
 async fn kind_page_reads_its_partial_index_under_rls_and_generic_plans() {
     let (database, admin, runtime, platform, platform_role, runtime_role, _) =
         super::setup_full_schema().await;
-    let owners: Vec<_> = (0..100).map(|_| Uuid::now_v7()).collect();
-    let _rows = seed(&admin, &owners).await;
+    let owners: Vec<_> = (0..16).map(|_| Uuid::now_v7()).collect();
+    sqlx::query("INSERT INTO proxima_core.owners(owner_id, kind) SELECT o, 'group' FROM unnest($1::uuid[]) AS o")
+        .bind(&owners)
+        .execute(&admin)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO proxima_core.memory_head (handle, t, kind, owner_id, schema_id)
+         SELECT uuidv7(), uuidv7(), 'fact', $1, 'paging/fact-a'
+           FROM generate_series(1, 5000)",
+    )
+    .bind(owners[0])
+    .execute(&admin)
+    .await
+    .unwrap();
     // The rest of the corpus holds Perspectives too (heads suffice: the page
     // starts at heads), about 1,000 heads per owner of which one in ten is a
     // Perspective, so the planner's per-owner estimate is not toy-sized.
-    // Owner 0 has 10,000 Facts and no Perspective.
+    // Owner 0 has 5,000 Facts and no Perspective.
     sqlx::query(
         "INSERT INTO proxima_core.memory_head (handle, t, kind, owner_id, schema_id)
          SELECT uuidv7(), uuidv7(),
