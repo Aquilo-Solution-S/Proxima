@@ -26,6 +26,15 @@ services:
       # The test suite's connection budget: see .config/nextest.toml.
       - "-c"
       - "max_connections=200"
+      # Disposable databases: every DROP DATABASE forces a checkpoint.
+      # CI turns these off for the same reason; crash safety buys nothing
+      # here. Leave them on in production.
+      - "-c"
+      - "fsync=off"
+      - "-c"
+      - "synchronous_commit=off"
+      - "-c"
+      - "full_page_writes=off"
       - "-c"
       - "shared_preload_libraries=pg_stat_statements,auto_explain"
       - "-c"

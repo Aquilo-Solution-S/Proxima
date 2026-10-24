@@ -96,6 +96,12 @@ backends; re-measure (`pg_stat_activity`) before raising `test-threads`.
 A fixture boot that times out on its pool reports the server's connection
 use in its panic.
 
+Every `DROP DATABASE` forces a checkpoint. With `fsync` on, those
+checkpoints wait on disk and a full local run pays seconds per drop. The
+dev compose file and CI turn `fsync`, `synchronous_commit`, and
+`full_page_writes` off on that disposable server; crash safety is
+irrelevant for per-test databases. Do not restore them in CI.
+
 The PgBouncer lane runs the storage suites that depend on what a connection
 carries between transactions (export/erase fence, maintenance lease, pool
 startup parameters) with their serving pools behind PgBouncer 1.26.1 or later
