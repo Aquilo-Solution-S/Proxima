@@ -1365,6 +1365,9 @@ mod tests {
             .expect("split roles");
         let mut unreachable = reqwest::Url::parse(&platform_url).expect("fixture URL");
         unreachable
+            .set_host(Some("127.0.0.1"))
+            .expect("a postgres URL takes a host");
+        unreachable
             .set_port(Some(1))
             .expect("a postgres URL takes a port");
         let env = [
@@ -1383,6 +1386,10 @@ mod tests {
         let booted = blob_maintenance_app(runtime_url, s3, &pairs(&env))
             .expect("the URLs pass the check")
             .store_number(0)
+            .pg_pool_config(proxima::PgPoolConfig {
+                acquire_timeout: std::time::Duration::from_millis(300),
+                ..proxima::PgPoolConfig::default()
+            })
             .build()
             .await;
         let admin = sqlx::PgPool::connect(&proxima_pg_testkit::db_url(&database))
