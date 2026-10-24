@@ -1330,6 +1330,39 @@ pub async fn database_exists(name: &str) -> Result<bool, sqlx::Error> {
     Ok(exists)
 }
 
+/// Wait until `name` has no backends in `pg_stat_activity`.
+///
+/// `PgConnection::close` can return before Postgres drops the session from
+/// the catalog, so collection that keys off idle detection must wait here
+/// rather than sleep a fixed interval.
+///
+/// # Errors
+///
+/// Returns admin connection or query errors, or a protocol error if a
+/// backend is still listed after five seconds.
+pub async fn wait_until_database_idle(name: &str) -> Result<(), sqlx::Error> {
+    let mut conn = connect_admin().await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let live: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = $1)")
+                .bind(name)
+                .fetch_one(&mut conn)
+                .await?;
+        if !live {
+            conn.close().await?;
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            conn.close().await?;
+            return Err(sqlx::Error::Protocol(format!(
+                "database {name} still has a backend after close"
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn database_exists_on(conn: &mut PgConnection, name: &str) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
         .bind(name)

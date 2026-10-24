@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use proxima_pg_testkit::{
     TemplateFamily, db_url, drop_db, drop_stale_templates, drop_stale_templates_in,
-    ensure_template, ensure_template_in, sweep_stale_test_dbs,
+    ensure_template, ensure_template_in, sweep_stale_test_dbs, wait_until_database_idle,
 };
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
@@ -137,6 +137,9 @@ async fn a_new_hash_collects_the_old_template_once_it_is_idle() {
     let new = built(&family, 2).await;
     let kept_while_busy = exists(&old).await;
     busy.close().await.expect("close");
+    wait_until_database_idle(&old)
+        .await
+        .expect("the busy session leaves pg_stat_activity");
 
     let dropped = drop_stale_templates_in(&family, 2).await.expect("gc");
     let old_after = exists(&old).await;
