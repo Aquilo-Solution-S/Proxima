@@ -480,12 +480,16 @@ async fn a_zero_interval_turns_the_drain_off() -> TestResult<()> {
             decision.reason
         );
         assert!(built.feature_control(Feature::ObjectPurge).is_none());
-        tokio::time::sleep(3 * TICK).await;
-        assert_eq!(
-            debts(&admin).await?,
-            1,
-            "nothing drains with the feature off"
-        );
+        // Interval is irrelevant while Off: nothing is ticking. Poll the
+        // debt row instead of sitting out three 1 s ticks.
+        for _ in 0..5 {
+            assert_eq!(
+                debts(&admin).await?,
+                1,
+                "nothing drains with the feature off"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         built.shutdown().await;
         admin.close().await;
         Ok(())
