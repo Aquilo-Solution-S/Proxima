@@ -997,8 +997,9 @@ async fn an_expired_lease_is_reclaimed_and_fences_out_the_first_holder() {
         .await
         .expect("capture");
 
-    // The shortest lease `claim` accepts, so the wait below is the real
-    // expiry of a real lease rather than a clock the test moved.
+    // The shortest lease `claim` accepts. Expiry is injected by moving
+    // `lease_expires_at` behind `now()`, so the reclaim does not sit out
+    // the production one-second floor.
     let first_publisher = PublisherId::new("publisher-one").expect("valid");
     let first = pg
         .claim(
@@ -1012,7 +1013,15 @@ async fn an_expired_lease_is_reclaimed_and_fences_out_the_first_holder() {
     let first = first.into_iter().next().expect("one record");
     assert_eq!(first.attempts, 1);
 
-    tokio::time::sleep(Duration::from_millis(1_250)).await;
+    sqlx::query(
+        "UPDATE proxima_core.publication_delivery
+            SET lease_expires_at = now() - interval '1 second'
+          WHERE t = $1 AND consumer = 'default'",
+    )
+    .bind(first.id)
+    .execute(&pool)
+    .await
+    .expect("expire the lease");
 
     let second_publisher = PublisherId::new("publisher-two").expect("valid");
     let second = pg
