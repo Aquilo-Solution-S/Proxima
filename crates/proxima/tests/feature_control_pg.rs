@@ -504,8 +504,11 @@ async fn a_quiescent_worker_claims_nothing_while_serving_continues_and_resume_dr
     world.close().await;
 }
 
-/// Absence has no signal, so this one lets whole worker intervals pass. The
-/// control half proves the worker drains within them when it is not paused.
+/// Absence has no signal once the worker is parked: `quiesce` has already
+/// resolved, so later intervals cannot claim. The control half proves the
+/// worker drains within them when it is not paused. The policy floor is one
+/// second, so this test does not shrink the interval the way the outbox
+/// poll does under `cfg(test)`.
 #[tokio::test]
 async fn a_job_enqueued_after_quiesce_stays_pending_across_several_worker_intervals() {
     const INTERVAL: Duration = Duration::from_secs(1);
@@ -523,16 +526,22 @@ async fn a_job_enqueued_after_quiesce_stays_pending_across_several_worker_interv
 
     assert_eq!(within(control.quiesce()).await, Ok(()));
     world.write_note(engine, "after quiesce").await;
-    tokio::time::sleep(INTERVAL * 3).await;
-    assert_eq!(
-        world.queue().await,
-        Queue {
-            pending: 1,
-            processing: 0,
-            embedded: 1
-        },
-        "three intervals passed and the job was never claimed"
-    );
+    let held = Queue {
+        pending: 1,
+        processing: 0,
+        embedded: 1,
+    };
+    // The worker is parked; poll the row instead of sitting out 3 s of
+    // INTERVAL. A claim would move pending/processing, so several looks
+    // still prove the job was never taken.
+    for _ in 0..5 {
+        assert_eq!(
+            world.queue().await,
+            held,
+            "the quiescent worker never claimed the job"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     assert_eq!(control.resume(), Ok(()));
     world.wait_until_drained(2).await;
