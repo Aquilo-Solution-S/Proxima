@@ -1879,6 +1879,7 @@ async fn export_uses_one_read_only_snapshot_and_allowlist() {
 async fn export_behind_a_long_erase_gives_up_with_a_retryable_error() {
     let (db_name, pg, _lifecycle) = fresh_pg(1).await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
+        const FENCE_WAIT: Duration = Duration::from_millis(200);
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let auth = ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner {
@@ -1889,6 +1890,8 @@ async fn export_behind_a_long_erase_gives_up_with_a_retryable_error() {
         sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
             .execute(&mut *erase)
             .await?;
+        pg.platform_scope_for_host()
+            .set_fence_lock_timeout(FENCE_WAIT);
         let started = std::time::Instant::now();
         let queued = tokio::time::timeout(
             Duration::from_secs(15),
@@ -1905,7 +1908,7 @@ async fn export_behind_a_long_erase_gives_up_with_a_retryable_error() {
             other => panic!("expected a retryable fence timeout, got {other:?}"),
         }
         assert!(
-            waited >= Duration::from_secs(4),
+            waited >= FENCE_WAIT.mul_f32(0.5),
             "the export waited for the fence before giving up ({waited:?})"
         );
         assert!(

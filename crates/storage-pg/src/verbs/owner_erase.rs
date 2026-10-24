@@ -68,10 +68,8 @@ async fn begin_bulk_erase_tx(
     // below is for the erase body and must not turn a queued erase into an
     // unbounded wait for its owner's fence. 55P03 is a retryable lock
     // conflict, so the outer erase retries the whole tx.
-    sqlx::query("SET LOCAL lock_timeout = '5s'")
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
+    crate::platform_scope::set_local_lock_timeout(tx.as_mut(), platform.fence_lock_timeout())
+        .await?;
     // Owner export holds this fence in SHARE mode for its whole snapshot
     // (`PgPlatformScope::begin_export_snapshot`). ROW EXCLUSIVE waits for
     // running exports and makes queued ones wait for this commit, so an
@@ -1910,6 +1908,7 @@ mod tests {
         use proxima_core::{StorageError, UserId};
         use proxima_pg_testkit::drop_db;
 
+        const FENCE_WAIT: Duration = Duration::from_millis(200);
         let (pg, database) = fresh_pg("owner_erase_owner_lock_timeout").await;
         let pool = pg.pool_for_tests();
         let platform = pg.platform_scope_for_host();
@@ -1920,6 +1919,7 @@ mod tests {
             .await
             .expect("hold the owner fence shared");
 
+        platform.set_fence_lock_timeout(FENCE_WAIT);
         let mut tx = super::begin_bulk_erase_tx(pool, &platform)
             .await
             .expect("the erase transaction begins without any lock");

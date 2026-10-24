@@ -1,9 +1,17 @@
 //! Boot-bound authority for the explicit platform RLS policy.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use proxima_core::StorageError;
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
+
+/// Default bound on the export/erase fence wait, matching the erase body's
+/// own wait for that fence.
+pub(crate) const EXPORT_ERASE_FENCE_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A validated platform connection pool. Request handlers cannot promote an
 /// owner witness into this capability: its constructor checks database identity
@@ -14,6 +22,7 @@ pub struct PgPlatformScope {
     database_oid: i64,
     role_oid: i64,
     schemas: std::sync::Arc<[String]>,
+    fence_lock_timeout_ms: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for PgPlatformScope {
@@ -43,6 +52,9 @@ impl PgPlatformScope {
             database_oid: 0,
             role_oid: 0,
             schemas: std::sync::Arc::from([String::from("proxima_core")]),
+            fence_lock_timeout_ms: Arc::new(AtomicU64::new(millis(
+                EXPORT_ERASE_FENCE_LOCK_TIMEOUT,
+            ))),
         }
     }
 
@@ -81,7 +93,23 @@ impl PgPlatformScope {
             database_oid,
             role_oid,
             schemas: schemas.iter().map(|schema| (*schema).to_owned()).collect(),
+            fence_lock_timeout_ms: Arc::new(AtomicU64::new(millis(
+                EXPORT_ERASE_FENCE_LOCK_TIMEOUT,
+            ))),
         })
+    }
+
+    /// How long an export or bulk erase waits for the export/erase fence.
+    pub(crate) fn fence_lock_timeout(&self) -> Duration {
+        Duration::from_millis(self.fence_lock_timeout_ms.load(Ordering::Relaxed))
+    }
+
+    /// Bound the fence wait for a test that must observe the timeout without
+    /// sitting out the shipped five seconds. Clones share the bound.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn set_fence_lock_timeout(&self, timeout: Duration) {
+        self.fence_lock_timeout_ms
+            .store(millis(timeout), Ordering::Relaxed);
     }
 
     /// Union composed schemas with stored flavor surfaces for runtime
@@ -161,7 +189,7 @@ impl PgPlatformScope {
     /// lock behind.
     ///
     /// The wait for the fence is bounded by a transaction-local
-    /// `lock_timeout` of 5 s, the bound an erase puts on its own wait for the
+    /// `lock_timeout` of [`EXPORT_ERASE_FENCE_LOCK_TIMEOUT`], the bound an erase puts on its own wait for the
     /// fence. An export queued behind a longer erase returns
     /// [`StorageError::Retryable`] saying so instead of holding a pooled
     /// connection for the length of the erase. Once the fence is held,
@@ -177,20 +205,18 @@ impl PgPlatformScope {
             .execute(&mut *transaction)
             .await
             .map_err(map_err)?;
-        sqlx::query("SET LOCAL lock_timeout = '5s'")
-            .execute(&mut *transaction)
-            .await
-            .map_err(map_err)?;
+        let fence_wait = self.fence_lock_timeout();
+        set_local_lock_timeout(transaction.as_mut(), fence_wait).await?;
         sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN SHARE MODE")
             .execute(&mut *transaction)
             .await
             .map_err(|error| match &error {
                 sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03") => {
-                    StorageError::Retryable(
-                        "owner export waited 5 s for the export/erase fence: an owner or \
-                         source erase is running; retry the export after it commits"
-                            .into(),
-                    )
+                    StorageError::Retryable(format!(
+                        "owner export waited {} for the export/erase fence: an owner or \
+                         source erase is running; retry the export after it commits",
+                        fence_lock_timeout_phrase(fence_wait)
+                    ))
                 }
                 _ => map_err(error),
             })?;
@@ -238,8 +264,33 @@ impl PgPlatformScope {
     }
 }
 
+/// Bound this transaction's `lock_timeout` (`SET LOCAL`).
+pub(crate) async fn set_local_lock_timeout(
+    connection: &mut sqlx::PgConnection,
+    timeout: Duration,
+) -> Result<(), StorageError> {
+    sqlx::query("SELECT set_config('lock_timeout', $1, true)")
+        .bind(format!("{}ms", timeout.as_millis()))
+        .execute(&mut *connection)
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
 fn refused(message: &str) -> StorageError {
     StorageError::ConstraintViolation(message.to_owned())
+}
+
+fn millis(timeout: Duration) -> u64 {
+    u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn fence_lock_timeout_phrase(timeout: Duration) -> String {
+    if timeout >= Duration::from_secs(1) && timeout.as_millis().is_multiple_of(1000) {
+        format!("{} s", timeout.as_secs())
+    } else {
+        format!("{} ms", timeout.as_millis())
+    }
 }
 
 /// Begin a transaction under the boot-bound platform authority.
