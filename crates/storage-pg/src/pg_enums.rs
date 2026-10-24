@@ -3,6 +3,9 @@
 //! Database labels are decoded at the row boundary. Unknown labels return a
 //! decode error; exhaustive `From` matches cover every admitted Rust variant.
 
+use std::fmt;
+use std::str::FromStr;
+
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{EntityKind, MemoryKind, StorageError};
 
@@ -145,6 +148,93 @@ impl From<PgSketchKind> for EntityKind {
     }
 }
 
+/// `proxima_core.publication_state`: one consumer's delivery lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "proxima_core.publication_state", rename_all = "lowercase")]
+pub enum PublicationDeliveryState {
+    Pending,
+    Claimed,
+    Published,
+}
+
+impl PublicationDeliveryState {
+    /// The database label: what a statement spells and a message names.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Claimed => "claimed",
+            Self::Published => "published",
+        }
+    }
+}
+
+impl fmt::Display for PublicationDeliveryState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl FromStr for PublicationDeliveryState {
+    type Err = PublicationStateParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "pending" => Ok(Self::Pending),
+            "claimed" => Ok(Self::Claimed),
+            "published" => Ok(Self::Published),
+            _ => Err(PublicationStateParseError),
+        }
+    }
+}
+
+/// `proxima_core.publication_record_state`: a captured event's aggregate.
+///
+/// `published` exactly when no lane is undelivered. There is no `claimed`
+/// label here — claiming is per lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(
+    type_name = "proxima_core.publication_record_state",
+    rename_all = "lowercase"
+)]
+pub enum PublicationRecordState {
+    Pending,
+    Published,
+}
+
+impl PublicationRecordState {
+    /// The database label: what a statement spells and a message names.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Published => "published",
+        }
+    }
+}
+
+impl fmt::Display for PublicationRecordState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl FromStr for PublicationRecordState {
+    type Err = PublicationStateParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "pending" => Ok(Self::Pending),
+            "published" => Ok(Self::Published),
+            _ => Err(PublicationStateParseError),
+        }
+    }
+}
+
+/// A label that is not one of the closed publication-state vocabularies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublicationStateParseError;
+
 /// `proxima_core.pin_target_kind`. Four labels: the same three as
 /// [`PgMemoryKind`] plus `goal`, because a pin target may be a Goal.
 ///
@@ -198,5 +288,24 @@ mod tests {
     fn a_goal_is_a_sketch_kind_but_not_a_memory_kind() {
         assert_eq!(PgMemoryKind::of(EntityKind::Goal), None);
         assert_eq!(PgSketchKind::from(EntityKind::Goal).label(), "goal");
+    }
+
+    #[test]
+    fn publication_states_round_trip_their_database_labels() {
+        for state in [
+            PublicationDeliveryState::Pending,
+            PublicationDeliveryState::Claimed,
+            PublicationDeliveryState::Published,
+        ] {
+            assert_eq!(state.to_string().parse(), Ok(state));
+        }
+        for state in [
+            PublicationRecordState::Pending,
+            PublicationRecordState::Published,
+        ] {
+            assert_eq!(state.to_string().parse(), Ok(state));
+        }
+        assert!("claimed".parse::<PublicationRecordState>().is_err());
+        assert!("Claimed".parse::<PublicationDeliveryState>().is_err());
     }
 }

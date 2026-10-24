@@ -37,6 +37,7 @@ use uuid::Uuid;
 
 use crate::PgStorage;
 use crate::error::{internal, map_err};
+use crate::pg_enums::PublicationDeliveryState;
 use crate::sidecars::int_to_u64;
 
 /// The next position in the series `handle`: its publication counter,
@@ -609,7 +610,7 @@ impl PublicationOutboxPort for PgStorage {
             ReleaseOutcome::Released
         } else {
             match current_lane_state(tx.as_mut(), id, consumer).await? {
-                Some(state) if state == "published" => ReleaseOutcome::AlreadyPublished,
+                Some(PublicationDeliveryState::Published) => ReleaseOutcome::AlreadyPublished,
                 _ => ReleaseOutcome::StaleClaim,
             }
         };
@@ -944,9 +945,9 @@ async fn current_lane_state(
     connection: &mut sqlx::PgConnection,
     id: Uuid,
     consumer: &ConsumerName,
-) -> Result<Option<String>, StorageError> {
+) -> Result<Option<PublicationDeliveryState>, StorageError> {
     sqlx::query_scalar(
-        "SELECT state::text FROM proxima_core.publication_delivery
+        "SELECT state FROM proxima_core.publication_delivery
           WHERE t = $1 AND consumer = $2",
     )
     .bind(id)
