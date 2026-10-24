@@ -299,7 +299,10 @@ impl proxima::rmcp::ServerHandler for HostHandler {
         request: proxima::rmcp::model::CallToolRequestParams,
         context: proxima::rmcp::service::RequestContext<proxima::rmcp::service::RoleServer>,
     ) -> Result<proxima::rmcp::model::CallToolResponse, proxima::rmcp::model::ErrorData> {
-        self.inner.call_tool(request, context).await
+        let (judged, call) = self.inner.call_tool_observed(request, &context);
+        let reply = call.await;
+        let _key = judged.get();
+        reply
     }
 }
 

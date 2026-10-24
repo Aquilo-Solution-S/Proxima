@@ -155,8 +155,20 @@ into the other. Replace deployment `.tool_scope(...)` calls with
 
 A host that records what a call did reads the key the gate decided on from
 `McpToolCtx::judged`, set by the gate before it decides, so a refused call
-carries its key too; a behavior wrapping the gate reads it from its own clone
-of the context once the call returns. It names the key from the descriptor:
+carries its key too. A host wrapping `DynamicHandler` retains that exact cell
+through the observed adapter entrypoint:
+
+```rust
+let (judged, call) = handler.call_tool_observed(request, &context);
+let reply = call.await;
+let key = judged.get(); // Also available when reply is Err.
+```
+
+Each invocation creates a fresh cell; a failure before the gate derives a key
+leaves it empty. Ordinary `ServerHandler::call_tool` uses the same path without
+retaining the observation. A behavior wrapping the gate can also read the cell
+from its own clone of the context once the call returns.
+It names the key from the descriptor:
 `McpToolDescriptor::title_of(&key)` returns the tool's `Tool::TITLE` for a bare
 key and the action's `McpActionArgSpec::title` (`McpArgvActionSpec::title` for
 an argv dispatcher) for `tool:action`, so the host keeps no word list of its

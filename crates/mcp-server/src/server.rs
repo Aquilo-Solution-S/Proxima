@@ -342,8 +342,15 @@ impl McpToolHost {
     ) -> Result<ToolReply, ToolInvocationError> {
         let auth = auth.ok_or_else(|| ToolInvocationError::NotAuthorized(name.to_string()))?;
         let target = self.resolve_tool(&auth, name).await?;
-        self.call_resolved(target, args, author, auth, request)
-            .await
+        self.call_resolved(
+            target,
+            args,
+            author,
+            auth,
+            request,
+            proxima_core::mcp::JudgedKey::default(),
+        )
+        .await
     }
 
     /// The tool `name` calls for `auth`: the registry's, else the host
@@ -391,6 +398,7 @@ impl McpToolHost {
         author: McpAuthorContext,
         auth: McpAuthContext,
         mut request: FlavorServices,
+        judged: proxima_core::mcp::JudgedKey,
     ) -> Result<ToolReply, ToolInvocationError> {
         let declares_output_schema = target.declares_output_schema();
         let (name, terminal): (String, TerminalDispatch<'_>) = match target {
@@ -429,7 +437,8 @@ impl McpToolHost {
                 )
             }
         };
-        let ctx = self.ctx_for_request(author, &auth, request)?;
+        let mut ctx = self.ctx_for_request(author, &auth, request)?;
+        ctx.judged = judged;
         // Validate once for every transport before a behavior can log
         // arguments or a tool can pass them to storage.
         reject_nul_in_args(&args)?;

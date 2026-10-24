@@ -85,6 +85,69 @@ impl DynamicHandler {
         self
     }
 
+    /// Start the ordinary tool call with a fresh observation of the scope gate.
+    ///
+    /// The returned cell is the exact [`JudgedKey`](proxima_core::mcp::JudgedKey)
+    /// installed in the call's context. Retain it, await the future, then read
+    /// it after either success or refusal. It stays empty if the request fails
+    /// before the gate derives a key. Each invocation allocates its own cell;
+    /// callers cannot supply a cell shared with another request.
+    ///
+    /// # Errors
+    ///
+    /// The future returns the same errors as [`ServerHandler::call_tool`].
+    pub fn call_tool_observed(
+        &self,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+    ) -> (
+        proxima_core::mcp::JudgedKey,
+        impl Future<Output = Result<CallToolResponse, ErrorData>> + MaybeSendFuture + use<>,
+    ) {
+        let judged = proxima_core::mcp::JudgedKey::default();
+        let observation = judged.clone();
+        let server = self.server.clone();
+        let auth = auth_context(context);
+        let (client_name, client_version) = peer_implementation(context);
+        let request_services = request_services(&self.server, context);
+        let heartbeat = context
+            .meta
+            .get_progress_token()
+            .map(|token| (token, context.peer.clone(), self.progress_heartbeat));
+        let call = async move {
+            let request_services = request_services?;
+            let request_name = request.name.to_string();
+            let mut args = request
+                .arguments
+                .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
+            let author = author_from_args(&args, auth.as_ref(), &client_name, &client_version)?;
+            strip_call_context_args(&mut args);
+            let error_auth = auth.clone();
+            let call = async {
+                let Some(auth) = auth else {
+                    let name = canonical_tool_name(&server, &request_name)
+                        .unwrap_or_else(|| request_name.clone());
+                    return Err(ToolInvocationError::NotAuthorized(name));
+                };
+                let target = match server.resolve_tool(&auth, &request_name).await {
+                    Ok(target) => target,
+                    Err(err) => return Err(err),
+                };
+                server
+                    .call_resolved(target, args, author, auth, request_services, judged)
+                    .await
+            };
+            let reply = with_progress_heartbeat(call, heartbeat).await;
+            let outcome = reply
+                .map_err(|err| {
+                    tool_invocation_error_to_error_data(server.registry(), err, error_auth.as_ref())
+                })
+                .and_then(|reply| wire_reply(&request_name, reply));
+            Ok(outcome?.into())
+        };
+        (observation, Box::pin(call))
+    }
+
     /// [`ServerHandler::get_info`] plus `instructions` generated from the
     /// caller's admitted surface (exact token keys, deployment surface, and
     /// request behaviors' `visible`), the surface `list_tools`
@@ -480,45 +543,7 @@ impl ServerHandler for DynamicHandler {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + MaybeSendFuture + '_ {
-        let server = self.server.clone();
-        let auth = auth_context(&context);
-        let (client_name, client_version) = peer_implementation(&context);
-        let request_services = request_services(&self.server, &context);
-        let heartbeat = context
-            .meta
-            .get_progress_token()
-            .map(|token| (token, context.peer.clone(), self.progress_heartbeat));
-        async move {
-            let request_services = request_services?;
-            let request_name = request.name.to_string();
-            let mut args = request
-                .arguments
-                .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
-            let author = author_from_args(&args, auth.as_ref(), &client_name, &client_version)?;
-            strip_call_context_args(&mut args);
-            let error_auth = auth.clone();
-            let call = async {
-                let Some(auth) = auth else {
-                    let name = canonical_tool_name(&server, &request_name)
-                        .unwrap_or_else(|| request_name.clone());
-                    return Err(ToolInvocationError::NotAuthorized(name));
-                };
-                let target = match server.resolve_tool(&auth, &request_name).await {
-                    Ok(target) => target,
-                    Err(err) => return Err(err),
-                };
-                server
-                    .call_resolved(target, args, author, auth, request_services)
-                    .await
-            };
-            let reply = with_progress_heartbeat(call, heartbeat).await;
-            let outcome = reply
-                .map_err(|err| {
-                    tool_invocation_error_to_error_data(server.registry(), err, error_auth.as_ref())
-                })
-                .and_then(|reply| wire_reply(&request_name, reply));
-            Ok(outcome?.into())
-        }
+        self.call_tool_observed(request, &context).1
     }
 }
 
@@ -2539,3 +2564,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod observed_tests;
