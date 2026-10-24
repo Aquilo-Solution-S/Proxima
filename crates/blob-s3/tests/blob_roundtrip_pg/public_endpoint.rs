@@ -218,7 +218,8 @@ async fn public_roundtrip(
     ctx: &AuthzContext,
     owner: OwnerId,
     body: &[u8],
-    endpoint: &str,
+    store_endpoint: &str,
+    read_endpoint: &str,
 ) -> UploadCompleted {
     let prepared = store
         .prepare_upload(
@@ -232,7 +233,15 @@ async fn public_roundtrip(
         )
         .await
         .expect("prepare public upload");
-    assert!(prepared.upload_url.starts_with(endpoint));
+    assert!(
+        prepared.upload_url.starts_with(store_endpoint),
+        "upload link {} is signed for the store endpoint {store_endpoint}",
+        prepared.upload_url
+    );
+    assert!(
+        !prepared.upload_url.starts_with(read_endpoint),
+        "upload link must not use the read endpoint"
+    );
     let http = reqwest::Client::new();
     let mut request = http.put(&prepared.upload_url);
     for header in &prepared.headers {
@@ -261,7 +270,11 @@ async fn public_roundtrip(
         )
         .await
         .expect("prepare public download");
-    assert!(download.read_url.starts_with(endpoint));
+    assert!(
+        download.read_url.starts_with(read_endpoint),
+        "read link {} is signed for {read_endpoint}",
+        download.read_url
+    );
     let response = http
         .get(&download.read_url)
         .send()
@@ -389,13 +402,23 @@ async fn public_links_carry_bytes_while_object_io_stays_internal() {
         AuthPath::HostBearer,
     ));
     let body = b"%PDF-1.7 public links, internal object operations";
-    let completed = public_roundtrip(&pg, &store, &ctx, owner, body, &proxy.endpoint).await;
+    let store_endpoint = configured
+        .endpoint_url
+        .as_deref()
+        .expect("test S3 endpoint");
+    let completed = public_roundtrip(
+        &pg,
+        &store,
+        &ctx,
+        owner,
+        body,
+        store_endpoint,
+        &proxy.endpoint,
+    )
+    .await;
     let requests = proxy.requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(
-        (requests[0].method.as_str(), requests[1].method.as_str()),
-        ("PUT", "GET")
-    );
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
     let host = reqwest::Url::parse(&proxy.endpoint).expect("public endpoint");
     let host = format!(
         "{}:{}",
@@ -419,8 +442,8 @@ async fn public_links_carry_bytes_while_object_io_stays_internal() {
     )
     .await;
     let requests = proxy.requests();
-    assert_eq!(requests.len(), 3);
-    assert_ne!(requests[2].host, host);
+    assert_eq!(requests.len(), 2);
+    assert_ne!(requests[1].host, host);
     let object = Uuid::parse_str(&completed.blob.cited_object_id).expect("cited object id");
     internal_operations(&pg, &store, &ctx, owner, object, body).await;
     assert_eq!(

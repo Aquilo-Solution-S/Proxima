@@ -84,7 +84,7 @@ impl CitedBlobStore {
         ) {
             return Err(BlobError::State("cited object not found for Owner".into()));
         }
-        let client = self.presigning_client();
+        let client = self.read_presigning_client();
         let expires_at = OffsetDateTime::now_utc()
             + time::Duration::seconds(
                 i64::try_from(self.config.read_ttl_seconds).unwrap_or(i64::MAX),

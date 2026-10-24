@@ -46,7 +46,8 @@ pub use dto::{
 pub use sweep::UploadExpirySweepOutcome;
 
 use crate::config::{
-    DEFAULT_MAX_BLOB_BYTES, S3RuntimeConfig, validate_endpoint_url, validate_presign_ttl,
+    DEFAULT_MAX_BLOB_BYTES, PresignedLinkKind, S3RuntimeConfig, validate_endpoint_url,
+    validate_presign_ttl,
 };
 use crate::error::BlobError;
 use proxima_core::authz::{SystemAuthority, SystemAuthorityBinding};
@@ -64,8 +65,11 @@ pub struct CitedBlobStore {
     /// S3 client built from the configured static key pair and target,
     /// memoized once per store.
     client: std::sync::OnceLock<aws_sdk_s3::Client>,
-    /// Client whose endpoint is selected before signing holder-facing URLs.
-    presigning_client: std::sync::OnceLock<aws_sdk_s3::Client>,
+    /// Client that signs upload links for the store endpoint.
+    upload_presigning_client: std::sync::OnceLock<aws_sdk_s3::Client>,
+    /// Client that signs read links for the public endpoint when one is
+    /// configured, and for the store endpoint otherwise.
+    read_presigning_client: std::sync::OnceLock<aws_sdk_s3::Client>,
     /// Set once by normal Proxima boot and shared by every store clone.
     /// A witness minted by an unrelated disposable Engine cannot authorize
     /// this store's global operations.
@@ -122,7 +126,8 @@ impl CitedBlobStore {
             config,
             max_blob_bytes,
             client: std::sync::OnceLock::new(),
-            presigning_client: std::sync::OnceLock::new(),
+            upload_presigning_client: std::sync::OnceLock::new(),
+            read_presigning_client: std::sync::OnceLock::new(),
             system_authority: std::sync::Arc::new(std::sync::OnceLock::new()),
             platform_scope,
             stage_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_STAGES)),
@@ -182,10 +187,19 @@ impl CitedBlobStore {
         self.client.get_or_init(|| self.config.client())
     }
 
-    /// The memoized client for presigning; object I/O keeps using `client`.
-    pub(super) fn presigning_client(&self) -> &aws_sdk_s3::Client {
-        self.presigning_client
-            .get_or_init(|| self.config.presigning_client())
+    /// The memoized client that signs upload links for the store endpoint.
+    pub(super) fn upload_presigning_client(&self) -> &aws_sdk_s3::Client {
+        self.upload_presigning_client
+            .get_or_init(|| self.config.presigning_client(PresignedLinkKind::Upload))
+    }
+
+    /// The memoized client that signs read links.
+    ///
+    /// Uses the public endpoint when one is configured, and the store
+    /// endpoint otherwise. It does not sign upload links.
+    pub(super) fn read_presigning_client(&self) -> &aws_sdk_s3::Client {
+        self.read_presigning_client
+            .get_or_init(|| self.config.presigning_client(PresignedLinkKind::Read))
     }
 
     pub(super) fn bucket(&self) -> &str {
@@ -219,7 +233,8 @@ mod tests {
         .unwrap();
         assert!(!format!("{store:?}").contains(secret));
         store.client();
-        store.presigning_client();
+        store.upload_presigning_client();
+        store.read_presigning_client();
         assert!(!format!("{store:?}").contains(secret));
     }
 
@@ -241,7 +256,11 @@ mod tests {
                 "https://objects.internal.example/internal/test-bucket/config-probe?",
             ),
             (
-                store.presigning_client(),
+                store.upload_presigning_client(),
+                "https://objects.internal.example/internal/test-bucket/config-probe?",
+            ),
+            (
+                store.read_presigning_client(),
                 "https://files.example/objects/test-bucket/config-probe?",
             ),
         ] {

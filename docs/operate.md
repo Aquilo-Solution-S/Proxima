@@ -154,11 +154,12 @@ request headers.
 
 ## Object storage
 
-Set `PROXIMA_S3_PUBLIC_ENDPOINT_URL` when holders of presigned upload and
-download links reach a different address from the host. The presigner shares
-the configured credentials, region, bucket, path style and lifetimes with the
-object client. Staging, verified reads, reconciliation and object purge
-use `PROXIMA_S3_ENDPOINT_URL`.
+Set `PROXIMA_S3_PUBLIC_ENDPOINT_URL` when holders of presigned read links
+reach a different address from the host. Presigned upload links are signed
+for `PROXIMA_S3_ENDPOINT_URL` and do not use the public endpoint. The
+presigner shares the configured credentials, region, bucket, path style and
+lifetimes with the object client. Staging, verified reads, reconciliation
+and object purge use `PROXIMA_S3_ENDPOINT_URL`.
 
 The upload `PUT` signs the declared `byte_len` as its `Content-Length`, so the
 store refuses a body of any other length before it lands; a proxy in front of
@@ -167,11 +168,11 @@ the declared length, at most eight uploads at a time per process; a ninth
 waits for a slot.
 
 SigV4 signs the Host, including its port, the complete path, including any
-endpoint prefix, and the query. The public proxy must forward these unchanged
-to the store, or verify that original signed request itself before translating
-it. Configure the public address before signing; a signed link cannot be
-rewritten to another address or path. Both endpoint settings use the same
-HTTPS or allowed-plaintext host policy.
+endpoint prefix, and the query. A proxy in front of a read link must forward
+these unchanged to the store, or verify that original signed request itself
+before translating it. Configure each address before signing; a signed link
+cannot be rewritten to another address or path. Both endpoint settings use
+the same HTTPS or allowed-plaintext host policy.
 
 Every upload and every purge debt names the object store that holds its
 bytes. By default the name is derived from `PROXIMA_S3_ENDPOINT_URL` and

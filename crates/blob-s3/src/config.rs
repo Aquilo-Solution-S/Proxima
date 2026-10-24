@@ -68,17 +68,28 @@ impl std::fmt::Debug for S3KeyPair {
     }
 }
 
+/// Which presigned link a client signs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PresignedLinkKind {
+    /// A prepared upload `PUT`, signed for the store endpoint only.
+    Upload,
+    /// A completed object's `GET`. Signed for the public endpoint when one
+    /// is configured, otherwise for the store endpoint.
+    Read,
+}
+
 /// Runtime S3 target and TTL settings for cited-blob uploads.
 #[derive(Debug, Clone)]
 pub struct S3RuntimeConfig {
     pub bucket: String,
     pub region: String,
     pub key_pair: S3KeyPair,
-    /// Endpoint for internal object I/O; `None` uses AWS endpoint resolution.
+    /// Endpoint for internal object I/O and for presigned upload links.
+    /// `None` uses AWS endpoint resolution.
     pub endpoint_url: Option<String>,
-    /// Holder-facing endpoint used before signing upload and read URLs.
-    /// `None` uses `endpoint_url` or AWS endpoint resolution. Internal object
-    /// I/O always uses `endpoint_url`.
+    /// Endpoint presigned read links are signed for when holders reach a
+    /// different address from the store. `None` signs read links for
+    /// `endpoint_url`. Upload links never use this field.
     pub public_endpoint_url: Option<String>,
     /// Hosts, besides loopback, that may be named in either endpoint over
     /// plaintext `http://`. Empty by default ([`PlaintextHosts::none`]).
@@ -228,12 +239,29 @@ impl S3RuntimeConfig {
         self.client_for_endpoint(self.endpoint_url.as_deref())
     }
 
-    pub(crate) fn presigning_client(&self) -> Client {
-        self.client_for_endpoint(
-            self.public_endpoint_url
-                .as_deref()
-                .or(self.endpoint_url.as_deref()),
-        )
+    /// The endpoint one link kind is signed for.
+    ///
+    /// Upload selects `endpoint_url` and does not read `public_endpoint_url`.
+    /// Read selects `public_endpoint_url` when that field is set. When no
+    /// public endpoint is configured, read selects `endpoint_url`. A
+    /// configured public endpoint is never used for an upload, and a
+    /// configured store endpoint is never substituted for a configured
+    /// public read endpoint.
+    #[must_use]
+    pub(crate) fn presign_endpoint(&self, kind: PresignedLinkKind) -> Option<&str> {
+        match kind {
+            PresignedLinkKind::Upload => self.endpoint_url.as_deref(),
+            PresignedLinkKind::Read => match self.public_endpoint_url.as_deref() {
+                Some(endpoint) => Some(endpoint),
+                None => self.endpoint_url.as_deref(),
+            },
+        }
+    }
+
+    /// Client that signs one link kind. Object I/O stays on [`Self::client`].
+    #[must_use]
+    pub(crate) fn presigning_client(&self, kind: PresignedLinkKind) -> Client {
+        self.client_for_endpoint(self.presign_endpoint(kind))
     }
 
     fn client_for_endpoint(&self, endpoint_url: Option<&str>) -> Client {
@@ -604,7 +632,12 @@ mod tests {
                 "/internal/b/config-probe",
             ),
             (
-                config.presigning_client(),
+                config.presigning_client(PresignedLinkKind::Upload),
+                "objects.internal.example",
+                "/internal/b/config-probe",
+            ),
+            (
+                config.presigning_client(PresignedLinkKind::Read),
                 "files.example",
                 "/objects/b/config-probe",
             ),
@@ -637,8 +670,14 @@ mod tests {
         .expect("bucket is set");
         assert!(config.public_endpoint_url.is_none());
         let internal = presign_config_probe(&config, &config.client()).await;
-        let presigning = presign_config_probe(&config, &config.presigning_client()).await;
-        for url in [&internal, &presigning] {
+        let upload = presign_config_probe(
+            &config,
+            &config.presigning_client(PresignedLinkKind::Upload),
+        )
+        .await;
+        let read =
+            presign_config_probe(&config, &config.presigning_client(PresignedLinkKind::Read)).await;
+        for url in [&internal, &upload, &read] {
             assert_eq!(url.scheme(), "http");
             assert_eq!(url.host_str(), Some("127.0.0.1"));
             assert_eq!(url.port(), Some(9000));
@@ -659,15 +698,29 @@ mod tests {
         .expect("bucket is set");
         assert!(config.endpoint_url.is_none());
         let internal = presign_config_probe(&config, &config.client()).await;
+        let upload = presign_config_probe(
+            &config,
+            &config.presigning_client(PresignedLinkKind::Upload),
+        )
+        .await;
         assert!(
             internal.host_str() != Some("files.example"),
             "public-only configuration leaves internal endpoint resolution unchanged"
         );
-        let prefixed = presign_config_probe(&config, &config.presigning_client()).await;
+        assert_eq!(
+            upload.host_str(),
+            internal.host_str(),
+            "an upload link does not fall back to the public endpoint"
+        );
+        let prefixed =
+            presign_config_probe(&config, &config.presigning_client(PresignedLinkKind::Read)).await;
         let mut root_endpoint = config.clone();
         root_endpoint.public_endpoint_url = Some("https://files.example".into());
-        let unprefixed =
-            presign_config_probe(&root_endpoint, &root_endpoint.presigning_client()).await;
+        let unprefixed = presign_config_probe(
+            &root_endpoint,
+            &root_endpoint.presigning_client(PresignedLinkKind::Read),
+        )
+        .await;
         assert_eq!(prefixed.path(), "/objects/b/config-probe");
         assert_eq!(unprefixed.path(), "/b/config-probe");
         assert!(

@@ -369,7 +369,7 @@ impl CitedBlobStore {
             + time::Duration::seconds(
                 i64::try_from(self.config.upload_ttl_seconds).unwrap_or(i64::MAX),
             );
-        let client = self.presigning_client();
+        let client = self.upload_presigning_client();
         let presigned = client
             .put_object()
             .bucket(&self.config.bucket)
