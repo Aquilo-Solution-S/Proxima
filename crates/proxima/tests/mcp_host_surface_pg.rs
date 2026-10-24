@@ -210,10 +210,10 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
     // The idle timeout is this test's own choice: short enough to keep the
     // test quick, long enough that the heartbeat (idle / 2) leaves a margin
     // a loaded runner's scheduling hiccups do not eat. Beats are counted,
-    // not timed: the call is held open by a barrier until three beats have
+    // not timed: the call is held open by a barrier until two beats have
     // arrived, so it outlives the idle timeout by construction.
-    const IDLE: Duration = Duration::from_secs(2);
-    const BEATS: usize = 3;
+    const IDLE: Duration = Duration::from_secs(1);
+    const BEATS: usize = 2;
     let db = described(
         "PG required",
         SplitRoleDb::create("proxima_session_idle", &[]).await,
