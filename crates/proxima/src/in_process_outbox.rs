@@ -38,6 +38,8 @@ use std::time::Duration;
 use proxima_core::QuiesceGate;
 use proxima_core::publication::intake::{DurableIntake, ReceivedEvent};
 use proxima_core::quiesce::{Checkpoint, GateWorker};
+#[cfg(test)]
+use proxima_core::storage_ports::publication::ClaimToken;
 use proxima_core::storage_ports::publication::{
     AckOutcome, ClaimedPublication, ConsumerName, PublicationOutboxPort, PublisherId,
     ReleaseOutcome,
@@ -512,6 +514,82 @@ where
         tokio::join!(drains, housekeeping);
     });
     (gates, task)
+}
+
+/// Counts every `claim` the runtime drain issues, empty ones included.
+///
+/// Crate tests wait on the counter instead of a wall clock: an idle pass is
+/// the event that "nothing more was delivered".
+#[cfg(test)]
+pub(crate) struct CountingOutbox {
+    inner: Arc<dyn PublicationOutboxPort>,
+    claims: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(test)]
+impl CountingOutbox {
+    pub(crate) fn wrap(
+        inner: Arc<dyn PublicationOutboxPort>,
+    ) -> (
+        Arc<dyn PublicationOutboxPort>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let claims = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        (
+            Arc::new(Self {
+                inner,
+                claims: claims.clone(),
+            }),
+            claims,
+        )
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl PublicationOutboxPort for CountingOutbox {
+    async fn claim(
+        &self,
+        consumer: &ConsumerName,
+        publisher: &PublisherId,
+        limit: NonZeroU32,
+        lease: Duration,
+    ) -> Result<Vec<ClaimedPublication>, proxima_core::StorageError> {
+        self.claims
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.claim(consumer, publisher, limit, lease).await
+    }
+
+    async fn mark_published_batch(
+        &self,
+        consumer: &ConsumerName,
+        claims: &[(uuid::Uuid, ClaimToken)],
+    ) -> Result<Vec<AckOutcome>, proxima_core::StorageError> {
+        self.inner.mark_published_batch(consumer, claims).await
+    }
+
+    async fn renew_claim(
+        &self,
+        consumer: &ConsumerName,
+        id: uuid::Uuid,
+        claim: ClaimToken,
+        lease: Duration,
+    ) -> Result<bool, proxima_core::StorageError> {
+        self.inner.renew_claim(consumer, id, claim, lease).await
+    }
+
+    async fn release(
+        &self,
+        consumer: &ConsumerName,
+        id: uuid::Uuid,
+        claim: ClaimToken,
+    ) -> Result<ReleaseOutcome, proxima_core::StorageError> {
+        self.inner.release(consumer, id, claim).await
+    }
+
+    async fn pending_count(&self) -> Result<u64, proxima_core::StorageError> {
+        self.inner.pending_count().await
+    }
 }
 
 #[cfg(test)]

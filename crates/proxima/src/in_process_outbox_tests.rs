@@ -284,6 +284,29 @@ impl World {
         let (_gate, task) = spawn(vec![drain], cancel.clone(), |_| async {});
         (cancel, task)
     }
+
+    fn claims(&self) -> &AtomicUsize {
+        self.built.outbox_claims_for_tests()
+    }
+
+    /// Wait until the runtime drain (and any test wrapping the same handle)
+    /// has issued `wanted` claims, empty idle passes included.
+    async fn wait_for_claims(&self, wanted: usize) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while self.claims().load(Ordering::SeqCst) < wanted {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("outbox claims");
+    }
+
+    /// Wait for `extra` further claims after the current count: the event
+    /// that an idle drain would have retried if a published lane were still live.
+    async fn wait_for_idle_claims(&self, extra: usize) {
+        let wanted = self.claims().load(Ordering::SeqCst).saturating_add(extra);
+        self.wait_for_claims(wanted).await;
+    }
 }
 
 #[tokio::test]
@@ -633,7 +656,7 @@ async fn the_http_sink_retries_a_503_and_publishes_once_the_receiver_accepts() {
                 .collect::<Vec<_>>(),
             [Some("1".to_owned()), Some("2".to_owned())]
         );
-        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        world.wait_for_idle_claims(3).await;
         assert_eq!(
             receiver.seen().len(),
             2,
@@ -664,7 +687,7 @@ async fn the_http_sink_settles_a_422_after_one_request() {
     let outcome = AssertUnwindSafe(async {
         let t = capture(&world.built, world.owner, "refused over HTTP").await;
         world.wait_for_lane(t, "http", "published").await;
-        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        world.wait_for_idle_claims(3).await;
         assert_eq!(receiver.seen().len(), 1, "a rejection is never retried");
     })
     .catch_unwind()
@@ -948,8 +971,13 @@ async fn a_committed_fact_wakes_a_drain_whose_fallback_is_an_hour() {
         );
         let cancel = CancellationToken::new();
         let (_gate, task) = spawn(vec![drain], cancel.clone(), |_| async {});
-        // Let the first, empty claim run, so the drain is asleep.
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        world.wait_for_claims(1).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            world.claims().load(Ordering::SeqCst),
+            1,
+            "the first empty claim leaves the drain asleep"
+        );
 
         let written = tokio::time::Instant::now();
         let t = capture(&world.built, world.owner, "wakes the drain").await;

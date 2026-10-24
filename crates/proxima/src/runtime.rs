@@ -2,6 +2,8 @@ use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 
 use axum::Router;
 use axum::body::Body;
@@ -637,6 +639,10 @@ struct Runtime {
     /// outside the publisher task.
     #[cfg(test)]
     outbox_for_tests: Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort>,
+    /// Claim calls the runtime drain (and any test wrapping this handle)
+    /// has issued, including empty idle passes.
+    #[cfg(test)]
+    outbox_claims_for_tests: Arc<AtomicUsize>,
 }
 
 impl Runtime {
@@ -659,6 +665,19 @@ impl Runtime {
                 authority: system_authority.clone(),
                 health: host.object_purge_health.clone(),
             });
+        #[cfg(test)]
+        let (counted_outbox, outbox_claims_for_tests) =
+            crate::in_process_outbox::CountingOutbox::wrap(booted.outbox.clone());
+        let publication_outbox = {
+            #[cfg(test)]
+            {
+                counted_outbox.clone()
+            }
+            #[cfg(not(test))]
+            {
+                booted.outbox.clone()
+            }
+        };
         let features = crate::features::start::<A>(
             mcp,
             &FeatureInputs {
@@ -667,7 +686,7 @@ impl Runtime {
                 cancel: &cancel,
                 config,
                 publication: crate::features::PublicationHandles {
-                    outbox: booted.outbox.clone(),
+                    outbox: publication_outbox,
                     retention: booted.outbox_retention,
                 },
                 objects,
@@ -684,7 +703,9 @@ impl Runtime {
             features,
             outbox_consumers: booted.outbox_consumers,
             #[cfg(test)]
-            outbox_for_tests: booted.outbox,
+            outbox_for_tests: counted_outbox,
+            #[cfg(test)]
+            outbox_claims_for_tests,
         }
     }
 
@@ -824,6 +845,13 @@ impl BuiltProxima {
         &self,
     ) -> Arc<dyn proxima_core::storage_ports::publication::PublicationOutboxPort> {
         self.runtime.outbox_for_tests.clone()
+    }
+
+    /// Claim calls issued through [`Self::outbox_for_tests`] and the runtime
+    /// drain, including empty idle passes.
+    #[cfg(test)]
+    pub(crate) fn outbox_claims_for_tests(&self) -> &Arc<AtomicUsize> {
+        &self.runtime.outbox_claims_for_tests
     }
 }
 
