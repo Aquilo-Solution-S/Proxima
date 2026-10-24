@@ -81,7 +81,13 @@ impl Settings {
                 .expect("`proxima:<pid>` is a valid publisher label"),
             batch: NonZeroU32::new(64).expect("64 is not zero"),
             lease: Duration::from_secs(30),
-            poll_interval: Duration::from_millis(500),
+            // Crate tests compile this with `cfg(test)` and must not sit
+            // out the shipped 500 ms backoff between failed accepts.
+            poll_interval: if cfg!(test) {
+                Duration::from_millis(50)
+            } else {
+                Duration::from_millis(500)
+            },
             idle_poll_max: MAX_BACKOFF,
             accept_timeout: Duration::from_secs(5),
         }
