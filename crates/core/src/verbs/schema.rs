@@ -6,8 +6,8 @@
 use crate::authz::{AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, OwnerResolver};
 use crate::error::ProtocolError;
 use crate::flavor::contract::{
-    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability,
-    FlavorContract, LanguagePolicy, RankSource, SearchProjectionDecl, SubstringArm,
+    Band, BandComparability, CoreBandName, FlavorContract, LanguagePolicy, RankSource,
+    SearchProjectionDecl, SubstringArm,
 };
 use crate::mcp::RequestBehavior;
 use crate::{
@@ -216,17 +216,17 @@ impl RenderBands {
     ///
     /// [`FlavorRegistryError::ProjectionBandName`]: crate::flavor::FlavorRegistryError::ProjectionBandName
     pub fn resolve(bands: &[Band]) -> Result<Self, &'static str> {
-        let named = |name: &'static str| {
+        let named = |name: CoreBandName| {
             bands
                 .iter()
                 .copied()
-                .find(|band| band.name == name)
-                .ok_or(name)
+                .find(|band| band.name == name.as_str())
+                .ok_or(name.as_str())
         };
         Ok(Self {
-            exact: named(BAND_NAME_EXACT)?,
-            rescue: named(BAND_NAME_RESCUE)?,
-            substring: named(BAND_NAME_SUBSTRING)?,
+            exact: named(CoreBandName::Exact)?,
+            rescue: named(CoreBandName::Rescue)?,
+            substring: named(CoreBandName::Substring)?,
         })
     }
 }

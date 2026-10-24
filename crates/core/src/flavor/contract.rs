@@ -310,21 +310,78 @@ pub enum SearchProjectionDecl {
         /// The set is the right shape; the NAMES are the contract, and
         /// freeze checks that a schema served by the core renderer declares
         /// the three names that renderer resolves
-        /// ([`BAND_NAME_EXACT`], [`BAND_NAME_RESCUE`],
+        /// ([`CoreBandName`]; [`BAND_NAME_EXACT`], [`BAND_NAME_RESCUE`],
         /// [`BAND_NAME_SUBSTRING`]).
         bands: &'static [Band],
         substring: SubstringArm,
     },
 }
 
+/// The three band names the core renderer resolves. [`Band::name`] stays
+/// open so a non-core renderer can declare other arms; freeze and
+/// [`crate::verbs::schema::RenderBands::resolve`] look these three up by
+/// name rather than by position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CoreBandName {
+    Exact,
+    Rescue,
+    Substring,
+}
+
+impl CoreBandName {
+    /// Declaration order: exact, rescue, substring.
+    pub const ALL: [Self; 3] = [Self::Exact, Self::Rescue, Self::Substring];
+
+    /// The wire / contract spelling this arm is declared under.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Rescue => "rescue",
+            Self::Substring => "substring",
+        }
+    }
+}
+
+impl std::fmt::Display for CoreBandName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for CoreBandName {
+    type Err = CoreBandNameParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "exact" => Ok(Self::Exact),
+            "rescue" => Ok(Self::Rescue),
+            "substring" => Ok(Self::Substring),
+            _ => Err(CoreBandNameParseError),
+        }
+    }
+}
+
+/// A name that is not one of the three core renderer arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreBandNameParseError;
+
+impl std::fmt::Display for CoreBandNameParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("core band name must be exact, rescue, or substring")
+    }
+}
+
+impl std::error::Error for CoreBandNameParseError {}
+
 /// The band the exact `tsquery` arm renders. Resolved by name, not by
 /// position: see [`SearchProjectionDecl::Projected::bands`].
-pub const BAND_NAME_EXACT: &str = "exact";
+pub const BAND_NAME_EXACT: &str = CoreBandName::Exact.as_str();
 /// The band the `any_tsq` rescue arm renders.
-pub const BAND_NAME_RESCUE: &str = "rescue";
+pub const BAND_NAME_RESCUE: &str = CoreBandName::Rescue.as_str();
 /// The band the substring arm renders — flat, because it admits rather
 /// than ranks.
-pub const BAND_NAME_SUBSTRING: &str = "substring";
+pub const BAND_NAME_SUBSTRING: &str = CoreBandName::Substring.as_str();
 
 impl SearchProjectionDecl {
     #[must_use]
@@ -1804,8 +1861,9 @@ impl FlavorContract {
 #[cfg(test)]
 mod tests {
     use super::{
-        CounterRule, DbConstraint, EraseRule, ExportRule, ForgetLeg, ForgetRule, KeyShape,
-        LanguagePolicy, SearchProjectionDecl, SubstringArm, Surface, TransferRule, WeightedField,
+        CoreBandName, CounterRule, DbConstraint, EraseRule, ExportRule, ForgetLeg, ForgetRule,
+        KeyShape, LanguagePolicy, SearchProjectionDecl, SubstringArm, Surface, TransferRule,
+        WeightedField,
     };
 
     #[test]
@@ -1881,5 +1939,13 @@ mod tests {
                 .weight_class(3.0)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn core_band_names_round_trip_their_spellings() {
+        for name in CoreBandName::ALL {
+            assert_eq!(name.to_string().parse(), Ok(name));
+        }
+        assert!("Exact".parse::<CoreBandName>().is_err());
     }
 }

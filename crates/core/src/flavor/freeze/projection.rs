@@ -97,9 +97,7 @@ impl FlavorRegistry {
     pub(super) fn validate_contract_projection(
         contract: &crate::flavor::contract::FlavorContract,
     ) -> Result<(), FlavorRegistryError> {
-        use crate::flavor::contract::{
-            BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, BandComparability, KeyShape,
-        };
+        use crate::flavor::contract::{BandComparability, CoreBandName, KeyShape};
 
         let Some(spec) = contract.projection.spec() else {
             return Ok(());
@@ -122,12 +120,12 @@ impl FlavorRegistry {
             if !spec.rank_source.is_projection() {
                 continue;
             }
-            for name in [BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING] {
-                if schema.search.band(name).is_none() {
+            for name in CoreBandName::ALL {
+                if schema.search.band(name.as_str()).is_none() {
                     return Err(FlavorRegistryError::ProjectionBandName {
                         flavor_id: contract.flavor_id,
                         schema_id,
-                        missing: name,
+                        missing: name.as_str(),
                     });
                 }
             }

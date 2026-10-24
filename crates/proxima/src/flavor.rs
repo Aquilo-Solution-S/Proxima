@@ -39,8 +39,8 @@ pub use proxima_core::error::{ErrorCode, ProtocolError};
 /// contract values; no runtime registry or storage handle crosses the SDK.
 pub use proxima_core::flavor::{
     BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
-    CounterRule, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, EmbeddingSlot, Enforcement,
-    EraseLeg, EraseRule, ExportRule, FlavorContract, ForgetLeg, ForgetRule,
+    CoreBandName, CounterRule, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, EmbeddingSlot,
+    Enforcement, EraseLeg, EraseRule, ExportRule, FlavorContract, ForgetLeg, ForgetRule,
     HostStateEraseDisposition, KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec,
     Provenance, RankSource, ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT, SchemaContract,
     SchemaRef, SearchProjectionDecl, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
