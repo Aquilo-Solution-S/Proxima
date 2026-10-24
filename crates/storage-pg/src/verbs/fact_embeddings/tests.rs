@@ -650,54 +650,52 @@ mod pg_tests {
         owner: &OwnerId,
         count: i32,
     ) -> Result<(), sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        sqlx::query(
+            "LOCK TABLE proxima_core.memory, proxima_core.goal IN SHARE ROW EXCLUSIVE MODE",
+        )
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             "INSERT INTO proxima_core.owners (owner_id, kind)
              VALUES ($1, 'group') ON CONFLICT DO NOTHING",
         )
         .bind(owner.into_inner())
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-        // A write takes one advisory lock per memory, so the heads go in in
-        // batches that fit the server's lock table.
-        let mut remaining = count;
-        while remaining > 0 {
-            let batch = remaining.min(1_000);
-            remaining -= batch;
-            let mut tx = pool.begin().await?;
-            sqlx::query(
-                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-                 SELECT uuidv7(), 'fact', 'core/agent-note-v1', $1, uuidv7()
-                   FROM generate_series(1, $2)",
-            )
-            .bind(owner.into_inner())
-            .bind(batch)
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                "INSERT INTO proxima_core.memory
-                     (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
-                 SELECT h.handle, h.t, 'fact', $1, h.schema_id,
-                        ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp(h.t),
-                        '00000000-0000-0000-0000-000000000509'::uuid, NULL
-                   FROM proxima_core.memory_head h
-                  WHERE h.owner_id = $1
-                    AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)",
-            )
-            .bind(owner.into_inner())
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
-                 SELECT m.t, uuidv7(), 'note', 'body', '{}'
-                   FROM proxima_core.memory m
-                  WHERE m.owner_id = $1
-                    AND NOT EXISTS (SELECT 1 FROM proxima_core.agent_note_v1 s WHERE s.t = m.t)",
-            )
-            .bind(owner.into_inner())
-            .execute(&mut *tx)
-            .await?;
-            tx.commit().await?;
-        }
+        sqlx::query(
+            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             SELECT uuidv7(), 'fact', 'core/agent-note-v1', $1, uuidv7()
+               FROM generate_series(1, $2)",
+        )
+        .bind(owner.into_inner())
+        .bind(count)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.memory
+                 (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+             SELECT h.handle, h.t, 'fact', $1, h.schema_id,
+                    ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp(h.t),
+                    '00000000-0000-0000-0000-000000000509'::uuid, NULL
+               FROM proxima_core.memory_head h
+              WHERE h.owner_id = $1
+                AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)",
+        )
+        .bind(owner.into_inner())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             SELECT m.t, uuidv7(), 'note', 'body', '{}'
+               FROM proxima_core.memory m
+              WHERE m.owner_id = $1
+                AND NOT EXISTS (SELECT 1 FROM proxima_core.agent_note_v1 s WHERE s.t = m.t)",
+        )
+        .bind(owner.into_inner())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 
