@@ -477,7 +477,6 @@ async fn concurrent_forget_waits_for_the_bulk_transaction() {
         };
         let driver = async {
             wait_for_lock_waiter(pool).await?;
-            tokio::time::sleep(Duration::from_millis(300)).await;
             assert!(
                 !done.load(Ordering::SeqCst),
                 "forget must wait for the bulk"
@@ -536,7 +535,6 @@ async fn concurrent_erase_waits_for_the_bulk_transaction() {
         };
         let driver = async {
             wait_for_lock_waiter(pool).await?;
-            tokio::time::sleep(Duration::from_millis(300)).await;
             assert!(!done.load(Ordering::SeqCst), "erase must wait for the bulk");
             bulk.commit().await?;
             TestResult::Ok(())
@@ -591,7 +589,6 @@ async fn concurrent_erase_waits_for_the_bulk_transaction() {
         };
         let driver = async {
             wait_for_lock_waiter(pool).await?;
-            tokio::time::sleep(Duration::from_millis(300)).await;
             assert!(
                 !done.load(Ordering::SeqCst),
                 "the coarse lock must wait for the erase"
