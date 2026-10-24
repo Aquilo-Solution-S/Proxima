@@ -601,7 +601,7 @@ mod tests {
     }
 
     /// An idle drain backs off to the ceiling: over ten minutes it claims
-    /// about thirty times, not once per poll interval (1200 times).
+    /// about thirty times, not once per poll interval.
     #[tokio::test(start_paused = true)]
     async fn an_idle_drain_backs_off_to_the_ceiling() {
         let outbox = Arc::new(EmptyOutbox::default());
@@ -612,9 +612,18 @@ mod tests {
         cancel.cancel();
         task.await.expect("drain joins");
 
-        // 0.5 + 1 + 2 + 4 + 8 + 16 s of doubling, then one claim per 30 s.
-        let doubling = 6;
-        let ramp: Duration = (0..doubling).map(|step| poll * (1 << step)).sum();
+        // Doubling from the poll floor until `idle_poll_max`, then one claim
+        // per ceiling. The first claim is immediate. (`cfg(test)` uses a 50 ms
+        // floor; this test is virtual time, so the floor is not a wall wait.)
+        let mut doubling = 0usize;
+        let mut wait = poll;
+        while wait < ceiling {
+            doubling += 1;
+            wait = next_backoff(wait, poll, ceiling);
+        }
+        let ramp: Duration = (0..doubling)
+            .map(|step| poll.saturating_mul(1 << u32::try_from(step).expect("small")))
+            .sum();
         let at_ceiling = Duration::from_mins(10)
             .checked_sub(ramp)
             .expect("the ramp is shorter than ten minutes")
