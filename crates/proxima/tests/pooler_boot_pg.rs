@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
 use proxima::{
-    AppInfo, AuthPath, AuthzContext, BuiltProxima, FactWrite, FlavorApp, GroupId, OwnerId, Proxima,
-    Role, ServedSurface, UserId,
+    AppInfo, AuthPath, AuthzContext, BuiltProxima, FactWrite, FlavorApp, GroupId, OwnerId,
+    PgPoolConfig, Proxima, Role, ServedSurface, UserId,
 };
 use proxima_core::AgentNoteV1;
 use proxima_pg_testkit::{
@@ -181,15 +181,30 @@ async fn migration_url_is_the_one_used(database: &str) -> TestResult<()> {
     let (runtime_url, platform_url) = split_role_urls(database).await?;
     let mut unreachable = reqwest::Url::parse(&platform_url)?;
     unreachable
+        .set_host(Some("127.0.0.1"))
+        .expect("a postgres URL takes a host");
+    unreachable
         .set_port(Some(1))
-        .map_err(|()| "a postgres URL takes a port")?;
+        .expect("a postgres URL takes a port");
     let urls = Urls {
         runtime: runtime_url,
         platform: platform_url,
         migration: unreachable.to_string(),
     };
     let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
-    let booted = boot(&urls, owner, false).await;
+    let booted = Proxima::<CoreApp>::app()
+        .database_url(&urls.runtime)
+        .store_number(0)
+        .platform_database_url(&urls.platform)
+        .migration_database_url(&urls.migration)
+        .pg_pool_config(PgPoolConfig {
+            acquire_timeout: Duration::from_millis(300),
+            ..PgPoolConfig::default()
+        })
+        .owner(owner)
+        .served_surface(ServedSurface::All)
+        .build()
+        .await;
     assert!(
         booted.is_err(),
         "boot connects its migrations to the migration URL"
