@@ -2505,8 +2505,9 @@ async fn cancelling_max_one_export_waiting_on_the_fence_releases_its_connection(
 /// transaction holding the fence reads what that transaction committed.
 /// Taking the fence with a lock function instead (`SELECT
 /// pg_advisory_xact_lock(..)` as the first statement of the REPEATABLE READ
-/// transaction) starts the snapshot at that statement, before its wait, and
-/// this export would read no row.
+/// transaction), or setting `lock_timeout` with `SELECT set_config(...)`,
+/// starts the snapshot at that statement, before its wait, and this export
+/// would read no row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_export_queued_behind_the_fence_reads_what_its_holder_committed() {
     let (db_name, pg, _lifecycle) = fresh_pg(4).await;

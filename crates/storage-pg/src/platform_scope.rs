@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use proxima_core::StorageError;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{AssertSqlSafe, PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
 
@@ -265,15 +265,22 @@ impl PgPlatformScope {
 }
 
 /// Bound this transaction's `lock_timeout` (`SET LOCAL`).
+///
+/// Must be `SET LOCAL`, not `SELECT set_config(...)`. A `SELECT` is the first
+/// snapshot-taking statement of a REPEATABLE READ export and would freeze the
+/// view before `LOCK TABLE` waited for the fence.
 pub(crate) async fn set_local_lock_timeout(
     connection: &mut sqlx::PgConnection,
     timeout: Duration,
 ) -> Result<(), StorageError> {
-    sqlx::query("SELECT set_config('lock_timeout', $1, true)")
-        .bind(format!("{}ms", timeout.as_millis()))
-        .execute(&mut *connection)
-        .await
-        .map_err(map_err)?;
+    // SQL-POLICY: fixed-fragment — interpolates only a millisecond count.
+    sqlx::query(AssertSqlSafe(format!(
+        "SET LOCAL lock_timeout = '{}ms'",
+        timeout.as_millis()
+    )))
+    .execute(&mut *connection)
+    .await
+    .map_err(map_err)?;
     Ok(())
 }
 
