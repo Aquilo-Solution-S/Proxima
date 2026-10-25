@@ -320,6 +320,10 @@ To diagnose a search deadline, enable `proxima::stage_timing=debug` in the
 host's existing tracing filter. It is disabled at the usual info level. Events
 name `stage`, `outcome` (`started`, `finished`, or `cancelled`), and
 `elapsed_us`; cancellation records the stage active when the future was dropped.
+`finished` means the future returned, including an error or an inner timeout,
+and does not imply success. In particular, an embedding request's own
+`timeout_at` can return a timeout as `finished`; an outer deadline that drops
+the pending embedding call records `cancelled` instead.
 The stages separate query embedding, embedding-client mutex wait, provider work,
 and the storage search, payload, and neighbor port calls (SQL for the PostgreSQL
 backend). Search planning and authorization are timed too. Query and
