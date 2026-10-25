@@ -1667,7 +1667,7 @@ fn dedup_hosts(hosts: impl IntoIterator<Item = String>) -> Vec<String> {
         .collect()
 }
 
-fn parse_duration_seconds(key: &str, raw: &str) -> Result<Duration, ProximaError> {
+pub(crate) fn parse_duration_seconds(key: &str, raw: &str) -> Result<Duration, ProximaError> {
     let trimmed = raw.trim();
     let seconds = trimmed
         .parse::<u64>()

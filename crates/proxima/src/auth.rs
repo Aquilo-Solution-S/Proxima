@@ -245,18 +245,15 @@ fn oidc_http_timeout(lookup: &impl Fn(&str) -> Option<String>) -> Result<Duratio
     let Some(raw) = env_value(lookup, OIDC_HTTP_TIMEOUT_SECONDS) else {
         return Ok(proxima_auth_oidc::DEFAULT_HTTP_REQUEST_TIMEOUT);
     };
-    let seconds = raw.parse::<u64>().map_err(|_| {
-        ProximaError::Config(format!(
-            "{OIDC_HTTP_TIMEOUT_SECONDS} must be integer seconds, got {raw:?}"
-        ))
-    })?;
+    let timeout = crate::runtime_config::parse_duration_seconds(OIDC_HTTP_TIMEOUT_SECONDS, &raw)?;
+    let seconds = timeout.as_secs();
     if seconds == 0 || seconds > proxima_auth_oidc::MAX_HTTP_REQUEST_TIMEOUT.as_secs() {
         return Err(ProximaError::Config(format!(
             "{OIDC_HTTP_TIMEOUT_SECONDS} must be between 1 and {} seconds, got {raw:?}",
             proxima_auth_oidc::MAX_HTTP_REQUEST_TIMEOUT.as_secs()
         )));
     }
-    Ok(Duration::from_secs(seconds))
+    Ok(timeout)
 }
 
 /// Parse the issuer-aware subject map.
