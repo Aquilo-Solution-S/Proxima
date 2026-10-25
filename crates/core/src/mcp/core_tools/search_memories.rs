@@ -540,9 +540,17 @@ async fn search_local(
     since: Option<time::OffsetDateTime>,
     until: Option<time::OffsetDateTime>,
 ) -> Result<SearchMemoriesOutput, McpToolError> {
+    use tracing::Instrument as _;
+    let span = tracing::debug_span!(target: "proxima::stage_timing", "memory_search",
+        search = %uuid::Uuid::now_v7(), work = "query");
     let mode = SearchMode::from(args.mode);
     let spaces = resolve_search_spaces(ctx, &args.spaces)?;
-    let lanes = plan_owner_lanes(ctx, mode, query, spaces).await?;
+    let lanes = crate::stage_timing::timed(
+        "search_planning",
+        plan_owner_lanes(ctx, mode, query, spaces),
+    )
+    .instrument(span.clone())
+    .await?;
     let mut degraded_to_lexical = lanes
         .iter()
         .any(|lane| matches!(lane.arm, LaneArm::Degraded));
@@ -579,6 +587,7 @@ async fn search_local(
             .zip(&positions)
             .map(|(lane, position)| search_one_space(ctx, args, &prepared, lane, position.after)),
     )
+    .instrument(span)
     .await;
     let mut lists = Vec::with_capacity(lanes.len());
     let mut all_neighbor_edges = Vec::new();
@@ -1328,13 +1337,19 @@ async fn embed_query_for_search(
     embed: &BoundEmbeddingClient,
     query: &str,
 ) -> Result<crate::SpaceVector, String> {
-    embed
-        .embed_query(query, crate::llm::QueryTask::DEFAULT)
-        .await
-        .map_err(|err| {
-            tracing::warn!(error = %err, "embedding provider failed");
-            EMBEDDING_PROVIDER_UNAVAILABLE.to_string()
-        })
+    use tracing::Instrument as _;
+    crate::stage_timing::timed(
+        "query_embedding",
+        embed.embed_query(query, crate::llm::QueryTask::DEFAULT),
+    )
+    .instrument(
+        tracing::debug_span!(target: "proxima::stage_timing", "query_embedding", work = "query"),
+    )
+    .await
+    .map_err(|err| {
+        tracing::warn!(error = %err, "embedding provider failed");
+        EMBEDDING_PROVIDER_UNAVAILABLE.to_string()
+    })
 }
 
 /// Drop neighbor edges that no longer touch a surviving (post-truncation)

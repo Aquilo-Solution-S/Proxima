@@ -6,7 +6,7 @@ extern crate self as proxima_core;
 ///
 /// Deliberately not `CARGO_PKG_VERSION`: workspace crates are `0.1.0` with
 /// `publish = false`. Releases are git tags; bump this when cutting one.
-pub const RELEASE_VERSION: &str = "0.0.60";
+pub const RELEASE_VERSION: &str = "0.0.61";
 
 pub mod access;
 pub mod auth;
@@ -42,6 +42,7 @@ pub mod publication;
 pub mod quiesce;
 pub mod read_models;
 pub mod scope;
+mod stage_timing;
 pub mod storage;
 pub mod storage_ports;
 // Also under plain `cfg(test)`: the in-crate suites use the same probe

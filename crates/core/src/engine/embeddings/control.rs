@@ -104,10 +104,22 @@ impl ClientState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ClientControl {
+    trace_id: u64,
     dispatch: tokio::sync::Mutex<()>,
     state: Mutex<ClientState>,
+}
+
+impl Default for ClientControl {
+    fn default() -> Self {
+        static NEXT_CLIENT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            trace_id: NEXT_CLIENT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            dispatch: tokio::sync::Mutex::default(),
+            state: Mutex::default(),
+        }
+    }
 }
 
 impl ClientControl {
@@ -123,15 +135,21 @@ impl ClientControl {
                 policy.request_timeout().as_secs()
             ))
         };
-        let _dispatch = tokio::time::timeout_at(deadline, self.dispatch.lock())
-            .await
-            .map_err(|_| timed_out())?;
+        let _dispatch = crate::stage_timing::timed(
+            "embedding_mutex_wait",
+            tokio::time::timeout_at(deadline, self.dispatch.lock()),
+        )
+        .await
+        .map_err(|_| timed_out())?;
         if let Some(error) = lock(&self.state).refusal(Instant::now()) {
             return Err(error);
         }
-        let result = tokio::time::timeout_at(deadline, call)
-            .await
-            .unwrap_or_else(|_| Err(timed_out()));
+        let result = crate::stage_timing::timed(
+            "embedding_provider",
+            tokio::time::timeout_at(deadline, call),
+        )
+        .await
+        .unwrap_or_else(|_| Err(timed_out()));
         lock(&self.state).settle(&result, policy.worker_interval(), Instant::now());
         result
     }
@@ -326,22 +344,29 @@ impl ControlledClient {
 #[async_trait::async_trait]
 impl EmbeddingClient for ControlledClient {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        use tracing::Instrument as _;
         self.control
             .call(self.policy, async {
                 let vector = self.inner.embed(text).await?;
                 self.validate(vector)
             })
+            .instrument(
+                tracing::debug_span!(target: "proxima::stage_timing", "embedding_call",
+                call = %uuid::Uuid::now_v7(), client = self.control.trace_id, kind = "single"),
+            )
             .await
     }
 
     async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
+        use tracing::Instrument as _;
         self.control.call(self.policy, async {
             let vectors = self.inner.embed_many(texts).await?;
             if vectors.len() != texts.len() {
                 return Err(LlmError::retryable(format!("embedding batch cardinality mismatch: sent {} texts but received {} vectors", texts.len(), vectors.len())));
             }
             vectors.into_iter().map(|vector| self.validate(vector)).collect()
-        }).await
+        }).instrument(tracing::debug_span!(target: "proxima::stage_timing", "embedding_call",
+            call = %uuid::Uuid::now_v7(), client = self.control.trace_id, kind = "batch")).await
     }
 
     fn model_id(&self) -> &str {

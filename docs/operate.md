@@ -313,3 +313,18 @@ accepted downstream. See [data and erasure](data-and-erasure.md).
 For command flags, use `proxima-mcp --help` and each maintenance subcommand's
 `--help`. For a failed check, keep the exact command and error; credentials and
 bearers stay out of diagnostic artifacts.
+
+### Search stage timing
+
+To diagnose a search deadline, enable `proxima::stage_timing=debug` in the
+host's existing tracing filter. It is disabled at the usual info level. Events
+name `stage`, `outcome` (`started`, `finished`, or `cancelled`), and
+`elapsed_us`; cancellation records the stage active when the future was dropped.
+The stages separate query embedding, embedding-client mutex wait, provider work,
+and the storage search, payload, and neighbor port calls (SQL for the PostgreSQL
+backend). Search planning and authorization are timed too. Query and
+index spans identify the work, and local search/call identifiers distinguish
+concurrent operations; a process-local client number links a queued call to
+other work sharing its embedding client. Durations use a local monotonic clock; identifiers and
+parent spans do not propagate through remote transports. Query text, embedding
+inputs, credentials, and provider answers are never included.

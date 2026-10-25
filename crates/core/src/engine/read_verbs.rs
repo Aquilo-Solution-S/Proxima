@@ -106,9 +106,11 @@ impl Engine {
         req: &SearchReadRequest,
     ) -> Result<SearchReadResponse, ProtocolError> {
         validate_search_request(&req.search)?;
-        let owner = self
-            .authorize_owner_read(authz, &req.search.owner, AccessKind::Fact)
-            .await?;
+        let owner = crate::stage_timing::timed(
+            "search_authorization",
+            self.authorize_owner_read(authz, &req.search.owner, AccessKind::Fact),
+        )
+        .await?;
         search_authorized(
             &self.storage.read_verb,
             self.registry.search_projections(),
@@ -505,11 +507,14 @@ pub(in crate::engine) async fn search_authorized(
 ) -> Result<SearchReadResponse, ProtocolError> {
     let mut effective = req.search.clone();
     effective.read_owners = read_owners.to_vec();
-    let page = ports
-        .memory_read
-        .search_memories(owner_scope, &effective, search_projections)
-        .await
-        .map_err(|err| storage_error("search_memories", &err))?;
+    let page = crate::stage_timing::timed(
+        "storage_search",
+        ports
+            .memory_read
+            .search_memories(owner_scope, &effective, search_projections),
+    )
+    .await
+    .map_err(|err| storage_error("search_memories", &err))?;
     let memories = page.results;
 
     let identities = memories
@@ -527,19 +532,28 @@ pub(in crate::engine) async fn search_authorized(
     let payloads = if identities.is_empty() {
         Vec::new()
     } else {
-        ports
-            .memory_read
-            .load_memory_graph_payloads(owner_scope, &identities, schemas, req.include_body)
-            .await
-            .map_err(|err| storage_error("load_memory_graph_payloads", &err))?
+        crate::stage_timing::timed(
+            "storage_payloads",
+            ports.memory_read.load_memory_graph_payloads(
+                owner_scope,
+                &identities,
+                schemas,
+                req.include_body,
+            ),
+        )
+        .await
+        .map_err(|err| storage_error("load_memory_graph_payloads", &err))?
     };
     let neighbor_edges = if req.include_neighbor_edges {
-        super::pin_read::neighbor_edges_from_nodes(
-            &ports.memory_read,
-            owner_scope,
-            read_owners,
-            &memory_ids,
-            NEIGHBOR_EDGE_LIMIT,
+        crate::stage_timing::timed(
+            "storage_neighbors",
+            super::pin_read::neighbor_edges_from_nodes(
+                &ports.memory_read,
+                owner_scope,
+                read_owners,
+                &memory_ids,
+                NEIGHBOR_EDGE_LIMIT,
+            ),
         )
         .await?
     } else {

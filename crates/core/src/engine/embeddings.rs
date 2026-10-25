@@ -1,5 +1,7 @@
 //! Owner routes, durable embedding work, and host maintenance.
 
+use tracing::Instrument as _;
+
 use super::Engine;
 use crate::authz::AuthzContext;
 use crate::error::ProtocolError;
@@ -209,6 +211,10 @@ impl Engine {
         };
         let embedding = client
             .embed(&text)
+            .instrument(
+                tracing::debug_span!(target: "proxima::stage_timing", "embedding_index",
+                work = "index"),
+            )
             .await
             .map_err(|e| StorageError::Internal(format!("embed memory text: {e}")))?;
         self.storage
@@ -461,7 +467,12 @@ impl Engine {
                 }
                 continue;
             };
-            self.embed_claim_batch(client, space_batch, outcome).await?;
+            self.embed_claim_batch(client, space_batch, outcome)
+                .instrument(
+                    tracing::debug_span!(target: "proxima::stage_timing", "embedding_index",
+                    batch = %uuid::Uuid::now_v7(), work = "index"),
+                )
+                .await?;
         }
         Ok(())
     }
