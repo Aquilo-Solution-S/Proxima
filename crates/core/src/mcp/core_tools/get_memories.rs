@@ -158,7 +158,14 @@ async fn read_remote_memories(
             }
             Ok(RemoteRead::NotFound | RemoteRead::Erased)
             | Err(OtherStoresError::UnknownStore(_)) => None,
-            Err(_) => Some((MemoryId::new(*id), RemoteAnswer::Unanswered)),
+            Err(err) => {
+                tracing::warn!(
+                    store = crate::memory_store_number(*id),
+                    error = %err,
+                    "remote memory read unanswered",
+                );
+                Some((MemoryId::new(*id), RemoteAnswer::Unanswered))
+            }
         })
         .collect()
 }
