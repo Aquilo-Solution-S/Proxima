@@ -188,26 +188,40 @@ impl proxima::host::OtherStores for ForwardTo {
             )
             .await;
             Ok(match read {
-                Ok(memory) => proxima::host::RemoteRead::Found(proxima::host::RemoteMemory {
-                    handle: memory["handle"]
-                        .as_str()
-                        .and_then(|h| h.parse().ok())
-                        .unwrap_or(id),
-                    series: memory["series"]
-                        .as_str()
-                        .and_then(|h| h.parse().ok())
-                        .unwrap_or(id),
-                    writer: proxima_core::WriterAttribution {
-                        by: self.owner.into_inner(),
-                        via: None,
-                    },
-                    kind: proxima_core::verbs::query::EntityKind::Fact,
-                    schema_id: "core/fact".into(),
-                    title: memory["title"].as_str().map(str::to_owned),
-                    body: memory.to_string(),
-                    created_at: time::OffsetDateTime::UNIX_EPOCH,
-                    tags: Vec::new(),
-                }),
+                Ok(memory) => {
+                    proxima::host::RemoteRead::Found(Box::new(proxima::host::RemoteMemory {
+                        handle: memory["handle"]
+                            .as_str()
+                            .and_then(|h| h.parse().ok())
+                            .unwrap_or(id),
+                        series: memory["series"]
+                            .as_str()
+                            .and_then(|h| h.parse().ok())
+                            .unwrap_or(id),
+                        owner: memory["owner"]
+                            .as_str()
+                            .and_then(|owner| owner.parse().ok())
+                            .expect("a memory has an owner UUID"),
+                        writer: proxima_core::WriterAttribution {
+                            by: self.owner.into_inner(),
+                            via: None,
+                        },
+                        kind: proxima_core::verbs::query::EntityKind::Fact,
+                        schema_id: "core/fact".into(),
+                        payload: memory["payload"].clone(),
+                        title: memory["title"].as_str().map(str::to_owned),
+                        body: memory.to_string(),
+                        created_at: time::OffsetDateTime::UNIX_EPOCH,
+                        occurred_at: memory["occurred_at"].as_str().map(|occurred_at| {
+                            time::OffsetDateTime::parse(
+                                occurred_at,
+                                &time::format_description::well_known::Rfc3339,
+                            )
+                            .expect("a memory occurrence time is RFC 3339")
+                        }),
+                        tags: Vec::new(),
+                    }))
+                }
                 Err(_) => proxima::host::RemoteRead::NotFound,
             })
         })

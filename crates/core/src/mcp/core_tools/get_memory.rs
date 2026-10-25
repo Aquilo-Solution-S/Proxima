@@ -57,6 +57,9 @@ pub struct GetMemoryOutput {
     /// The series every version of this memory shares.
     pub series: String,
     pub space: String,
+    /// The authoritative owner UUID, independent of the selected space key
+    /// and the principal that wrote this memory.
+    pub owner: uuid::Uuid,
     pub by: uuid::Uuid,
     pub via: Option<uuid::Uuid>,
     pub kind: crate::EntityKind,
@@ -64,7 +67,7 @@ pub struct GetMemoryOutput {
     pub schema_version: u32,
     /// When the observation occurred (a backdated import's `observed_at`,
     /// else the write time), in the RFC 3339 form `core_search_memories`
-    /// gives `created_at`. Present on every Fact of this store.
+    /// gives `created_at`. Present on every Fact, including another store's.
     #[serde(
         with = "time::serde::rfc3339::option",
         skip_serializing_if = "Option::is_none"
@@ -130,8 +133,8 @@ pub async fn get_memory(
 }
 
 /// A remote UUID read through the other-stores port, as the caller.
-/// The space is the issuing store's number; a remote memory has no local payload
-/// or neighbor edges.
+/// The port supplies the memory's owner, payload and occurrence time.
+/// Neighbor edges are not included in the remote read.
 pub(super) async fn remote_memory_output(
     ctx: &McpToolCtx,
     origin: uuid::Uuid,
@@ -153,15 +156,16 @@ pub(super) fn project_remote_memory(
         handle: handle.clone(),
         memory: handle,
         series: memory.series.to_string(),
-        space: crate::memory_store_number(memory.handle).to_string(),
+        space: memory.owner.to_string(),
+        owner: memory.owner.into_inner(),
         by: memory.writer.by,
         via: memory.writer.via,
         kind: memory.kind,
         schema_id: memory.schema_id,
         schema_version: 1,
-        occurred_at: None,
+        occurred_at: memory.occurred_at,
         text: Some(memory.body.clone()),
-        payload: serde_json::Value::Null,
+        payload: memory.payload,
         title: memory.title,
         body: Some(memory.body),
         tags: memory.tags,
@@ -196,6 +200,7 @@ pub(super) fn project_memory_snapshot(
         memory: handle,
         series: snapshot.series.into_inner().to_string(),
         space,
+        owner: snapshot.owner.into_inner(),
         by: snapshot.writer.by,
         via: snapshot.writer.via,
         kind: snapshot.kind,
@@ -269,12 +274,20 @@ mod tests {
                 None,
             )
             .expect("local projection");
-            let remote = project_remote_memory(RemoteMemory {
+            let remote_memory = RemoteMemory {
+                owner: crate::OwnerId::new(uuid::Uuid::from_u128(4)),
                 writer,
                 schema_id: "remote/note".into(),
                 body: "stored remote note".into(),
                 ..RemoteMemory::fixture(origin)
-            });
+            };
+            let remote = project_remote_memory(remote_memory.clone());
+            assert_eq!(local.owner, ctx.owner.into_inner());
+            assert_eq!(local.space, "current");
+            assert_eq!(remote.owner, remote_memory.owner.into_inner());
+            assert_eq!(remote.space, remote_memory.owner.to_string());
+            assert_eq!(remote.payload, remote_memory.payload);
+            assert_eq!(remote.occurred_at, remote_memory.occurred_at);
             for output in [local, remote] {
                 let wire = serde_json::to_value(output).expect("wire output");
                 assert_eq!(wire["by"], serde_json::json!(writer.by));
@@ -290,7 +303,9 @@ mod tests {
         let required = schema["required"].as_array().expect("required fields");
         assert!(required.contains(&serde_json::json!("by")));
         assert!(required.contains(&serde_json::json!("via")));
+        assert!(required.contains(&serde_json::json!("owner")));
         assert_eq!(schema["properties"]["by"]["type"], "string");
+        assert_eq!(schema["properties"]["owner"]["type"], "string");
         assert_eq!(
             schema["properties"]["via"]["type"],
             serde_json::json!(["string", "null"])

@@ -104,7 +104,7 @@ pub async fn get_memories(
         if crate::memory_store_number(id.into_inner()) != engine.store_number() {
             match remote.remove(&id) {
                 Some(RemoteAnswer::Found(memory)) => {
-                    memories.push(project_remote_memory(memory));
+                    memories.push(project_remote_memory(*memory));
                 }
                 Some(RemoteAnswer::Unanswered) => unanswered.push(raw.to_string()),
                 None => missing.push(raw.to_string()),
@@ -128,7 +128,7 @@ pub async fn get_memories(
 
 /// What another store said about one requested id; absent = missing.
 enum RemoteAnswer {
-    Found(RemoteMemory),
+    Found(Box<RemoteMemory>),
     Unanswered,
 }
 

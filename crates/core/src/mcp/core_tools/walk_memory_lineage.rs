@@ -679,7 +679,7 @@ mod tests {
             self.reads.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(1_900)).await;
-                Ok(RemoteRead::Found(RemoteMemory::fixture(id)))
+                Ok(RemoteRead::Found(Box::new(RemoteMemory::fixture(id))))
             })
         }
     }

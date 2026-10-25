@@ -22,7 +22,7 @@ use super::{AgentMemoryApp, call_test_model_tool, read_test_model_resource, spac
 
 #[derive(Clone)]
 enum Entry {
-    Readable(RemoteMemory),
+    Readable(Box<RemoteMemory>),
     Denied,
     Erased,
     /// The store fails the read instead of answering it.
@@ -53,28 +53,25 @@ fn remote_id(store: u16, key: &str) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
-fn fact(handle: Uuid, body: &str) -> RemoteMemory {
-    RemoteMemory {
-        handle,
-        series: handle,
-        writer: proxima_core::WriterAttribution {
-            by: Uuid::now_v7(),
-            via: None,
-        },
-        kind: EntityKind::Fact,
+fn fact(handle: Uuid, body: &str) -> Box<RemoteMemory> {
+    Box::new(RemoteMemory {
         schema_id: "remote/note".into(),
+        payload: serde_json::json!({
+            "external_id": handle,
+            "measurement": {"value": 7, "unit": "items"}
+        }),
         title: Some(format!("title of {handle}")),
         body: body.to_string(),
-        created_at: time::OffsetDateTime::UNIX_EPOCH,
         tags: vec!["remote".into()],
-    }
+        ..RemoteMemory::fixture(handle)
+    })
 }
 
-fn dated_fact(handle: Uuid, body: &str, day: i64) -> RemoteMemory {
-    RemoteMemory {
+fn dated_fact(handle: Uuid, body: &str, day: i64) -> Box<RemoteMemory> {
+    Box::new(RemoteMemory {
         created_at: time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(day),
-        ..fact(handle, body)
-    }
+        ..*fact(handle, body)
+    })
 }
 
 impl FakeStores {
@@ -521,6 +518,14 @@ async fn assert_remote_and_batch_reads(
     owner: OwnerId,
     local: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let expected = dated_fact(remote_id(2, "c1"), "zebra account in the crm", 2);
+    assert_ne!(expected.owner, owner);
+    assert_ne!(expected.owner.into_inner(), expected.writer.by);
+    assert_ne!(expected.occurred_at, Some(expected.created_at));
+    let occurred_at = expected
+        .occurred_at
+        .expect("a Fact has an occurrence time")
+        .format(&time::format_description::well_known::Rfc3339)?;
     // The UUID alone routes the read through the port.
     let remote = read_test_model_resource(
         tools,
@@ -530,7 +535,10 @@ async fn assert_remote_and_batch_reads(
     )
     .await?;
     assert_eq!(remote["handle"], remote_id(2, "c1").to_string());
-    assert_eq!(remote["space"], "2");
+    assert_eq!(remote["owner"], serde_json::json!(expected.owner));
+    assert_eq!(remote["space"], expected.owner.to_string());
+    assert_eq!(remote["payload"], expected.payload);
+    assert_eq!(remote["occurred_at"], occurred_at);
     assert_eq!(remote["body"], "zebra account in the crm");
     let batch = read_test_model_resource(
         tools,
@@ -547,6 +555,8 @@ async fn assert_remote_and_batch_reads(
     .await?;
     assert_eq!(batch["memories"].as_array().expect("memories").len(), 3);
     assert_eq!(batch["memories"][0]["memory"], local);
+    assert_eq!(batch["memories"][0]["owner"], serde_json::json!(owner));
+    assert_eq!(batch["memories"][0]["space"], "current");
     assert_eq!(
         batch["memories"][1]["memory"],
         remote_id(1, "w1").to_string()
@@ -555,6 +565,15 @@ async fn assert_remote_and_batch_reads(
         batch["memories"][2]["memory"],
         remote_id(2, "c1").to_string()
     );
+    assert_eq!(batch["memories"][2], remote);
+    let expected = dated_fact(remote_id(1, "w1"), "zebra crossing in the wiki", 3);
+    assert_eq!(
+        batch["memories"][1]["owner"],
+        serde_json::json!(expected.owner)
+    );
+    assert_eq!(batch["memories"][1]["space"], expected.owner.to_string());
+    assert_eq!(batch["memories"][1]["payload"], expected.payload);
+    assert_eq!(batch["memories"][1]["occurred_at"], occurred_at);
     assert_eq!(
         batch["missing"],
         serde_json::json!([remote_id(2, "absent")])
@@ -1585,10 +1604,10 @@ async fn goal_evidence_in_another_store_resolves_to_its_series_head() {
         fake.put(
             1,
             v2,
-            Entry::Readable(RemoteMemory {
+            Entry::Readable(Box::new(RemoteMemory {
                 series,
-                ..dated_fact(v2, "basis revised", 2)
-            }),
+                ..*dated_fact(v2, "basis revised", 2)
+            })),
         );
         let memory = |query: &str| format!("proxima://memory/{v1}{query}");
         let exact = read_test_model_resource(&tools, authz.clone(), owner, &memory("")).await?;

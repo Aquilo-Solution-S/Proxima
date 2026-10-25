@@ -60,6 +60,12 @@ Reads return committed owner-visible rows. A `t` identifies one version;
 different operations. A Goal handle read returns its current head; explicit
 version selectors can retrieve historical rows.
 
+Single and batch memory reads report the stored `owner` UUID independently of
+the writer and of `space`. Local `space` remains a server-issued selector,
+including `current`; a remote read reports the owner's UUID there. Neither a
+store number nor a selector proves ownership. Remote reads retain the stored
+payload and a Fact's occurrence time, just as local reads do.
+
 Pagination uses an opaque cursor bound to the read's filters. Memory recency
 uses `(created_at, t)`; Goal pages use `(handle, t)`, so changing an Active Goal
 to Paused does not move its series across the page boundary. A page is not a

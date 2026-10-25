@@ -310,9 +310,9 @@ async fn batch_preserves_request_order_with_erased_missing_and_mismatched_unansw
         let reply = if id == erased {
             RemoteRead::Erased
         } else if id == mismatched {
-            RemoteRead::Found(memory(crate::new_memory_uuid(2)))
+            RemoteRead::Found(Box::new(memory(crate::new_memory_uuid(2))))
         } else {
-            RemoteRead::Found(memory(id))
+            RemoteRead::Found(Box::new(memory(id)))
         };
         answer.send(reply).expect("waiting read");
     }
@@ -345,13 +345,15 @@ async fn batch_preserves_request_order_with_erased_missing_and_mismatched_unansw
             .map(ToString::to_string)
             .collect::<Vec<_>>()
     );
+    // #655: remote space identifies the returned owner, independently of store routing.
+    let owner = memory(first).owner.to_string();
     assert_eq!(
         output
             .memories
             .iter()
             .map(|row| row.space.as_str())
             .collect::<Vec<_>>(),
-        ["1", "current", "2", "1"]
+        [owner.as_str(), "current", owner.as_str(), owner.as_str()]
     );
     for row in output.memories {
         assert_read_projection(&row, &local.memory);
@@ -370,10 +372,15 @@ fn assert_read_projection(row: &GetMemoryOutput, local: &MemorySnapshot) {
     assert_eq!(row.handle, row.memory);
     assert_eq!(row.kind, crate::EntityKind::Fact);
     let writer = if row.memory == local.memory_id.into_inner().to_string() {
+        assert_eq!(row.owner, local.owner.into_inner());
         assert_eq!(row.body.as_deref(), Some("local body"));
         assert_eq!(row.occurred_at, Some(time::OffsetDateTime::UNIX_EPOCH));
         local.writer
     } else {
+        let remote = memory(row.memory.parse().expect("remote UUID"));
+        assert_eq!(row.owner, remote.owner.into_inner());
+        assert_eq!(row.payload, remote.payload);
+        assert_eq!(row.occurred_at, remote.occurred_at);
         assert_eq!(row.title.as_deref(), Some("remote title"));
         assert_eq!(row.body.as_deref(), Some("remote body"));
         assert_eq!(row.tags, ["remote"]);

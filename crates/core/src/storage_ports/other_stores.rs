@@ -158,12 +158,19 @@ pub struct RemoteMemory {
     pub handle: Uuid,
     /// The series the version belongs to; the same on every version of it.
     pub series: Uuid,
+    /// The memory's owner in the issuing store, independent of its writer.
+    pub owner: OwnerId,
     pub writer: WriterAttribution,
     pub kind: EntityKind,
     pub schema_id: String,
+    /// The stored payload, independently of its display title and body.
+    pub payload: serde_json::Value,
     pub title: Option<String>,
     pub body: String,
     pub created_at: time::OffsetDateTime,
+    /// When the observation occurred: `Some` for every Fact, `None` for an
+    /// Abstraction or Perspective. This is independent of the write time.
+    pub occurred_at: Option<time::OffsetDateTime>,
     pub tags: Vec<String>,
 }
 
@@ -176,15 +183,18 @@ impl RemoteMemory {
         Self {
             handle,
             series: handle,
+            owner: OwnerId::new(Uuid::from_u128(2)),
             writer: WriterAttribution {
                 by: Uuid::from_u128(3),
                 via: None,
             },
             kind: EntityKind::Fact,
             schema_id: "test/fact-v1".into(),
+            payload: serde_json::json!({"observation": {"count": 7, "unit": "sample"}}),
             title: None,
             body: String::new(),
             created_at: time::OffsetDateTime::UNIX_EPOCH,
+            occurred_at: Some(time::OffsetDateTime::UNIX_EPOCH - time::Duration::days(1)),
             tags: Vec::new(),
         }
     }
@@ -230,7 +240,7 @@ impl ReadOrigin {
 /// The outcome of reading one remote handle.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RemoteRead {
-    Found(RemoteMemory),
+    Found(Box<RemoteMemory>),
     /// Unknown to the store, or not readable by this caller; the two are
     /// deliberately indistinguishable, as for a local handle.
     NotFound,
@@ -416,7 +426,7 @@ impl OtherStoresService {
                         handle: id,
                         kind: memory.kind,
                     },
-                    memory,
+                    *memory,
                 )),
                 RemoteRead::NotFound | RemoteRead::Erased => None,
             },
@@ -441,7 +451,7 @@ impl OtherStoresService {
                             handle: *handle,
                             kind: memory.kind,
                         },
-                        Box::new(memory),
+                        memory,
                     ),
                     RemoteRead::NotFound => RemoteOriginRead::NotFound,
                     RemoteRead::Erased => RemoteOriginRead::Erased,
@@ -734,10 +744,10 @@ mod tests {
             _at: ReadAt,
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             Box::pin(async {
-                Ok(RemoteRead::Found(RemoteMemory {
+                Ok(RemoteRead::Found(Box::new(RemoteMemory {
                     body: "different memory".into(),
                     ..RemoteMemory::fixture(Uuid::from_u128(2))
-                }))
+                })))
             })
         }
     }

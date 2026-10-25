@@ -72,6 +72,7 @@ async fn a_memory_reads_the_same_from_search_and_by_id() {
             by_id["space"], shared,
             "a group memory reports the group: {by_id}"
         );
+        assert_eq!(by_id["owner"], group.to_string());
         let batch = read(format!("proxima://memories?ids={m_p},{m_g}")).await?;
         assert_eq!(
             find(&batch, "memories", &m_p)["space"],
@@ -79,6 +80,20 @@ async fn a_memory_reads_the_same_from_search_and_by_id() {
             "{batch}"
         );
         assert_eq!(find(&batch, "memories", &m_g)["space"], shared, "{batch}");
+        assert_eq!(
+            find(&batch, "memories", &m_p)["owner"],
+            personal.to_string()
+        );
+        assert_eq!(find(&batch, "memories", &m_g)["owner"], group.to_string());
+        let group_current = read_test_model_resource(
+            &tools,
+            authz.clone(),
+            group,
+            &format!("proxima://memory/{m_g}"),
+        )
+        .await?;
+        assert_eq!(group_current["space"], "current");
+        assert_eq!(group_current["owner"], group.to_string());
 
         // A follow-up write to the reported space lands with the group.
         let reported = by_id["space"].as_str().ok_or("space")?.to_owned();

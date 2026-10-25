@@ -295,7 +295,11 @@ For a store accessed by flavor workers, register an `OtherStores` port with
 configured timeout. `OtherStores::read` takes a `ReadAt`: `Version` answers
 the exact memory asked for, `SeriesHead` the newest version of its series the
 caller may read, and `RemoteMemory::series` names that series. Goal evidence
-names a remote memory through the same owner-authorized read. The extra-store transaction is separate from a Proxima
+names a remote memory through the same owner-authorized read. The adapter also
+supplies the stored owner, payload and occurrence time; display text and writer
+attribution do not establish ownership. A Fact carries its occurrence time,
+including a backdated observation. Single and batch reads preserve these fields.
+The extra-store transaction is separate from a Proxima
 `UnitOfWork`; use host-state participation when the change must be atomic with
 a Fact write. A flavor never queries `proxima_core` directly.
 

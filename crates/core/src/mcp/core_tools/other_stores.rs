@@ -70,7 +70,7 @@ pub(crate) async fn read_head(
         .read_bounded(caller(ctx), id, ReadAt::SeriesHead)
         .await
     {
-        Ok(RemoteRead::Found(memory)) => Ok(memory),
+        Ok(RemoteRead::Found(memory)) => Ok(*memory),
         Ok(RemoteRead::NotFound | RemoteRead::Erased) => Err(not_found(id)),
         Err(error) => Err(remote_read_error(id, &error)),
     }
@@ -591,7 +591,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<RemoteRead, OtherStoresError>> {
             Box::pin(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(1_900)).await;
-                Ok(RemoteRead::Found(RemoteMemory::fixture(id)))
+                Ok(RemoteRead::Found(Box::new(RemoteMemory::fixture(id))))
             })
         }
     }
@@ -667,8 +667,8 @@ mod tests {
                     ReadReply::Unavailable => {
                         Err(OtherStoresError::Unavailable("remote internals".into()))
                     }
-                    ReadReply::Mismatched => Ok(RemoteRead::Found(RemoteMemory::fixture(
-                        crate::new_memory_uuid(1),
+                    ReadReply::Mismatched => Ok(RemoteRead::Found(Box::new(
+                        RemoteMemory::fixture(crate::new_memory_uuid(1)),
                     ))),
                     ReadReply::NotFound => Ok(RemoteRead::NotFound),
                     ReadReply::Erased => Ok(RemoteRead::Erased),
