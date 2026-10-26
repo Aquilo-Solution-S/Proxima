@@ -19,7 +19,7 @@ plus a migration pool of the same size during boot; size the server's
 | PROXIMA_STORE_NUMBER | immutable host-assigned store number | required on every boot | `RuntimeBuilder::store_number` |
 | PROXIMA_MCP_BIND | MCP listener address | serving MCP | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_EXPOSE_NETWORK | non-loopback exposure gate | public listener | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
-| PROXIMA_ALLOWED_ORIGINS | CORS origin allowlist | browser clients | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
+| PROXIMA_ALLOWED_ORIGINS | CORS origin allowlist (no port = any port; an explicit port also matches a browser Origin that omits it when it is the scheme default, HTTP 80 or HTTPS 443) | browser clients | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_ALLOWED_HOSTS | Host allowlist | non-loopback listener | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_PUBLIC_URL | public OAuth URL | OIDC/public serving | [runtime config](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/runtime_config.rs) |
 | PROXIMA_OIDC_ISSUER | OIDC issuer | OIDC serving | [OIDC](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/proxima/src/auth.rs) |

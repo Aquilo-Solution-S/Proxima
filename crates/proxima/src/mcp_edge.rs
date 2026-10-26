@@ -65,7 +65,10 @@ impl McpEdge {
         &self.edge_auth
     }
 
-    /// Browser `Origin` allowlist (`PROXIMA_ALLOWED_ORIGINS`).
+    /// Browser `Origin` allowlist (`PROXIMA_ALLOWED_ORIGINS`). A portless
+    /// entry accepts any port; an explicit port also matches a browser
+    /// `Origin` that omits it when it is the scheme default (HTTP 80 or
+    /// HTTPS 443).
     #[must_use]
     pub fn origin_allowlist(&self) -> &OriginAllowlist {
         &self.origin_allowlist

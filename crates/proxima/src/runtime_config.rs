@@ -429,7 +429,9 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Set the CORS origin allowlist for exposed MCP. Env equivalent
+    /// Set the CORS origin allowlist for exposed MCP. A portless entry accepts
+    /// any port; an explicit port also matches a browser `Origin` that omits
+    /// it when it is the scheme default (HTTP 80 or HTTPS 443). Env equivalent
     /// (comma-separated): `PROXIMA_ALLOWED_ORIGINS`.
     #[must_use]
     pub fn allowed_origins(mut self, allowed_origins: Vec<String>) -> Self {
@@ -1188,6 +1190,9 @@ pub struct RuntimeConfig {
     pub owner: Option<OwnerId>,
     pub mcp: Option<McpSettings>,
     pub expose_network: bool,
+    /// CORS origin allowlist for exposed MCP. A portless entry accepts any
+    /// port; an explicit port also matches a browser `Origin` that omits it
+    /// when it is the scheme default (HTTP 80 or HTTPS 443).
     pub allowed_origins: Vec<String>,
     /// Explicit inbound `Host` allowlist (`PROXIMA_ALLOWED_HOSTS`). Empty
     /// ⇒ derive from `resource_metadata.public_url` + `allowed_origins`.

@@ -29,6 +29,9 @@ const MCP_SESSION_ID_HEADER: &str = "Mcp-Session-Id";
 pub(crate) const PROXIMA_OWNER_HEADER: &str = "X-Proxima-Owner";
 const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 
+/// Browser Origin allowlist: a portless entry accepts any port; an explicit
+/// port also matches a browser Origin that omits it when it is the scheme
+/// default (HTTP 80 or HTTPS 443).
 #[derive(Clone, Debug)]
 pub struct OriginAllowlist {
     patterns: Vec<OriginPattern>,
@@ -89,20 +92,20 @@ impl OriginAllowlist {
         let Some(origin) = origin.to_str().ok() else {
             return false;
         };
-        let Some(parsed) = parse_origin(origin) else {
+        let Some(parsed) = RequestOrigin::parse(origin) else {
             return false;
         };
         self.patterns.iter().any(|pattern| {
             pattern.scheme == parsed.scheme
                 && pattern.host == parsed.host
-                && match (&pattern.port, &parsed.port) {
-                    (PortMatch::Any, _) => true,
-                    (PortMatch::Exact(expected), PortMatch::Exact(actual)) => expected == actual,
-                    (PortMatch::Exact(_), PortMatch::Any) => false,
+                && match pattern.port {
+                    PortMatch::Any => true,
+                    PortMatch::Exact(expected) => parsed.port == Some(expected),
                 }
         })
     }
 
+    /// Origin patterns for rmcp, with any-port entries spelled as `:*`.
     #[must_use]
     pub fn origins(&self) -> Vec<String> {
         self.patterns
@@ -110,7 +113,7 @@ impl OriginAllowlist {
             .map(|pattern| {
                 let base = format!("{}://{}", pattern.scheme, pattern.host);
                 match pattern.port {
-                    PortMatch::Any => base,
+                    PortMatch::Any => format!("{base}:*"),
                     PortMatch::Exact(port) => format!("{base}:{port}"),
                 }
             })
@@ -879,16 +882,16 @@ fn parse_pattern(value: &str) -> Result<OriginPattern, McpServerError> {
     if pattern.is_empty() || pattern == "*" {
         return Err(invalid_origin(value));
     }
-    let Some(parsed) = parse_origin(pattern) else {
+    let Some((scheme, host, port)) = parse_origin_parts(pattern) else {
         return Err(invalid_origin(value));
     };
-    if parsed.scheme.is_empty() || parsed.host.is_empty() {
+    if scheme.is_empty() || host.is_empty() {
         return Err(invalid_origin(value));
     }
     Ok(OriginPattern {
-        scheme: parsed.scheme,
-        host: parsed.host,
-        port: parsed.port,
+        scheme,
+        host,
+        port: port.map_or(PortMatch::Any, PortMatch::Exact),
     })
 }
 
@@ -896,13 +899,25 @@ fn invalid_origin(value: &str) -> McpServerError {
     McpServerError::InvalidOrigin(format!("origin pattern {value:?}"))
 }
 
-struct ParsedOrigin {
+struct RequestOrigin {
     scheme: String,
     host: String,
-    port: PortMatch,
+    port: Option<u16>,
 }
 
-fn parse_origin(value: &str) -> Option<ParsedOrigin> {
+impl RequestOrigin {
+    fn parse(value: &str) -> Option<Self> {
+        let (scheme, host, port) = parse_origin_parts(value)?;
+        let port = port.or(match scheme.as_str() {
+            "http" => Some(80),
+            "https" => Some(443),
+            _ => None,
+        });
+        Some(Self { scheme, host, port })
+    }
+}
+
+fn parse_origin_parts(value: &str) -> Option<(String, String, Option<u16>)> {
     let (scheme, rest) = value.split_once("://")?;
     if rest.contains(['/', '?', '#', '@']) {
         return None;
@@ -910,26 +925,19 @@ fn parse_origin(value: &str) -> Option<ParsedOrigin> {
     let (host, port) = if let Some(rest) = rest.strip_prefix('[') {
         let (host, after) = rest.split_once(']')?;
         let port = if let Some(port) = after.strip_prefix(':') {
-            PortMatch::Exact(port.parse().ok()?)
+            Some(port.parse().ok()?)
         } else if after.is_empty() {
-            PortMatch::Any
+            None
         } else {
             return None;
         };
         (format!("[{}]", host.to_ascii_lowercase()), port)
     } else if let Some((host, port)) = rest.rsplit_once(':') {
-        (
-            host.to_ascii_lowercase(),
-            PortMatch::Exact(port.parse().ok()?),
-        )
+        (host.to_ascii_lowercase(), Some(port.parse().ok()?))
     } else {
-        (rest.to_ascii_lowercase(), PortMatch::Any)
+        (rest.to_ascii_lowercase(), None)
     };
-    Some(ParsedOrigin {
-        scheme: scheme.to_ascii_lowercase(),
-        host,
-        port,
-    })
+    Some((scheme.to_ascii_lowercase(), host, port))
 }
 
 #[cfg(test)]
@@ -1872,6 +1880,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_default_port_origin_passes_cors_and_preflight() {
+        let app = Router::new()
+            .route("/ok", any(|| async { StatusCode::OK }))
+            .layer(cors_layer(OriginAllowlist::new([
+                "https://example.com:443",
+            ])));
+
+        for (method, expected) in [
+            (Method::GET, StatusCode::OK),
+            (Method::OPTIONS, StatusCode::NO_CONTENT),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/ok")
+                        .header(header::ORIGIN, "https://example.com")
+                        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), expected);
+            assert_eq!(
+                response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+                Some(&header::HeaderValue::from_static("https://example.com"))
+            );
+            assert_eq!(
+                response.headers().get(header::VARY),
+                Some(&header::HeaderValue::from_static("Origin"))
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn cors_appends_vary_without_replacing_route_values() {
         let app = Router::new()
             .route(
@@ -2282,22 +2328,93 @@ mod tests {
     }
 
     #[test]
-    fn parse_valid_patterns_round_trips_into_origins() {
-        let allowlist =
-            OriginAllowlist::parse(["http://LOCALHOST", "https://example.com:8443"]).unwrap();
+    fn origins_render_explicit_port_rules_for_rmcp() {
+        let allowlist = OriginAllowlist::parse([
+            "http://LOCALHOST",
+            "https://example.com:443",
+            "https://example.com:8443",
+            "http://[::1]",
+            "https://[::1]:443",
+        ])
+        .unwrap();
 
         assert_eq!(
             allowlist.origins(),
             vec![
-                "http://localhost".to_string(),
+                "http://localhost:*".to_string(),
+                "https://example.com:443".to_string(),
                 "https://example.com:8443".to_string(),
+                "http://[::1]:*".to_string(),
+                "https://[::1]:443".to_string(),
             ]
         );
     }
 
     #[test]
+    fn explicit_default_ports_match_portless_browser_origins() {
+        for (pattern, origin) in [
+            ("https://example.com:443", "https://example.com"),
+            ("http://example.com:80", "http://example.com"),
+            ("https://[::1]:443", "https://[::1]"),
+            ("http://[::1]:80", "http://[::1]"),
+            ("HTTPS://EXAMPLE.COM:443", "https://example.com"),
+        ] {
+            let allowlist = OriginAllowlist::parse([pattern]).unwrap();
+            assert!(
+                allowlist.allows_origin(&header::HeaderValue::from_static(origin)),
+                "{pattern} should allow {origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_ports_match_only_the_request_port() {
+        for (pattern, origin, allowed) in [
+            ("https://example.com:8443", "https://example.com", false),
+            ("http://example.com:8080", "http://example.com", false),
+            ("https://example.com:443", "https://example.com:443", true),
+            ("https://example.com:443", "https://example.com:8443", false),
+            ("https://example.com:8443", "https://example.com:8443", true),
+            ("https://example.com:8443", "https://example.com:443", false),
+            ("http://example.com:80", "http://example.com:80", true),
+            ("http://example.com:80", "http://example.com:8080", false),
+            ("https://[::1]:443", "https://[::1]:8443", false),
+            ("custom://example.com:443", "custom://example.com", false),
+            ("custom://example.com:443", "custom://example.com:443", true),
+        ] {
+            let allowlist = OriginAllowlist::parse([pattern]).unwrap();
+            assert_eq!(
+                allowlist.allows_origin(&header::HeaderValue::from_static(origin)),
+                allowed,
+                "{pattern} vs {origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn portless_patterns_allow_any_request_port() {
+        for pattern in [
+            "http://example.com",
+            "https://example.com",
+            "https://[::1]",
+            "custom://example.com",
+        ] {
+            let allowlist = OriginAllowlist::parse([pattern]).unwrap();
+            for suffix in ["", ":80", ":443", ":8443"] {
+                let origin = format!("{pattern}{suffix}");
+                assert!(
+                    allowlist.allows_origin(&header::HeaderValue::from_str(&origin).unwrap()),
+                    "{pattern} should allow {origin}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn parse_rejects_star() {
-        assert_invalid_origin("*");
+        for pattern in ["*", "https://example.com:*", "https://[::1]:*"] {
+            assert_invalid_origin(pattern);
+        }
     }
 
     #[test]
