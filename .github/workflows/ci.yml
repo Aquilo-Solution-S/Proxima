@@ -100,7 +100,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$TIP"
       # rust-toolchain.toml pins the channel (1.96.0) + components (rustfmt, clippy).
       # Swatinem/rust-cache@v2.9.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           save-if: ${{ github.ref == 'refs/heads/main' && inputs.ref == github.sha }}
       - name: rustfmt
@@ -159,7 +159,7 @@ jobs:
       - name: install git-cliff
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.release == 'true' }}
         # taiki-e/install-action@v2; same generator as the tag workflow.
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91
         with:
           tool: git-cliff@2.13.1
       - name: release-note configuration
@@ -321,7 +321,7 @@ jobs:
           git checkout --detach "$TIP"
           test "$(git rev-parse HEAD)" = "$TIP"
       # Swatinem/rust-cache@v2.9.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           save-if: ${{ github.ref == 'refs/heads/main' && inputs.ref == github.sha }}
       - name: relax test Postgres durability, size its connections
@@ -364,7 +364,7 @@ jobs:
         # taiki-e/install-action@v2. The tool is an input, not the `@nextest`
         # tag: a pinned commit names no tool, and a dependabot bump of the pin
         # then installs nothing.
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91
         with:
           tool: nextest
       # All features cover REST. The shipped substrate host also runs its
@@ -417,7 +417,7 @@ jobs:
           git checkout --detach "$TIP"
           test "$(git rev-parse HEAD)" = "$TIP"
       # Swatinem/rust-cache@v2.9.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           save-if: ${{ github.ref == 'refs/heads/main' && inputs.ref == github.sha }}
       - name: start pgbouncer in transaction mode
@@ -483,7 +483,7 @@ jobs:
           test "$(psql "$PROXIMA_TEST_PGBOUNCER_URL" -Atc 'SELECT 1')" = 1
       - name: install nextest
         # taiki-e/install-action@v2
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91
         with:
           tool: nextest
       - name: test through pgbouncer
