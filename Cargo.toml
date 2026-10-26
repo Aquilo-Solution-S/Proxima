@@ -44,7 +44,7 @@ schemars = { version = "1", features = ["uuid1", "preserve_order"] }
 boon = "0.6"
 # Manifest parsing for tests only: the example flavor's dependency guardrail
 # (flavors/example/tests/cargo_deps.rs) resolves every dependency table.
-toml = "0.8"
+toml = "1.1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 # v10 split the crypto backend out of default features (default = ["use_pem"] only),
 # so a bare dep panics at first RS256 sign/verify ("could not determine CryptoProvider").
