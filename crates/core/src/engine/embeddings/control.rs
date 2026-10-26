@@ -1,6 +1,6 @@
 //! Shared client admission for embedding calls, plus observed queue routes.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
@@ -104,10 +104,105 @@ impl ClientState {
     }
 }
 
+/// Which queue a call waits in for its client's one dispatch slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Admission {
+    /// A search's query embedding: a person is waiting on the answer.
+    Interactive,
+    /// Drains, maintenance and health.
+    Background,
+}
+
+#[derive(Debug, Default)]
+struct Gate {
+    held: bool,
+    interactive: VecDeque<tokio::sync::oneshot::Sender<()>>,
+    background: VecDeque<tokio::sync::oneshot::Sender<()>>,
+}
+
+/// One request at a time through a client. A waiting search is admitted before every waiting
+/// background call; each queue is first come, first served. The holder hands the slot on directly,
+/// so nothing can overtake a search that is already waiting.
+#[derive(Debug, Default)]
+struct Dispatch(Mutex<Gate>);
+
+#[derive(Debug)]
+struct DispatchGuard(Arc<Dispatch>);
+
+impl Drop for DispatchGuard {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+/// A queued caller. Dropped after the slot was handed to it but before it took it, it hands the
+/// slot on, so a deadline in the queue cannot strand the client.
+struct Waiting<'a> {
+    dispatch: &'a Arc<Dispatch>,
+    receiver: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        if let Some(mut receiver) = self.receiver.take() {
+            receiver.close();
+            if receiver.try_recv().is_ok() {
+                self.dispatch.release();
+            }
+        }
+    }
+}
+
+impl Dispatch {
+    async fn acquire(self: &Arc<Self>, admission: Admission) -> DispatchGuard {
+        loop {
+            let receiver = {
+                let mut gate = lock(&self.0);
+                if !gate.held {
+                    gate.held = true;
+                    return DispatchGuard(Arc::clone(self));
+                }
+                let (sender, receiver) = tokio::sync::oneshot::channel();
+                match admission {
+                    Admission::Interactive => gate.interactive.push_back(sender),
+                    Admission::Background => gate.background.push_back(sender),
+                }
+                receiver
+            };
+            let mut waiting = Waiting {
+                dispatch: self,
+                receiver: Some(receiver),
+            };
+            let handed = match waiting.receiver.as_mut() {
+                Some(receiver) => receiver.await.is_ok(),
+                None => false,
+            };
+            if handed {
+                waiting.receiver = None;
+                return DispatchGuard(Arc::clone(self));
+            }
+        }
+    }
+
+    fn release(&self) {
+        let mut gate = lock(&self.0);
+        while let Some(next) = gate
+            .interactive
+            .pop_front()
+            .or_else(|| gate.background.pop_front())
+        {
+            if next.send(()).is_ok() {
+                return;
+            }
+        }
+        gate.held = false;
+    }
+}
+
 #[derive(Debug)]
 struct ClientControl {
     trace_id: u64,
-    dispatch: tokio::sync::Mutex<()>,
+    dispatch: Arc<Dispatch>,
     state: Mutex<ClientState>,
 }
 
@@ -116,7 +211,7 @@ impl Default for ClientControl {
         static NEXT_CLIENT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             trace_id: NEXT_CLIENT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            dispatch: tokio::sync::Mutex::default(),
+            dispatch: Arc::default(),
             state: Mutex::default(),
         }
     }
@@ -126,6 +221,7 @@ impl ClientControl {
     async fn call<T>(
         &self,
         policy: EmbeddingRuntimePolicy,
+        admission: Admission,
         call: impl std::future::Future<Output = Result<T, LlmError>>,
     ) -> Result<T, LlmError> {
         let deadline = Instant::now() + policy.request_timeout();
@@ -137,7 +233,7 @@ impl ClientControl {
         };
         let _dispatch = crate::stage_timing::timed(
             "embedding_mutex_wait",
-            tokio::time::timeout_at(deadline, self.dispatch.lock()),
+            tokio::time::timeout_at(deadline, self.dispatch.acquire(admission)),
         )
         .await
         .map_err(|_| timed_out())?;
@@ -194,11 +290,23 @@ impl EmbeddingControl {
         true
     }
 
-    pub(super) fn observe(
+    #[cfg(test)]
+    fn observe(
         &self,
         owner: OwnerId,
         route: EmbeddingRoute,
         policy: EmbeddingRuntimePolicy,
+    ) -> EmbeddingRoute {
+        self.observe_for(owner, route, policy, Admission::Background)
+    }
+
+    /// [`Self::observe`], whose clients wait for dispatch as `admission`.
+    pub(super) fn observe_for(
+        &self,
+        owner: OwnerId,
+        route: EmbeddingRoute,
+        policy: EmbeddingRuntimePolicy,
+        admission: Admission,
     ) -> EmbeddingRoute {
         let mut registry = lock(&self.registry);
         registry
@@ -232,6 +340,7 @@ impl EmbeddingControl {
                 space,
                 control,
                 policy,
+                admission,
             })
         });
         if bindings.is_empty() {
@@ -321,6 +430,7 @@ struct ControlledClient {
     space: EmbeddingSpace,
     control: Arc<ClientControl>,
     policy: EmbeddingRuntimePolicy,
+    admission: Admission,
 }
 
 impl ControlledClient {
@@ -346,7 +456,7 @@ impl EmbeddingClient for ControlledClient {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         use tracing::Instrument as _;
         self.control
-            .call(self.policy, async {
+            .call(self.policy, self.admission, async {
                 let vector = self.inner.embed(text).await?;
                 self.validate(vector)
             })
@@ -359,7 +469,7 @@ impl EmbeddingClient for ControlledClient {
 
     async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
         use tracing::Instrument as _;
-        self.control.call(self.policy, async {
+        self.control.call(self.policy, self.admission, async {
             let vectors = self.inner.embed_many(texts).await?;
             if vectors.len() != texts.len() {
                 return Err(LlmError::retryable(format!("embedding batch cardinality mismatch: sent {} texts but received {} vectors", texts.len(), vectors.len())));
@@ -931,10 +1041,66 @@ mod tests {
         .expect("bounded test policy")
     }
 
+    #[tokio::test]
+    async fn a_waiting_search_goes_before_earlier_queued_background_calls() {
+        let dispatch = Arc::new(Dispatch::default());
+        let held = dispatch.acquire(Admission::Background).await;
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut queued = Vec::new();
+        for (name, admission) in [
+            ("first drain", Admission::Background),
+            ("second drain", Admission::Background),
+            ("search", Admission::Interactive),
+        ] {
+            let (waiter, order) = (Arc::clone(&dispatch), Arc::clone(&order));
+            queued.push(tokio::spawn(async move {
+                let _slot = waiter.acquire(admission).await;
+                lock(&order).push(name);
+            }));
+            while {
+                let gate = lock(&dispatch.0);
+                gate.interactive.len() + gate.background.len()
+            } < queued.len()
+            {
+                tokio::task::yield_now().await;
+            }
+        }
+        drop(held);
+        for task in queued {
+            tokio::time::timeout(PATIENCE, task)
+                .await
+                .expect("every queued call is admitted")
+                .expect("queued task");
+        }
+        assert_eq!(*lock(&order), ["search", "first drain", "second drain"]);
+        assert!(!lock(&dispatch.0).held, "the last holder frees the slot");
+    }
+
+    #[tokio::test]
+    async fn a_waiter_dropped_after_its_turn_came_hands_the_slot_on() {
+        let dispatch = Arc::new(Dispatch::default());
+        let held = dispatch.acquire(Admission::Background).await;
+        let mut abandoned = Box::pin(dispatch.acquire(Admission::Interactive));
+        assert!(
+            futures::FutureExt::now_or_never(abandoned.as_mut()).is_none(),
+            "queued behind the holder"
+        );
+        drop(held);
+        assert!(lock(&dispatch.0).held, "the slot was handed to the waiter");
+        drop(abandoned);
+        assert!(
+            !lock(&dispatch.0).held,
+            "a waiter that never took its turn frees the slot"
+        );
+        let _next = tokio::time::timeout(PATIENCE, dispatch.acquire(Admission::Background))
+            .await
+            .expect("the client is not stranded");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn queued_deadline_does_not_poll_provider_or_settle_in_flight_state() {
         let control = Arc::new(ClientControl::default());
-        let dispatch = control.dispatch.lock().await;
+        let dispatch = control.dispatch.acquire(Admission::Background).await;
         let calls = Arc::new(AtomicUsize::new(0));
         let policy = admission_timeout_policy();
         let (started, waiting) = tokio::sync::oneshot::channel();
@@ -944,7 +1110,7 @@ mod tests {
         let queued = tokio::spawn(async move {
             started.send(()).expect("queued request marker");
             queued_control
-                .call(policy, async {
+                .call(policy, Admission::Background, async {
                     queued_calls.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 })
@@ -987,7 +1153,7 @@ mod tests {
         );
         drop(dispatch);
         control
-            .call(policy, async {
+            .call(policy, Admission::Background, async {
                 calls.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             })
@@ -999,7 +1165,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn provider_receives_only_the_request_budget_remaining_after_admission() {
         let control = Arc::new(ClientControl::default());
-        let dispatch = control.dispatch.lock().await;
+        let dispatch = control.dispatch.acquire(Admission::Background).await;
         let calls = Arc::new(AtomicUsize::new(0));
         let policy = admission_timeout_policy();
         let (started, waiting) = tokio::sync::oneshot::channel();
@@ -1010,7 +1176,7 @@ mod tests {
         let request = tokio::spawn(async move {
             started.send(()).expect("queued request marker");
             queued_control
-                .call(policy, async {
+                .call(policy, Admission::Background, async {
                     queued_calls.fetch_add(1, Ordering::SeqCst);
                     provider_entered
                         .send(())

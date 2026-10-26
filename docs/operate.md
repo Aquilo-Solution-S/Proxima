@@ -215,7 +215,9 @@ binding with a new client when configuration changes; mutating the same client
 does not reset the pause. Drains observe changed routes and clear faults once
 their old bindings are no longer active. Healthy clients continue draining.
 Calls through one original client serialize; the request deadline includes
-waiting for its dispatch slot and the provider call together.
+waiting for its dispatch slot and the provider call together. A search's query
+embedding waits ahead of queued drain, maintenance and health calls, never
+beside the call in flight.
 
 `proxima::serve` and `RunningProxima::until_shutdown_signal` drain on
 SIGTERM/SIGINT: readiness fails, listeners stop accepting, requests and streams

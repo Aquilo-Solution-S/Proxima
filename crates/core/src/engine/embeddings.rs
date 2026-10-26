@@ -84,13 +84,25 @@ impl Engine {
         &self,
         owner: &OwnerId,
     ) -> Result<EmbeddingRoute, EmbeddingRouteError> {
+        self.observed_route(owner, control::Admission::Background)
+            .await
+    }
+
+    async fn observed_route(
+        &self,
+        owner: &OwnerId,
+        admission: control::Admission,
+    ) -> Result<EmbeddingRoute, EmbeddingRouteError> {
         let Some(router) = &self.embedding_router else {
             return Ok(EmbeddingRoute::none());
         };
         let route = router.route(owner).await?;
-        Ok(self
-            .embedding_control
-            .observe(*owner, route, self.embedding_runtime_policy))
+        Ok(self.embedding_control.observe_for(
+            *owner,
+            route,
+            self.embedding_runtime_policy,
+            admission,
+        ))
     }
 
     /// Configuration faults on currently observed bindings. This snapshot
@@ -135,15 +147,18 @@ impl Engine {
     /// `owner`'s route for a search: a route the host refuses reads as
     /// [`EmbeddingRoute::none`], so the search runs without a semantic arm
     /// instead of failing.
+    /// Its query embedding is admitted to the shared client ahead of queued drains.
     pub async fn search_route(&self, owner: &OwnerId) -> EmbeddingRoute {
-        self.embedding_route(owner).await.unwrap_or_else(|err| {
-            tracing::warn!(
-                owner = %owner.to_string(),
-                error = %err,
-                "embedding route refused; searching without a semantic arm"
-            );
-            EmbeddingRoute::none()
-        })
+        self.observed_route(owner, control::Admission::Interactive)
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!(
+                    owner = %owner.to_string(),
+                    error = %err,
+                    "embedding route refused; searching without a semantic arm"
+                );
+                EmbeddingRoute::none()
+            })
     }
 
     /// Best-effort Fact embedding. Missing text or missing embedding
