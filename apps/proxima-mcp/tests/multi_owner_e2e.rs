@@ -76,6 +76,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.multi-owner.test".to_string(),
             authorization_servers: vec![ISSUER.to_string()],
+            additional_scopes: Vec::new(),
         })
         .mcp_bind("127.0.0.1:0".parse().unwrap())
         .run()
@@ -275,6 +276,7 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.multi-owner.test".to_string(),
             authorization_servers: vec![ISSUER.to_string()],
+            additional_scopes: Vec::new(),
         })
         .mcp_bind("127.0.0.1:0".parse().unwrap())
         .run()

@@ -364,6 +364,7 @@ async fn host_tier_builds_the_mcp_edge_layer_stack() {
     let metadata = proxima::ResourceServerMetadata {
         public_url: "https://proxima.example.com".to_owned(),
         authorization_servers: vec!["https://issuer.example.com".to_owned()],
+        additional_scopes: Vec::new(),
     };
     let hosts = proxima::HostAllowlist::new(["proxima.example.com"]);
     let origins =

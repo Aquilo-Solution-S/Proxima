@@ -15,6 +15,7 @@ fn metadata() -> ResourceServerMetadata {
     ResourceServerMetadata {
         public_url: "https://p.example.com".into(),
         authorization_servers: vec!["https://idp.example.com".into()],
+        additional_scopes: Vec::new(),
     }
 }
 

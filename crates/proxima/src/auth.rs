@@ -180,6 +180,7 @@ pub(crate) fn oidc_from_lookup(
         ResourceServerMetadata {
             public_url,
             authorization_servers: vec![issuer],
+            additional_scopes: Vec::new(),
         },
     )))
 }

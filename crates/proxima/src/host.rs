@@ -577,6 +577,9 @@ pub use proxima_mcp_server::{
 };
 /// MCP edge wiring [`layered_router`] takes, and the listener CORS layer.
 pub use proxima_mcp_server::{McpEdgeAuth, OriginAllowlist, cors_layer};
+/// One scope in [`ResourceServerMetadata::additional_scopes`], and why
+/// [`ScopeToken::parse`] refused one.
+pub use proxima_mcp_server::{ScopeToken, ScopeTokenError};
 /// What [`ProximaHost::host_state_erase_context_for_host`] returns. Opaque and
 /// authority-free: it grants no erase by itself.
 pub use proxima_storage_pg::PgHostStateEraseContext;

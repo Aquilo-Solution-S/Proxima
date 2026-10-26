@@ -117,6 +117,7 @@ async fn oidc_e2e_discovery_public_and_core_tools_behind_bearer()
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
             authorization_servers: vec![ISSUER.to_string()],
+            additional_scopes: Vec::new(),
         })
         .mcp_bind("127.0.0.1:0".parse().unwrap())
         .run()
@@ -518,6 +519,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
             authorization_servers: vec![ISSUER.to_string()],
+            additional_scopes: Vec::new(),
         })
         .mcp_bind("127.0.0.1:0".parse().unwrap())
         .run()
@@ -908,6 +910,7 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
             authorization_servers: vec![ISSUER.to_string()],
+            additional_scopes: Vec::new(),
         })
         .mcp_bind("127.0.0.1:0".parse().unwrap())
         .run()

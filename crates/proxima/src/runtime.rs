@@ -1650,6 +1650,7 @@ mod tests {
             .resource_metadata(proxima_mcp_server::ResourceServerMetadata {
                 public_url: "https://proxy.example.com".to_string(),
                 authorization_servers: vec!["https://idp.test".to_string()],
+                additional_scopes: Vec::new(),
             })
             .authenticator(Arc::new(StubAuth { owner }))
             .resolve()
@@ -1718,6 +1719,7 @@ mod tests {
             .resource_metadata(proxima_mcp_server::ResourceServerMetadata {
                 public_url: "https://proxima.example.com".to_string(),
                 authorization_servers: vec!["https://idp.test".to_string()],
+                additional_scopes: Vec::new(),
             })
             .authenticator(Arc::new(StubAuth { owner }))
             .resolve()

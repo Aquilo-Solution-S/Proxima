@@ -22,7 +22,8 @@ pub const MCP_PROTECTED_RESOURCE_METADATA_PATH: &str = "/.well-known/oauth-prote
 
 /// Scopes a client requests: `openid` for the OIDC sign-in, `offline_access`
 /// for a refresh token. A client that finds no `scopes_supported` requests
-/// none, and its session ends with the first access token.
+/// none, and its session ends with the first access token. A deployment adds
+/// its own after these ([`ResourceServerMetadata::additional_scopes`]).
 pub const SCOPES_SUPPORTED: [&str; 2] = ["openid", "offline_access"];
 
 /// Which protected resource a document or a 401 challenge describes.
@@ -60,13 +61,81 @@ impl ProtectedResource {
     }
 }
 
+/// One OAuth scope: an RFC 6749 §3.3 `scope-token`, one or more printable
+/// ASCII characters other than space, `"` and `\`. A client joins the
+/// published scopes with spaces, so any other value would request scopes
+/// nobody configured.
+///
+/// The constructor is the only way in; a literal cannot skip its checks:
+///
+/// ```compile_fail,E0423
+/// let _ = proxima_mcp_server::ScopeToken(String::from("two scopes"));
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopeToken(String);
+
+impl ScopeToken {
+    /// # Errors
+    ///
+    /// Returns [`ScopeTokenError::Invalid`] when `raw` is empty or holds a
+    /// character outside the `scope-token` grammar.
+    pub fn parse(raw: impl Into<String>) -> Result<Self, ScopeTokenError> {
+        let value = raw.into();
+        let is_scope_token = !value.is_empty()
+            && value
+                .bytes()
+                .all(|byte| matches!(byte, 0x21 | 0x23..=0x5B | 0x5D..=0x7E));
+        if is_scope_token {
+            Ok(Self(value))
+        } else {
+            Err(ScopeTokenError::Invalid { value })
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ScopeTokenError {
+    #[error("invalid OAuth scope {value:?}: expected an RFC 6749 scope-token")]
+    Invalid { value: String },
+}
+
 /// Advertised resource-server metadata pointing MCP clients at the `IdP`.
+///
+/// A host whose bearer must carry more than the sign-in scopes lists them in
+/// `additional_scopes`:
+///
+/// ```
+/// use proxima_mcp_server::{ProtectedResource, ResourceServerMetadata, ScopeToken};
+///
+/// let metadata = ResourceServerMetadata {
+///     public_url: "https://erp.example.com".to_string(),
+///     authorization_servers: vec!["https://auth.example.com".to_string()],
+///     additional_scopes: vec![ScopeToken::parse("urn:zitadel:iam:org:project:id:42:aud")?],
+/// };
+/// assert_eq!(
+///     metadata.to_json(ProtectedResource::Mcp)["scopes_supported"],
+///     serde_json::json!(["openid", "offline_access", "urn:zitadel:iam:org:project:id:42:aud"]),
+/// );
+/// # Ok::<(), proxima_mcp_server::ScopeTokenError>(())
+/// ```
 #[derive(Clone, Debug)]
 pub struct ResourceServerMetadata {
     /// Public base URL (scheme+host, no trailing slash), e.g. `https://proxima.example.com`.
     pub public_url: String,
     /// Authorization servers (the Zitadel issuer URL(s)).
     pub authorization_servers: Vec<String>,
+    /// Scopes published after [`SCOPES_SUPPORTED`], for tokens that must
+    /// carry more than the sign-in: an MCP client requests what
+    /// `scopes_supported` lists. Example: a host that exchanges the bearer
+    /// (RFC 8693) at Zitadel, which grants an exchange only scopes the
+    /// subject token already holds, lists the audience scope it will ask
+    /// for. Usually empty.
+    pub additional_scopes: Vec<ScopeToken>,
 }
 
 impl ResourceServerMetadata {
@@ -90,13 +159,25 @@ impl ResourceServerMetadata {
         format!("{}{}", self.origin(), which.metadata_path())
     }
 
+    /// [`SCOPES_SUPPORTED`], then each additional scope not already listed.
+    #[must_use]
+    pub fn scopes_supported(&self) -> Vec<&str> {
+        let mut scopes = SCOPES_SUPPORTED.to_vec();
+        for scope in &self.additional_scopes {
+            if !scopes.contains(&scope.as_str()) {
+                scopes.push(scope.as_str());
+            }
+        }
+        scopes
+    }
+
     #[must_use]
     pub fn to_json(&self, which: ProtectedResource) -> serde_json::Value {
         serde_json::json!({
             "resource": self.resource(which),
             "authorization_servers": self.authorization_servers,
             "bearer_methods_supported": ["header"],
-            "scopes_supported": SCOPES_SUPPORTED,
+            "scopes_supported": self.scopes_supported(),
         })
     }
 
@@ -153,12 +234,15 @@ pub fn protected_resource_router(metadata: &ResourceServerMetadata) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProtectedResource, ResourceChallenges, ResourceServerMetadata};
+    use super::{
+        ProtectedResource, ResourceChallenges, ResourceServerMetadata, ScopeToken, ScopeTokenError,
+    };
 
     fn metadata() -> ResourceServerMetadata {
         ResourceServerMetadata {
             public_url: "https://proxima.example.com".to_string(),
             authorization_servers: vec!["https://idp.example.com".to_string()],
+            additional_scopes: Vec::new(),
         }
     }
 
@@ -177,7 +261,7 @@ mod tests {
 
         let trailing = ResourceServerMetadata {
             public_url: "https://proxima.example.com/".to_string(),
-            authorization_servers: vec!["https://idp.example.com".to_string()],
+            ..metadata()
         };
         assert_eq!(
             trailing.resource(ProtectedResource::Origin),
@@ -215,6 +299,54 @@ mod tests {
                 serde_json::json!(["openid", "offline_access"])
             );
         }
+    }
+
+    /// A deployment's scopes follow the sign-in scopes in both documents,
+    /// each once.
+    #[test]
+    fn additional_scopes_follow_the_sign_in_scopes_once() {
+        let metadata = ResourceServerMetadata {
+            additional_scopes: vec![
+                ScopeToken::parse("urn:zitadel:iam:org:project:id:42:aud").unwrap(),
+                ScopeToken::parse("openid").unwrap(),
+            ],
+            ..metadata()
+        };
+        for which in [ProtectedResource::Origin, ProtectedResource::Mcp] {
+            assert_eq!(
+                metadata.to_json(which)["scopes_supported"],
+                serde_json::json!([
+                    "openid",
+                    "offline_access",
+                    "urn:zitadel:iam:org:project:id:42:aud"
+                ])
+            );
+        }
+    }
+
+    #[test]
+    fn a_scope_outside_the_scope_token_grammar_is_refused() {
+        for raw in [
+            "",
+            "two scopes",
+            "quote\"d",
+            "back\\slash",
+            "tab\t",
+            "ümlaut",
+        ] {
+            assert_eq!(
+                ScopeToken::parse(raw),
+                Err(ScopeTokenError::Invalid {
+                    value: raw.to_string()
+                }),
+            );
+        }
+        assert_eq!(
+            ScopeToken::parse("urn:zitadel:iam:org:project:id:42:aud")
+                .unwrap()
+                .as_str(),
+            "urn:zitadel:iam:org:project:id:42:aud"
+        );
     }
 
     #[test]

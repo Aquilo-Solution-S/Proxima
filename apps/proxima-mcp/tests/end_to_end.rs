@@ -163,6 +163,7 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.end-to-end.test".to_string(),
             authorization_servers: vec![ISSUER.to_string()],
+            additional_scopes: Vec::new(),
         })
         .mcp_bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
         .run()
@@ -544,6 +545,7 @@ async fn idempotency_conflict_names_existing_on_mcp_and_rest()
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.end-to-end.test".to_string(),
             authorization_servers: vec![ISSUER.to_string()],
+            additional_scopes: Vec::new(),
         })
         .mcp_bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0));
     #[cfg(feature = "rest")]

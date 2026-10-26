@@ -2392,6 +2392,7 @@ mod tests {
         config.resource_metadata = Some(ResourceServerMetadata {
             public_url: "https://proxima.example.com".to_string(),
             authorization_servers: vec!["https://idp.test".to_string()],
+            additional_scopes: Vec::new(),
         });
 
         config.validate().unwrap();
@@ -2403,6 +2404,7 @@ mod tests {
         config.resource_metadata = Some(ResourceServerMetadata {
             public_url: "https://proxima.example.com".to_string(),
             authorization_servers: vec![],
+            additional_scopes: Vec::new(),
         });
         config.allowed_origins = vec![
             "https://app.test".to_string(),

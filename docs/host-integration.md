@@ -134,6 +134,30 @@ narrowing preserve the map, while each authentication supplies its own values.
 Custom authenticators may attach their already verified payload with
 `AuthzContext::with_verified_claims`; contexts without one return `None`.
 
+`ResourceServerMetadata` publishes the RFC 9728 documents that tell an MCP
+client where to sign in, and the client requests exactly their
+`scopes_supported`: `openid offline_access`, then the entries of
+`additional_scopes`. A host whose bearer must carry more lists it there. A host
+that exchanges the bearer at Zitadel (RFC 8693) lists the audience scope its
+exchange requests, because Zitadel grants an exchange only scopes the subject
+token already holds:
+
+```rust
+use proxima::{ResourceServerMetadata, RuntimeBuilder, ScopeToken, ScopeTokenError};
+
+fn configure(builder: RuntimeBuilder) -> Result<RuntimeBuilder, ScopeTokenError> {
+    Ok(builder.resource_metadata(ResourceServerMetadata {
+        public_url: "https://erp.example.com".to_string(),
+        authorization_servers: vec!["https://auth.example.com".to_string()],
+        additional_scopes: vec![ScopeToken::parse("urn:zitadel:iam:org:project:id:42:aud")?],
+    }))
+}
+```
+
+`ScopeToken::parse` refuses an RFC 6749 `scope-token` violation, such as two
+scopes joined by a space. Parse each scope where it enters the host, for
+example while reading its configuration.
+
 The scope gate judges the caller's role on the owner the call's `space`
 resolves to.
 

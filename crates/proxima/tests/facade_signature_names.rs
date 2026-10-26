@@ -227,7 +227,7 @@ facade_names! {
 
     // Needed by `ResourceServerMetadata`.
     protected_resource {
-        host_only: [ProtectedResource],
+        host_only: [ProtectedResource, ScopeToken, ScopeTokenError],
         both_tiers: [],
     }
 
