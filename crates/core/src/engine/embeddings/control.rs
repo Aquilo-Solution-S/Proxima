@@ -418,7 +418,12 @@ impl EmbeddingClient for ControlledClient {
         use tracing::Instrument as _;
         self.control
             .call(self.policy, self.purpose, async {
-                let vector = self.inner.embed(text).await?;
+                let vector =
+                    if self.policy.search_concurrent() && matches!(self.purpose, Purpose::Search) {
+                        self.inner.embed_query(text).await?
+                    } else {
+                        self.inner.embed(text).await?
+                    };
                 self.validate(vector)
             })
             .instrument(
@@ -1384,5 +1389,136 @@ mod tests {
             Err(LlmError::Configuration(_))
         ));
         assert_eq!(original.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[derive(Debug)]
+    struct QueuedClient {
+        entered: tokio::sync::mpsc::UnboundedSender<String>,
+        writing_release: tokio::sync::Semaphore,
+        query_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl EmbeddingClient for QueuedClient {
+        async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+            self.entered.send(text.to_owned()).unwrap();
+            self.writing_release.acquire().await.unwrap().forget();
+            Ok(vec![1.0; 384])
+        }
+
+        async fn embed_query(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+            self.query_calls.fetch_add(1, Ordering::SeqCst);
+            self.entered.send(text.to_owned()).unwrap();
+            Ok(vec![1.0; 384])
+        }
+
+        fn model_id(&self) -> &'static str {
+            "queued"
+        }
+        fn dim(&self) -> usize {
+            384
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_search_bypasses_six_queued_writes_while_switch_off_keeps_fifo() {
+        const QUEUED_WRITES: usize = 6;
+        for concurrent in [false, true] {
+            let (entered, mut events) = tokio::sync::mpsc::unbounded_channel();
+            let client = Arc::new(QueuedClient {
+                entered,
+                writing_release: tokio::sync::Semaphore::new(0),
+                query_calls: AtomicUsize::new(0),
+            });
+            let bound = BoundEmbeddingClient::bind(Arc::clone(&client) as Arc<dyn EmbeddingClient>)
+                .unwrap();
+            let control = EmbeddingControl::default();
+            let owner = OwnerId::new(uuid::Uuid::now_v7());
+            let policy = EmbeddingRuntimePolicy::default().with_search_concurrent(concurrent);
+            let writing = control.observe(
+                owner,
+                EmbeddingRoute::current(bound.clone()),
+                policy,
+                Purpose::Background,
+            );
+            let search = control.observe(
+                owner,
+                EmbeddingRoute::current(bound),
+                policy,
+                Purpose::Search,
+            );
+            let writing = writing.current_client().unwrap();
+            let search = search.current_client().unwrap();
+            let labels: Vec<_> = (0..=QUEUED_WRITES)
+                .map(|index| format!("write-{index}"))
+                .collect();
+            let mut writers: std::collections::VecDeque<_> = labels
+                .iter()
+                .map(|text| Box::pin(writing.embed(text)))
+                .collect();
+            for writer in &mut writers {
+                assert!(poll_once(writer.as_mut()).is_pending());
+            }
+            let mut order = vec![events.try_recv().unwrap()];
+            assert_eq!(order, ["write-0"]);
+            assert!(events.try_recv().is_err(), "all other writers are queued");
+            let mut query = Box::pin(search.embed("query"));
+            let mut query = if concurrent {
+                assert!(matches!(
+                    poll_once(query.as_mut()),
+                    std::task::Poll::Ready(Ok(_))
+                ));
+                order.push(events.try_recv().unwrap());
+                assert_eq!(
+                    order,
+                    ["write-0", "query"],
+                    "query reached its provider before the held writer released"
+                );
+                None
+            } else {
+                assert!(poll_once(query.as_mut()).is_pending());
+                assert!(events.try_recv().is_err());
+                Some(query)
+            };
+            while let Some(mut writer) = writers.pop_front() {
+                client.writing_release.add_permits(1);
+                tokio::time::timeout(PATIENCE, &mut writer)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                // Poll in reverse order: FIFO admission still gives only the oldest writer its turn.
+                for queued in writers.iter_mut().rev() {
+                    assert!(poll_once(queued.as_mut()).is_pending());
+                }
+                if let Some(query) = &mut query {
+                    assert!(poll_once(query.as_mut()).is_pending());
+                }
+                while let Ok(event) = events.try_recv() {
+                    order.push(event);
+                }
+            }
+            if let Some(query) = query {
+                client.writing_release.add_permits(1);
+                tokio::time::timeout(PATIENCE, query)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+            let background_order: Vec<_> = order
+                .iter()
+                .filter(|event| event.starts_with("write-"))
+                .cloned()
+                .collect();
+            assert_eq!(background_order, labels);
+            assert_eq!(
+                client.query_calls.load(Ordering::SeqCst),
+                usize::from(concurrent)
+            );
+            if concurrent {
+                assert_eq!(order[1], "query");
+            } else {
+                assert_eq!(order.last().unwrap(), "query");
+            }
+        }
     }
 }

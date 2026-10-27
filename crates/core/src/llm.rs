@@ -356,10 +356,21 @@ fn parse_duration_setting(
     Ok(Duration::from_secs(seconds))
 }
 
+/// Header by which an embedding adapter identifies an explicit query-purpose request.
+pub const EMBEDDING_PURPOSE_HEADER: &str = "x-proxima-embedding-purpose";
+/// Query-purpose value of [`EMBEDDING_PURPOSE_HEADER`].
+pub const EMBEDDING_SEARCH_PURPOSE: &str = "search";
+
 /// Embedding client surface. Concrete impls live outside core.
 #[async_trait]
 pub trait EmbeddingClient: Send + Sync + std::fmt::Debug {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError>;
+
+    /// Embed an already-rendered search query. Providers may use the purpose
+    /// for scheduling; vector semantics remain the same as [`Self::embed`].
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        self.embed(text).await
+    }
 
     /// Embed several texts in one provider call, one vector per input, in
     /// input order. The default falls back to sequential single embeds so

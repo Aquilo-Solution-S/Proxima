@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use proxima_core::PlaintextHosts;
 use proxima_core::llm::{
-    EmbeddingClient, EmbeddingConfigurationFault, EmbeddingInputRefusal, LlmError,
-    MIN_EMBED_INPUT_CAP_CHARS,
+    EMBEDDING_PURPOSE_HEADER, EMBEDDING_SEARCH_PURPOSE, EmbeddingClient,
+    EmbeddingConfigurationFault, EmbeddingInputRefusal, LlmError, MIN_EMBED_INPUT_CAP_CHARS,
 };
 use proxima_core::models::EmbedCaps;
 use serde::{Deserialize, Serialize};
@@ -358,7 +358,7 @@ impl OpenAiCompatEmbeddingClient {
         Ok(())
     }
 
-    async fn embed_call(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
+    async fn embed_call(&self, inputs: &[&str], search: bool) -> Result<Vec<Vec<f32>>, LlmError> {
         self.refuse_over_cap(inputs)?;
         let body = EmbedRequest {
             model: &self.model_id,
@@ -367,6 +367,9 @@ impl OpenAiCompatEmbeddingClient {
         };
 
         let mut req = self.client.post(self.endpoint.clone()).json(&body);
+        if search {
+            req = req.header(EMBEDDING_PURPOSE_HEADER, EMBEDDING_SEARCH_PURPOSE);
+        }
         if let Some(token) = &self.config.bearer_token {
             req = req.bearer_auth(token);
         }
@@ -423,7 +426,13 @@ impl OpenAiCompatEmbeddingClient {
 #[async_trait]
 impl EmbeddingClient for OpenAiCompatEmbeddingClient {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-        let mut vecs = self.embed_call(&[text]).await?;
+        let mut vecs = self.embed_call(&[text], false).await?;
+        vecs.pop()
+            .ok_or_else(|| LlmError::retryable("OpenAI-compatible response had no embeddings"))
+    }
+
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        let mut vecs = self.embed_call(&[text], true).await?;
         vecs.pop()
             .ok_or_else(|| LlmError::retryable("OpenAI-compatible response had no embeddings"))
     }
@@ -433,7 +442,7 @@ impl EmbeddingClient for OpenAiCompatEmbeddingClient {
             return Ok(Vec::new());
         }
         let inputs: Vec<&str> = texts.iter().map(String::as_str).collect();
-        self.embed_call(&inputs).await
+        self.embed_call(&inputs, false).await
     }
 
     fn model_id(&self) -> &str {
@@ -1240,6 +1249,114 @@ mod redirect_tests {
         )
         .expect("build test client with production redirect policy");
         client
+    }
+
+    #[tokio::test]
+    async fn only_explicit_query_operations_send_the_search_purpose_header() {
+        use proxima_core::{EMBEDDING_PURPOSE_HEADER, EMBEDDING_SEARCH_PURPOSE};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (captured, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let server = ResponseTask(tokio::spawn(async move {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                captured.send(read_request(&mut stream).await).unwrap();
+                let body = r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#;
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        }));
+        let client = OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            EmbedCaps::new(2, false),
+            OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
+        )
+        .unwrap();
+        tokio::time::timeout(PATIENCE, async {
+            client.embed("text").await.unwrap();
+            client.embed_many(&["text".to_owned()]).await.unwrap();
+            client.embed_query("text").await.unwrap();
+        })
+        .await
+        .unwrap();
+        server.complete().await;
+        for query in [false, false, true] {
+            let request = requests.try_recv().unwrap();
+            let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+            let purpose = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case(EMBEDDING_PURPOSE_HEADER))
+                .map(|(_, value)| value.trim());
+            assert_eq!(purpose, query.then_some(EMBEDDING_SEARCH_PURPOSE));
+            let body: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert_eq!(body["input"], serde_json::json!(["text"]));
+        }
+    }
+
+    #[tokio::test]
+    async fn loopback_query_latency_while_a_writing_response_is_held() {
+        use proxima_core::{EMBEDDING_PURPOSE_HEADER, EMBEDDING_SEARCH_PURPOSE};
+        const SAMPLES: usize = 32;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (writer_entered, entered) = tokio::sync::oneshot::channel();
+        let (release, writer_release) = tokio::sync::oneshot::channel();
+        let server = ResponseTask(tokio::spawn(async move {
+            let body = r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let (mut writer, _) = listener.accept().await.unwrap();
+            let _ = read_request(&mut writer).await;
+            writer_entered.send(()).unwrap();
+            for _ in 0..SAMPLES {
+                let (mut query, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut query).await;
+                assert!(request.lines().any(|line| line
+                    == format!("{EMBEDDING_PURPOSE_HEADER}: {EMBEDDING_SEARCH_PURPOSE}")));
+                query.write_all(response.as_bytes()).await.unwrap();
+            }
+            writer_release.await.unwrap();
+            writer.write_all(response.as_bytes()).await.unwrap();
+        }));
+        let client = OpenAiCompatEmbeddingClient::new(
+            "test-embed",
+            EmbedCaps::new(2, false),
+            OpenAiCompatConfig::new(format!("http://{addr}/v1"), None),
+        )
+        .unwrap();
+        let mut writer = Box::pin(client.embed("held writing request"));
+        tokio::time::timeout(PATIENCE, async {
+            tokio::select! {
+                result = &mut writer => panic!("writer answered before release: {result:?}"),
+                result = entered => result.unwrap(),
+            }
+        })
+        .await
+        .unwrap();
+        let mut latencies = Vec::with_capacity(SAMPLES);
+        for _ in 0..SAMPLES {
+            let started = std::time::Instant::now();
+            tokio::time::timeout(PATIENCE, client.embed_query("query"))
+                .await
+                .unwrap()
+                .unwrap();
+            latencies.push(started.elapsed().as_micros());
+        }
+        release.send(()).unwrap();
+        tokio::time::timeout(PATIENCE, writer)
+            .await
+            .unwrap()
+            .unwrap();
+        server.complete().await;
+        latencies.sort_unstable();
+        eprintln!(
+            "loopback HTTP queries while writing held: n={SAMPLES} median_us={} p95_us={} max_us={}",
+            latencies[SAMPLES / 2],
+            latencies[(SAMPLES * 95).div_ceil(100) - 1],
+            latencies[SAMPLES - 1]
+        );
     }
 
     #[tokio::test]

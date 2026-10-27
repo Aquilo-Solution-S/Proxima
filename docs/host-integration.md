@@ -60,6 +60,10 @@ resolved owner or role.
 Embedding calls serialize per original client. A host that permits one search
 embedding beside background indexing sets
 `RuntimeBuilder::embedding_runtime_policy(EmbeddingRuntimePolicy::default().with_search_concurrent(true))`.
+The client's `EmbeddingClient::embed_query` operation distinguishes query
+purpose; its default uses the ordinary embedding algorithm. An HTTP adapter
+can carry that purpose to a host's admission boundary. Engine calls use it
+only when the policy enables concurrent search.
 This is an explicit capacity decision; both lanes still share provider backoff
 and configuration pauses ([operate](operate.md#probes-and-shutdown)).
 

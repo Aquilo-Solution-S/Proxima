@@ -218,6 +218,10 @@ Calls through one original client serialize by default. With
 `PROXIMA_EMBED_SEARCH_CONCURRENT=true`, search routes have one dispatch slot
 beside the background slot; each lane still serializes its own calls. Enable
 this only where the provider and host admission allow two concurrent requests.
+The HTTP adapter marks the explicit query operation with
+`x-proxima-embedding-purpose: search`; ordinary single and batch operations
+send no purpose header. With the switch off, engine searches use the ordinary
+embedding operation and serialize with writes as before.
 Both lanes share configuration pauses and backoff; a call already in flight
 can finish, but its success cannot clear a newer refusal. The request deadline
 includes waiting for its dispatch slot and the provider call together.
