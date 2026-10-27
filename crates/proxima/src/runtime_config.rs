@@ -730,8 +730,8 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Set provider batching, request timeout, worker cadence, and durable
-    /// claim lifecycle as one validated policy block.
+    /// Set provider batching, request timeout, worker cadence, durable claim
+    /// lifecycle, and optional search concurrency as one validated policy block.
     #[must_use]
     pub fn embedding_runtime_policy(mut self, policy: EmbeddingRuntimePolicy) -> Self {
         self.embedding_runtime_policy = Some(policy);
@@ -1739,6 +1739,7 @@ fn embedding_runtime_policy_env_is_set(lookup: &impl Fn(&str) -> Option<String>)
     [
         proxima_core::PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
         proxima_core::PROXIMA_EMBED_BATCH_SIZE,
+        proxima_core::PROXIMA_EMBED_SEARCH_CONCURRENT,
         proxima_core::PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
         proxima_core::PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
     ]
@@ -2544,6 +2545,30 @@ mod tests {
             .expect("programmatic policy resolves")
             .0;
         assert_eq!(resolved.embedding_runtime_policy, explicit);
+    }
+
+    #[test]
+    fn search_concurrency_alone_sets_the_embedding_policy_block() {
+        let builder = RuntimeBuilder::default()
+            .apply_lookup(lookup(&[(
+                proxima_core::PROXIMA_EMBED_SEARCH_CONCURRENT,
+                "true",
+            )]))
+            .expect("explicit query concurrency");
+        assert!(
+            builder
+                .embedding_runtime_policy
+                .expect("policy block present")
+                .search_concurrent()
+        );
+        assert!(
+            RuntimeBuilder::default()
+                .apply_lookup(lookup(&[(
+                    proxima_core::PROXIMA_EMBED_SEARCH_CONCURRENT,
+                    "invalid"
+                )]))
+                .is_err()
+        );
     }
 
     #[test]

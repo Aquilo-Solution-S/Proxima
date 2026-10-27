@@ -100,6 +100,7 @@ impl LlmError {
 }
 
 pub const PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS: &str = "PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS";
+pub const PROXIMA_EMBED_SEARCH_CONCURRENT: &str = "PROXIMA_EMBED_SEARCH_CONCURRENT";
 pub const PROXIMA_EMBED_BATCH_SIZE: &str = "PROXIMA_EMBED_BATCH_SIZE";
 pub const PROXIMA_EMBED_WORKER_INTERVAL_SECONDS: &str = "PROXIMA_EMBED_WORKER_INTERVAL_SECONDS";
 pub const PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS: &str =
@@ -130,6 +131,7 @@ pub struct EmbeddingRuntimePolicy {
     batch_size: usize,
     worker_interval: Duration,
     stale_claim_timeout: Duration,
+    search_concurrent: bool,
 }
 
 impl Default for EmbeddingRuntimePolicy {
@@ -139,12 +141,15 @@ impl Default for EmbeddingRuntimePolicy {
             batch_size: DEFAULT_EMBED_BATCH_SIZE,
             worker_interval: DEFAULT_EMBED_WORKER_INTERVAL,
             stale_claim_timeout: DEFAULT_EMBED_STALE_CLAIM_TIMEOUT,
+            search_concurrent: false,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EmbeddingRuntimePolicyError {
+    #[error("{key} must be true or false, got {value:?}")]
+    MalformedBoolean { key: &'static str, value: String },
     #[error("{key} must be integer seconds, got {value:?}")]
     MalformedSeconds { key: &'static str, value: String },
     #[error("{key} must be a positive integer, got {value:?}")]
@@ -215,6 +220,7 @@ impl EmbeddingRuntimePolicy {
             batch_size,
             worker_interval,
             stale_claim_timeout,
+            search_concurrent: false,
         })
     }
 
@@ -253,12 +259,37 @@ impl EmbeddingRuntimePolicy {
             PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
             defaults.stale_claim_timeout,
         )?;
+        let search_concurrent = crate::env_value(lookup, PROXIMA_EMBED_SEARCH_CONCURRENT)
+            .map(|raw| match raw.as_str() {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                _ => Err(EmbeddingRuntimePolicyError::MalformedBoolean {
+                    key: PROXIMA_EMBED_SEARCH_CONCURRENT,
+                    value: raw,
+                }),
+            })
+            .transpose()?
+            .unwrap_or(false);
         Self::new(
             request_timeout,
             batch_size,
             worker_interval,
             stale_claim_timeout,
         )
+        .map(|policy| policy.with_search_concurrent(search_concurrent))
+    }
+
+    /// Allow one search-route call beside one background call per original client.
+    /// Disabled by default. Both lanes retain shared backoff and configuration pauses.
+    #[must_use]
+    pub const fn with_search_concurrent(mut self, enabled: bool) -> Self {
+        self.search_concurrent = enabled;
+        self
+    }
+
+    #[must_use]
+    pub const fn search_concurrent(self) -> bool {
+        self.search_concurrent
     }
 
     #[must_use]
@@ -585,6 +616,32 @@ mod tests {
         assert_eq!(policy.batch_size(), 17);
         assert_eq!(policy.worker_interval(), Duration::from_secs(9));
         assert_eq!(policy.stale_claim_timeout(), Duration::from_secs(91));
+    }
+
+    #[test]
+    fn concurrent_search_policy_is_an_explicit_boolean_opt_in() {
+        use super::PROXIMA_EMBED_SEARCH_CONCURRENT;
+        assert!(!EmbeddingRuntimePolicy::default().search_concurrent());
+        assert!(
+            !EmbeddingRuntimePolicy::from_lookup(&lookup(&[]))
+                .unwrap()
+                .search_concurrent()
+        );
+        for (raw, expected) in [("true", true), ("false", false)] {
+            let policy = EmbeddingRuntimePolicy::from_lookup(&lookup(&[(
+                PROXIMA_EMBED_SEARCH_CONCURRENT,
+                raw,
+            )]))
+            .unwrap();
+            assert_eq!(policy.search_concurrent(), expected);
+        }
+        assert!(matches!(
+            EmbeddingRuntimePolicy::from_lookup(&lookup(&[(
+                PROXIMA_EMBED_SEARCH_CONCURRENT,
+                "yes"
+            )])),
+            Err(EmbeddingRuntimePolicyError::MalformedBoolean { .. })
+        ));
     }
 
     #[test]
