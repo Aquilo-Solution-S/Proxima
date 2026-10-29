@@ -70,9 +70,12 @@ impl ToolContent {
 /// A tool that ran answers with a variant; a call that could not run (the
 /// scope gate's refusal, authentication, an unknown tool, invalid input, a
 /// host's [`McpToolError`](super::McpToolError)) answers with that error,
-/// which the transport reports as a protocol error. The two never convert
-/// into each other: [`Self::Failure`] and [`Self::StructuredFailure`] are
-/// built by a host terminal and nothing in Proxima turns an error into one.
+/// which the transport reports as a protocol error. The one error that
+/// becomes a reply is the tool's own failure,
+/// [`McpToolError::Failure`](super::McpToolError::Failure) (a registry
+/// tool's [`ToolError::Failure`](crate::ToolError::Failure)): its text,
+/// unchanged, is the one block of a [`Self::Failure`]. A surface that
+/// carries only JSON turns such a failure back into that error.
 ///
 /// ```compile_fail,E0277
 /// let error = proxima_core::McpToolError::NotAuthorized("tool".into());
@@ -91,14 +94,16 @@ impl ToolContent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolReply {
     /// A JSON object, sent as `structuredContent` plus its text rendering.
-    /// Every registry tool answers this way, and a behavior that only
-    /// post-processes JSON matches this variant and passes the others on.
+    /// Every registry tool that succeeds answers this way, and a behavior
+    /// that only post-processes JSON matches this variant and passes the
+    /// others on.
     Structured(serde_json::Value),
     /// Content blocks and no `structuredContent`.
     Content(Vec<ToolContent>),
     /// The tool ran and failed in a way the caller should read and may
     /// retry: content blocks with `isError: true`. Proxima does not redact
-    /// them; the host owns what it puts here.
+    /// them; the tool owns what it puts here. A registry tool answers this
+    /// way with [`ToolError::Failure`](crate::ToolError::Failure).
     Failure(Vec<ToolContent>),
     /// The tool ran and failed with details a program reads: `structured` is
     /// sent as `structuredContent` beside the content blocks, with

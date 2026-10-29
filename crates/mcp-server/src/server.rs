@@ -15,8 +15,8 @@ use proxima_core::mcp::core_tools::{
 };
 use proxima_core::mcp::{
     McpAuthorContext, McpHostToolCall, McpToolCtx, McpToolDescriptor, McpToolError,
-    McpToolErrorKind, Next, TerminalDispatch, ToolCall, ToolReply, resolve_operator_label,
-    tool_name_matches,
+    McpToolErrorKind, Next, TerminalDispatch, ToolCall, ToolContent, ToolReply,
+    resolve_operator_label, tool_name_matches,
 };
 use proxima_core::protocol::resource as protocol_resource;
 use proxima_core::{
@@ -285,8 +285,10 @@ impl McpToolHost {
 
     /// # Errors
     ///
-    /// Returns `ToolNotFound`, the called tool error, or an internal error
-    /// when the final reply after request behaviors is not a JSON object.
+    /// Returns `ToolNotFound`, the called tool error, a failure of one text
+    /// block as [`McpToolError::Failure`] with that text, or an internal
+    /// error when the final reply after request behaviors is anything else
+    /// but a JSON object.
     pub async fn call_tool(
         &self,
         name: &str,
@@ -434,7 +436,11 @@ impl McpToolHost {
                     descriptor.name.to_string(),
                     Box::new(move |call| {
                         let ToolCall { args, ctx, .. } = call;
-                        Box::pin(async move { call_fn(ctx, args).await.map(ToolReply::Structured) })
+                        Box::pin(async move {
+                            tool_failure_as_reply(
+                                call_fn(ctx, args).await.map(ToolReply::Structured),
+                            )
+                        })
                     }),
                 )
             }
@@ -459,7 +465,9 @@ impl McpToolHost {
                 let source = Arc::clone(source);
                 (
                     name,
-                    Box::new(move |call| Box::pin(async move { source.call(call).await })),
+                    Box::new(move |call| {
+                        Box::pin(async move { tool_failure_as_reply(source.call(call).await) })
+                    }),
                 )
             }
         };
@@ -563,6 +571,19 @@ impl ToolTarget<'_> {
     }
 }
 
+/// A tool's own failure ([`McpToolError::Failure`]) is a result the caller
+/// reads, `isError: true` with the tool's text unchanged; every other error
+/// stays a protocol error. Applied at the terminal, so the behaviors see the
+/// failure as the reply it is.
+fn tool_failure_as_reply(
+    result: Result<ToolReply, McpToolError>,
+) -> Result<ToolReply, McpToolError> {
+    match result {
+        Err(McpToolError::Failure(text)) => Ok(ToolReply::Failure(vec![ToolContent::Text(text)])),
+        other => other,
+    }
+}
+
 /// The final reply of a tool call, checked where it leaves the behaviors: a
 /// structured answer is a JSON object, and only a tool that declared no
 /// output schema answers content or a structured failure, which a
@@ -600,12 +621,22 @@ fn checked_reply(
 }
 
 /// The JSON of a reply for a surface that carries nothing else (a resource
-/// read, the REST surface, `CoreMcpTools`).
+/// read, the REST surface, `CoreMcpTools`). A failure of one text block, the
+/// shape [`tool_failure_as_reply`] builds, is that tool failure again, its
+/// text unchanged.
 fn json_reply(name: &str, reply: ToolReply) -> Result<serde_json::Value, McpToolError> {
-    reply.into_structured().map_err(|_| {
+    let not_json = || {
         tracing::error!(tool = %name, "this surface carries JSON; the tool answered content");
         McpToolError::Other("tool reply must be a JSON object".into())
-    })
+    };
+    match reply.into_structured() {
+        Ok(value) => Ok(value),
+        Err(ToolReply::Failure(content)) => match <[ToolContent; 1]>::try_from(content) {
+            Ok([ToolContent::Text(text)]) => Err(McpToolError::Failure(text)),
+            _ => Err(not_json()),
+        },
+        Err(_) => Err(not_json()),
+    }
 }
 
 fn host_tool_name_refusal(

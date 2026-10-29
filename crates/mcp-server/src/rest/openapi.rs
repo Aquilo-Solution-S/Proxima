@@ -83,7 +83,11 @@ const PROBLEM_STATUSES: &[(u16, &str)] = &[
         "Idempotency conflict, duplicate ingest, trigger conflict, or a \
          suppressed subject.",
     ),
-    (422, "The write would violate F/A/P layering."),
+    (
+        422,
+        "The write would violate F/A/P layering, or the tool ran and failed \
+         (`tool-failure`, the tool's text as detail).",
+    ),
     (500, "Internal error. The detail is deliberately generic."),
     (
         503,

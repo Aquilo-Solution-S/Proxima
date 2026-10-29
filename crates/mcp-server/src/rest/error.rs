@@ -202,6 +202,11 @@ fn tool_problem(err: &McpToolError, instance: &str) -> Problem {
             "store-unavailable",
             "Store unavailable",
         ),
+        McpToolError::Failure(_) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "tool-failure",
+            "Tool failed",
+        ),
         McpToolError::Protocol(inner) => protocol_status(inner.code),
         McpToolError::Storage(inner) => storage_status(inner),
         McpToolError::Other(_) => (
@@ -423,6 +428,10 @@ mod tests {
             (
                 McpToolError::from(proxima_core::ToolError::Unavailable("x".into())),
                 StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                McpToolError::from(proxima_core::ToolError::Failure("x".into())),
+                StatusCode::UNPROCESSABLE_ENTITY,
             ),
             (
                 McpToolError::Other("x".into()),

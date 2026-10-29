@@ -31,6 +31,13 @@ pub enum McpToolError {
     /// own error text may carry the remote store's internals.
     #[error("store {store} unavailable")]
     StoreUnavailable { store: u16 },
+    /// The tool ran and failed, in its own words
+    /// ([`ToolError::Failure`]). A tool call answers it as
+    /// [`ToolReply::Failure`](crate::ToolReply::Failure), `isError: true`
+    /// with this text unchanged; it is a protocol error only on a path
+    /// that is not a tool call, and its text stays verbatim there too.
+    #[error("{0}")]
+    Failure(String),
     #[error("{0}")]
     Other(String),
 }
@@ -125,6 +132,7 @@ impl McpToolError {
                 | crate::StorageError::SchemaResetRequired { .. } => McpToolErrorKind::Internal,
             },
             Self::StoreUnavailable { .. } => McpToolErrorKind::StoreUnavailable,
+            Self::Failure(_) => McpToolErrorKind::InvalidRequest,
             Self::Other(_) => McpToolErrorKind::Internal,
         }
     }
@@ -159,6 +167,7 @@ impl From<ToolError> for McpToolError {
             ToolError::LayeringViolation(message) => Self::LayeringViolation(message),
             ToolError::Storage(err) => Self::Storage(err),
             ToolError::Unavailable(message) => Self::Unavailable(message),
+            ToolError::Failure(text) => Self::Failure(text),
             ToolError::Other(message) => Self::Other(message),
         }
     }

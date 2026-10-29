@@ -180,6 +180,14 @@ name the parameter. An unknown resource and a missing or invisible entity
 return a resource-not-found error. The negotiated MCP revision controls wire
 error-code compatibility. Internal errors redact source chains and credentials.
 
+A tool that ran and failed answers MCP's tool-execution error, not a JSON-RPC
+error: a result with `isError: true` whose content is the tool's own text. A
+typed tool returns `ToolError::Failure(text)`; a host tool answers
+`ToolReply::Failure` or `ToolReply::StructuredFailure`. Proxima neither
+redacts nor rewords that text. Every other `ToolError` stays a JSON-RPC error.
+REST answers a tool failure as `422` with type `tool-failure` and the text as
+`detail`.
+
 REST returns `application/problem+json`: machine-readable `type`, `title`,
 `status`, safe `detail`, and request `instance`. Its exhaustive variant map is
 [`rest/error.rs`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/mcp-server/src/rest/error.rs).
@@ -192,6 +200,7 @@ REST returns `application/problem+json`: machine-readable `type`, `title`,
 | Invalid input or unknown schema | 400 |
 | Idempotency, storage, or suppression conflict | 409 |
 | Layering violation | 422 |
+| Tool failure (`tool-failure`, the tool's text) | 422 |
 | Missing capability or publication capacity exhausted | 503 |
 | Another store did not answer (`store-unavailable`, retryable) | 503 |
 | Internal/deployment failure | 500 |

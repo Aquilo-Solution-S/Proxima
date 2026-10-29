@@ -695,6 +695,12 @@ pub enum ToolError {
     /// (REST 503), not a redacted 500.
     #[error("{0}")]
     Unavailable(String),
+    /// The tool ran and failed, and says why in its own words. Answered as
+    /// MCP's tool-execution error, a result with `isError: true` and this
+    /// text as its one content block, never as a protocol error. Proxima
+    /// neither redacts nor rewords it; the tool owns the text.
+    #[error("{0}")]
+    Failure(String),
     #[error("{0}")]
     Other(String),
 }

@@ -69,6 +69,9 @@ pub trait RequestBehavior: Send + Sync + std::fmt::Debug {
     /// Wrap one call: refuse it, or pass it to `next` and post-process the
     /// reply. A behavior that only reads JSON matches
     /// [`ToolReply::Structured`] and returns the other variants unchanged.
+    /// A tool that ran and failed reaches it as `Ok` with
+    /// [`ToolReply::Failure`] or [`ToolReply::StructuredFailure`], never as
+    /// `Err`.
     ///
     /// # Errors
     ///

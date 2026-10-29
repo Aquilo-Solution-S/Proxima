@@ -749,6 +749,131 @@ mod tests {
         }
     }
 
+    /// A typed tool that answers how its call went: done, failed in its own
+    /// words, or refused its input.
+    struct SendTool;
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    enum SendOutcome {
+        Done,
+        Failed,
+        Invalid,
+    }
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct SendArgs {
+        /// How the call goes.
+        outcome: SendOutcome,
+    }
+
+    #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+    struct SendOutput {
+        sent: bool,
+    }
+
+    const SEND_TOOL: &str = "proxima-stub_send";
+
+    /// Not a string Proxima would ever write: redaction or a reworded
+    /// message would not keep it.
+    const SEND_FAILURE: &str = "send refused: token sk-live-1234 rejected (retry after 60s)";
+
+    impl proxima_core::Tool for SendTool {
+        const NAME: &'static str = SEND_TOOL;
+        const TITLE: &'static str = "Send";
+        const DESCRIPTION: &'static str = "Answers the outcome it is asked for.";
+        const EFFECT: Option<proxima_core::ToolEffect> = Some(proxima_core::ToolEffect::ReadOnly);
+        type Args = SendArgs;
+        type Output = SendOutput;
+        fn call(
+            _: proxima_core::ToolCtx,
+            args: SendArgs,
+        ) -> futures_util::future::BoxFuture<'static, Result<SendOutput, proxima_core::ToolError>>
+        {
+            Box::pin(async move {
+                match args.outcome {
+                    SendOutcome::Done => Ok(SendOutput { sent: true }),
+                    SendOutcome::Failed => {
+                        Err(proxima_core::ToolError::Failure(SEND_FAILURE.into()))
+                    }
+                    SendOutcome::Invalid => {
+                        Err(proxima_core::ToolError::InvalidInput("no recipient".into()))
+                    }
+                }
+            })
+        }
+    }
+
+    /// A typed tool's failure is MCP's tool-execution error: a result with
+    /// `isError: true` and the tool's text as its content, unchanged, never
+    /// a JSON-RPC error. Its success and its other errors keep their wire
+    /// forms, and a JSON-only surface gets the failure back with its text.
+    #[tokio::test]
+    async fn a_typed_tool_failure_goes_out_as_is_error_with_its_text() {
+        let mut registry = proxima_core::FlavorRegistry::new();
+        registry.add_tool_or_panic_for_tests::<SendTool>("proxima-stub");
+        let host = crate::server::McpToolHost::from_parts(
+            Arc::new(registry.freeze_or_panic_for_tests()),
+            proxima_core::FlavorServices::default(),
+        );
+        let owner = personal_owner();
+        let send = |outcome: &str| {
+            let mut request = per_request_rpc(
+                "2026-07-28",
+                "tools/call",
+                serde_json::json!({"name": SEND_TOOL, "arguments": {"outcome": outcome}}),
+            );
+            request
+                .headers_mut()
+                .insert("Mcp-Name", SEND_TOOL.parse().unwrap());
+            request.extensions_mut().insert(auth_for(owner));
+            first_message(mcp_service_for(host.clone()), request)
+        };
+
+        let message = send("failed").await;
+        assert!(message.get("error").is_none(), "{message}");
+        assert_eq!(message["result"]["isError"], true, "{message}");
+        assert!(message["result"].get("structuredContent").is_none());
+        assert_eq!(
+            message["result"]["content"],
+            serde_json::json!([{"type": "text", "text": SEND_FAILURE}])
+        );
+
+        let message = send("done").await;
+        assert_eq!(message["result"]["isError"], false, "{message}");
+        assert_eq!(
+            message["result"]["structuredContent"],
+            serde_json::json!({"sent": true})
+        );
+
+        let message = send("invalid").await;
+        assert!(message.get("result").is_none(), "{message}");
+        assert_eq!(message["error"]["code"], -32602, "{message}");
+        assert_eq!(message["error"]["message"], "invalid input: no recipient");
+
+        let json = host
+            .call_tool(
+                SEND_TOOL,
+                serde_json::json!({"outcome": "failed"}),
+                proxima_core::mcp::McpAuthorContext {
+                    model_id: "test".into(),
+                    trusted_model_id: None,
+                    client_name: "test".into(),
+                    client_version: "0".into(),
+                    caller_self_perspective: None,
+                },
+                Some(auth_for(owner)),
+            )
+            .await;
+        let Err(crate::server::ToolInvocationError::Tool(
+            error @ proxima_core::mcp::McpToolError::Failure(_),
+        )) = json
+        else {
+            panic!("a JSON-only surface answers the tool's failure: {json:?}");
+        };
+        assert_eq!(error.client_message(), SEND_FAILURE);
+    }
+
     /// A host tool's `_meta` and `openWorldHint` reach `tools/list`; the
     /// other hints are the effect's, and a tool that sets neither shows
     /// neither.

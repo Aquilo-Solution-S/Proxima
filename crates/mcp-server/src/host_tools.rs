@@ -177,8 +177,9 @@ pub trait McpHostTools: Send + Sync + std::fmt::Debug {
     /// for a failure the model should read and retry, or
     /// [`ToolReply::StructuredFailure`] when the failure also carries an
     /// object a program reads. The `Err` side is for a call that cannot be
-    /// answered at all, and maps to a JSON-RPC error; Proxima never turns it
-    /// into a failure.
+    /// answered at all, and maps to a JSON-RPC error. The one exception is
+    /// [`McpToolError::Failure`], answered as a [`ToolReply::Failure`] of its
+    /// text, as a registry tool's is.
     ///
     /// # Errors
     ///
