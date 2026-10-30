@@ -153,12 +153,16 @@ exchange requests, because Zitadel grants an exchange only scopes the subject
 token already holds:
 
 ```rust
-use proxima::{ResourceServerMetadata, RuntimeBuilder, ScopeToken, ScopeTokenError};
+use proxima::{
+    AuthorizationServers, ResourceServerMetadata, RuntimeBuilder, ScopeToken, ScopeTokenError,
+};
 
 fn configure(builder: RuntimeBuilder) -> Result<RuntimeBuilder, ScopeTokenError> {
     Ok(builder.resource_metadata(ResourceServerMetadata {
         public_url: "https://erp.example.com".to_string(),
-        authorization_servers: vec!["https://auth.example.com".to_string()],
+        authorization_servers: AuthorizationServers::Issuers(vec![
+            "https://auth.example.com".to_string(),
+        ]),
         additional_scopes: vec![ScopeToken::parse("urn:zitadel:iam:org:project:id:42:aud")?],
     }))
 }
@@ -167,6 +171,15 @@ fn configure(builder: RuntimeBuilder) -> Result<RuntimeBuilder, ScopeTokenError>
 `ScopeToken::parse` refuses an RFC 6749 `scope-token` violation, such as two
 scopes joined by a space. Parse each scope where it enters the host, for
 example while reading its configuration.
+
+For a host that fronts one upstream identity provider with a public PKCE client,
+set `authorization_servers` to `AuthorizationServers::PublicClient`. The host
+then publishes RFC 8414 authorization-server metadata at both
+`/.well-known/oauth-authorization-server` and
+`/.well-known/oauth-authorization-server/mcp`, and accepts stateless RFC 7591
+registration at `/oauth/register`. The upstream provider remains the issuer of
+authorization and token responses; the host only supplies discovery and echoes
+the registering client's redirect URIs.
 
 The scope gate judges the caller's role on the owner the call's `space`
 resolves to.

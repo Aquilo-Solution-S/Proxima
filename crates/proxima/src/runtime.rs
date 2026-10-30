@@ -1280,7 +1280,7 @@ fn build_router<A: FlavorApp>(
         .layer(auth_layer);
     let mut router = protected_router;
     if let Some(md) = &edge.resource_metadata {
-        router = router.merge(proxima_mcp_server::protected_resource_router(md));
+        router = router.merge(proxima_mcp_server::public_discovery_router(md));
     }
     // Apply listener-wide guards only after anonymous OAuth metadata has been
     // merged, so CORS covers public metadata and preflights. Health probes sit
@@ -1649,7 +1649,9 @@ mod tests {
             .allowed_origins(vec!["https://app.example.com".to_string()])
             .resource_metadata(proxima_mcp_server::ResourceServerMetadata {
                 public_url: "https://proxy.example.com".to_string(),
-                authorization_servers: vec!["https://idp.test".to_string()],
+                authorization_servers: proxima_mcp_server::AuthorizationServers::Issuers(vec![
+                    "https://idp.test".to_string(),
+                ]),
                 additional_scopes: Vec::new(),
             })
             .authenticator(Arc::new(StubAuth { owner }))
@@ -1718,7 +1720,9 @@ mod tests {
             .allowed_origins(vec!["https://app.example.com".to_string()])
             .resource_metadata(proxima_mcp_server::ResourceServerMetadata {
                 public_url: "https://proxima.example.com".to_string(),
-                authorization_servers: vec!["https://idp.test".to_string()],
+                authorization_servers: proxima_mcp_server::AuthorizationServers::Issuers(vec![
+                    "https://idp.test".to_string(),
+                ]),
                 additional_scopes: Vec::new(),
             })
             .authenticator(Arc::new(StubAuth { owner }))

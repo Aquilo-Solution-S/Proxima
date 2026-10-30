@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_core::{Authenticator, env_value};
-use proxima_mcp_server::ResourceServerMetadata;
+use proxima_mcp_server::{AuthorizationServers, ResourceServerMetadata};
 
 use crate::OwnerAccessPort;
 use crate::config::parse_bool_value;
@@ -179,7 +179,7 @@ pub(crate) fn oidc_from_lookup(
         Arc::new(authenticator),
         ResourceServerMetadata {
             public_url,
-            authorization_servers: vec![issuer],
+            authorization_servers: AuthorizationServers::Issuers(vec![issuer]),
             additional_scopes: Vec::new(),
         },
     )))
@@ -545,6 +545,7 @@ mod tests {
         use proxima_core::{
             AccessError, AuthError, Authenticator, Credentials, OwnerAccessPort, OwnerRoles, UserId,
         };
+        use proxima_mcp_server::AuthorizationServers;
         use uuid::Uuid;
 
         use super::env;
@@ -669,7 +670,10 @@ mod tests {
             let (authenticator, metadata) = pinned(issuer, jwks, user)
                 .expect("pinned jwks config")
                 .expect("an issuer yields a bundle");
-            assert_eq!(metadata.authorization_servers, [issuer]);
+            assert_eq!(
+                metadata.authorization_servers,
+                AuthorizationServers::Issuers(vec![issuer.to_string()])
+            );
             authenticator
         }
 

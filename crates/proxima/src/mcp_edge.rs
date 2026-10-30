@@ -126,7 +126,7 @@ impl McpEdge {
             ));
         let mut router = protected.merge(app_router);
         if let Some(metadata) = &self.resource_metadata {
-            router = router.merge(proxima_mcp_server::protected_resource_router(metadata));
+            router = router.merge(proxima_mcp_server::public_discovery_router(metadata));
         }
         guard_listener(
             router,
@@ -171,4 +171,95 @@ where
         host_allowlist,
         proxima_mcp_server::MAX_REQUEST_BODY_BYTES,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode};
+    use proxima_core::{FlavorRegistry, FlavorServices, RevalidationConfig};
+    use tower::ServiceExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn public_client_discovery_bypasses_auth_but_mcp_remains_protected() {
+        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let metadata = ResourceServerMetadata {
+            public_url: "https://proxima.example.com".to_string(),
+            authorization_servers: proxima_mcp_server::AuthorizationServers::PublicClient(
+                proxima_mcp_server::PublicClientFacade::try_new(
+                    "public-client",
+                    "https://idp.example.com/authorize",
+                    "https://idp.example.com/token",
+                )
+                .unwrap(),
+            ),
+            additional_scopes: Vec::new(),
+        };
+        let edge = McpEdge {
+            tool_host: McpToolHost::from_parts(Arc::new(registry), FlavorServices::default()),
+            edge_auth: Arc::new(McpEdgeAuth::headless()),
+            origin_allowlist: OriginAllowlist::parse(["https://proxima.example.com"]).unwrap(),
+            host_allowlist: HostAllowlist::parse(["proxima.example.com"]).unwrap(),
+            revalidation: RevalidationConfig::default(),
+            resource_metadata: Some(metadata),
+            transport: McpTransportConfig::default(),
+            rest_router: Router::new(),
+            cancel: CancellationToken::new(),
+        };
+        let app = edge.router(Router::new());
+
+        for path in [
+            "/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-authorization-server/mcp",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header("host", "proxima.example.com")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["issuer"], "https://proxima.example.com");
+        }
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/register")
+                    .header("host", "proxima.example.com")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"redirect_uris":["https://client.example/cb"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(proxima_mcp_server::MCP_PATH)
+                    .header("host", "proxima.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
 }

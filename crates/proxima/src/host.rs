@@ -287,8 +287,9 @@ pub use proxima_core::{
 pub use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
 pub use proxima_mcp_server::selfdoc::{build_instructions, how_to_markdown};
 pub use proxima_mcp_server::{
-    HostAllowlist, MAX_REQUEST_BODY_BYTES, McpAuthContext, McpTransportConfig,
-    RequestHeaderAllowlist, ResourceServerMetadata,
+    AuthorizationServers, HostAllowlist, MAX_REQUEST_BODY_BYTES, McpAuthContext,
+    McpTransportConfig, PublicClientFacade, PublicClientFacadeError, RequestHeaderAllowlist,
+    ResourceServerMetadata,
 };
 /// Stable exported Postgres `OwnerAccessPort` adapter for embedding hosts
 /// (see [`proxima_storage_pg::PgOwnerAccessResolver`]).

@@ -1,4 +1,4 @@
-//! OAuth 2.0 Protected Resource Metadata (RFC 9728) for the deployment.
+//! OAuth 2.0 protected-resource and authorization-server discovery for deployments.
 //!
 //! Two protected resources, two documents. The origin covers `/v1` and host
 //! routes; the MCP endpoint is its own resource, `{origin}/mcp`, because an
@@ -9,7 +9,14 @@
 //! answering the origin (§3.3: `resource` equals the identifier the
 //! document's URL was built from).
 
-use axum::{Router, http::HeaderValue, http::header::CONTENT_TYPE, routing::get};
+use axum::{
+    Router,
+    body::Bytes,
+    http::{HeaderValue, StatusCode, header::CONTENT_TYPE},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use url::Url;
 
 /// The origin's discovery path.
 pub const PROTECTED_RESOURCE_METADATA_PATH: &str = "/.well-known/oauth-protected-resource";
@@ -19,6 +26,21 @@ pub const MCP_PATH: &str = "/mcp";
 
 /// The MCP endpoint's discovery path (RFC 9728 §3.1 path insertion).
 pub const MCP_PROTECTED_RESOURCE_METADATA_PATH: &str = "/.well-known/oauth-protected-resource/mcp";
+
+/// RFC 8414 authorization-server metadata, served under
+/// [`AuthorizationServers::PublicClient`] only.
+pub const AUTHORIZATION_SERVER_METADATA_PATH: &str = "/.well-known/oauth-authorization-server";
+
+/// The same document at the path-inserted location some MCP clients probe.
+pub const MCP_AUTHORIZATION_SERVER_METADATA_PATH: &str =
+    "/.well-known/oauth-authorization-server/mcp";
+
+/// RFC 7591 registration, served under [`AuthorizationServers::PublicClient`]
+/// only. Outside [`MCP_PATH`], which is bearer-gated.
+pub const REGISTRATION_PATH: &str = "/oauth/register";
+
+/// What a registration grants: the authorization-code flow with refresh.
+const GRANT_TYPES: [&str; 2] = ["authorization_code", "refresh_token"];
 
 /// Scopes a client requests: `openid` for the OIDC sign-in, `offline_access`
 /// for a refresh token. A client that finds no `scopes_supported` requests
@@ -104,17 +126,20 @@ pub enum ScopeTokenError {
     Invalid { value: String },
 }
 
-/// Advertised resource-server metadata pointing MCP clients at the `IdP`.
+/// Advertised resource-server metadata pointing clients at direct issuers or a public-client facade.
+///
+/// The facade advertises this origin for discovery and registration while the
+/// upstream identity provider handles authorization and token issuance.
 ///
 /// A host whose bearer must carry more than the sign-in scopes lists them in
 /// `additional_scopes`:
 ///
 /// ```
-/// use proxima_mcp_server::{ProtectedResource, ResourceServerMetadata, ScopeToken};
+/// use proxima_mcp_server::{AuthorizationServers, ProtectedResource, ResourceServerMetadata, ScopeToken};
 ///
 /// let metadata = ResourceServerMetadata {
 ///     public_url: "https://erp.example.com".to_string(),
-///     authorization_servers: vec!["https://auth.example.com".to_string()],
+///     authorization_servers: AuthorizationServers::Issuers(vec!["https://auth.example.com".to_string()]),
 ///     additional_scopes: vec![ScopeToken::parse("urn:zitadel:iam:org:project:id:42:aud")?],
 /// };
 /// assert_eq!(
@@ -127,8 +152,8 @@ pub enum ScopeTokenError {
 pub struct ResourceServerMetadata {
     /// Public base URL (scheme+host, no trailing slash), e.g. `https://proxima.example.com`.
     pub public_url: String,
-    /// Authorization servers (the Zitadel issuer URL(s)).
-    pub authorization_servers: Vec<String>,
+    /// Direct issuer URLs or this origin's stateless public-client facade.
+    pub authorization_servers: AuthorizationServers,
     /// Scopes published after [`SCOPES_SUPPORTED`], for tokens that must
     /// carry more than the sign-in: an MCP client requests what
     /// `scopes_supported` lists. Example: a host that exchanges the bearer
@@ -173,9 +198,13 @@ impl ResourceServerMetadata {
 
     #[must_use]
     pub fn to_json(&self, which: ProtectedResource) -> serde_json::Value {
+        let authorization_servers = match &self.authorization_servers {
+            AuthorizationServers::Issuers(issuers) => issuers.clone(),
+            AuthorizationServers::PublicClient(_) => vec![self.origin().to_string()],
+        };
         serde_json::json!({
             "resource": self.resource(which),
-            "authorization_servers": self.authorization_servers,
+            "authorization_servers": authorization_servers,
             "bearer_methods_supported": ["header"],
             "scopes_supported": self.scopes_supported(),
         })
@@ -185,6 +214,109 @@ impl ResourceServerMetadata {
     pub fn www_authenticate_value(&self, which: ProtectedResource) -> String {
         format!("Bearer resource_metadata=\"{}\"", self.metadata_url(which))
     }
+}
+
+/// How clients discover the authorization server for a protected resource.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthorizationServers {
+    /// Clients go to these issuers directly.
+    Issuers(Vec<String>),
+    /// This origin fronts the upstream identity provider for one public PKCE
+    /// client: for a provider without dynamic client registration, whose
+    /// clients could otherwise not register. Every registration receives
+    /// that client's id; sign-in and tokens stay the provider's, so nothing
+    /// is stored here.
+    PublicClient(PublicClientFacade),
+}
+
+/// Upstream endpoints and client identifier used by the stateless facade.
+///
+/// The constructor is the only way in; a literal cannot skip validation:
+/// ```compile_fail,E0451
+/// let _ = proxima_mcp_server::PublicClientFacade {
+///     client_id: String::new(),
+///     authorization_endpoint: String::new(),
+///     token_endpoint: String::new(),
+/// };
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicClientFacade {
+    client_id: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+}
+
+impl PublicClientFacade {
+    /// Creates a validated facade configuration.
+    /// # Errors
+    ///
+    /// Returns an error when the client ID or either endpoint violates its invariant.
+    pub fn try_new(
+        client_id: impl Into<String>,
+        authorization_endpoint: impl AsRef<str>,
+        token_endpoint: impl AsRef<str>,
+    ) -> Result<Self, PublicClientFacadeError> {
+        let client_id = client_id.into();
+        if client_id.is_empty() || client_id.chars().any(char::is_whitespace) {
+            return Err(PublicClientFacadeError::InvalidClientId);
+        }
+        let authorization_endpoint = validate_endpoint(authorization_endpoint.as_ref())?;
+        let token_endpoint = validate_endpoint(token_endpoint.as_ref())?;
+        Ok(Self {
+            client_id,
+            authorization_endpoint,
+            token_endpoint,
+        })
+    }
+
+    #[must_use]
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+    #[must_use]
+    pub fn authorization_endpoint(&self) -> &str {
+        &self.authorization_endpoint
+    }
+    #[must_use]
+    pub fn token_endpoint(&self) -> &str {
+        &self.token_endpoint
+    }
+}
+
+fn validate_endpoint(raw: &str) -> Result<String, PublicClientFacadeError> {
+    if raw
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err(PublicClientFacadeError::InvalidEndpoint);
+    }
+    let url = Url::parse(raw).map_err(|_| PublicClientFacadeError::InvalidEndpoint)?;
+    let valid_scheme = url.scheme() == "https"
+        || (url.scheme() == "http"
+            && match url.host() {
+                Some(url::Host::Domain(host)) => host == "localhost",
+                Some(url::Host::Ipv4(address)) => address.is_loopback(),
+                Some(url::Host::Ipv6(address)) => address.is_loopback(),
+                None => false,
+            });
+    // Both endpoints are published unauthenticated: userinfo would leak a
+    // credential, and a fragment is not allowed in an OAuth endpoint.
+    let has_userinfo = !url.username().is_empty() || url.password().is_some();
+    if !valid_scheme || url.host_str().is_none() || has_userinfo || url.fragment().is_some() {
+        return Err(PublicClientFacadeError::InvalidEndpoint);
+    }
+    Ok(raw.to_owned())
+}
+
+/// Why a public-client facade could not be constructed.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum PublicClientFacadeError {
+    #[error("client id must be non-empty and contain no whitespace")]
+    InvalidClientId,
+    #[error(
+        "endpoint must be an absolute https URL, or http on loopback, without userinfo or fragment"
+    )]
+    InvalidEndpoint,
 }
 
 /// The 401 challenge for each protected resource, validated once.
@@ -214,11 +346,10 @@ impl ResourceChallenges {
     }
 }
 
-/// A router exposing only the unauthenticated discovery documents. Merge
-/// this *after* the auth layer so it bypasses bearer enforcement.
+/// Returns the complete unauthenticated discovery surface for this metadata.
 #[must_use = "merge the returned router into the public MCP HTTP surface"]
-pub fn protected_resource_router(metadata: &ResourceServerMetadata) -> Router {
-    [ProtectedResource::Origin, ProtectedResource::Mcp]
+pub fn public_discovery_router(metadata: &ResourceServerMetadata) -> Router {
+    let router = [ProtectedResource::Origin, ProtectedResource::Mcp]
         .into_iter()
         .fold(Router::new(), |router, which| {
             let body = metadata.to_json(which).to_string();
@@ -229,21 +360,241 @@ pub fn protected_resource_router(metadata: &ResourceServerMetadata) -> Router {
                     async move { ([(CONTENT_TYPE, "application/json")], body) }
                 }),
             )
-        })
+        });
+    let AuthorizationServers::PublicClient(facade) = &metadata.authorization_servers else {
+        return router;
+    };
+    let origin = metadata.origin().to_string();
+    let as_json = serde_json::json!({
+        "issuer": origin,
+        "authorization_endpoint": facade.authorization_endpoint(),
+        "token_endpoint": facade.token_endpoint(),
+        "registration_endpoint": format!("{}{REGISTRATION_PATH}", metadata.origin()),
+        "response_types_supported": ["code"],
+        "grant_types_supported": GRANT_TYPES,
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "scopes_supported": metadata.scopes_supported(),
+    })
+    .to_string();
+    let first_body = as_json.clone();
+    let second_body = as_json;
+    let facade = facade.clone();
+    router
+        .route(
+            AUTHORIZATION_SERVER_METADATA_PATH,
+            get(move || {
+                let body = first_body.clone();
+                async move { ([(CONTENT_TYPE, "application/json")], body) }
+            }),
+        )
+        .route(
+            MCP_AUTHORIZATION_SERVER_METADATA_PATH,
+            get(move || {
+                let body = second_body.clone();
+                async move { ([(CONTENT_TYPE, "application/json")], body) }
+            }),
+        )
+        // The upstream public client's redirect allowlist is the sole enforcer;
+        // duplicating it here would drift while adding no protection.
+        .route(
+            REGISTRATION_PATH,
+            post(move |body: Bytes| {
+                let facade = facade.clone();
+                async move { register(&body, &facade) }
+            }),
+        )
+}
+
+#[derive(serde::Deserialize)]
+struct RegistrationRequest {
+    redirect_uris: Option<serde_json::Value>,
+    client_name: Option<String>,
+    /// Present-but-`null` must refuse too, so this stays a raw value.
+    #[serde(default, deserialize_with = "present")]
+    token_endpoint_auth_method: Option<serde_json::Value>,
+}
+
+/// `Some(value)` for any present field, `null` included.
+fn present<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
+}
+
+/// Handles dynamic client registration without persistence.
+///
+/// Redirect hosts are deliberately not filtered here: the upstream public
+/// client's redirect allowlist is the single enforcer and this facade is stateless.
+fn register(body: &[u8], facade: &PublicClientFacade) -> Response {
+    let Ok(request) = serde_json::from_slice::<RegistrationRequest>(body) else {
+        return registration_error("invalid_client_metadata", "Request body must be JSON");
+    };
+    let Some(redirect_uris) = request.redirect_uris else {
+        return registration_error(
+            "invalid_redirect_uri",
+            "redirect_uris must be a non-empty array",
+        );
+    };
+    let Some(redirect_uris) = redirect_uris.as_array() else {
+        return registration_error(
+            "invalid_redirect_uri",
+            "redirect_uris must be a non-empty array",
+        );
+    };
+    let redirect_uris = redirect_uris
+        .iter()
+        .map(serde_json::Value::as_str)
+        .collect::<Option<Vec<_>>>();
+    let Some(redirect_uris) = redirect_uris else {
+        return registration_error("invalid_redirect_uri", "redirect_uris must contain strings");
+    };
+    if redirect_uris.is_empty() || redirect_uris.iter().any(|uri| Url::parse(uri).is_err()) {
+        return registration_error(
+            "invalid_redirect_uri",
+            "redirect_uris must contain absolute URLs",
+        );
+    }
+    if request
+        .token_endpoint_auth_method
+        .is_some_and(|method| method != "none")
+    {
+        return registration_error(
+            "invalid_client_metadata",
+            "token_endpoint_auth_method must be none",
+        );
+    }
+    let mut response = serde_json::json!({
+        "client_id": facade.client_id(),
+        "redirect_uris": redirect_uris,
+        "token_endpoint_auth_method": "none",
+        "grant_types": GRANT_TYPES,
+        "response_types": ["code"],
+    });
+    if let Some(client_name) = request.client_name {
+        response["client_name"] = serde_json::Value::String(client_name);
+    }
+    (
+        StatusCode::CREATED,
+        [(CONTENT_TYPE, "application/json")],
+        response.to_string(),
+    )
+        .into_response()
+}
+
+fn registration_error(code: &str, description: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [(CONTENT_TYPE, "application/json")],
+        serde_json::json!({"error": code, "error_description": description}).to_string(),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
 mod tests {
+    use axum::http::StatusCode;
+
     use super::{
-        ProtectedResource, ResourceChallenges, ResourceServerMetadata, ScopeToken, ScopeTokenError,
+        AuthorizationServers, ProtectedResource, PublicClientFacade, PublicClientFacadeError,
+        ResourceChallenges, ResourceServerMetadata, ScopeToken, ScopeTokenError, register,
     };
 
     fn metadata() -> ResourceServerMetadata {
         ResourceServerMetadata {
             public_url: "https://proxima.example.com".to_string(),
-            authorization_servers: vec!["https://idp.example.com".to_string()],
+            authorization_servers: AuthorizationServers::Issuers(vec![
+                "https://idp.example.com".to_string(),
+            ]),
             additional_scopes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn public_client_facade_validates_once() {
+        assert_eq!(
+            PublicClientFacade::try_new(
+                "",
+                "https://idp.example/authorize",
+                "https://idp.example/token"
+            ),
+            Err(PublicClientFacadeError::InvalidClientId)
+        );
+        assert_eq!(
+            PublicClientFacade::try_new(
+                "two words",
+                "https://idp.example/authorize",
+                "https://idp.example/token"
+            ),
+            Err(PublicClientFacadeError::InvalidClientId)
+        );
+        assert_eq!(
+            PublicClientFacade::try_new(
+                "client",
+                "http://example.test/authorize",
+                "https://idp.example/token"
+            ),
+            Err(PublicClientFacadeError::InvalidEndpoint)
+        );
+        let facade = PublicClientFacade::try_new(
+            "client",
+            "http://127.0.0.2:8080/authorize",
+            "https://idp.example/token",
+        )
+        .expect("loopback HTTP endpoint is valid");
+        assert_eq!(
+            facade.authorization_endpoint(),
+            "http://127.0.0.2:8080/authorize"
+        );
+        assert!(
+            PublicClientFacade::try_new(
+                "client",
+                "http://[::1]:8080/authorize",
+                "https://idp.example/token",
+            )
+            .is_ok()
+        );
+        for endpoint in [
+            "https://user:secret@idp.example/authorize",
+            "https://user@idp.example/authorize",
+            "https://idp.example/authorize#fragment",
+        ] {
+            assert_eq!(
+                PublicClientFacade::try_new("client", endpoint, "https://idp.example/token"),
+                Err(PublicClientFacadeError::InvalidEndpoint),
+                "{endpoint}"
+            );
+        }
+        assert_eq!(
+            PublicClientFacade::try_new(
+                "client",
+                " https://idp.example/authorize",
+                "https://idp.example/token",
+            ),
+            Err(PublicClientFacadeError::InvalidEndpoint)
+        );
+    }
+
+    #[test]
+    fn registration_rejects_null_auth_method_and_omits_missing_name() {
+        let facade = PublicClientFacade::try_new(
+            "client",
+            "https://idp.example/authorize",
+            "https://idp.example/token",
+        )
+        .expect("test facade");
+        let response = register(
+            br#"{"redirect_uris":["https://client.example/cb"],"token_endpoint_auth_method":null}"#,
+            &facade,
+        );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = register(
+            br#"{"redirect_uris":["https://client.example/cb"]}"#,
+            &facade,
+        );
+        assert_eq!(response.status(), StatusCode::CREATED);
     }
 
     /// The origin document still names the origin, so `/v1` clients see

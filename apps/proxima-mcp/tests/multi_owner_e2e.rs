@@ -16,7 +16,7 @@ use aws_lc_rs::rsa::KeySize;
 use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
-use proxima::{Proxima, ResourceServerMetadata};
+use proxima::{AuthorizationServers, Proxima, ResourceServerMetadata};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
 use proxima_core::storage_ports::{
     MembershipWritePermit, OwnerMembershipAdminPort, OwnerWritePermit,
@@ -75,7 +75,7 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.multi-owner.test".to_string(),
-            authorization_servers: vec![ISSUER.to_string()],
+            authorization_servers: AuthorizationServers::Issuers(vec![ISSUER.to_string()]),
             additional_scopes: Vec::new(),
         })
         .mcp_bind("127.0.0.1:0".parse().unwrap())
@@ -275,7 +275,7 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.multi-owner.test".to_string(),
-            authorization_servers: vec![ISSUER.to_string()],
+            authorization_servers: AuthorizationServers::Issuers(vec![ISSUER.to_string()]),
             additional_scopes: Vec::new(),
         })
         .mcp_bind("127.0.0.1:0".parse().unwrap())

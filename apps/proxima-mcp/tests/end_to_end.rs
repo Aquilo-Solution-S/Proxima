@@ -11,7 +11,7 @@ use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use boon::{Compiler, Schemas};
 use jsonwebtoken::DecodingKey;
-use proxima::{Proxima, ResourceServerMetadata};
+use proxima::{AuthorizationServers, Proxima, ResourceServerMetadata};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
 use proxima_core::{FlavorRegistry, OwnerAccessPort, OwnerId, UserId, provider_safe_tool_name};
 use proxima_mcp::ProximaMcpApp;
@@ -162,7 +162,7 @@ async fn oidc_host_auth_serves_tools_list() -> Result<(), Box<dyn std::error::Er
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.end-to-end.test".to_string(),
-            authorization_servers: vec![ISSUER.to_string()],
+            authorization_servers: AuthorizationServers::Issuers(vec![ISSUER.to_string()]),
             additional_scopes: Vec::new(),
         })
         .mcp_bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
@@ -544,7 +544,7 @@ async fn idempotency_conflict_names_existing_on_mcp_and_rest()
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.end-to-end.test".to_string(),
-            authorization_servers: vec![ISSUER.to_string()],
+            authorization_servers: AuthorizationServers::Issuers(vec![ISSUER.to_string()]),
             additional_scopes: Vec::new(),
         })
         .mcp_bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0));

@@ -21,7 +21,7 @@ use aws_lc_rs::rsa::KeySize;
 use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
-use proxima::{Proxima, ResourceServerMetadata, S3RuntimeConfig};
+use proxima::{AuthorizationServers, Proxima, ResourceServerMetadata, S3RuntimeConfig};
 use proxima_auth_oidc::{OidcAuthConfig, OidcAuthenticator, OidcSubjectMap, StaticJwksResolver};
 #[cfg(feature = "rest")]
 use proxima_core::ToolScope;
@@ -116,7 +116,7 @@ async fn oidc_e2e_discovery_public_and_core_tools_behind_bearer()
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
-            authorization_servers: vec![ISSUER.to_string()],
+            authorization_servers: AuthorizationServers::Issuers(vec![ISSUER.to_string()]),
             additional_scopes: Vec::new(),
         })
         .mcp_bind("127.0.0.1:0".parse().unwrap())
@@ -518,7 +518,7 @@ async fn oidc_e2e_rest_openapi_matches_the_mcp_scope_on_the_mounted_runtime()
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
-            authorization_servers: vec![ISSUER.to_string()],
+            authorization_servers: AuthorizationServers::Issuers(vec![ISSUER.to_string()]),
             additional_scopes: Vec::new(),
         })
         .mcp_bind("127.0.0.1:0".parse().unwrap())
@@ -909,7 +909,7 @@ async fn oidc_e2e_group_auth_host_resolved_editor_role_permits_tool_call()
         .authenticator(Arc::new(authn))
         .resource_metadata(ResourceServerMetadata {
             public_url: "https://proxima.e2e.test".to_string(),
-            authorization_servers: vec![ISSUER.to_string()],
+            authorization_servers: AuthorizationServers::Issuers(vec![ISSUER.to_string()]),
             additional_scopes: Vec::new(),
         })
         .mcp_bind("127.0.0.1:0".parse().unwrap())

@@ -1823,6 +1823,7 @@ mod tests {
     use async_trait::async_trait;
     use proxima_core::env_from_pairs as lookup;
     use proxima_core::{AuthError, AuthzContext, Credentials, GroupId, OwnerId};
+    use proxima_mcp_server::AuthorizationServers;
 
     use super::*;
 
@@ -2397,7 +2398,9 @@ mod tests {
         config.allowed_origins = vec!["http://localhost:8080".to_string()];
         config.resource_metadata = Some(ResourceServerMetadata {
             public_url: "https://proxima.example.com".to_string(),
-            authorization_servers: vec!["https://idp.test".to_string()],
+            authorization_servers: AuthorizationServers::Issuers(vec![
+                "https://idp.test".to_string(),
+            ]),
             additional_scopes: Vec::new(),
         });
 
@@ -2409,7 +2412,7 @@ mod tests {
         let mut config = base_config(Some(addr([127, 0, 0, 1])));
         config.resource_metadata = Some(ResourceServerMetadata {
             public_url: "https://proxima.example.com".to_string(),
-            authorization_servers: vec![],
+            authorization_servers: AuthorizationServers::Issuers(vec![]),
             additional_scopes: Vec::new(),
         });
         config.allowed_origins = vec![

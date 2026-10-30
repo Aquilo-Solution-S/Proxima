@@ -26,9 +26,11 @@ pub use handler::{
 };
 pub use host_tools::{MAX_HOST_INSTRUCTIONS_CHARS, McpHostTool, McpHostTools};
 pub use oauth::{
-    MCP_PATH, MCP_PROTECTED_RESOURCE_METADATA_PATH, PROTECTED_RESOURCE_METADATA_PATH,
-    ProtectedResource, ResourceServerMetadata, SCOPES_SUPPORTED, ScopeToken, ScopeTokenError,
-    protected_resource_router,
+    AUTHORIZATION_SERVER_METADATA_PATH, AuthorizationServers,
+    MCP_AUTHORIZATION_SERVER_METADATA_PATH, MCP_PATH, MCP_PROTECTED_RESOURCE_METADATA_PATH,
+    PROTECTED_RESOURCE_METADATA_PATH, ProtectedResource, PublicClientFacade,
+    PublicClientFacadeError, REGISTRATION_PATH, ResourceServerMetadata, SCOPES_SUPPORTED,
+    ScopeToken, ScopeTokenError, public_discovery_router,
 };
 pub use request_scope::RequestHeaderAllowlist;
 pub use security::{
