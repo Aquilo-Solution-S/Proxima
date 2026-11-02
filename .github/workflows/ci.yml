@@ -159,7 +159,7 @@ jobs:
       - name: install git-cliff
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.release == 'true' }}
         # taiki-e/install-action@v2; same generator as the tag workflow.
-        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68
         with:
           tool: git-cliff@2.13.1
       - name: release-note configuration
@@ -189,7 +189,7 @@ jobs:
       - name: set up Lean/Lake
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.all == 'true' || needs.changes.outputs.lean == 'true' }}
         # leanprover/lean-action@v1
-        uses: leanprover/lean-action@24581d74d674803a25a81b10b059c5c0cdd344c6
+        uses: leanprover/lean-action@fe408643ea7367d8c0404a8be3975bb145f5fb64
         with:
           lake-package-directory: docs/lean
           build: false
@@ -364,7 +364,7 @@ jobs:
         # taiki-e/install-action@v2. The tool is an input, not the `@nextest`
         # tag: a pinned commit names no tool, and a dependabot bump of the pin
         # then installs nothing.
-        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68
         with:
           tool: nextest
       # All features cover REST. The shipped substrate host also runs its
@@ -483,7 +483,7 @@ jobs:
           test "$(psql "$PROXIMA_TEST_PGBOUNCER_URL" -Atc 'SELECT 1')" = 1
       - name: install nextest
         # taiki-e/install-action@v2
-        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91
+        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68
         with:
           tool: nextest
       - name: test through pgbouncer
