@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
 use pgvector::{HalfVector, Vector};
-use proxima_core::{EmbeddingDim, EmbeddingSpace, StorageError};
+use proxiima_core::{EmbeddingDim, EmbeddingSpace, StorageError};
 use sqlx::encode::IsNull;
 use sqlx::error::BoxDynError;
 use sqlx::postgres::{PgArgumentBuffer, PgTypeInfo};
@@ -43,7 +43,7 @@ pub(crate) fn set_hnsw_search_sql(tuning: &PgTuning) -> String {
 }
 
 /// One width lane's fixed SQL, for a statement that aliases
-/// `proxima_core.embeddings` as `emb`.
+/// `proxiima_core.embeddings` as `emb`.
 ///
 /// Migration 0015 indexes each supported width with a partial expression
 /// index, `(vec::vector(N)) WHERE dim = N` (`halfvec` above 2000 dims). The
@@ -205,7 +205,11 @@ mod tests {
                 "vector"
             };
             let index = format!(
-                "CREATE INDEX embeddings_hnsw_d{w} ON proxima_core.embeddings USING hnsw (((vec)::public.{kind}({w})) public.{kind}_cosine_ops) WHERE (dim = {w});",
+                "CREATE INDEX embeddings_hnsw_d{w} ON {schema}.embeddings USING hnsw (((vec)::public.{kind}({w})) public.{kind}_cosine_ops) WHERE (dim = {w});",
+                schema = format_args!(
+                    "{}core",
+                    crate::rename_bootstrap::historical_namespace_prefix()
+                ),
                 w = dim.width(),
             );
             assert!(migration.contains(&index), "missing lane index: {index}");

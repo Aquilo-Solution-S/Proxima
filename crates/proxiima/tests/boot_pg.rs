@@ -1,0 +1,799 @@
+use std::borrow::Cow;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use proxiima::spiice::SpiiceBundle;
+use proxiima::{
+    AccessError, AppInfo, Feature, FeatureState, NamedMigrator, OwnerDropProofPort,
+    OwnerEraseOutcome, OwnerEraseRefusal, PayloadKind, Proxiima, ProxiimaError, SpiiceApp,
+    company_owner, run_core_and_spiice_migrations,
+};
+use proxiima_core::llm::{EmbeddingClient, LlmError};
+use proxiima_core::test_fixtures::ConstantEmbedding;
+use proxiima_core::{
+    AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FactPayload,
+    MemoryId, OwnerId, Role, SchemaId, SchemaVersion, ServedSurface, SpiiceRegistry,
+    SpiiceRegistryError, UserId,
+};
+use proxiima_pg_testkit::{
+    admin_url, create_db, db_url, drop_db, quoted_ident, split_role_urls, unique_db_name,
+};
+use proxiima_storage_pg::PgSidecarKey;
+use sqlx::migrate::{Migration, MigrationType, Migrator};
+use sqlx::{Connection, SqlSafeStr};
+use tokio::time::{Duration, Instant};
+use uuid::Uuid;
+
+struct GoalTestApp;
+
+fn host_context(owner: OwnerId, path: AuthPath) -> AuthzContext {
+    proxiima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
+        UserId::new(Uuid::now_v7()),
+        [(owner, Role::admin())],
+        path,
+    ))
+    .narrowed_to_owner(owner)
+    .expect("trusted host resolved this exact owner")
+}
+
+#[derive(Debug)]
+struct TestAuthenticator {
+    subject: UserId,
+    owner: OwnerId,
+}
+
+#[async_trait]
+impl Authenticator for TestAuthenticator {
+    async fn authenticate(&self, _credentials: &Credentials) -> Result<AuthzContext, AuthError> {
+        Ok(AuthzContext::for_subject_with_role(
+            self.subject,
+            [(self.owner, Role::admin())],
+            AuthPath::HostBearer,
+        ))
+    }
+}
+
+fn drain_note(title: &str) -> AgentNoteV1 {
+    AgentNoteV1 {
+        note_id: Uuid::now_v7(),
+        title: title.into(),
+        body: title.into(),
+        tags: Vec::new(),
+        idempotency_key: Some(title.into()),
+    }
+}
+
+impl SpiiceBundle for GoalTestApp {
+    fn register(_registry: &mut SpiiceRegistry) -> Result<(), SpiiceRegistryError> {
+        Ok(())
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        Vec::new()
+    }
+}
+
+async fn count_fact_embeddings(
+    pool: &sqlx::PgPool,
+    memory_id: MemoryId,
+    model_id: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxiima_core.embeddings
+          WHERE entity_id = $1
+            AND model_id = $2",
+    )
+    .bind(memory_id.into_inner())
+    .bind(model_id)
+    .fetch_one(pool)
+    .await
+}
+
+async fn count_embedding_jobs(
+    pool: &sqlx::PgPool,
+    memory_id: MemoryId,
+    model_id: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxiima_core.embedding_jobs
+          WHERE entity_id = $1
+            AND model_id = $2",
+    )
+    .bind(memory_id.into_inner())
+    .bind(model_id)
+    .fetch_one(pool)
+    .await
+}
+
+async fn wait_for_embedding_drain(
+    pool: &sqlx::PgPool,
+    memory_id: MemoryId,
+    model_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let jobs = count_embedding_jobs(pool, memory_id, model_id).await?;
+        let embeddings = count_fact_embeddings(pool, memory_id, model_id).await?;
+        if jobs == 0 && embeddings == 1 {
+            return Ok(());
+        }
+        assert!(
+            Instant::now() < deadline,
+            "embedding worker did not drain job before deadline: jobs={jobs} embeddings={embeddings}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+impl SpiiceApp for GoalTestApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "goal-test",
+            title: "Goal Test",
+            version: "1",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FixedDimEmbedding {
+    model_id: String,
+    dim: usize,
+}
+
+impl FixedDimEmbedding {
+    fn new(model_id: impl Into<String>, dim: usize) -> Self {
+        Self {
+            model_id: model_id.into(),
+            dim,
+        }
+    }
+}
+
+#[async_trait]
+impl EmbeddingClient for FixedDimEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Ok(vec![0.0; self.dim])
+    }
+
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+}
+
+#[tokio::test]
+async fn unknown_pre_reset_ledger_fails_closed_in_migration_facade() {
+    let db_name = unique_db_name("proxiima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
+            &db_url,
+            proxiima_storage_pg::PgPoolConfig::from_env()?,
+            proxiima_storage_pg::PgTuning::from_env()?,
+        )
+        .await?;
+        sqlx::query("CREATE SCHEMA proxiima_core")
+            .execute(&pg.clone_pool_for_backend())
+            .await?;
+        sqlx::query(
+            "CREATE TABLE public._sqlx_migrations (
+                 version bigint PRIMARY KEY,
+                 description text NOT NULL,
+                 installed_on timestamptz NOT NULL DEFAULT now(),
+                 success boolean NOT NULL,
+                 checksum bytea NOT NULL,
+                 execution_time bigint NOT NULL
+             )",
+        )
+        .execute(&pg.clone_pool_for_backend())
+        .await?;
+        sqlx::query(
+            "INSERT INTO public._sqlx_migrations
+                 (version, description, success, checksum, execution_time)
+             VALUES (1, 'init', true, decode('00', 'hex'), 0)",
+        )
+        .execute(&pg.clone_pool_for_backend())
+        .await?;
+
+        let err = run_core_and_spiice_migrations(
+            &pg,
+            Vec::<NamedMigrator>::new(),
+            &proxiima::PgSidecarRegistryFrozen::default(),
+        )
+        .await
+        .expect_err("stale ledger must fail closed through facade");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("reset"),
+            "error must explain reset, got: {msg}",
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("migration facade fail-closed test failed");
+}
+
+#[tokio::test]
+async fn unknown_pre_reset_ledger_surfaces_typed_reset_error_through_boot() {
+    let db_name = unique_db_name("proxiima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
+            &db_url,
+            proxiima_storage_pg::PgPoolConfig::from_env()?,
+            proxiima_storage_pg::PgTuning::from_env()?,
+        )
+        .await?;
+        sqlx::query("CREATE SCHEMA proxiima_core")
+            .execute(&pg.clone_pool_for_backend())
+            .await?;
+        sqlx::query(
+            "CREATE TABLE public._sqlx_migrations (
+                 version bigint PRIMARY KEY,
+                 description text NOT NULL,
+                 installed_on timestamptz NOT NULL DEFAULT now(),
+                 success boolean NOT NULL,
+                 checksum bytea NOT NULL,
+                 execution_time bigint NOT NULL
+             )",
+        )
+        .execute(&pg.clone_pool_for_backend())
+        .await?;
+        sqlx::query(
+            "INSERT INTO public._sqlx_migrations
+                 (version, description, success, checksum, execution_time)
+             VALUES (1, 'init', true, decode('00', 'hex'), 0)",
+        )
+        .execute(&pg.clone_pool_for_backend())
+        .await?;
+        pg.clone_pool_for_backend().close().await;
+        drop(pg);
+
+        let owner = company_owner(Uuid::now_v7());
+
+        let err = Proxiima::<GoalTestApp>::app()
+            .database_url(db_url.clone())
+            .store_number(0)
+            .platform_database_url(db_url.clone())
+            .owner(owner)
+            .served_surface(ServedSurface::All)
+            .build()
+            .await
+            .expect_err("stale ledger must fail closed through build()");
+
+        match err {
+            ProxiimaError::SchemaResetRequired { details } => {
+                assert!(
+                    details.contains("reinstall") && details.contains("reset"),
+                    "reset details should name the schema mismatch, got: {details}"
+                );
+            }
+            other => {
+                panic!(
+                    "expected ProxiimaError::SchemaResetRequired, build() collapsed it to: {other:?}"
+                )
+            }
+        }
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("typed reset error propagation test failed");
+}
+
+#[tokio::test]
+async fn facade_run_with_custom_auth_needs_no_separate_owner_access() {
+    let db_name = unique_db_name("proxiima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let subject = UserId::new(Uuid::now_v7());
+        let running = Proxiima::<GoalTestApp>::app()
+            .database_url(runtime_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .authenticator(Arc::new(TestAuthenticator { subject, owner }))
+            .served_surface(ServedSurface::All)
+            .mcp_bind("127.0.0.1:0".parse()?)
+            .run()
+            .await?;
+
+        let addr = running.mcp_addr().expect("mcp bound");
+        assert!(addr.ip().is_loopback());
+        let expected_url = format!("http://{addr}/mcp");
+        assert_eq!(
+            running.host().engine().mcp_url().as_deref(),
+            Some(expected_url.as_str())
+        );
+        running.shutdown().await;
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("facade run integration test failed");
+}
+
+/// The host's proof that a person was dropped: yes for exactly one person and
+/// drop event, so a test sees both reach the port.
+#[derive(Debug)]
+struct DroppedPerson {
+    user: UserId,
+    drop_event_id: &'static str,
+}
+
+#[async_trait]
+impl OwnerDropProofPort for DroppedPerson {
+    async fn verify_personal_owner_dropped(
+        &self,
+        user_id: UserId,
+        drop_event_id: &str,
+    ) -> Result<bool, AccessError> {
+        Ok(user_id == self.user && drop_event_id == self.drop_event_id)
+    }
+}
+
+fn refusal(outcome: &OwnerEraseOutcome) -> Option<&OwnerEraseRefusal> {
+    match outcome {
+        OwnerEraseOutcome::Refused { reason, .. } => Some(reason),
+        _ => None,
+    }
+}
+
+/// A host installs its drop proof through the facade, and a personal erase
+/// asks it: with none installed the erase refuses, with one it erases only
+/// the drop the host proves.
+#[tokio::test]
+async fn facade_owner_drop_proof_gates_personal_erase() {
+    let db_name = unique_db_name("proxiima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let user = UserId::new(Uuid::now_v7());
+        let owner = OwnerId::from(user);
+        let system = AuthzContext::for_subject(UserId::new(Uuid::now_v7()), AuthPath::System);
+
+        let without = Proxiima::<GoalTestApp>::app()
+            .database_url(runtime_url.clone())
+            .store_number(0)
+            .platform_database_url(platform_url.clone())
+            .owner(owner)
+            .served_surface(ServedSurface::All)
+            .build()
+            .await?;
+        let payload = drain_note("a dropped person's fact");
+        without
+            .host()
+            .engine()
+            .ingest_fact(
+                &proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+                    &owner,
+                    AuthPath::HostBearer,
+                )),
+                proxiima::FactWrite::new(owner, "test/drop-proof", &payload),
+            )
+            .await?;
+        let outcome = without
+            .host()
+            .engine()
+            .erase_personal_owner(&system, user, "drop-1".into())
+            .await?;
+        assert_eq!(
+            refusal(&outcome),
+            Some(&OwnerEraseRefusal::DropProofPortUnavailable),
+            "{outcome:?}"
+        );
+        without.shutdown().await;
+
+        let with = Proxiima::<GoalTestApp>::app()
+            .database_url(runtime_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .served_surface(ServedSurface::All)
+            .owner_drop_proof(Arc::new(DroppedPerson {
+                user,
+                drop_event_id: "drop-1",
+            }))
+            .build()
+            .await?;
+        let engine = with.host().engine();
+        let outcome = engine
+            .erase_personal_owner(&system, user, "drop-2".into())
+            .await?;
+        assert_eq!(
+            refusal(&outcome),
+            Some(&OwnerEraseRefusal::PersonalDropNotVerified),
+            "{outcome:?}"
+        );
+        let outcome = engine
+            .erase_personal_owner(&system, user, "drop-1".into())
+            .await?;
+        let OwnerEraseOutcome::Completed { counts, .. } = outcome else {
+            panic!("the proven drop erases: {outcome:?}");
+        };
+        assert!(
+            counts.iter().any(|(_, erased)| erased > 0),
+            "the person's fact is erased: {counts:?}"
+        );
+        with.shutdown().await;
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("facade owner drop proof integration test failed");
+}
+
+/// #389: a host that sets an embedding client and nothing else gets its
+/// embeddings drained — the runtime starts the worker, no extra call.
+#[tokio::test]
+async fn facade_boot_exposes_pg_sidecars_and_drains_embedding_jobs_with_no_extra_call() {
+    let db_name = unique_db_name("proxiima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let model_id = "facade-drain-embed";
+        let inspection = sqlx::PgPool::connect(&db_url(&db_name)).await?;
+        let built = Proxiima::<GoalTestApp>::app()
+            .database_url(runtime_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .served_surface(ServedSurface::All)
+            .embed_client(Arc::new(ConstantEmbedding::prefixed(
+                model_id,
+                &[0.25, 0.5, 0.75],
+            )))
+            // The worker's first pass finds the queue empty and idles one
+            // interval; the default (5 s) would race the 5 s drain deadline.
+            .embedding_runtime_policy(proxiima::EmbeddingRuntimePolicy::new(
+                Duration::from_mins(2),
+                32,
+                Duration::from_secs(1),
+                Duration::from_mins(15),
+            )?)
+            .build()
+            .await?;
+        let note_key = PgSidecarKey::new(
+            PayloadKind::Fact,
+            SchemaId::new(proxiima_core::AgentNoteV1::SCHEMA_ID.into()),
+            SchemaVersion::new(proxiima_core::AgentNoteV1::SCHEMA_VERSION),
+        );
+        assert!(
+            built.host().pg_sidecars_for_host().contains(&note_key),
+            "boot result exposes the frozen core PG sidecar registry"
+        );
+        assert_eq!(
+            built.boot_report().get(Feature::EmbeddingWorker).state,
+            FeatureState::Started,
+            "an embedding client is the whole switch"
+        );
+
+        let payload = drain_note("facade worker drain fact");
+        let authz = host_context(owner, AuthPath::HostBearer);
+        let outcome = built
+            .host()
+            .engine()
+            .ingest_fact(
+                &authz,
+                proxiima::FactWrite::new(owner, "test/facade-worker", &payload),
+            )
+            .await?;
+        wait_for_embedding_drain(&inspection, outcome.memory_id, model_id).await?;
+
+        tokio::time::timeout(Duration::from_secs(5), built.shutdown()).await?;
+        inspection.close().await;
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("facade boot sidecar/worker integration test failed");
+}
+
+#[tokio::test]
+async fn boot_rejects_embedding_client_with_unsupported_width() {
+    let db_name = unique_db_name("proxiima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let app = || {
+            Proxiima::<GoalTestApp>::app()
+                .database_url(runtime_url.clone())
+                .store_number(0)
+                .platform_database_url(platform_url.clone())
+                .owner(owner)
+                .served_surface(ServedSurface::All)
+        };
+
+        // A width no lane indexes must fail fast at boot with Config,
+        // before any job is claimed and then refused at insert.
+        let err = app()
+            .embed_client(Arc::new(FixedDimEmbedding::new("unlaned", 512)))
+            .build()
+            .await
+            .expect_err("an unsupported embedding width must be rejected at boot");
+        match err {
+            ProxiimaError::Config(msg) => {
+                assert!(
+                    msg.contains("512"),
+                    "message names the offending width: {msg}"
+                );
+                assert!(
+                    msg.contains("not supported"),
+                    "message explains the width is unsupported: {msg}"
+                );
+            }
+            other => panic!("expected ProxiimaError::Config, got {other:?}"),
+        }
+
+        // One client and a router are two answers to one question.
+        let lane_768 = proxiima_core::llm::BoundEmbeddingClient::bind(Arc::new(
+            FixedDimEmbedding::new("lane-768", 768),
+        ))?;
+        let err = app()
+            .embed_client(Arc::new(FixedDimEmbedding::new("lane-768", 768)))
+            .embedding_router(Arc::new(proxiima_core::llm::SingleClientRouter::new(
+                lane_768,
+            )))
+            .build()
+            .await
+            .expect_err("a client and a router together must be rejected at boot");
+        assert!(
+            matches!(&err, ProxiimaError::Config(msg) if msg.contains("not both")),
+            "expected the either-or config error, got {err:?}"
+        );
+
+        // A supported width other than the 1024 default boots.
+        let booted = app()
+            .embed_client(Arc::new(FixedDimEmbedding::new("lane-768", 768)))
+            .build()
+            .await?;
+        let route = booted.host().engine().embedding_route(&owner).await?;
+        assert_eq!(
+            route.current_client().map(|client| client.space().dim()),
+            Some(proxiima_core::llm::EmbeddingDim::D768),
+            "a supported-width client routes every Owner"
+        );
+        booted.shutdown().await;
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("embedding width guard test failed");
+}
+
+fn role_ddl_migrator(role_name: &str) -> Migrator {
+    Migrator {
+        migrations: Cow::Owned(vec![Migration::new(
+            20_990_101_000_001,
+            Cow::Borrowed("role ddl on a shared catalog"),
+            MigrationType::Simple,
+            // SQL-POLICY: fixed-fragment — {role_name} is minted by the calling
+            // test from Uuid::now_v7().simple() under a fixed [a-z_] prefix, so the
+            // spliced identifier is [a-z0-9_] only; no caller value reaches it.
+            sqlx::AssertSqlSafe(format!("ALTER ROLE {role_name} SET lock_timeout = '32s';"))
+                .into_sql_str(),
+            false,
+        )]),
+        ..Migrator::DEFAULT
+    }
+}
+
+/// Boot-migrate one database while another session on a *different database*
+/// of the same cluster holds an uncommitted write to the same role's shared
+/// catalogs, and assert the facade rides out the lost race.
+///
+/// With `role_settings_pre_seeded` the role already has a committed
+/// `pg_db_role_setting` row, so holder and migration both UPDATE the shared
+/// tuple and the loser gets `tuple concurrently updated` (XX000). Without it
+/// both INSERT the missing row and the loser gets a `23505` unique violation
+/// on the catalog's index. Both shapes are deterministic: the blocked
+/// statement fails the moment the holder commits.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture covers two catalog race shapes with explicit setup and evidence"
+)]
+async fn assert_role_ddl_contention_retries_to_green(
+    role_settings_pre_seeded: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db_name = unique_db_name("proxiima_test");
+    create_db(&db_name).await.expect("PG required for tests");
+    let role_name = format!("proxiima_test_role_{}", Uuid::now_v7().simple());
+    let role_password = "proxiima_test_role_password";
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let mut admin = sqlx::PgConnection::connect(&admin_url()).await?;
+        // SQL-POLICY: fixed-fragment — {role_name} is minted by this test from
+        // Uuid::now_v7().simple() under a fixed [a-z_] prefix, so the spliced
+        // identifier is [a-z0-9_] only and no caller value reaches the statement.
+        // SQL-POLICY: fixed-fragment — {role_name} is the test-minted closed
+        // identifier above and {role_password} is a fixed fixture secret.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE ROLE {role_name} LOGIN PASSWORD '{role_password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS"
+        )))
+            .execute(&mut admin)
+            .await?;
+        // SQL-POLICY: fixed-fragment — both identifiers are quoted; db_name is
+        // generated by unique_db_name and role_name is the closed fixture role.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "GRANT CREATE ON DATABASE {} TO {}",
+            quoted_ident(&db_name),
+            quoted_ident(&role_name),
+        )))
+        .execute(&mut admin)
+        .await?;
+        let mut target_admin = sqlx::PgConnection::connect(&db_url(&db_name)).await?;
+        sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
+            .execute(&mut target_admin)
+            .await?;
+        // SQL-POLICY: fixed-fragment — role_name is the generated, quoted
+        // fixture identifier; the target schema is the literal public schema.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "GRANT CREATE ON SCHEMA public TO {role}; GRANT proxiima_search TO {role} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE",
+            role = quoted_ident(&role_name),
+        )))
+        .execute(&mut target_admin)
+        .await?;
+        target_admin.close().await?;
+        if role_settings_pre_seeded {
+            // SQL-POLICY: fixed-fragment — same test-minted {role_name} as above.
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER ROLE {role_name} SET idle_in_transaction_session_timeout = '30s'"
+            )))
+            .execute(&mut admin)
+            .await?;
+        }
+
+        // Hold an uncommitted write to the role's shared-catalog row from the
+        // admin database. The migrating boot below runs against a different
+        // database, so no database-scoped lock protects it from this.
+        let mut tx = admin.begin().await?;
+        // SQL-POLICY: fixed-fragment — same test-minted {role_name} as above.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "ALTER ROLE {role_name} SET statement_timeout = '31s'"
+        )))
+        .execute(tx.as_mut())
+        .await?;
+
+        let fixture_admin_url = admin_url();
+        let authority = fixture_admin_url
+            .split_once("://")
+            .and_then(|(_, rest)| rest.split_once('@'))
+            .map(|(_, authority)| authority.split('/').next().unwrap_or(authority))
+            .ok_or("test admin URL must contain an authority")?;
+        let role_url = format!("postgres://{role_name}:{role_password}@{authority}/{db_name}");
+        let pg = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
+            &role_url,
+            proxiima_storage_pg::PgPoolConfig::from_env()?,
+            proxiima_storage_pg::PgTuning::from_env()?,
+        )
+        .await?;
+        let migrator = role_ddl_migrator(&role_name);
+        let run = tokio::spawn(async move {
+            run_core_and_spiice_migrations(&pg, [NamedMigrator::new("role-ddl-spiice", migrator)], &proxiima::PgSidecarRegistryFrozen::default())
+                .await
+        });
+
+        // Wait until the spiice's ALTER ROLE is blocked on the held row, then
+        // commit: Postgres answers the blocked statement with the lost-race
+        // error the moment the holder's write commits. The migration
+        // connection carries a 5s lock_timeout, so the commit must come
+        // promptly once blockage is visible.
+        let mut poll = sqlx::PgConnection::connect(&admin_url()).await?;
+        let deadline = Instant::now() + Duration::from_mins(1);
+        loop {
+            if run.is_finished() {
+                let outcome = run.await.expect("migration task must not panic");
+                panic!("migration finished before contention became visible: {outcome:?}");
+            }
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1 FROM pg_stat_activity
+                     WHERE state = 'active'
+                       AND wait_event_type = 'Lock'
+                       AND query LIKE 'ALTER ROLE%32s%'
+                 )",
+            )
+            .fetch_one(&mut poll)
+            .await?;
+            if blocked {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "migration never blocked on the held role row"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tx.commit().await?;
+
+        let report = run.await.expect("migration task must not panic")?;
+        assert_eq!(report.sources, ["proxiima-core", "role-ddl-spiice"]);
+
+        // The retried migration's effect reached the shared catalog.
+        let setconfig: Option<Vec<String>> = sqlx::query_scalar(
+            "SELECT s.setconfig
+             FROM pg_db_role_setting s
+             JOIN pg_roles r ON r.oid = s.setrole
+             WHERE r.rolname = $1 AND s.setdatabase = 0",
+        )
+        .bind(&role_name)
+        .fetch_optional(&mut admin)
+        .await?;
+        let setconfig = setconfig.unwrap_or_default();
+        assert!(
+            setconfig.iter().any(|entry| entry == "lock_timeout=32s"),
+            "role setting from the retried migration missing: {setconfig:?}"
+        );
+        Ok(())
+    }
+    .await;
+
+    let database_cleanup = drop_db(&db_name).await;
+    let role_cleanup = async {
+        let mut cleanup = sqlx::PgConnection::connect(&admin_url()).await?;
+        // SQL-POLICY: fixed-fragment — role_name is minted by this test and
+        // contains only the closed [a-z0-9_] identifier alphabet.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP ROLE IF EXISTS {role_name}"
+        )))
+        .execute(&mut cleanup)
+        .await?;
+        let still_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)")
+                .bind(&role_name)
+                .fetch_one(&mut cleanup)
+                .await?;
+        cleanup.close().await?;
+        if still_exists {
+            return Err(sqlx::Error::Protocol(
+                "contention fixture role survived cleanup".into(),
+            ));
+        }
+        Ok::<(), sqlx::Error>(())
+    }
+    .await;
+    match (result, database_cleanup, role_cleanup) {
+        (Err(error), _, _) => Err(error),
+        (Ok(()), Err(error), _) | (Ok(()), Ok(()), Err(error)) => Err(error.into()),
+        (Ok(()), Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+#[tokio::test]
+async fn shared_catalog_role_ddl_insert_contention_retries_to_green() {
+    assert_role_ddl_contention_retries_to_green(false)
+        .await
+        .expect("insert-shape contention retry test failed");
+}
+
+#[tokio::test]
+async fn shared_catalog_role_ddl_update_contention_retries_to_green() {
+    assert_role_ddl_contention_retries_to_green(true)
+        .await
+        .expect("update-shape contention retry test failed");
+}

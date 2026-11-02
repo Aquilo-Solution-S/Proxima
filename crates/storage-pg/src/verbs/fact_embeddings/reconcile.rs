@@ -1,4 +1,4 @@
-use proxima_core::{OwnerId, StorageError};
+use proxiima_core::{OwnerId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
@@ -6,7 +6,7 @@ use crate::sidecars::int_to_u64;
 
 use super::{ensure_nonnegative_limit, reclaim_stale_embedding_jobs};
 
-pub use proxima_core::{
+pub use proxiima_core::{
     EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
 };
 
@@ -23,12 +23,12 @@ const RECONCILE_PAGE: i64 = 2_000;
 const RECONCILE_EMBEDDINGS_SQL: &str = "
 WITH page AS MATERIALIZED (
      SELECT m.t, m.handle, m.owner_id
-       FROM proxima_core.memory m /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+       FROM proxiima_core.memory m /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
       WHERE m.forgotten_at IS NULL
         AND ($8::uuid IS NULL OR m.t > $8)
         AND ($7::uuid[] IS NULL OR m.owner_id = ANY($7::uuid[]))
         AND ($3::text <> 'since'
-             OR proxima_core.memory_created_at(m.t) >= $4)
+             OR proxiima_core.memory_created_at(m.t) >= $4)
       ORDER BY m.t ASC
       LIMIT $9
  ),
@@ -39,13 +39,13 @@ WITH page AS MATERIALIZED (
        FROM page p
       CROSS JOIN LATERAL (
             SELECT mh.schema_id
-              FROM proxima_core.memory_head mh
+              FROM proxiima_core.memory_head mh
              WHERE mh.handle = p.handle AND mh.t = p.t
              LIMIT 1
        ) mh
        LEFT JOIN LATERAL (
             SELECT eh.embedding_version
-              FROM proxima_core.embedding_heads eh
+              FROM proxiima_core.embedding_heads eh
              WHERE eh.entity_id = p.t
                AND eh.model_id = $1
                AND eh.dim = $6
@@ -64,7 +64,7 @@ WITH page AS MATERIALIZED (
         )
         AND NOT EXISTS (
             SELECT 1
-              FROM proxima_core.embedding_jobs j
+              FROM proxiima_core.embedding_jobs j
              WHERE j.owner_id = s.owner_id
                AND j.entity_id = s.memory_id
                AND j.model_id = $1
@@ -75,13 +75,13 @@ WITH page AS MATERIALIZED (
  limited AS MATERIALIZED (
      SELECT e.*
        FROM eligible e
-       JOIN proxima_core.memory m ON m.t = e.memory_id AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+       JOIN proxiima_core.memory m ON m.t = e.memory_id AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
       ORDER BY e.memory_id ASC
       LIMIT $2
       FOR UPDATE OF m
  ),
  inserted AS (
-     INSERT INTO proxima_core.embedding_jobs
+     INSERT INTO proxiima_core.embedding_jobs
          (entity_id, model_id, dim, owner_id)
      SELECT memory_id, $1, $6, owner_id
        FROM limited
@@ -113,7 +113,7 @@ pub fn reconcile_embeddings_sql_for_tests() -> &'static str {
 /// only `options.owners` when the engine names the Owners routed to
 /// `options.space` — skips rows by
 /// scope-specific embedding coverage and target-space durable jobs, and
-/// enqueues via `proxima_core.embedding_jobs`. A row that already holds a
+/// enqueues via `proxiima_core.embedding_jobs`. A row that already holds a
 /// `failed` job (retryable cause, per `fail_embedding_job`) is requeued —
 /// status back to `pending`, `last_error` cleared — so reconcile is the
 /// operator/startup reset that lifts a Fact out of the retry dead-end.
@@ -235,7 +235,7 @@ async fn reconcile_page(
 
 const EMBEDDING_OWNER_PAGE_SQL: &str = "
 SELECT owner_id
-  FROM proxima_core.owners
+  FROM proxiima_core.owners
  WHERE ($1::uuid IS NULL OR owner_id > $1)
  ORDER BY owner_id ASC
  LIMIT $2";

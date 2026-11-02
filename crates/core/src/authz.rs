@@ -173,7 +173,7 @@ impl ToolScope {
 /// caller's exact [`ToolScope`], including for resources and owner reads.
 ///
 /// ```compile_fail,E0308
-/// use proxima_core::{ServedSurface, ToolScope};
+/// use proxiima_core::{ServedSurface, ToolScope};
 /// let _: ServedSurface = ToolScope::All;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,7 +315,7 @@ impl SystemAuthorityBinding {
 
 /// Uncloneable boot witness used only while composing the one delegated
 /// authority service and the worker-facing backend services for an Engine.
-/// It is never published through `FlavorServices` or `FlavorWorkerContext`.
+/// It is never published through `SpiiceServices` or `SpiiceWorkerContext`.
 #[doc(hidden)]
 pub struct DelegationRuntimeAuthority {
     binding: DelegationRuntimeBinding,
@@ -411,14 +411,14 @@ pub struct InvokingTool {
 /// deadline before extracting the exact-owner, role-ceiling context.
 ///
 /// ```compile_fail
-/// # use proxima_core::DelegatedPhase;
+/// # use proxiima_core::DelegatedPhase;
 /// fn duplicate(phase: DelegatedPhase) {
 ///     let _copy = phase.clone();
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// # use proxima_core::{AuthzContext, DelegatedPhase};
+/// # use proxiima_core::{AuthzContext, DelegatedPhase};
 /// fn extract(phase: &DelegatedPhase) -> &AuthzContext {
 ///     phase.authz()
 /// }
@@ -684,7 +684,7 @@ impl AuthzContext {
     /// deployment binds one to this principal.
     ///
     /// This is the only trustworthy answer to "which model is calling".
-    /// Flavors may build policy on it; the caller-supplied `model_id` label
+    /// Spiices may build policy on it; the caller-supplied `model_id` label
     /// is a claim, not a credential.
     #[must_use]
     pub fn trusted_model_id(&self) -> Option<&str> {
@@ -1057,7 +1057,7 @@ impl AuthzContext {
 
     /// Name the owner a request that selects none acts for — the MCP edge
     /// uses it when a client sends neither `Mcp-Session-Id` nor
-    /// `X-Proxima-Owner`, as a native OAuth client does.
+    /// `X-Proxiima-Owner`, as a native OAuth client does.
     ///
     /// **For authenticators only**, and only for an owner this context
     /// already carries a role for: the default selects, it never grants.

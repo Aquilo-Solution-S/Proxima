@@ -1,6 +1,6 @@
 //! OpenAI-compatible HTTP `EmbeddingClient` impls — the reference
 //! embedding adapter a host injects into the substrate (see docs/configuration.md).
-//! Proxima ships no embedding client of its own; this crate is the
+//! Proxiima ships no embedding client of its own; this crate is the
 //! canonical one.
 //!
 //! The surface is intentionally minimal. No retries; failures bubble up
@@ -11,8 +11,8 @@
 
 use std::time::Duration;
 
-use proxima_core::llm::LlmError;
-use proxima_core::{EndpointUrlPolicy, PlaintextHosts, validate_endpoint_url_for_hosts};
+use proxiima_core::llm::LlmError;
+use proxiima_core::{EndpointUrlPolicy, PlaintextHosts, validate_endpoint_url_for_hosts};
 
 pub mod openai_compat;
 
@@ -48,7 +48,7 @@ pub(crate) fn embedding_endpoint(
         let permitted = if plaintext_hosts.is_empty() {
             "loopback hosts"
         } else {
-            "loopback hosts and hosts named in PROXIMA_PLAINTEXT_HOSTS"
+            "loopback hosts and hosts named in PROXIIMA_PLAINTEXT_HOSTS"
         };
         LlmError::Internal(format!(
             "invalid or insecure embedding base_url: {error}; plaintext http is only \

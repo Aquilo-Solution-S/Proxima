@@ -1,42 +1,42 @@
 //! Postgres acceptance coverage for authorized Fact reference persistence.
 //!
 //! The fixture intentionally owns its schema, sidecar, and registration. That
-//! keeps this target independent from any product flavor while exercising the
+//! keeps this target independent from any product spiice while exercising the
 //! same engine, write-session, and Postgres paths used by a composed host.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::MemoryKind;
-use proxima_core::flavor::{
-    CounterRule, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule,
-    KeyShape, ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
-    TransferRule,
+use proxiima_core::MemoryKind;
+use proxiima_core::spiice::{
+    CounterRule, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, ForgetRule, KeyShape,
+    ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, SpiiceContract,
+    Surface, TransferRule,
 };
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     FactIngestPort, GoalWritePort, MemoryAuthoringPort, OwnerWritePermit,
 };
-use proxima_core::verbs::fact_ingest::{
+use proxiima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, AuthorizedNodeLinks, FactWriteCommand, InlineCitedObjectDraft,
 };
-use proxima_core::verbs::goal_write::{
+use proxiima_core::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft,
     GoalState, GoalTopologyWrite, IdempotencyKey,
 };
-use proxima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
-use proxima_core::{
+use proxiima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
+use proxiima_core::{
     AccessKind, AgentDerivationV1, AuthPath, AuthzContext, DerivationIdentity, DerivedMemory,
     EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityKind, EntityRef, FactPayload, FactWrite,
-    FlavorRegistry, GoalId, InputContractId, MemoryId, MemoryTarget, OperatorId, OwnerId,
-    PayloadKeyBuilder, PayloadReference, SchemaId, SchemaVersion, SeriesHandle, SidecarPayload,
+    GoalId, InputContractId, MemoryId, MemoryTarget, OperatorId, OwnerId, PayloadKeyBuilder,
+    PayloadReference, SchemaId, SchemaVersion, SeriesHandle, SidecarPayload, SpiiceRegistry,
     StorageError, UploadedBlobPayload, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::forget::MemoryColdStore;
-use proxima_storage_pg::{PgSidecarRegistry, PgStorage, register_core_pg_sidecars};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::verbs::forget::MemoryColdStore;
+use proxiima_storage_pg::{PgSidecarRegistry, PgStorage, register_core_pg_sidecars};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-const TEST_FLAVOR: &str = "test-refs";
+const TEST_SPIICE: &str = "test-refs";
 const FACT_TABLE: &str = "test_refs.referenced_fact_v1";
 const FACT_SCHEMA: &str = "test-refs/referenced-fact-v1";
 
@@ -99,8 +99,8 @@ const FACT_SURFACE: Surface = Surface {
 };
 
 const FACT_CONTRACT_SCHEMA: SchemaContract = SchemaContract {
-    id: SchemaRef::new(TEST_FLAVOR, "referenced-fact", 1),
-    kind: proxima_core::verbs::schema::PayloadKind::Fact,
+    id: SchemaRef::new(TEST_SPIICE, "referenced-fact", 1),
+    kind: proxiima_core::verbs::schema::PayloadKind::Fact,
     sidecar_table: Some(FACT_TABLE),
     search: SearchProjectionDecl::None {
         why: "the acceptance payload is read by key, not searched",
@@ -114,8 +114,8 @@ const FACT_CONTRACT_SCHEMA: SchemaContract = SchemaContract {
     natural_key_columns: &[],
 };
 
-static TEST_REFS_CONTRACT: FlavorContract = FlavorContract {
-    flavor_id: TEST_FLAVOR,
+static TEST_REFS_CONTRACT: SpiiceContract = SpiiceContract {
+    spiice_id: TEST_SPIICE,
     ordinal: 77,
     schemas: &[FACT_CONTRACT_SCHEMA],
     state_surfaces: &[],
@@ -130,13 +130,13 @@ static TEST_REFS_CONTRACT: FlavorContract = FlavorContract {
     bespoke_transfer_legs: &[],
 };
 
-proxima_core::proxima_flavor! {
+proxiima_core::proxiima_spiice! {
     name = "test-refs",
     fact_schemas = [ReferencedFactV1],
     contract = &TEST_REFS_CONTRACT,
 }
 
-proxima_storage_pg::pg_sidecar! {
+proxiima_storage_pg::pg_sidecar! {
     payload: ReferencedFactV1,
     row: ReferencedFactPayloadRow,
     kinds: [Fact],
@@ -173,15 +173,15 @@ fn payload(logical_id: &str, fact_id: Uuid, goal_id: Uuid) -> ReferencedFactV1 {
     }
 }
 
-fn registry() -> proxima_core::FlavorRegistryFrozen {
-    let mut registry = FlavorRegistry::new();
+fn registry() -> proxiima_core::SpiiceRegistryFrozen {
+    let mut registry = SpiiceRegistry::new();
     register(&mut registry).expect("fixture schema registration");
     registry.freeze_or_panic_for_tests()
 }
 
 fn sidecars(
-    registry: &proxima_core::FlavorRegistryFrozen,
-) -> proxima_storage_pg::PgSidecarRegistryFrozen {
+    registry: &proxiima_core::SpiiceRegistryFrozen,
+) -> proxiima_storage_pg::PgSidecarRegistryFrozen {
     let mut sidecars = PgSidecarRegistry::new();
     register_core_pg_sidecars(&mut sidecars);
     sidecars.add_fact::<ReferencedFactV1>();
@@ -190,8 +190,8 @@ fn sidecars(
         .expect("fixture sidecar registration")
 }
 
-async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+async fn bootstrap() -> (String, PgStorage, proxiima_core::SpiiceRegistryFrozen) {
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
@@ -201,27 +201,27 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
         sqlx::raw_sql(
             "CREATE SCHEMA test_refs;
              CREATE TABLE test_refs.referenced_fact_v1 (
-                 t uuid PRIMARY KEY REFERENCES proxima_core.memory(t) ON DELETE CASCADE,
+                 t uuid PRIMARY KEY REFERENCES proxiima_core.memory(t) ON DELETE CASCADE,
                  logical_id text NOT NULL,
                  fact_id uuid NOT NULL,
                  goal_id uuid NOT NULL,
                  target_kind text NOT NULL
              );
-             INSERT INTO proxima_core.flavor_surface (table_name, flavor_id)
+             INSERT INTO proxiima_core.spiice_surface (table_name, spiice_id)
              VALUES ('test_refs.referenced_fact_v1', 'test-refs');
              CREATE TRIGGER referenced_fact_v1_declared_by_memory
              BEFORE INSERT ON test_refs.referenced_fact_v1
              FOR EACH ROW
-             EXECUTE FUNCTION proxima_core.assert_memory_declares_sidecar('t');
-             GRANT USAGE ON SCHEMA test_refs TO proxima_test_runtime, proxima_test_platform;
+             EXECUTE FUNCTION proxiima_core.assert_memory_declares_sidecar('t');
+             GRANT USAGE ON SCHEMA test_refs TO proxiima_test_runtime, proxiima_test_platform;
              GRANT SELECT, INSERT, UPDATE, DELETE ON test_refs.referenced_fact_v1
-               TO proxima_test_runtime, proxima_test_platform;",
+               TO proxiima_test_runtime, proxiima_test_platform;",
         )
         .execute(pg.pool_for_tests())
         .await?;
         let pg = pg
             .with_sidecars(sidecars(&registry))
-            .with_flavors(&registry);
+            .with_spiices(&registry);
         Ok::<_, Box<dyn std::error::Error>>((pg, registry))
     }
     .await;
@@ -260,7 +260,7 @@ async fn seed_abstraction(
         Uuid::now_v7(),
         Uuid::now_v7(),
     );
-    draft.kind = proxima_core::MemoryKind::Abstraction;
+    draft.kind = proxiima_core::MemoryKind::Abstraction;
     draft.source_id = None;
     draft.ingest_key = None;
     draft.receipt = None;
@@ -281,7 +281,7 @@ async fn seed_perspective(pg: &PgStorage, owner: OwnerId) -> Result<MemoryId, St
         Uuid::now_v7(),
         Uuid::now_v7(),
     );
-    draft.kind = proxima_core::MemoryKind::Perspective;
+    draft.kind = proxiima_core::MemoryKind::Perspective;
     draft.source_id = None;
     draft.ingest_key = None;
     draft.receipt = None;
@@ -295,14 +295,14 @@ async fn seed_perspective(pg: &PgStorage, owner: OwnerId) -> Result<MemoryId, St
 }
 
 async fn stored_refs(pg: &PgStorage, memory_id: MemoryId) -> Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
+    sqlx::query_scalar("SELECT refs FROM proxiima_core.memory WHERE t = $1")
         .bind(memory_id.into_inner())
         .fetch_one(pg.pool_for_tests())
         .await
 }
 
 async fn stored_goal_refs(pg: &PgStorage, memory_id: MemoryId) -> Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar("SELECT goal_refs FROM proxima_core.memory WHERE t = $1")
+    sqlx::query_scalar("SELECT goal_refs FROM proxiima_core.memory WHERE t = $1")
         .bind(memory_id.into_inner())
         .fetch_one(pg.pool_for_tests())
         .await
@@ -317,8 +317,8 @@ fn direct_draft(logical_id: &str, raw_refs: Vec<Uuid>) -> FactWriteCommand {
     draft
 }
 
-fn engine(pg: &PgStorage, registry: &proxima_core::FlavorRegistryFrozen) -> proxima_core::Engine {
-    proxima_core::Engine::new(registry.clone())
+fn engine(pg: &PgStorage, registry: &proxiima_core::SpiiceRegistryFrozen) -> proxiima_core::Engine {
+    proxiima_core::Engine::new(registry.clone())
         .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
 }
 
@@ -346,14 +346,14 @@ fn inline_citation() -> InlineCitedObjectDraft {
 async fn stage_inline_citation_upload(pg: &PgStorage, owner: OwnerId) -> Result<(), sqlx::Error> {
     let owner_id = owner.into_inner();
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')
+        "INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')
          ON CONFLICT (owner_id) DO NOTHING",
     )
     .bind(owner_id)
     .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.blob_uploads
+        "INSERT INTO proxiima_core.blob_uploads
             (owner_id, bucket, object_key, filename, mime, expected_byte_len,
              content_hash, sha256, expires_at, object_store)
          VALUES ($1, 'test', 'authorized-fact-refs', 'refs.txt', 'text/plain', 16,
@@ -373,7 +373,7 @@ fn custom_draft(payload: &ReferencedFactV1) -> FactWriteCommand {
 
 async fn create_goal(
     pg: &PgStorage,
-    registry: &proxima_core::FlavorRegistryFrozen,
+    registry: &proxiima_core::SpiiceRegistryFrozen,
     owner: OwnerId,
     perspective: MemoryId,
 ) -> Result<GoalId, Box<dyn std::error::Error>> {
@@ -425,10 +425,9 @@ async fn authorized_links_are_persisted_by_engine_uow() {
         let fact_id = seed_fact(&pg, owner).await?;
         let perspective = seed_perspective(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, perspective).await?;
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let engine = engine(&pg, &registry);
         let uow_payload = payload("uow-one", fact_id.into_inner(), goal.into_inner());
         let mut uow = engine.unit_of_work(&authz).await?;
@@ -575,10 +574,9 @@ async fn inline_and_by_ref_citation_routes_keep_authorized_links() {
         let fact_id = seed_fact(&pg, owner).await?;
         let perspective = seed_perspective(&pg, owner).await?;
         let goal_id = create_goal(&pg, &registry, owner, perspective).await?;
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let engine = engine(&pg, &registry);
 
         let inline_payload = payload(
@@ -669,7 +667,7 @@ async fn by_ref_citation_refuses_missing_and_foreign_objects_alike() {
             foreign_fact.into_inner(),
             foreign_goal.into_inner(),
         );
-        let foreign_authz = proxima_core::test_fixtures::authenticated_context(
+        let foreign_authz = proxiima_core::test_fixtures::authenticated_context(
             AuthzContext::single_owner(&foreign_owner, AuthPath::HostBearer),
         );
         stage_inline_citation_upload(&pg, foreign_owner).await?;
@@ -690,10 +688,9 @@ async fn by_ref_citation_refuses_missing_and_foreign_objects_alike() {
         let fact_id = seed_fact(&pg, owner).await?;
         let goal_id =
             create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let mut refusals = Vec::new();
         for (label, cited_object_id) in [("missing", Uuid::now_v7()), ("foreign", foreign_blob)] {
             let payload = payload(
@@ -754,10 +751,9 @@ async fn an_uploaded_blob_citation_needs_a_staged_upload() {
         let fact_id = seed_fact(&pg, owner).await?;
         let goal_id =
             create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let engine = engine(&pg, &registry);
         let cite = |label: &'static str| {
             let payload = payload(label, fact_id.into_inner(), goal_id.into_inner());
@@ -785,7 +781,7 @@ async fn an_uploaded_blob_citation_needs_a_staged_upload() {
             "{error}"
         );
         let minted: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.blob WHERE schema_id = 'core/uploaded-blob-v1'",
+            "SELECT count(*) FROM proxiima_core.blob WHERE schema_id = 'core/uploaded-blob-v1'",
         )
         .fetch_one(pg.pool_for_tests())
         .await?;
@@ -810,10 +806,9 @@ async fn typed_raw_refs_cannot_disagree_with_payload_declarations() {
         let fact_a = seed_fact(&pg, owner).await?;
         let fact_b = seed_fact(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let engine = engine(&pg, &registry);
         let payload = payload("raw-disagreement", fact_a.into_inner(), goal.into_inner());
         let error = engine
@@ -824,7 +819,7 @@ async fn typed_raw_refs_cannot_disagree_with_payload_declarations() {
             )
             .await
             .expect_err("raw refs must not replace typed refs");
-        assert_eq!(error.code, proxima_core::error::ErrorCode::InvalidArgument);
+        assert_eq!(error.code, proxiima_core::error::ErrorCode::InvalidArgument);
         Ok(())
     }
     .await;
@@ -841,10 +836,9 @@ async fn storage_uses_sidecars_bound_during_authorization() {
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
         let admitted = payload("bound-sidecar", first.into_inner(), goal.into_inner());
         let admitted_sidecars = [SidecarPayload::fact(admitted.clone())];
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let engine = engine(&pg, &registry);
         let authorized = engine
             .authorize_fact_ingest(&authz, custom_draft(&admitted), &admitted_sidecars)
@@ -858,7 +852,7 @@ async fn storage_uses_sidecars_bound_during_authorization() {
 
         let written: bool = sqlx::query_scalar(
             "SELECT EXISTS (
-                 SELECT 1 FROM proxima_core.memory
+                 SELECT 1 FROM proxiima_core.memory
                   WHERE owner_id = $1 AND source_id = $2 AND ingest_key = $3
              )",
         )
@@ -885,7 +879,7 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
         let abstraction = seed_abstraction(&pg, owner, fact).await?;
         let foreign_fact = seed_fact(&pg, foreign_owner).await?;
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
+        let authz = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
         let engine = engine(&pg, &registry);
 
         let wrong_kind = payload("wrong-kind", fact.into_inner(), goal.into_inner());
@@ -899,7 +893,7 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
             )
             .await
             .expect_err("stored Fact must not authorize as Abstraction");
-        assert_eq!(error.code, proxima_core::error::ErrorCode::InvalidArgument);
+        assert_eq!(error.code, proxiima_core::error::ErrorCode::InvalidArgument);
 
         let declared_fact = payload(
             "declared-fact-stored-abstraction",
@@ -914,7 +908,7 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
             )
             .await
             .expect_err("a Fact endpoint must not target an Abstraction row");
-        assert_eq!(error.code, proxima_core::error::ErrorCode::InvalidArgument);
+        assert_eq!(error.code, proxiima_core::error::ErrorCode::InvalidArgument);
 
         let memory_declared_as_goal = payload(
             "memory-declared-as-goal",
@@ -929,7 +923,7 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
             )
             .await
             .expect_err("a Goal endpoint must resolve to a stored Goal row");
-        assert_eq!(error.code, proxima_core::error::ErrorCode::Forbidden);
+        assert_eq!(error.code, proxiima_core::error::ErrorCode::Forbidden);
 
         let unreadable = payload("unreadable", foreign_fact.into_inner(), goal.into_inner());
         let error = engine
@@ -940,10 +934,10 @@ async fn target_kind_and_visibility_are_checked_before_fact_write() {
             )
             .await
             .expect_err("foreign Fact must not authorize");
-        assert_eq!(error.code, proxima_core::error::ErrorCode::Forbidden);
+        assert_eq!(error.code, proxiima_core::error::ErrorCode::Forbidden);
 
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*)::bigint FROM proxima_core.memory WHERE owner_id = $1 AND schema_id = $2",
+            "SELECT COUNT(*)::bigint FROM proxiima_core.memory WHERE owner_id = $1 AND schema_id = $2",
         )
         .bind(owner.into_inner())
         .bind(FACT_SCHEMA)
@@ -967,10 +961,9 @@ async fn malformed_fact_source_and_endpoints_are_rejected_before_write() {
         let owner = owner();
         let target = seed_fact(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let engine = engine(&pg, &registry);
 
         let mut non_fact = direct_draft("non-fact-source", Vec::new());
@@ -979,7 +972,7 @@ async fn malformed_fact_source_and_endpoints_are_rejected_before_write() {
             .authorize_fact_ingest(&authz, non_fact, &[])
             .await
             .expect_err("Fact authorization must reject non-Fact source");
-        assert_eq!(error.code, proxima_core::error::ErrorCode::InvalidArgument);
+        assert_eq!(error.code, proxiima_core::error::ErrorCode::InvalidArgument);
 
         let payload = payload("malformed-endpoint", target.into_inner(), goal.into_inner());
         let mut malformed = custom_draft(&payload);
@@ -991,7 +984,7 @@ async fn malformed_fact_source_and_endpoints_are_rejected_before_write() {
             .authorize_fact_ingest(&authz, malformed, &[SidecarPayload::fact(payload)])
             .await
             .expect_err("malformed Goal/Memory endpoint must be rejected");
-        assert_eq!(error.code, proxima_core::error::ErrorCode::InvalidArgument);
+        assert_eq!(error.code, proxiima_core::error::ErrorCode::InvalidArgument);
         Ok(())
     }
     .await;
@@ -1006,10 +999,9 @@ async fn uow_rejects_session_visible_target_kind_mismatch() {
         let owner = owner();
         let anchor = seed_fact(&pg, owner).await?;
         let goal = create_goal(&pg, &registry, owner, seed_perspective(&pg, owner).await?).await?;
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let engine = engine(&pg, &registry);
         let mut uow = engine.unit_of_work(&authz).await?;
         let derived = uow
@@ -1043,7 +1035,7 @@ async fn uow_rejects_session_visible_target_kind_mismatch() {
             .ingest_fact(FactWrite::new(owner, "test/session", &wrong))
             .await
             .expect_err("session-visible Abstraction must not authorize as a Fact target");
-        assert_eq!(error.code, proxima_core::error::ErrorCode::InvalidArgument);
+        assert_eq!(error.code, proxiima_core::error::ErrorCode::InvalidArgument);
         Ok(())
     }
     .await;
@@ -1062,7 +1054,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
 
         let reference_handle = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
         )
         .bind(reference_handle)
@@ -1070,7 +1062,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
                  sidecar_tables, occurred_at, \"by\", via)
              VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
@@ -1085,7 +1077,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         // `origins` always did. Before the split this same insert succeeded.
         let memory_ref_handle = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
         )
         .bind(memory_ref_handle)
@@ -1093,7 +1085,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         .execute(pool)
         .await?;
         let error = sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
                  sidecar_tables, occurred_at, \"by\", via)
              VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', $3, '{}', '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
@@ -1117,7 +1109,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         // put an id of the other kind.
         let goal_ref_handle = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
         )
         .bind(goal_ref_handle)
@@ -1125,7 +1117,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         .execute(pool)
         .await?;
         let error = sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
                  sidecar_tables, occurred_at, \"by\", via)
              VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
@@ -1146,7 +1138,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
 
         let origin_handle = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
         )
         .bind(origin_handle)
@@ -1154,7 +1146,7 @@ async fn sql_accepts_goal_refs_but_rejects_goals_in_origins_or_refs() {
         .execute(pool)
         .await?;
         let error = sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables, occurred_at, \"by\", via)
              VALUES ($1, $1, 'fact', $2, 'core/upload-v1', $3, '{}', '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -1188,7 +1180,7 @@ async fn goal_erase_serializes_against_reference_admission() {
         let mut erase_tx = pool.begin().await?;
         sqlx::query(
             "SELECT pg_advisory_xact_lock(
-                 hashtextextended('proxima-forget:' || $1::text, 0)
+                 hashtextextended('proxiima-forget:' || $1::text, 0)
              )",
         )
         .bind(goal.into_inner())
@@ -1205,7 +1197,7 @@ async fn goal_erase_serializes_against_reference_admission() {
                 .await?;
             let handle = Uuid::now_v7();
             sqlx::query(
-                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
                  VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
             )
             .bind(handle)
@@ -1216,7 +1208,7 @@ async fn goal_erase_serializes_against_reference_admission() {
                 .send(pid)
                 .map_err(|_| sqlx::Error::Protocol("lock-wait observer was dropped".to_owned()))?;
             sqlx::query(
-                "INSERT INTO proxima_core.memory
+                "INSERT INTO proxiima_core.memory
                     (handle, t, kind, owner_id, schema_id, origins, refs, goal_refs,
                      sidecar_tables, occurred_at, \"by\", via)
                  VALUES ($1, $1, 'fact', $2, 'core/upload-v1', '{}', '{}', $3, '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
@@ -1251,7 +1243,7 @@ async fn goal_erase_serializes_against_reference_admission() {
             "reference admission must wait on the shared lifecycle lock"
         );
 
-        sqlx::query("DELETE FROM proxima_core.goal WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.goal WHERE t = $1")
             .bind(goal.into_inner())
             .execute(erase_tx.as_mut())
             .await?;
@@ -1288,7 +1280,7 @@ async fn crossed_memory_pins_lock_in_global_t_order() {
         };
         let pool = pg.pool_for_tests();
         let mut blocker = pool.begin().await?;
-        sqlx::query("SELECT 1 FROM proxima_core.memory WHERE t = $1 FOR UPDATE")
+        sqlx::query("SELECT 1 FROM proxiima_core.memory WHERE t = $1 FOR UPDATE")
             .bind(smaller)
             .execute(blocker.as_mut())
             .await?;
@@ -1303,7 +1295,7 @@ async fn crossed_memory_pins_lock_in_global_t_order() {
                 .await?;
             let handle = Uuid::now_v7();
             sqlx::query(
-                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
                  VALUES ($1, 'fact', 'core/upload-v1', $2, $1)",
             )
             .bind(handle)
@@ -1314,7 +1306,7 @@ async fn crossed_memory_pins_lock_in_global_t_order() {
                 .send(pid)
                 .map_err(|_| sqlx::Error::Protocol("lock-wait observer was dropped".to_owned()))?;
             let inserted = sqlx::query(
-                "INSERT INTO proxima_core.memory
+                "INSERT INTO proxiima_core.memory
                     (handle, t, kind, owner_id, schema_id, origins, refs, sidecar_tables, occurred_at, \"by\", via)
                  VALUES ($1, $1, 'fact', $2, 'core/upload-v1', $3, $4, '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
             )
@@ -1349,7 +1341,7 @@ async fn crossed_memory_pins_lock_in_global_t_order() {
         assert!(waiting, "crossed declaration must wait on the smaller t");
 
         let mut probe = pool.begin().await?;
-        sqlx::query("SELECT 1 FROM proxima_core.memory WHERE t = $1 FOR UPDATE NOWAIT")
+        sqlx::query("SELECT 1 FROM proxiima_core.memory WHERE t = $1 FOR UPDATE NOWAIT")
             .bind(larger)
             .execute(probe.as_mut())
             .await
@@ -1405,10 +1397,9 @@ async fn storage_persists_authorized_links_not_draft_refs() {
 
         // The engine keeps the storage conflict's caller-fixable class when
         // routing the same replay through the public FactIngest verb.
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let engine = engine(&pg, &registry);
         engine
             .fact_ingest(
@@ -1425,7 +1416,7 @@ async fn storage_persists_authorized_links_not_draft_refs() {
             .expect_err("Engine must map changed-ref replay to IdempotencyConflict");
         assert_eq!(
             error.code,
-            proxima_core::error::ErrorCode::IdempotencyConflict
+            proxiima_core::error::ErrorCode::IdempotencyConflict
         );
         Ok(())
     }
@@ -1491,7 +1482,7 @@ async fn receipt_replay_requires_identical_authorized_refs() {
             .expect_err("changed refs must conflict");
         assert!(matches!(
             error,
-            StorageError::ReplayChanged(proxima_core::ReplayDrift::FactRefs)
+            StorageError::ReplayChanged(proxiima_core::ReplayDrift::FactRefs)
         ));
         assert_eq!(
             stored_refs(&pg, outcome.memory_id).await?,
@@ -1578,7 +1569,7 @@ async fn forgotten_replay_requires_known_identical_refs() {
             .expect_err("forgotten replay with changed refs must conflict");
         assert!(matches!(
             error,
-            StorageError::ReplayChanged(proxima_core::ReplayDrift::FactRefs)
+            StorageError::ReplayChanged(proxiima_core::ReplayDrift::FactRefs)
         ));
 
         Ok(())

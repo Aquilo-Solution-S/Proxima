@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use proxima_pg_testkit::{create_db, db_url, drop_db};
-use proxima_storage_pg::PgStorage;
+use proxiima_pg_testkit::{create_db, db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
 use uuid::Uuid;
 
 trait DatabaseFixture {
@@ -19,18 +19,18 @@ impl DatabaseFixture for PgStorage {
 
 async fn apply_current_migrations(
     pg: &impl DatabaseFixture,
-) -> Result<(), proxima_core::StorageError> {
+) -> Result<(), proxiima_core::StorageError> {
     let database: String = sqlx::query_scalar("SELECT current_database()")
         .fetch_one(pg.pool_for_tests())
         .await
-        .map_err(|error| proxima_core::StorageError::Unavailable(error.to_string()))?;
-    let (_, platform_url) = proxima_pg_testkit::split_role_urls(&database)
+        .map_err(|error| proxiima_core::StorageError::Unavailable(error.to_string()))?;
+    let (_, platform_url) = proxiima_pg_testkit::split_role_urls(&database)
         .await
-        .map_err(|error| proxima_core::StorageError::Unavailable(error.to_string()))?;
-    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        .map_err(|error| proxiima_core::StorageError::Unavailable(error.to_string()))?;
+    let migration = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
         &platform_url,
-        proxima_storage_pg::PgPoolConfig::default(),
-        proxima_storage_pg::PgTuning::default(),
+        proxiima_storage_pg::PgPoolConfig::default(),
+        proxiima_storage_pg::PgTuning::default(),
     )
     .await?;
     migration.run_migrations().await
@@ -41,7 +41,7 @@ async fn table_exists(pg: &impl DatabaseFixture, table_name: &str) -> bool {
         "SELECT EXISTS (
              SELECT 1
                FROM information_schema.tables
-              WHERE table_schema = 'proxima_core'
+              WHERE table_schema = 'proxiima_core'
                 AND table_name = $1
          )",
     )
@@ -56,7 +56,7 @@ async fn column_exists(pg: &impl DatabaseFixture, table: &str, column: &str) -> 
         "SELECT EXISTS (
              SELECT 1
                FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
+              WHERE table_schema = 'proxiima_core'
                 AND table_name = $1
                 AND column_name = $2
          )",
@@ -73,7 +73,7 @@ async fn index_exists(pg: &impl DatabaseFixture, index_name: &str) -> bool {
         "SELECT EXISTS (
              SELECT 1
                FROM pg_indexes
-              WHERE schemaname = 'proxima_core'
+              WHERE schemaname = 'proxiima_core'
                 AND indexname = $1
          )",
     )
@@ -87,7 +87,7 @@ async fn index_exists(pg: &impl DatabaseFixture, index_name: &str) -> bool {
 /// way (a column, a function call, prose) is not a relation reference.
 const RELATION_KEYWORDS: [&str; 5] = ["FROM", "INTO", "UPDATE", "JOIN", "TABLE"];
 
-/// Every `proxima_core.<relation>` named by a keyword-led SQL fragment under
+/// Every `proxiima_core.<relation>` named by a keyword-led SQL fragment under
 /// `crates/storage-pg/src`.
 fn core_relations_named_in_storage_sql() -> BTreeSet<String> {
     let mut found = BTreeSet::new();
@@ -132,7 +132,7 @@ fn collect_relations(dir: &Path, found: &mut BTreeSet<String>) {
     }
 }
 
-/// Relations this source itself creates (`CREATE TABLE proxima_core.<name>`,
+/// Relations this source itself creates (`CREATE TABLE proxiima_core.<name>`,
 /// with or without `IF NOT EXISTS`).
 fn relations_created_in_source(source: &str) -> BTreeSet<String> {
     let mut created = BTreeSet::new();
@@ -144,7 +144,7 @@ fn relations_created_in_source(source: &str) -> BTreeSet<String> {
             .trim_start()
             .strip_prefix("IF NOT EXISTS ")
             .unwrap_or(tail);
-        let Some(qualified) = tail.trim_start().strip_prefix("proxima_core.") else {
+        let Some(qualified) = tail.trim_start().strip_prefix("proxiima_core.") else {
             continue;
         };
         let name: String = qualified
@@ -167,14 +167,14 @@ fn collect_relations_in_source(source: &str, found: &mut BTreeSet<String>) {
             if !tail.starts_with(|ch: char| ch.is_whitespace()) {
                 continue;
             }
-            let Some(qualified) = tail.trim_start().strip_prefix("proxima_core.") else {
+            let Some(qualified) = tail.trim_start().strip_prefix("proxiima_core.") else {
                 continue;
             };
             let name: String = qualified
                 .chars()
                 .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
                 .collect();
-            // `FROM proxima_core.lexical_tsv(...)` is a set-returning call,
+            // `FROM proxiima_core.lexical_tsv(...)` is a set-returning call,
             // not a relation.
             let suffix = &qualified[name.len()..];
             let function = suffix.starts_with('(')
@@ -193,7 +193,7 @@ fn collect_relations_in_source(source: &str, found: &mut BTreeSet<String>) {
 /// first caller to reach it is the one that finds out.
 #[tokio::test]
 async fn every_core_relation_named_in_storage_sql_exists() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -205,7 +205,7 @@ async fn every_core_relation_named_in_storage_sql_exists() {
         let mut missing = Vec::new();
         for relation in core_relations_named_in_storage_sql() {
             let exists: bool =
-                sqlx::query_scalar("SELECT to_regclass('proxima_core.' || $1::text) IS NOT NULL")
+                sqlx::query_scalar("SELECT to_regclass('proxiima_core.' || $1::text) IS NOT NULL")
                     .bind(&relation)
                     .fetch_one(pg.pool_for_tests())
                     .await?;
@@ -215,7 +215,7 @@ async fn every_core_relation_named_in_storage_sql_exists() {
         }
         assert!(
             missing.is_empty(),
-            "storage-pg SQL names proxima_core relations the migration does not create: {missing:?}"
+            "storage-pg SQL names proxiima_core relations the migration does not create: {missing:?}"
         );
         Ok(())
     }
@@ -228,7 +228,7 @@ async fn every_core_relation_named_in_storage_sql_exists() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn migrations_apply_to_fresh_db() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
 
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -251,7 +251,7 @@ async fn migrations_apply_to_fresh_db() {
         ] {
             assert!(
                 table_exists(&pg, table).await,
-                "empty apply must create proxima_core.{table}"
+                "empty apply must create proxiima_core.{table}"
             );
         }
         for dead in [
@@ -301,7 +301,7 @@ async fn migrations_apply_to_fresh_db() {
                FROM pg_enum e
                JOIN pg_type t ON t.oid = e.enumtypid
                JOIN pg_namespace n ON n.oid = t.typnamespace
-              WHERE n.nspname = 'proxima_core' AND t.typname = 'pin_target_kind'
+              WHERE n.nspname = 'proxiima_core' AND t.typname = 'pin_target_kind'
               ORDER BY e.enumsortorder",
         )
         .fetch_all(pg.pool_for_tests())
@@ -327,7 +327,7 @@ async fn migrations_apply_to_fresh_db() {
                FROM pg_description d
                JOIN pg_class c ON c.oid = d.objoid
                JOIN pg_namespace n ON n.oid = c.relnamespace
-              WHERE n.nspname LIKE 'proxima%'
+              WHERE n.nspname LIKE 'proxiima%'
                 AND (d.description ~* '(Art\\.|Article)\\s+[0-9]+'
                   OR d.description ~* '\\m(GDPR|DSGVO)\\M')",
         )
@@ -392,7 +392,7 @@ async fn migrations_apply_to_fresh_db() {
             "goal_owner_state_t_idx",
             "goal_parent_handle_idx",
             "sketch_owner_t_idx",
-            // ONE composite GIN for the whole flavor, not one per sidecar.
+            // ONE composite GIN for the whole spiice, not one per sidecar.
             "core_projection_owner_tsv_gin",
         ] {
             assert!(
@@ -418,7 +418,7 @@ async fn migrations_apply_to_fresh_db() {
 
         assert!(
             table_exists(&pg, "projection").await,
-            "flavor #0 declares a projection table"
+            "spiice #0 declares a projection table"
         );
         for (table, column) in [
             ("agent_note_v1", "search_tsv"),
@@ -458,11 +458,11 @@ async fn migrations_apply_to_fresh_db() {
         // nothing about which versions actually landed.
         let applied: Vec<i64> = sqlx::query_scalar(
             "SELECT version FROM public._sqlx_migrations
-              WHERE success AND version <= 9999 ORDER BY version",
+              WHERE success ORDER BY version",
         )
         .fetch_all(pg.pool_for_tests())
         .await?;
-        let embedded: Vec<i64> = proxima_storage_pg::core_migrator()
+        let embedded: Vec<i64> = proxiima_storage_pg::core_migrator()
             .iter()
             .map(|migration| migration.version)
             .collect();
@@ -475,7 +475,7 @@ async fn migrations_apply_to_fresh_db() {
             "SELECT provolatile::text
                FROM pg_proc p
                JOIN pg_namespace n ON n.oid = p.pronamespace
-              WHERE n.nspname = 'proxima_core'
+              WHERE n.nspname = 'proxiima_core'
                 AND p.proname = 'pins_have_grounding_support'",
         )
         .fetch_one(pg.pool_for_tests())
@@ -488,7 +488,7 @@ async fn migrations_apply_to_fresh_db() {
         // The owners table is seeded by nothing: every owner row is minted
         // by a write (`ensure_owner_row`), including a transfer destination.
         let seeded_owners: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.owners")
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.owners")
                 .fetch_one(pg.pool_for_tests())
                 .await?;
         assert_eq!(seeded_owners, 0, "a fresh database seeds no owner rows");
@@ -497,7 +497,7 @@ async fn migrations_apply_to_fresh_db() {
                FROM pg_enum e
                JOIN pg_type t ON t.oid = e.enumtypid
                JOIN pg_namespace n ON n.oid = t.typnamespace
-              WHERE n.nspname = 'proxima_core' AND t.typname = 'owner_kind'
+              WHERE n.nspname = 'proxiima_core' AND t.typname = 'owner_kind'
               ORDER BY e.enumsortorder",
         )
         .fetch_all(pg.pool_for_tests())
@@ -510,7 +510,7 @@ async fn migrations_apply_to_fresh_db() {
 
         let owner_null: (i64,) = sqlx::query_as(
             "SELECT count(*)::bigint FROM information_schema.columns
-              WHERE table_schema = 'proxima_core'
+              WHERE table_schema = 'proxiima_core'
                 AND table_name IN ('memory', 'memory_head', 'ingest_keys', 'announce', 'owners')
                 AND column_name = 'owner_id'
                 AND is_nullable = 'YES'",
@@ -531,7 +531,7 @@ async fn migrations_apply_to_fresh_db() {
 /// vector widths.
 #[tokio::test]
 async fn embedding_lanes_refuse_unsupported_dimensions_and_widths() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name)
         .await
         .expect("PG is required for migrations tests");
@@ -540,7 +540,7 @@ async fn embedding_lanes_refuse_unsupported_dimensions_and_widths() {
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let owner_id = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner_id)
             .execute(pool)
             .await?;
@@ -549,7 +549,7 @@ async fn embedding_lanes_refuse_unsupported_dimensions_and_widths() {
             (1024, 768, "embeddings_vec_width_chk"),
         ] {
             let err = sqlx::query(
-                "INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, vec, owner_id)
+                "INSERT INTO proxiima_core.embeddings (entity_id, model_id, dim, vec, owner_id)
                  VALUES ($1, 'legacy-model', $2, array_fill(0.5::real, ARRAY[$3])::vector, $4)",
             )
             .bind(Uuid::now_v7())
@@ -577,7 +577,7 @@ async fn embedding_lanes_refuse_unsupported_dimensions_and_widths() {
 /// A staged upload content hash remains exactly 32 bytes.
 #[tokio::test]
 async fn blob_upload_content_hash_rejects_noncanonical_length() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name)
         .await
         .expect("PG is required for migrations tests");
@@ -586,13 +586,13 @@ async fn blob_upload_content_hash_rejects_noncanonical_length() {
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner)
             .execute(pool)
             .await?;
         let upload = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads
+            "INSERT INTO proxiima_core.blob_uploads
                 (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, expires_at)
              VALUES ($1, $2, 'bucket', 's3:test/bucket', 'objects/test', 'test',
@@ -603,7 +603,7 @@ async fn blob_upload_content_hash_rejects_noncanonical_length() {
         .execute(pool)
         .await?;
         let malformed = sqlx::query(
-            "UPDATE proxima_core.blob_uploads SET content_hash = decode('00', 'hex')
+            "UPDATE proxiima_core.blob_uploads SET content_hash = decode('00', 'hex')
               WHERE upload_id = $1",
         )
         .bind(upload)
@@ -632,7 +632,7 @@ async fn blob_upload_content_hash_rejects_noncanonical_length() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn reference_integrity_migration_enforces_goal_refs() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -643,7 +643,7 @@ async fn reference_integrity_migration_enforces_goal_refs() {
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
              VALUES ($1, 'personal')",
         )
         .bind(owner)
@@ -653,7 +653,7 @@ async fn reference_integrity_migration_enforces_goal_refs() {
         let goal_handle = Uuid::now_v7();
         let goal_t = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
              VALUES ($1, 'test/goal-v1', $2, $3)",
         )
         .bind(goal_handle)
@@ -662,7 +662,7 @@ async fn reference_integrity_migration_enforces_goal_refs() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.goal
+            "INSERT INTO proxiima_core.goal
                  (handle, t, owner_id, title, state, request_id, \"by\", via)
              VALUES ($1, $2, $3, 'reference target', 'Active', 'reference-goal', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -675,7 +675,7 @@ async fn reference_integrity_migration_enforces_goal_refs() {
         let fact_handle = Uuid::now_v7();
         let fact_t = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'test/fact-v1', $2, $3)",
         )
         .bind(fact_handle)
@@ -684,7 +684,7 @@ async fn reference_integrity_migration_enforces_goal_refs() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                  (handle, t, kind, owner_id, schema_id, goal_refs, occurred_at, \"by\", via)
              VALUES ($1, $2, 'fact', $3, 'test/fact-v1', ARRAY[$4]::uuid[], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -700,7 +700,7 @@ async fn reference_integrity_migration_enforces_goal_refs() {
         let source_handle = Uuid::now_v7();
         let source_t = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'test/source-v1', $2, $3)",
         )
         .bind(source_handle)
@@ -709,7 +709,7 @@ async fn reference_integrity_migration_enforces_goal_refs() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                  (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
              VALUES ($1, $2, 'fact', $3, 'test/source-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -720,7 +720,7 @@ async fn reference_integrity_migration_enforces_goal_refs() {
         .await?;
 
         let content_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
              VALUES ($1, 'test/abstraction-v1', $2)
              RETURNING content_id",
         )
@@ -731,7 +731,7 @@ async fn reference_integrity_migration_enforces_goal_refs() {
         let abstraction_handle = Uuid::now_v7();
         let abstraction_t = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'abstraction', 'test/abstraction-v1', $2, $3)",
         )
         .bind(abstraction_handle)
@@ -740,7 +740,7 @@ async fn reference_integrity_migration_enforces_goal_refs() {
         .execute(pool)
         .await?;
         let err = sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                  (handle, t, kind, owner_id, schema_id, origins, content_id, \"by\", via)
              VALUES ($1, $2, 'abstraction', $3, 'test/abstraction-v1',
                      ARRAY[$4, $5]::uuid[], $6, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
@@ -771,7 +771,7 @@ async fn reference_integrity_migration_enforces_goal_refs() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -783,12 +783,12 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
         let owner = Uuid::now_v7();
         let handle = Uuid::now_v7();
         let t = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner)
             .execute(pool)
             .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
         )
         .bind(handle)
@@ -797,7 +797,7 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                  (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
              VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -808,7 +808,7 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
         .await?;
 
         let err = sqlx::query(
-            "INSERT INTO proxima_core.erased_pin_target (t, kind)
+            "INSERT INTO proxiima_core.erased_pin_target (t, kind)
              VALUES ($1, 'fact')",
         )
         .bind(t)
@@ -821,12 +821,12 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
             "direct witness insert must name its trusted writer: {err}"
         );
 
-        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.memory WHERE t = $1")
             .bind(t)
             .execute(pool)
             .await?;
         let kind: String = sqlx::query_scalar(
-            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+            "SELECT kind::text FROM proxiima_core.erased_pin_target WHERE t = $1",
         )
         .bind(t)
         .fetch_one(pool)
@@ -834,14 +834,14 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
         assert_eq!(kind, "fact");
 
         let err =
-            sqlx::query("UPDATE proxima_core.erased_pin_target SET kind = 'goal' WHERE t = $1")
+            sqlx::query("UPDATE proxiima_core.erased_pin_target SET kind = 'goal' WHERE t = $1")
                 .bind(t)
                 .execute(pool)
                 .await
                 .expect_err("witnesses are immutable");
         assert!(err.to_string().contains("append-only"), "got: {err}");
 
-        let err = sqlx::query("DELETE FROM proxima_core.erased_pin_target WHERE t = $1")
+        let err = sqlx::query("DELETE FROM proxiima_core.erased_pin_target WHERE t = $1")
             .bind(t)
             .execute(pool)
             .await
@@ -863,7 +863,7 @@ async fn erased_pin_target_direct_insert_is_rejected_and_delete_records_kind() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -875,12 +875,12 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         let owner = Uuid::now_v7();
         let t = Uuid::now_v7();
         let handle = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner)
             .execute(pool)
             .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
         )
         .bind(handle)
@@ -889,7 +889,7 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+            "INSERT INTO proxiima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
              VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
@@ -897,12 +897,12 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         .bind(owner)
         .execute(pool)
         .await?;
-        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.memory WHERE t = $1")
             .bind(t)
             .execute(pool)
             .await?;
         let witness: String = sqlx::query_scalar(
-            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+            "SELECT kind::text FROM proxiima_core.erased_pin_target WHERE t = $1",
         )
         .bind(t)
         .fetch_one(pool)
@@ -914,7 +914,7 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         let mut tx = pool.begin().await?;
         let goal_handle = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
              VALUES ($1, 'core/task-v1', $2, $3)",
         )
         .bind(goal_handle)
@@ -923,7 +923,7 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         .execute(&mut *tx)
         .await?;
         let err = sqlx::query(
-            "INSERT INTO proxima_core.goal
+            "INSERT INTO proxiima_core.goal
                  (handle, t, owner_id, title, state, request_id, \"by\", via)
              VALUES ($1, $2, $3, 'reused', 'Active', 'reused-witness', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -939,7 +939,7 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         );
         tx.rollback().await?;
         let goal_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.goal_head WHERE handle = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.goal_head WHERE handle = $1",
         )
         .bind(goal_handle)
         .fetch_one(pool)
@@ -948,13 +948,13 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
 
         let replacement_handle = Uuid::now_v7();
         let mut tx = pool.begin().await?;
-        sqlx::query("ALTER TABLE proxima_core.memory DISABLE TRIGGER memory_pin_checks")
+        sqlx::query("ALTER TABLE proxiima_core.memory DISABLE TRIGGER memory_pin_checks")
             .execute(&mut *tx)
             .await?;
         // Fixture-only resurrection creates a live row solely to drive the
         // hard-delete trigger against a conflicting witness kind.
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
         )
         .bind(replacement_handle)
@@ -963,7 +963,7 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+            "INSERT INTO proxiima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
              VALUES ($1, $2, 'fact', $3, 'core/test-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(replacement_handle)
@@ -971,7 +971,7 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         .bind(owner)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("ALTER TABLE proxima_core.memory ENABLE TRIGGER memory_pin_checks")
+        sqlx::query("ALTER TABLE proxiima_core.memory ENABLE TRIGGER memory_pin_checks")
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -981,17 +981,17 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         // committed, so the following DELETE observes a pre-existing conflict.
         let mut tx = pool.begin().await?;
         sqlx::query(
-            "ALTER TABLE proxima_core.erased_pin_target
+            "ALTER TABLE proxiima_core.erased_pin_target
              DISABLE TRIGGER erased_pin_target_append_only",
         )
         .execute(&mut *tx)
         .await?;
-        sqlx::query("UPDATE proxima_core.erased_pin_target SET kind = 'goal' WHERE t = $1")
+        sqlx::query("UPDATE proxiima_core.erased_pin_target SET kind = 'goal' WHERE t = $1")
             .bind(t)
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "ALTER TABLE proxima_core.erased_pin_target
+            "ALTER TABLE proxiima_core.erased_pin_target
              ENABLE TRIGGER erased_pin_target_append_only",
         )
         .execute(&mut *tx)
@@ -999,7 +999,7 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         tx.commit().await?;
 
         let mut tx = pool.begin().await?;
-        let err = sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+        let err = sqlx::query("DELETE FROM proxiima_core.memory WHERE t = $1")
             .bind(t)
             .execute(&mut *tx)
             .await
@@ -1011,7 +1011,7 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
         );
         tx.rollback().await?;
         let witness_after: String = sqlx::query_scalar(
-            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+            "SELECT kind::text FROM proxiima_core.erased_pin_target WHERE t = $1",
         )
         .bind(t)
         .fetch_one(pool)
@@ -1021,7 +1021,7 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
             "a failed delete leaves the conflicting witness intact"
         );
         let replacement_rows: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.memory WHERE t = $1")
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
@@ -1039,7 +1039,7 @@ async fn conflicting_witness_rejects_delete_and_goal_t_reuse() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn memory_is_append_only_and_head_t_only() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1050,13 +1050,13 @@ async fn memory_is_append_only_and_head_t_only() {
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
         let handle = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner)
             .execute(pool)
             .await?;
         let t = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
         )
         .bind(handle)
@@ -1065,7 +1065,7 @@ async fn memory_is_append_only_and_head_t_only() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, origins, refs, occurred_at, \"by\", via)
+            "INSERT INTO proxiima_core.memory (handle, t, kind, owner_id, schema_id, origins, refs, occurred_at, \"by\", via)
              VALUES ($1, $2, 'fact', $3, 'core/test-v1', '{}', '{}', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
@@ -1074,7 +1074,7 @@ async fn memory_is_append_only_and_head_t_only() {
         .execute(pool)
         .await?;
 
-        let err = sqlx::query("UPDATE proxima_core.memory SET kind = 'abstraction' WHERE t = $1")
+        let err = sqlx::query("UPDATE proxiima_core.memory SET kind = 'abstraction' WHERE t = $1")
             .bind(t)
             .execute(pool)
             .await
@@ -1082,8 +1082,8 @@ async fn memory_is_append_only_and_head_t_only() {
         assert!(err.to_string().contains("append-only"), "got: {err}");
 
         for query in [
-            sqlx::query("UPDATE proxima_core.memory SET \"by\" = $2 WHERE t = $1"),
-            sqlx::query("UPDATE proxima_core.memory SET via = $2 WHERE t = $1"),
+            sqlx::query("UPDATE proxiima_core.memory SET \"by\" = $2 WHERE t = $1"),
+            sqlx::query("UPDATE proxiima_core.memory SET via = $2 WHERE t = $1"),
         ] {
             let error = query.bind(t).bind(Uuid::now_v7())
                 .execute(pool).await.expect_err("writer attribution is append-only");
@@ -1091,7 +1091,7 @@ async fn memory_is_append_only_and_head_t_only() {
         }
 
         let later = Uuid::now_v7();
-        sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+        sqlx::query("UPDATE proxiima_core.memory_head SET t = $2 WHERE handle = $1")
             .bind(handle)
             .bind(later)
             .execute(pool)
@@ -1099,7 +1099,7 @@ async fn memory_is_append_only_and_head_t_only() {
             .expect("memory_head.t may move");
 
         let err = sqlx::query(
-            "UPDATE proxima_core.memory_head SET kind = 'abstraction' WHERE handle = $1",
+            "UPDATE proxiima_core.memory_head SET kind = 'abstraction' WHERE handle = $1",
         )
         .bind(handle)
         .execute(pool)
@@ -1108,7 +1108,7 @@ async fn memory_is_append_only_and_head_t_only() {
         assert!(err.to_string().contains("frozen"), "got: {err}");
 
         let err = sqlx::query(
-            "UPDATE proxima_core.memory_head SET schema_id = 'other' WHERE handle = $1",
+            "UPDATE proxiima_core.memory_head SET schema_id = 'other' WHERE handle = $1",
         )
         .bind(handle)
         .execute(pool)
@@ -1117,18 +1117,18 @@ async fn memory_is_append_only_and_head_t_only() {
         assert!(err.to_string().contains("frozen"), "got: {err}");
 
         let destination = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'group')")
             .bind(destination)
             .execute(pool)
             .await?;
         let mut tx = pool.begin().await?;
-        sqlx::query("UPDATE proxima_core.memory_head SET owner_id = $2 WHERE handle = $1")
+        sqlx::query("UPDATE proxiima_core.memory_head SET owner_id = $2 WHERE handle = $1")
             .bind(handle)
             .bind(destination)
             .execute(&mut *tx)
             .await
             .expect("memory_head.owner_id may move for an owner transfer");
-        sqlx::query("UPDATE proxima_core.memory SET owner_id = $2 WHERE t = $1")
+        sqlx::query("UPDATE proxiima_core.memory SET owner_id = $2 WHERE t = $1")
             .bind(t)
             .bind(destination)
             .execute(&mut *tx)
@@ -1136,19 +1136,19 @@ async fn memory_is_append_only_and_head_t_only() {
             .expect("memory.owner_id may move for an owner transfer");
         tx.commit().await?;
         let moved: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(moved, destination);
         let writer: (Uuid, Option<Uuid>) = sqlx::query_as(
-            "SELECT \"by\", via FROM proxima_core.memory WHERE t = $1",
+            "SELECT \"by\", via FROM proxiima_core.memory WHERE t = $1",
         ).bind(t).fetch_one(pool).await?;
         assert_eq!(writer, (Uuid::from_u128(0x509), None));
 
         let delegation_id = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.delegated_authority_grants
+            "INSERT INTO proxiima_core.delegated_authority_grants
                 (delegation_id, subject_user_id, owner_id, tool_name,
                  read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at, \"by\", via)
              VALUES ($1, $2, $2, 'core_remember', 'fact', 'fact',
@@ -1157,32 +1157,32 @@ async fn memory_is_append_only_and_head_t_only() {
         ).bind(delegation_id).bind(owner).bind(writer.0).bind(Uuid::from_u128(0x510))
             .execute(pool).await?;
         for query in [
-            sqlx::query("UPDATE proxima_core.delegated_authority_grants SET \"by\" = $2 WHERE delegation_id = $1"),
-            sqlx::query("UPDATE proxima_core.delegated_authority_grants SET via = $2 WHERE delegation_id = $1"),
+            sqlx::query("UPDATE proxiima_core.delegated_authority_grants SET \"by\" = $2 WHERE delegation_id = $1"),
+            sqlx::query("UPDATE proxiima_core.delegated_authority_grants SET via = $2 WHERE delegation_id = $1"),
         ] {
             let error = query.bind(delegation_id).bind(Uuid::now_v7())
                 .execute(pool).await.expect_err("delegated writer is immutable");
             assert!(error.to_string().contains("append-only"), "{error}");
         }
         let revoked = sqlx::query(
-            "UPDATE proxima_core.delegated_authority_grants
+            "UPDATE proxiima_core.delegated_authority_grants
                 SET revoked_at = TIMESTAMPTZ '2027-01-01 00:00:00Z', revoked_by_user_id = $2
               WHERE delegation_id = $1",
         ).bind(delegation_id).bind(owner).execute(pool).await?;
         assert_eq!(revoked.rows_affected(), 1, "writer guard must preserve revocation");
         let grant_writer: (Uuid, Option<Uuid>) = sqlx::query_as(
-            "SELECT \"by\", via FROM proxima_core.delegated_authority_grants WHERE delegation_id = $1",
+            "SELECT \"by\", via FROM proxiima_core.delegated_authority_grants WHERE delegation_id = $1",
         ).bind(delegation_id).fetch_one(pool).await?;
         assert_eq!(grant_writer, (writer.0, Some(Uuid::from_u128(0x510))));
 
 
         let err = sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, \"by\", via)
+            "INSERT INTO proxiima_core.memory (handle, t, kind, owner_id, schema_id, \"by\", via)
              VALUES ($1, $3, 'abstraction', $2, 'core/test-v1', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(owner)
-        .bind(proxima_core::new_memory_uuid(1))
+        .bind(proxiima_core::new_memory_uuid(1))
         .execute(pool)
         .await
         .expect_err("kind must match head");
@@ -1200,7 +1200,7 @@ async fn memory_is_append_only_and_head_t_only() {
 /// The final reference arrays remain append-only after the migration reset.
 #[tokio::test]
 async fn memory_reference_arrays_remain_append_only() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name)
         .await
         .expect("PG is required for migrations tests");
@@ -1210,12 +1210,12 @@ async fn memory_reference_arrays_remain_append_only() {
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
         let handle = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner)
             .execute(pool)
             .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/test-v1', $2, $3)",
         )
         .bind(handle)
@@ -1224,7 +1224,7 @@ async fn memory_reference_arrays_remain_append_only() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                  (handle, t, kind, owner_id, schema_id, refs, goal_refs, occurred_at, \"by\", via)
              VALUES ($1, $1, 'fact', $2, 'core/test-v1', '{}', '{}', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -1236,12 +1236,12 @@ async fn memory_reference_arrays_remain_append_only() {
         for (column, query) in [
             (
                 "refs",
-                sqlx::query("UPDATE proxima_core.memory SET refs = ARRAY[$1]::uuid[] WHERE t = $2"),
+                sqlx::query("UPDATE proxiima_core.memory SET refs = ARRAY[$1]::uuid[] WHERE t = $2"),
             ),
             (
                 "goal_refs",
                 sqlx::query(
-                    "UPDATE proxima_core.memory SET goal_refs = ARRAY[$1]::uuid[] WHERE t = $2",
+                    "UPDATE proxiima_core.memory SET goal_refs = ARRAY[$1]::uuid[] WHERE t = $2",
                 ),
             ),
         ] {
@@ -1266,7 +1266,7 @@ async fn memory_reference_arrays_remain_append_only() {
 /// The final Fact occurrence constraint remains immutable and complete.
 #[tokio::test]
 async fn fact_occurred_at_is_immutable_and_required() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name)
         .await
         .expect("PG is required for migrations tests");
@@ -1275,13 +1275,13 @@ async fn fact_occurred_at_is_immutable_and_required() {
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner)
             .execute(pool)
             .await?;
         let handle = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/test-v1', $2, $1)",
         )
         .bind(handle)
@@ -1289,7 +1289,7 @@ async fn fact_occurred_at_is_immutable_and_required() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                  (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
              VALUES ($1, $1, 'fact', $2, 'core/test-v1', uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -1298,7 +1298,7 @@ async fn fact_occurred_at_is_immutable_and_required() {
         .execute(pool)
         .await?;
         let refused = sqlx::query(
-            "UPDATE proxima_core.memory SET occurred_at = occurred_at - interval '1 day'
+            "UPDATE proxiima_core.memory SET occurred_at = occurred_at - interval '1 day'
               WHERE t = $1",
         )
         .bind(handle)
@@ -1309,7 +1309,7 @@ async fn fact_occurred_at_is_immutable_and_required() {
 
         let missing = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/test-v1', $2, $1)",
         )
         .bind(missing)
@@ -1317,7 +1317,7 @@ async fn fact_occurred_at_is_immutable_and_required() {
         .execute(pool)
         .await?;
         let refused = sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                  (handle, t, kind, owner_id, schema_id, \"by\", via)
              VALUES ($1, $1, 'fact', $2, 'core/test-v1', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -1337,11 +1337,11 @@ async fn fact_occurred_at_is_immutable_and_required() {
     result.expect("Fact occurrence constraint test failed");
 }
 
-/// The flavor surface is the registry for the core sidecar contract.
+/// The spiice surface is the registry for the core sidecar contract.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+async fn spiice_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
 
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -1353,13 +1353,13 @@ async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
         apply_current_migrations(&pg).await?;
 
         let declared: Vec<String> = sqlx::query_scalar(
-            "SELECT table_name FROM proxima_core.flavor_surface
-              WHERE flavor_id = 'core' ORDER BY table_name",
+            "SELECT table_name FROM proxiima_core.spiice_surface
+              WHERE spiice_id = 'core' ORDER BY table_name",
         )
         .fetch_all(pg.pool_for_tests())
         .await?;
 
-        let mut contract: Vec<String> = proxima_core::FLAVOR_0
+        let mut contract: Vec<String> = proxiima_core::SPIICE_0
             .schemas
             .iter()
             .filter_map(|schema| schema.sidecar_table)
@@ -1370,17 +1370,17 @@ async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
 
         assert_eq!(
             declared, contract,
-            "the migration's flavor #0 rows are the contract's sidecar surfaces"
+            "the migration's spiice #0 rows are the contract's sidecar surfaces"
         );
 
         let owner_id = Uuid::now_v7();
         let handle = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner_id)
             .execute(pg.pool_for_tests())
             .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/agent-note-v1', $2, $3)",
         )
         .bind(handle)
@@ -1390,10 +1390,10 @@ async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
         .await?;
 
         let err = sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                  (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
              VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1',
-                     ARRAY['proxima_core.not_a_declared_surface'], uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+                     ARRAY['proxiima_core.not_a_declared_surface'], uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(owner_id)
@@ -1410,7 +1410,7 @@ async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("flavor_surface subset test failed");
+    result.expect("spiice_surface subset test failed");
 }
 
 /// The migration text IS the generator's output.
@@ -1423,10 +1423,10 @@ async fn flavor_surface_is_the_registry_and_the_stamp_must_be_a_subset() {
 /// the next boot.
 #[test]
 fn generator_output_is_the_migration_text() {
-    let core = proxima_storage_pg::projection::projection_artifacts(&proxima_core::FLAVOR_0)
+    let core = proxiima_storage_pg::projection::projection_artifacts(&proxiima_core::SPIICE_0)
         .expect("core artifacts")
-        .expect("flavor #0 declares a projection");
-    let baseline = include_str!("../migrations/0057_baseline.sql");
+        .expect("spiice #0 declares a projection");
+    let baseline = include_str!("../fixtures/0057_baseline.sql");
     for statement in [core.table.forward.as_str(), core.index.forward.as_str()] {
         assert!(
             baseline.contains(statement),
@@ -1440,38 +1440,38 @@ fn generator_output_is_the_migration_text() {
     );
     assert!(baseline.contains(&core.tag_index.forward));
     for artifact in
-        proxima_storage_pg::search_candidates::candidate_artifacts(&proxima_core::FLAVOR_0)
+        proxiima_storage_pg::search_candidates::candidate_artifacts(&proxiima_core::SPIICE_0)
             .expect("core candidates")
     {
         assert!(
-            proxima_storage_pg::definitions::FUNCTIONS.contains(&artifact.forward),
+            proxiima_storage_pg::definitions::FUNCTIONS.contains(&artifact.forward),
             "definitions do not carry generated candidate function:\n{}",
             artifact.forward
         );
     }
     for artifact in
-        proxima_storage_pg::vector_index::vector_candidate_artifacts().expect("vector candidates")
+        proxiima_storage_pg::vector_index::vector_candidate_artifacts().expect("vector candidates")
     {
         assert!(
-            proxima_storage_pg::definitions::VECTOR.contains(&artifact.forward),
+            proxiima_storage_pg::definitions::VECTOR.contains(&artifact.forward),
             "definitions/vector.sql does not carry generated vector candidate function:\n{}",
             artifact.forward
         );
     }
 
-    // A flavor's baseline is checked from its own crate's tests (the
-    // example flavor's `tests/migration_pg.rs`), which is where that file is.
+    // A spiice's baseline is checked from its own crate's tests (the
+    // example spiice's `tests/migration_pg.rs`), which is where that file is.
     assert!(
-        baseline.contains(proxima_storage_pg::projection::BTREE_GIN_EXTENSION),
+        baseline.contains(proxiima_storage_pg::projection::BTREE_GIN_EXTENSION),
         "the composite GIN needs btree_gin"
     );
 }
 
 /// One frozen core registry, for the tests below and nothing else.
-fn frozen_core_sidecars() -> proxima_storage_pg::PgSidecarRegistryFrozen {
-    let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-    let mut pg = proxima_storage_pg::PgSidecarRegistry::new();
-    proxima_storage_pg::register_core_pg_sidecars(&mut pg);
+fn frozen_core_sidecars() -> proxiima_storage_pg::PgSidecarRegistryFrozen {
+    let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
+    let mut pg = proxiima_storage_pg::PgSidecarRegistry::new();
+    proxiima_storage_pg::register_core_pg_sidecars(&mut pg);
     pg.freeze_against(&registry)
         .expect("the core registration freezes against the core contract")
 }
@@ -1489,7 +1489,7 @@ fn frozen_core_sidecars() -> proxima_storage_pg::PgSidecarRegistryFrozen {
 /// trigger definitions.
 #[test]
 fn generated_declaration_triggers_are_the_migration_text() {
-    use proxima_storage_pg::integrity::DECLARATION_TRIGGER_FUNCTION;
+    use proxiima_storage_pg::integrity::DECLARATION_TRIGGER_FUNCTION;
 
     let migration = include_str!("../definitions/triggers.sql");
     let functions = include_str!("../definitions/functions.sql");
@@ -1535,7 +1535,7 @@ fn generated_declaration_triggers_are_the_migration_text() {
 /// or that stopped guarding one of the other five — fails here.
 #[test]
 fn generated_presence_triggers_are_the_migration_text() {
-    use proxima_storage_pg::integrity::{DELETE_GUARD_FUNCTION, PRESENCE_TRIGGER_FUNCTION};
+    use proxiima_storage_pg::integrity::{DELETE_GUARD_FUNCTION, PRESENCE_TRIGGER_FUNCTION};
 
     let migration = include_str!("../definitions/triggers.sql");
     let functions = include_str!("../definitions/functions.sql");
@@ -1578,7 +1578,7 @@ fn generated_presence_triggers_are_the_migration_text() {
     assert_eq!(
         (presence, orphan),
         (6, 6),
-        "flavor #0 registers seven memory sidecars, one of them owner-pinned; only the other \
+        "spiice #0 registers seven memory sidecars, one of them owner-pinned; only the other \
          six get a presence trigger and an orphan guard"
     );
     assert_eq!(
@@ -1616,7 +1616,7 @@ fn embedded_core_checksums_are_sha384_of_the_files_without_carriage_returns() {
     use sha2::{Digest, Sha384};
 
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let migrator = proxima_storage_pg::core_migrator();
+    let migrator = proxiima_storage_pg::core_migrator();
     let mut checked = 0;
     for entry in std::fs::read_dir(&directory).expect("core migrations directory") {
         let path = entry.expect("migration entry").path();
@@ -1663,7 +1663,7 @@ fn embedded_core_checksums_are_sha384_of_the_files_without_carriage_returns() {
 /// check cannot see this write at all.
 #[tokio::test]
 async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1674,7 +1674,7 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
         let pool = pg.pool_for_tests();
 
         let owner_id = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner_id)
             .execute(pool)
             .await?;
@@ -1690,7 +1690,7 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
             let handle = Uuid::now_v7();
             let mut stamped = pool.begin().await?;
             sqlx::query(
-                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
                  VALUES ($1, 'fact', 'core/agent-note-v1', $2, $1)",
             )
             .bind(handle)
@@ -1698,12 +1698,12 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
             .execute(&mut *stamped)
             .await?;
             let stamp: Vec<String> = if declared {
-                vec!["proxima_core.agent_note_v1".to_owned()]
+                vec!["proxiima_core.agent_note_v1".to_owned()]
             } else {
                 Vec::new()
             };
             sqlx::query(
-                "INSERT INTO proxima_core.memory
+                "INSERT INTO proxiima_core.memory
                      (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
                  VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
             )
@@ -1716,7 +1716,7 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
                 // The same statement the undeclared memory is refused below,
                 // against the memory that declared it.
                 sqlx::query(
-                    "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+                    "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
                      VALUES ($1, $1, 'title', 'body', '{}')",
                 )
                 .bind(handle)
@@ -1729,7 +1729,7 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
         }
 
         let err = sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+            "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $1, 'title', 'body', '{}')",
         )
         .bind(ids[0])
@@ -1738,7 +1738,7 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
         .expect_err("an undeclared sidecar row must be refused by the database");
         let message = err.to_string();
         assert!(
-            message.contains("proxima_core.agent_note_v1"),
+            message.contains("proxiima_core.agent_note_v1"),
             "the refusal names the table: {message}"
         );
         assert!(
@@ -1761,7 +1761,7 @@ async fn a_sidecar_row_no_memory_declares_is_refused_by_the_database() {
     reason = "one Goal fixture exercises each declaration refusal and its cascade"
 )]
 async fn goal_replay_declaration_enforces_identity_and_cascade() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name)
         .await
         .expect("PG is required for migrations tests");
@@ -1771,12 +1771,12 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
         let handle = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner)
             .execute(pool)
             .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
              VALUES ($1, 'core/goal-v1', $2, $3)",
         )
         .bind(handle)
@@ -1785,7 +1785,7 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.goal
+            "INSERT INTO proxiima_core.goal
                  (handle, t, owner_id, title, state, request_id, \"by\", via)
              VALUES ($1, $1, $2, 'replay', 'Active', 'replay-test', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -1794,7 +1794,7 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
         .execute(pool)
         .await?;
         let err = sqlx::query(
-            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
              VALUES ($1, '[]'::jsonb, 0)",
         )
         .bind(handle)
@@ -1813,7 +1813,7 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
             "{err}"
         );
         let err = sqlx::query(
-            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
              VALUES ($1, '{}'::jsonb, -1)",
         )
         .bind(handle)
@@ -1831,14 +1831,14 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
             "{err}"
         );
         sqlx::query(
-            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
              VALUES ($1, '{}'::jsonb, 0)",
         )
         .bind(handle)
         .execute(pool)
         .await?;
         let err = sqlx::query(
-            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
              VALUES ($1, '{}'::jsonb, 0)",
         )
         .bind(handle)
@@ -1857,7 +1857,7 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
         );
         let missing_goal = Uuid::now_v7();
         let err = sqlx::query(
-            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
              VALUES ($1, '{}'::jsonb, 0)",
         )
         .bind(missing_goal)
@@ -1875,12 +1875,12 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
                 .contains("goal_replay_declaration_goal_t_fkey"),
             "{err}"
         );
-        sqlx::query("DELETE FROM proxima_core.goal WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.goal WHERE t = $1")
             .bind(handle)
             .execute(pool)
             .await?;
         let count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.goal_replay_declaration WHERE goal_t = $1",
+            "SELECT count(*) FROM proxiima_core.goal_replay_declaration WHERE goal_t = $1",
         )
         .bind(handle)
         .fetch_one(pool)
@@ -1899,7 +1899,7 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
 /// The checks of `goal_change_v1` refuse the rows they name.
 #[tokio::test]
 async fn goal_change_checks_refuse_the_rows_they_name() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1924,12 +1924,12 @@ async fn goal_change_checks_refuse_the_rows_they_name() {
                 .execute(&mut *tx)
                 .await?;
             let inserted = sqlx::query(
-                "INSERT INTO proxima_core.goal_change_v1
+                "INSERT INTO proxiima_core.goal_change_v1
                      (t, series, goal_t, revision, state, change_kind, parent_t, pending)
                  VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), $1, 'Paused',
-                         $2::proxima_core.goal_change_kind,
+                         $2::proxiima_core.goal_change_kind,
                          CASE WHEN $3 THEN gen_random_uuid() END,
-                         $4::proxima_core.goal_pending_work)",
+                         $4::proxiima_core.goal_pending_work)",
             )
             .bind(revision)
             .bind(kind)
@@ -1947,7 +1947,7 @@ async fn goal_change_checks_refuse_the_rows_they_name() {
             }
         }
 
-        let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.goal_change_v1")
+        let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.goal_change_v1")
             .fetch_one(pool)
             .await?;
         assert_eq!(kept, 1);
@@ -1962,7 +1962,7 @@ async fn goal_change_checks_refuse_the_rows_they_name() {
 /// The boot guardrail is bidirectional, like its projection sibling.
 #[tokio::test]
 async fn a_dropped_declaration_trigger_fails_the_boot_guardrail() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1973,19 +1973,19 @@ async fn a_dropped_declaration_trigger_fails_the_boot_guardrail() {
         let pool = pg.pool_for_tests();
         let sidecars = frozen_core_sidecars();
 
-        proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+        proxiima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
             .await
             .expect("a freshly migrated database satisfies the guardrail");
 
-        sqlx::query("DROP TRIGGER agent_note_v1_declared_by_memory ON proxima_core.agent_note_v1")
+        sqlx::query("DROP TRIGGER agent_note_v1_declared_by_memory ON proxiima_core.agent_note_v1")
             .execute(pool)
             .await?;
-        let err = proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+        let err = proxiima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
             .await
             .expect_err("a registered sidecar with no trigger is unguarded");
         let message = err.to_string();
         assert!(
-            message.contains("proxima_core.agent_note_v1"),
+            message.contains("proxiima_core.agent_note_v1"),
             "the refusal names the table that lost its guard: {message}"
         );
 
@@ -2005,7 +2005,7 @@ async fn a_dropped_declaration_trigger_fails_the_boot_guardrail() {
 /// table. The guardrail has to refuse both, so both are made here.
 #[tokio::test]
 async fn a_damaged_presence_trigger_fails_the_boot_guardrail() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2016,7 +2016,7 @@ async fn a_damaged_presence_trigger_fails_the_boot_guardrail() {
         let pool = pg.pool_for_tests();
         let sidecars = frozen_core_sidecars();
 
-        proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+        proxiima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
             .await
             .expect("a freshly migrated database satisfies the guardrail");
 
@@ -2024,23 +2024,23 @@ async fn a_damaged_presence_trigger_fails_the_boot_guardrail() {
         for (why, drop) in [
             (
                 "no presence trigger",
-                "DROP TRIGGER memory_declares_proxima_core_agent_note_v1
-                     ON proxima_core.memory",
+                "DROP TRIGGER memory_declares_proxiima_core_agent_note_v1
+                     ON proxiima_core.memory",
             ),
             (
                 "no orphan guard",
                 "DROP TRIGGER agent_note_v1_declared_by_memory_on_delete
-                     ON proxima_core.agent_note_v1",
+                     ON proxiima_core.agent_note_v1",
             ),
         ] {
             // SQL-POLICY: fixed-fragment — a literal from the table above.
             sqlx::query(sqlx::AssertSqlSafe(drop)).execute(pool).await?;
-            let err = proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+            let err = proxiima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
                 .await
                 .expect_err(why)
                 .to_string();
             assert!(
-                err.contains("proxima_core.agent_note_v1"),
+                err.contains("proxiima_core.agent_note_v1"),
                 "the refusal names the table that lost its guard ({why}): {err}"
             );
             // Put it back, so the next case is the only damage in the
@@ -2053,7 +2053,7 @@ async fn a_damaged_presence_trigger_fails_the_boot_guardrail() {
                     .execute(pool)
                     .await?;
             }
-            proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+            proxiima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
                 .await
                 .expect("re-applying the generator's output repairs it");
         }
@@ -2074,50 +2074,50 @@ async fn a_damaged_presence_trigger_fails_the_boot_guardrail() {
                 "a WHEN that never matches",
                 "WHEN (false)",
                 "DEFERRABLE INITIALLY DEFERRED",
-                "'proxima_core.agent_note_v1', 't'",
+                "'proxiima_core.agent_note_v1', 't'",
             ),
             (
                 "no WHEN at all",
                 "",
                 "DEFERRABLE INITIALLY DEFERRED",
-                "'proxima_core.agent_note_v1', 't'",
+                "'proxiima_core.agent_note_v1', 't'",
             ),
             (
                 "an immediate trigger",
-                "WHEN ('proxima_core.agent_note_v1' = ANY (NEW.sidecar_tables))",
+                "WHEN ('proxiima_core.agent_note_v1' = ANY (NEW.sidecar_tables))",
                 "",
-                "'proxima_core.agent_note_v1', 't'",
+                "'proxiima_core.agent_note_v1', 't'",
             ),
             (
                 "the wrong guarded surface",
-                "WHEN ('proxima_core.agent_note_v1' = ANY (NEW.sidecar_tables))",
+                "WHEN ('proxiima_core.agent_note_v1' = ANY (NEW.sidecar_tables))",
                 "DEFERRABLE INITIALLY DEFERRED",
-                "'proxima_core.utterance_v1', 't'",
+                "'proxiima_core.utterance_v1', 't'",
             ),
         ] {
             let ddl = format!(
                 // SQL-POLICY: fixed-fragment — see the comment above.
-                "DROP TRIGGER IF EXISTS memory_declares_proxima_core_agent_note_v1
-                     ON proxima_core.memory;
-                 CREATE CONSTRAINT TRIGGER memory_declares_proxima_core_agent_note_v1
-                     AFTER INSERT OR UPDATE OF sidecar_tables ON proxima_core.memory
+                "DROP TRIGGER IF EXISTS memory_declares_proxiima_core_agent_note_v1
+                     ON proxiima_core.memory;
+                 CREATE CONSTRAINT TRIGGER memory_declares_proxiima_core_agent_note_v1
+                     AFTER INSERT OR UPDATE OF sidecar_tables ON proxiima_core.memory
                      {deferral}
                      FOR EACH ROW
                      {when}
                      EXECUTE FUNCTION \
-                         proxima_core.assert_declared_sidecar_present({args})"
+                         proxiima_core.assert_declared_sidecar_present({args})"
             );
             // SQL-POLICY: fixed-fragment — every part comes from the fixed
             // table of damaged shapes above.
             sqlx::raw_sql(sqlx::AssertSqlSafe(ddl))
                 .execute(pool)
                 .await?;
-            let err = proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+            let err = proxiima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
                 .await
                 .expect_err(why)
                 .to_string();
             assert!(
-                err.contains("proxima_core.agent_note_v1"),
+                err.contains("proxiima_core.agent_note_v1"),
                 "the refusal names the table whose guard is wrong ({why}): {err}"
             );
         }
@@ -2145,7 +2145,7 @@ async fn a_key_repoint_onto_an_undeclared_memory_is_refused() {
     const TABLE: &str = "public.repointable_sidecar_v1";
     const KEY: &str = "t";
 
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2157,23 +2157,23 @@ async fn a_key_repoint_onto_an_undeclared_memory_is_refused() {
 
         sqlx::query(
             "CREATE TABLE public.repointable_sidecar_v1 (
-                 t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+                 t uuid PRIMARY KEY REFERENCES proxiima_core.memory (t),
                  body text NOT NULL
              )",
         )
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id)
+            "INSERT INTO proxiima_core.spiice_surface (table_name, spiice_id)
              VALUES ($1, 'repoint-test')",
         )
         .bind(TABLE)
         .execute(pool)
         .await?;
         for artifact in [
-            proxima_storage_pg::integrity::declaration_trigger(TABLE, KEY)
+            proxiima_storage_pg::integrity::declaration_trigger(TABLE, KEY)
                 .expect("the generator emits the INSERT guard"),
-            proxima_storage_pg::integrity::key_repoint_trigger(TABLE, KEY)
+            proxiima_storage_pg::integrity::key_repoint_trigger(TABLE, KEY)
                 .expect("the generator emits the UPDATE guard"),
         ] {
             // SQL-POLICY: generated
@@ -2183,7 +2183,7 @@ async fn a_key_repoint_onto_an_undeclared_memory_is_refused() {
         }
 
         let owner_id = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner_id)
             .execute(pool)
             .await?;
@@ -2194,7 +2194,7 @@ async fn a_key_repoint_onto_an_undeclared_memory_is_refused() {
         let bare = Uuid::now_v7();
         for (t, stamp) in [(declared, vec![TABLE.to_owned()]), (bare, Vec::new())] {
             sqlx::query(
-                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
                  VALUES ($1, 'fact', 'core/agent-note-v1', $2, $1)",
             )
             .bind(t)
@@ -2202,7 +2202,7 @@ async fn a_key_repoint_onto_an_undeclared_memory_is_refused() {
             .execute(pool)
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.memory
+                "INSERT INTO proxiima_core.memory
                      (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
                  VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
             )
@@ -2246,7 +2246,7 @@ async fn a_key_repoint_onto_an_undeclared_memory_is_refused() {
 ///
 /// Two of them change what `pg_get_triggerdef` renders. `search_path` omits
 /// the schema of anything the path already resolves, so a connection with
-/// `proxima_core` on its path renders `EXECUTE FUNCTION
+/// `proxiima_core` on its path renders `EXECUTE FUNCTION
 /// assert_row_not_still_declared(...)`; `quote_all_identifiers` double-quotes
 /// every identifier in the definition, down to `("new"."sidecar_tables")`
 /// inside a `WHEN`. Right trigger, different string — and compared naively, a
@@ -2255,7 +2255,7 @@ async fn a_key_repoint_onto_an_undeclared_memory_is_refused() {
 /// for its own read; this is what says so.
 #[tokio::test]
 async fn the_boot_guardrail_ignores_the_callers_session_settings() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2270,7 +2270,7 @@ async fn the_boot_guardrail_ignores_the_callers_session_settings() {
         // every connection this database hands out — so the guardrail cannot
         // dodge it by picking a fresh one from the pool.
         for setting in [
-            "search_path TO proxima_core, public",
+            "search_path TO proxiima_core, public",
             "quote_all_identifiers TO on",
         ] {
             // SQL-POLICY: fixed-fragment — the only interpolations are the
@@ -2283,11 +2283,11 @@ async fn the_boot_guardrail_ignores_the_callers_session_settings() {
             .await?;
         }
 
-        let (runtime_url, _) = proxima_pg_testkit::split_role_urls(&db_name).await?;
+        let (runtime_url, _) = proxiima_pg_testkit::split_role_urls(&db_name).await?;
         let scoped = PgStorage::connect_with_config(
             &runtime_url,
-            proxima_storage_pg::PgPoolConfig::default(),
-            proxima_storage_pg::PgTuning::default(),
+            proxiima_storage_pg::PgPoolConfig::default(),
+            proxiima_storage_pg::PgTuning::default(),
             pg.platform_scope_for_host(),
             1,
         )
@@ -2304,11 +2304,11 @@ async fn the_boot_guardrail_ignores_the_callers_session_settings() {
         let before = settings().await?;
         assert_eq!(
             (before.0.as_str(), before.1.as_str()),
-            ("proxima_core, public", "on"),
+            ("proxiima_core, public", "on"),
             "the fixture must actually change the settings it claims to"
         );
 
-        proxima_storage_pg::integrity::ensure_declaration_triggers(
+        proxiima_storage_pg::integrity::ensure_declaration_triggers(
             scoped.pool_for_tests(),
             &sidecars,
         )
@@ -2338,7 +2338,7 @@ async fn the_boot_guardrail_ignores_the_callers_session_settings() {
 /// key on `t`, so a rendering the guardrail gets wrong for any other column —
 /// and the key appears in the `BEFORE UPDATE OF <key>` clause and in two
 /// argument lists — would pass every other test here and then refuse to boot
-/// the first out-of-tree flavor that used `KeyShape::MemoryT { column }`. The
+/// the first out-of-tree spiice that used `KeyShape::MemoryT { column }`. The
 /// table is made by hand, registered, given the generator's own four
 /// artifacts, and put in front of the real guardrail.
 #[tokio::test]
@@ -2346,7 +2346,7 @@ async fn the_boot_guardrail_accepts_a_sidecar_keyed_on_something_other_than_t() 
     const TABLE: &str = "public.oddly_keyed_sidecar_v1";
     const KEY: &str = "note_memory_id";
 
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2358,14 +2358,14 @@ async fn the_boot_guardrail_accepts_a_sidecar_keyed_on_something_other_than_t() 
 
         sqlx::query(
             "CREATE TABLE public.oddly_keyed_sidecar_v1 (
-                 note_memory_id uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+                 note_memory_id uuid PRIMARY KEY REFERENCES proxiima_core.memory (t),
                  body text NOT NULL
              )",
         )
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id)
+            "INSERT INTO proxiima_core.spiice_surface (table_name, spiice_id)
              VALUES ($1, 'odd-key-test')",
         )
         .bind(TABLE)
@@ -2377,7 +2377,7 @@ async fn the_boot_guardrail_accepts_a_sidecar_keyed_on_something_other_than_t() 
 
         // Without its triggers the guardrail must refuse: otherwise the
         // acceptance below would prove only that the table was ignored.
-        let err = proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+        let err = proxiima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
             .await
             .expect_err("a registered sidecar with no triggers is unguarded");
         assert!(
@@ -2386,10 +2386,10 @@ async fn the_boot_guardrail_accepts_a_sidecar_keyed_on_something_other_than_t() 
         );
 
         for artifact in [
-            proxima_storage_pg::integrity::declaration_trigger(TABLE, KEY)?,
-            proxima_storage_pg::integrity::key_repoint_trigger(TABLE, KEY)?,
-            proxima_storage_pg::integrity::presence_trigger(TABLE, KEY)?,
-            proxima_storage_pg::integrity::delete_guard_trigger(TABLE, KEY)?,
+            proxiima_storage_pg::integrity::declaration_trigger(TABLE, KEY)?,
+            proxiima_storage_pg::integrity::key_repoint_trigger(TABLE, KEY)?,
+            proxiima_storage_pg::integrity::presence_trigger(TABLE, KEY)?,
+            proxiima_storage_pg::integrity::delete_guard_trigger(TABLE, KEY)?,
         ] {
             // SQL-POLICY: generated
             sqlx::raw_sql(sqlx::AssertSqlSafe(artifact.forward))
@@ -2397,7 +2397,7 @@ async fn the_boot_guardrail_accepts_a_sidecar_keyed_on_something_other_than_t() 
                 .await?;
         }
 
-        proxima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
+        proxiima_storage_pg::integrity::ensure_declaration_triggers(pool, &sidecars)
             .await
             .map_err(|err| {
                 format!(
@@ -2428,7 +2428,7 @@ async fn the_trigger_reads_the_declared_key_column_of_a_renamed_sidecar() {
     const TABLE: &str = "public.renamed_sidecar_v1";
     const KEY: &str = "note_memory_id";
 
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2440,20 +2440,20 @@ async fn the_trigger_reads_the_declared_key_column_of_a_renamed_sidecar() {
 
         sqlx::query(
             "CREATE TABLE public.renamed_sidecar_v1 (
-                 note_memory_id uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+                 note_memory_id uuid PRIMARY KEY REFERENCES proxiima_core.memory (t),
                  body text NOT NULL
              )",
         )
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.flavor_surface (table_name, flavor_id)
+            "INSERT INTO proxiima_core.spiice_surface (table_name, spiice_id)
              VALUES ($1, 'renamed-test')",
         )
         .bind(TABLE)
         .execute(pool)
         .await?;
-        let artifact = proxima_storage_pg::integrity::declaration_trigger(TABLE, KEY)
+        let artifact = proxiima_storage_pg::integrity::declaration_trigger(TABLE, KEY)
             .expect("the generator emits a trigger for a renamed key");
         // SQL-POLICY: generated
         sqlx::query(sqlx::AssertSqlSafe(artifact.forward))
@@ -2461,7 +2461,7 @@ async fn the_trigger_reads_the_declared_key_column_of_a_renamed_sidecar() {
             .await?;
 
         let owner_id = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner_id)
             .execute(pool)
             .await?;
@@ -2469,7 +2469,7 @@ async fn the_trigger_reads_the_declared_key_column_of_a_renamed_sidecar() {
         for declared in [false, true] {
             let handle = Uuid::now_v7();
             sqlx::query(
-                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
                  VALUES ($1, 'fact', 'core/agent-note-v1', $2, $1)",
             )
             .bind(handle)
@@ -2482,7 +2482,7 @@ async fn the_trigger_reads_the_declared_key_column_of_a_renamed_sidecar() {
                 Vec::new()
             };
             sqlx::query(
-                "INSERT INTO proxima_core.memory
+                "INSERT INTO proxiima_core.memory
                      (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
                  VALUES ($1, $1, 'fact', $2, 'core/agent-note-v1', $3, uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
             )
@@ -2527,20 +2527,20 @@ async fn the_trigger_reads_the_declared_key_column_of_a_renamed_sidecar() {
 #[tokio::test]
 async fn the_database_refuses_a_membership_under_a_users_id()
 -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await?;
     let result = async {
         let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
         apply_current_migrations(&pg).await?;
         let pool = pg.pool_for_tests();
         let (user, member) = (Uuid::now_v7(), Uuid::now_v7());
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(user)
             .execute(pool)
             .await?;
         for group_id in [user, Uuid::now_v7()] {
             let err = sqlx::query(
-                "INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation)
+                "INSERT INTO proxiima_core.group_memberships (group_id, member_user_id, relation)
                  VALUES ($1, $2, 'viewer')",
             )
             .bind(group_id)
@@ -2555,7 +2555,7 @@ async fn the_database_refuses_a_membership_under_a_users_id()
             );
         }
         let err = sqlx::query(
-            "INSERT INTO proxima_core.group_memberships
+            "INSERT INTO proxiima_core.group_memberships
                  (group_id, member_user_id, relation, group_kind)
              VALUES ($1, $2, 'viewer', 'personal')",
         )
@@ -2577,12 +2577,12 @@ async fn the_database_refuses_a_membership_under_a_users_id()
 
 #[tokio::test]
 async fn publication_record_state_rejects_claimed() -> Result<(), Box<dyn std::error::Error>> {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await?;
     let result = async {
         let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
         apply_current_migrations(&pg).await?;
-        let error = sqlx::query("SELECT 'claimed'::proxima_core.publication_record_state")
+        let error = sqlx::query("SELECT 'claimed'::proxiima_core.publication_record_state")
             .execute(pg.pool_for_tests())
             .await
             .expect_err("record state must have no claimed variant");

@@ -172,7 +172,7 @@ async fn missing_bucket_after_canonical_conflict_remains_unavailable() {
             .expect_err("missing bucket cannot be adopted");
     let error = blob_error_to_storage(error);
     assert!(
-        matches!(error, proxima_core::StorageError::Unavailable(_)),
+        matches!(error, proxiima_core::StorageError::Unavailable(_)),
         "missing bucket is a provider fault, not invalid upload input: {error:?}"
     );
 }
@@ -191,7 +191,7 @@ async fn named_provider_errors_on_404_remain_unavailable() {
             .expect_err("named provider error cannot be adopted");
         let error = blob_error_to_storage(error);
         assert!(
-            matches!(error, proxima_core::StorageError::Unavailable(_)),
+            matches!(error, proxiima_core::StorageError::Unavailable(_)),
             "explicit {code} must not be hidden by HTTP404: {error:?}"
         );
     }

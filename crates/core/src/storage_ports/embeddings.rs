@@ -22,7 +22,7 @@ pub trait EmbeddingTextPort: Send + Sync {
     ///
     /// `non_embeddable_schemas` are excluded exactly as in
     /// [`Self::list_facts_missing_embedding`]: a row whose schema declared
-    /// [`crate::flavor::EmbeddingRecipe::Never`] has no text to embed,
+    /// [`crate::spiice::EmbeddingRecipe::Never`] has no text to embed,
     /// however it is reached. The exclusion lives here, not only at the
     /// enqueue sites, because a caller holding a `MemoryId` can ask to
     /// embed one row directly and never passes through a job queue.
@@ -51,7 +51,7 @@ pub trait EmbeddingTextPort: Send + Sync {
     /// Facts with text but no vector in `space`.
     ///
     /// `non_embeddable_schemas` are excluded — they are not missing a
-    /// vector, they declined one ([`crate::flavor::EmbeddingRecipe::Never`]).
+    /// vector, they declined one ([`crate::spiice::EmbeddingRecipe::Never`]).
     /// Without the exclusion this reports a backlog that no drain can
     /// ever clear, which is the same shape of lie as a queue that never
     /// empties. Empty slice = exclude nothing.
@@ -327,7 +327,7 @@ pub struct EmbeddingJobDiagnostic {
 
 /// Where one embedding job sits, and the claim age when it is claimed.
 ///
-/// The Postgres column is `proxima_core.embedding_job_status`. Associated
+/// The Postgres column is `proxiima_core.embedding_job_status`. Associated
 /// data is not stored in that enum: claim age and `last_error` are extra
 /// columns, overlaid at the row boundary. [`std::fmt::Display`] /
 /// [`std::str::FromStr`] / `sqlx` speak only the four labels.
@@ -348,7 +348,7 @@ pub enum EmbeddingJobState {
 }
 
 impl EmbeddingJobState {
-    /// The `proxima_core.embedding_job_status` label this state occupies.
+    /// The `proxiima_core.embedding_job_status` label this state occupies.
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -404,7 +404,7 @@ impl std::str::FromStr for EmbeddingJobState {
 
 impl sqlx::Type<sqlx::Postgres> for EmbeddingJobState {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
-        sqlx::postgres::PgTypeInfo::with_name("proxima_core.embedding_job_status")
+        sqlx::postgres::PgTypeInfo::with_name("proxiima_core.embedding_job_status")
     }
 }
 
@@ -453,7 +453,7 @@ pub struct EmbeddingReconcileOptions<'a> {
     /// read to find them.
     pub limit: Option<i64>,
     /// Schema ids that declined a vector
-    /// ([`crate::flavor::EmbeddingRecipe::Never`]), excluded from the scan.
+    /// ([`crate::spiice::EmbeddingRecipe::Never`]), excluded from the scan.
     ///
     /// Reconcile is the global counterpart to the owner-scoped backfill,
     /// and it heals "no job exists" — precisely the state a

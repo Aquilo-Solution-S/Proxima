@@ -1,5 +1,5 @@
 [package]
-name = "proxima-storage-pg"
+name = "proxiima-storage-pg"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,11 @@ repository.workspace = true
 publish = false
 
 [lib]
-name = "proxima_storage_pg"
+name = "proxiima_storage_pg"
 
 [dependencies]
-proxima-core = { path = "../core" }
-proxima-pg-testkit = { path = "../pg-testkit", optional = true }
+proxiima-core = { path = "../core" }
+proxiima-pg-testkit = { path = "../pg-testkit", optional = true }
 sqlx = { workspace = true, features = ["json", "rust_decimal"] }
 pgvector = { workspace = true }
 rust_decimal = { workspace = true }
@@ -29,15 +29,15 @@ sha2 = { workspace = true }
 [features]
 default = []
 backend-api = []
-test-fixtures = ["dep:proxima-pg-testkit", "proxima-core/test-fixtures"]
+test-fixtures = ["dep:proxiima-pg-testkit", "proxiima-core/test-fixtures"]
 
 [lints]
 workspace = true
 
 [dev-dependencies]
-proxima-storage-pg = { path = ".", features = ["test-fixtures"] }
-proxima-core = { path = "../core", features = ["test-fixtures"] }
-proxima-pg-testkit = { path = "../pg-testkit" }
+proxiima-storage-pg = { path = ".", features = ["test-fixtures"] }
+proxiima-core = { path = "../core", features = ["test-fixtures"] }
+proxiima-pg-testkit = { path = "../pg-testkit" }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 time = { workspace = true }

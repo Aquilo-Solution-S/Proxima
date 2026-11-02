@@ -1,8 +1,8 @@
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_storage_pg::test_fixtures::fresh_pg;
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_storage_pg::test_fixtures::fresh_pg;
 
 async fn analyzed(pool: &sqlx::PgPool, config: &str, query: &str) -> Result<String, sqlx::Error> {
-    sqlx::query_scalar("SELECT proxima_core.lexical_query_text($1::regconfig, $2)")
+    sqlx::query_scalar("SELECT proxiima_core.lexical_query_text($1::regconfig, $2)")
         .bind(config)
         .bind(query)
         .fetch_one(pool)
@@ -14,7 +14,7 @@ async fn query_stopwords_choose_dominant_language_and_preserve_source_syntax()
 -> Result<(), Box<dyn std::error::Error>> {
     let (pg, _guard) = fresh_pg("dominant_stopwords").await;
     let pool = pg.pool_for_tests();
-    sqlx::query("INSERT INTO proxima_core.lexical_languages VALUES ('german')")
+    sqlx::query("INSERT INTO proxiima_core.lexical_languages VALUES ('german')")
         .execute(pool)
         .await?;
     for (query, expected) in [
@@ -65,7 +65,7 @@ async fn query_stopwords_choose_dominant_language_and_preserve_source_syntax()
     }
     let negation: String = sqlx::query_scalar(
         "SELECT websearch_to_tsquery('english',
-                    proxima_core.lexical_query_text('english', '-the cat'))::text",
+                    proxiima_core.lexical_query_text('english', '-the cat'))::text",
     )
     .fetch_one(pool)
     .await?;
@@ -73,7 +73,7 @@ async fn query_stopwords_choose_dominant_language_and_preserve_source_syntax()
         negation, "'cat'",
         "a removed stopword's minus must not negate the next term"
     );
-    sqlx::query("INSERT INTO proxima_core.lexical_languages VALUES ('french')")
+    sqlx::query("INSERT INTO proxiima_core.lexical_languages VALUES ('french')")
         .execute(pool)
         .await?;
     assert_eq!(
@@ -95,21 +95,21 @@ async fn query_stopwords_use_configured_dictionaries_and_ignore_unknown_words()
     let (pg, _guard) = fresh_pg("dictionary_stopwords").await;
     let pool = pg.pool_for_tests();
     sqlx::raw_sql(
-        "CREATE TEXT SEARCH DICTIONARY proxima_core.query_stop_only (
+        "CREATE TEXT SEARCH DICTIONARY proxiima_core.query_stop_only (
              TEMPLATE = pg_catalog.simple, STOPWORDS = english, ACCEPT = false
          );
-         CREATE TEXT SEARCH CONFIGURATION proxima_core.query_custom (PARSER = pg_catalog.default);
-         ALTER TEXT SEARCH CONFIGURATION proxima_core.query_custom
-             ADD MAPPING FOR asciiword, word WITH proxima_core.query_stop_only;
-         DELETE FROM proxima_core.lexical_default;
-         DELETE FROM proxima_core.lexical_languages;
-         INSERT INTO proxima_core.lexical_languages VALUES ('proxima_core.query_custom');",
+         CREATE TEXT SEARCH CONFIGURATION proxiima_core.query_custom (PARSER = pg_catalog.default);
+         ALTER TEXT SEARCH CONFIGURATION proxiima_core.query_custom
+             ADD MAPPING FOR asciiword, word WITH proxiima_core.query_stop_only;
+         DELETE FROM proxiima_core.lexical_default;
+         DELETE FROM proxiima_core.lexical_languages;
+         INSERT INTO proxiima_core.lexical_languages VALUES ('proxiima_core.query_custom');",
     )
     .execute(pool)
     .await?;
     let dictionary: (Option<Vec<String>>, Option<Vec<String>>) = sqlx::query_as(
-        "SELECT ts_lexize('proxima_core.query_stop_only', 'the'),
-                ts_lexize('proxima_core.query_stop_only', 'checkpoint')",
+        "SELECT ts_lexize('proxiima_core.query_stop_only', 'the'),
+                ts_lexize('proxiima_core.query_stop_only', 'checkpoint')",
     )
     .fetch_one(pool)
     .await?;
@@ -123,7 +123,7 @@ async fn query_stopwords_use_configured_dictionaries_and_ignore_unknown_words()
         "unknown checkpoint"
     );
 
-    sqlx::query("DELETE FROM proxima_core.lexical_languages")
+    sqlx::query("DELETE FROM proxiima_core.lexical_languages")
         .execute(pool)
         .await?;
     assert_eq!(
@@ -137,13 +137,13 @@ async fn query_stopwords_use_configured_dictionaries_and_ignore_unknown_words()
 #[tokio::test]
 async fn lexical_search_uses_dominant_german_stopwords_for_english_rows()
 -> Result<(), Box<dyn std::error::Error>> {
-    use proxima_core::storage_ports::MemoryReadPort;
-    use proxima_core::{OwnerId, UserId};
+    use proxiima_core::storage_ports::MemoryReadPort;
+    use proxiima_core::{OwnerId, UserId};
     use uuid::Uuid;
 
     let (pg, _guard) = fresh_pg("german_english_query").await;
     let pool = pg.pool_for_tests();
-    sqlx::query("INSERT INTO proxima_core.lexical_languages VALUES ('german')")
+    sqlx::query("INSERT INTO proxiima_core.lexical_languages VALUES ('german')")
         .execute(pool)
         .await?;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));

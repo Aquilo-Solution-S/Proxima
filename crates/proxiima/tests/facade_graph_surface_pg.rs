@@ -1,0 +1,1571 @@
+#[path = "fixtures/split_core_db.rs"]
+mod split_core_db;
+
+use std::collections::BTreeSet;
+
+use proxiima::spiice::{
+    AbstractionPayload, EdgeEndpoint, EdgeKind, FactPayload, InputContractId, MemoryId, OperatorId,
+    PayloadKeyBuilder, PayloadReference, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar,
+    PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry, ReferenceBinding, SidecarInsertPermit,
+    SidecarPayload, SpiiceBundle, SpiiceRegistry,
+};
+use proxiima::{
+    AppInfo, AuthPath, AuthzContext, GetMemoriesReadRequest, Proxiima, QueryRequest, ServedSurface,
+    SpiiceApp, StorageError, company_owner,
+};
+use proxiima_core::spiice::{
+    BandComparability, CounterRule, EmbeddingRecipe, EraseRule, ExportRule, ForgetRule, KeyShape,
+    LanguagePolicy, ProjectionDecl, ProjectionSpec, Provenance, RankSource, SchemaContract,
+    SchemaRef, SearchProjectionDecl, SpiiceContract, SubstringArm, Surface, TransferRule,
+    WEIGHT_UNIFORM, WeightedField,
+};
+use proxiima_core::verbs::schema::PayloadKind;
+use proxiima_core::{EntityKind, Role, SearchProjectionColumnKind, UserId};
+use split_core_db::clone_split_core_db;
+use uuid::Uuid;
+
+fn authenticated(context: AuthzContext) -> AuthzContext {
+    proxiima_core::test_fixtures::authenticated_context(context)
+}
+
+fn sdk_fact() -> FacadeFact {
+    FacadeFact {
+        note_id: Uuid::now_v7(),
+        title: "Observation".into(),
+        body: "A synthetic observation".into(),
+        tags: Vec::new(),
+    }
+}
+
+fn sdk_abstraction(
+    target: proxiima::MemoryTarget,
+    owner: proxiima::OwnerId,
+    fact: MemoryId,
+    origins: impl IntoIterator<Item = MemoryId>,
+) -> Result<proxiima::DerivedMemory, proxiima::ProtocolError> {
+    proxiima::DerivedMemory::abstraction(
+        target,
+        owner,
+        "A synthetic conclusion",
+        FacadeAbstraction {
+            title: "Conclusion".into(),
+            body: "A synthetic conclusion".into(),
+            source_count: 1,
+            observed_entity: fact.into_inner(),
+        },
+        origins,
+        proxiima::DerivationIdentity::new(
+            OperatorId::new(Uuid::now_v7()),
+            InputContractId::new(Uuid::now_v7()),
+        ),
+    )
+}
+
+fn sdk_new_series() -> proxiima::MemoryTarget {
+    proxiima::MemoryTarget::Series(proxiima::SeriesHandle::new(Uuid::now_v7()))
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
+    let split_db = clone_split_core_db("sdk_derived_identity")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxiima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .served_surface(ServedSurface::All)
+            .build()
+            .await?;
+        let authz = authenticated(built.single_owner_authz().expect("one owner"));
+        let engine = built.host().engine();
+        let fact = engine
+            .ingest_fact(
+                &authz,
+                proxiima::FactWrite::new(owner, "sdk/identity", &sdk_fact()),
+            )
+            .await?;
+        let handle = proxiima::SeriesHandle::new(Uuid::now_v7());
+        let request = sdk_abstraction(
+            proxiima::MemoryTarget::Series(handle),
+            owner,
+            fact.memory_id,
+            [fact.memory_id],
+        )?;
+        let (first, concurrent) = tokio::join!(
+            engine.derive_memory(&authz, request.clone()),
+            engine.derive_memory(&authz, request.clone()),
+        );
+        let first = first?;
+        let concurrent = concurrent?;
+        assert_eq!(
+            first.memory_id, concurrent.memory_id,
+            "concurrent creates converge on one row"
+        );
+        assert_ne!(
+            first.idempotent_replay, concurrent.idempotent_replay,
+            "one admission and one replay"
+        );
+        assert_ne!(
+            first.memory_id.into_inner(),
+            handle.into_inner(),
+            "a series handle is not an admitted row t"
+        );
+        let replay = engine.derive_memory(&authz, request).await?;
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.memory_id, first.memory_id);
+
+        let second = engine
+            .derive_memory(
+                &authz,
+                sdk_abstraction(sdk_new_series(), owner, fact.memory_id, [first.memory_id])?,
+            )
+            .await?;
+        let revised = engine
+            .derive_memory(
+                &authz,
+                sdk_abstraction(
+                    proxiima::MemoryTarget::Revision(first.memory_id),
+                    owner,
+                    fact.memory_id,
+                    [first.memory_id],
+                )?,
+            )
+            .await?;
+        assert_ne!(first.memory_id, revised.memory_id);
+        let mut all = QueryRequest::readable();
+        all.supersession = proxiima::SupersessionStatus::IncludeSuperseded;
+        let history = engine.query(&authz, &all).await?;
+        let original = history
+            .memories
+            .iter()
+            .find(|row| row.id == first.memory_id)
+            .expect("original preserved");
+        let revision = history
+            .memories
+            .iter()
+            .find(|row| row.id == revised.memory_id)
+            .expect("revision persisted");
+        let conclusion = history
+            .memories
+            .iter()
+            .find(|row| row.id == second.memory_id)
+            .expect("independent conclusion preserved");
+        assert_eq!(original.handle, handle.into_inner());
+        assert_eq!(revision.handle, original.handle);
+        assert_ne!(conclusion.handle, original.handle);
+        assert_eq!(original.origins, [fact.memory_id]);
+        assert_eq!(revision.origins, [first.memory_id]);
+        assert_eq!(conclusion.origins, [first.memory_id]);
+        let heads = engine.query(&authz, &QueryRequest::readable()).await?;
+        assert!(heads.memories.iter().any(|row| row.id == second.memory_id));
+        assert!(heads.memories.iter().any(|row| row.id == revised.memory_id));
+        assert!(!heads.memories.iter().any(|row| row.id == first.memory_id));
+
+        // Revision requests append versions; they do not carry a separate replay key.
+        let next = engine
+            .derive_memory(
+                &authz,
+                sdk_abstraction(
+                    proxiima::MemoryTarget::Revision(first.memory_id),
+                    owner,
+                    fact.memory_id,
+                    [first.memory_id],
+                )?,
+            )
+            .await?;
+        assert_ne!(next.memory_id, revised.memory_id);
+        assert!(!next.idempotent_replay);
+        let changed = engine
+            .derive_memory(
+                &authz,
+                sdk_abstraction(
+                    proxiima::MemoryTarget::Series(handle),
+                    owner,
+                    fact.memory_id,
+                    [second.memory_id],
+                )?,
+            )
+            .await?;
+        assert_ne!(changed.memory_id, next.memory_id);
+        assert!(!changed.idempotent_replay);
+        let rows = engine.query(&authz, &all).await?.memories;
+        let row = rows
+            .iter()
+            .find(|row| row.id == changed.memory_id)
+            .expect("changed-origin series version");
+        assert_eq!(row.handle, handle.into_inner());
+        assert_eq!(row.origins, [second.memory_id]);
+        assert!(
+            rows.iter().any(|row| row.id == first.memory_id),
+            "series reingest preserves history"
+        );
+        let heads = engine
+            .query(&authz, &QueryRequest::readable())
+            .await?
+            .memories;
+        assert!(heads.iter().any(|row| row.id == changed.memory_id));
+        assert!(!heads.iter().any(|row| row.id == next.memory_id));
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("typed derivation identity");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
+    let split_db = clone_split_core_db("sdk_derived_session")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxiima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .served_surface(ServedSurface::All)
+            .build()
+            .await?;
+        let authz = authenticated(built.single_owner_authz().expect("one owner"));
+        let engine = built.host().engine();
+        let mut uow = engine.unit_of_work(&authz).await?;
+        let fact = uow
+            .ingest_fact(proxiima::FactWrite::new(owner, "sdk/session", &sdk_fact()))
+            .await?;
+        let first = uow
+            .derive_memory(sdk_abstraction(
+                sdk_new_series(),
+                owner,
+                fact.memory_id,
+                [fact.memory_id],
+            )?)
+            .await?;
+        let second = uow
+            .derive_memory(
+                sdk_abstraction(sdk_new_series(), owner, fact.memory_id, [first.memory_id])?
+                    .refs([first.memory_id, fact.memory_id, first.memory_id]),
+            )
+            .await?;
+        let forged_payload_reference =
+            sdk_abstraction(sdk_new_series(), owner, first.memory_id, [first.memory_id])?;
+        let err = uow
+            .derive_memory(forged_payload_reference)
+            .await
+            .expect_err("payload declares its Abstraction target as Fact");
+        assert_eq!(err.code, proxiima::ErrorCode::InvalidArgument);
+        assert!(
+            err.message.contains("readable target is Abstraction"),
+            "kind mismatch is rejected during preparation: {err}"
+        );
+        uow.commit().await?;
+        let standalone = engine
+            .derive_memory(
+                &authz,
+                sdk_abstraction(sdk_new_series(), owner, fact.memory_id, [first.memory_id])?
+                    .refs([first.memory_id, fact.memory_id, first.memory_id]),
+            )
+            .await?;
+        let page = engine.query(&authz, &QueryRequest::readable()).await?;
+        let a = page
+            .memories
+            .iter()
+            .find(|row| row.id == second.memory_id)
+            .expect("transaction output");
+        let b = page
+            .memories
+            .iter()
+            .find(|row| row.id == standalone.memory_id)
+            .expect("standalone output");
+        assert_eq!(a.origins, [first.memory_id]);
+        assert_eq!(a.origins, b.origins);
+        assert_eq!(a.refs, b.refs);
+        assert_eq!(
+            a.refs.len(),
+            2,
+            "payload Fact ref and extra Abstraction ref, deduplicated"
+        );
+        assert!(a.refs.contains(&fact.memory_id));
+        assert!(a.refs.contains(&first.memory_id));
+
+        let rolled_back = {
+            let mut pending = engine.unit_of_work(&authz).await?;
+            let row = pending
+                .derive_memory(sdk_abstraction(
+                    sdk_new_series(),
+                    owner,
+                    fact.memory_id,
+                    [first.memory_id],
+                )?)
+                .await?;
+            let invalid = pending
+                .derive_memory(sdk_abstraction(
+                    sdk_new_series(),
+                    owner,
+                    fact.memory_id,
+                    [fact.memory_id, first.memory_id],
+                )?)
+                .await;
+            assert!(
+                invalid.is_err(),
+                "mixed origins must fail inside an open transaction"
+            );
+            row.memory_id
+        };
+        assert!(
+            engine
+                .get_memories(
+                    &authz,
+                    &GetMemoriesReadRequest {
+                        memory_ids: vec![rolled_back]
+                    }
+                )
+                .await?
+                .memories
+                .is_empty(),
+            "drop rolls back all pending rows"
+        );
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("typed derivation session visibility");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs() {
+    let split_db = clone_split_core_db("sdk_derived_access")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let foreign = company_owner(Uuid::now_v7());
+        let built = Proxiima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .served_surface(ServedSurface::All)
+            .build()
+            .await?;
+        let engine = built.host().engine();
+        let local_authz = authenticated(built.single_owner_authz().expect("one owner"));
+        let foreign_authz = authenticated(
+            AuthzContext::for_subject_with_role(
+                UserId::new(Uuid::now_v7()),
+                [(foreign, Role::admin())],
+                AuthPath::HostBearer,
+            )
+            .narrowed_to_owner(foreign)
+            .expect("foreign write scope"),
+        );
+        let both = authenticated(AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin()), (foreign, Role::admin())],
+            AuthPath::HostBearer,
+        ));
+        let fact = engine
+            .ingest_fact(
+                &foreign_authz,
+                proxiima::FactWrite::new(foreign, "sdk/foreign", &sdk_fact()),
+            )
+            .await?;
+        let foreign_a = engine
+            .derive_memory(
+                &foreign_authz,
+                sdk_abstraction(sdk_new_series(), foreign, fact.memory_id, [fact.memory_id])?,
+            )
+            .await?;
+        let request = sdk_abstraction(
+            sdk_new_series(),
+            owner,
+            fact.memory_id,
+            [foreign_a.memory_id],
+        )?;
+        let denied = engine
+            .derive_memory(&local_authz, request.clone())
+            .await
+            .expect_err("foreign premise is unreadable");
+        assert_eq!(denied.code, proxiima::ErrorCode::Forbidden);
+        let allowed = engine.derive_memory(&both, request).await?;
+        let page = engine.query(&both, &QueryRequest::readable()).await?;
+        let row = page
+            .memories
+            .iter()
+            .find(|row| row.id == allowed.memory_id)
+            .expect("foreign-derived output");
+        assert_eq!(row.owner, owner);
+        assert_eq!(row.origins, [foreign_a.memory_id]);
+        assert!(
+            sdk_abstraction(sdk_new_series(), owner, fact.memory_id, []).is_err(),
+            "empty Abstraction origins rejected at construction"
+        );
+        let mixed = sdk_abstraction(
+            sdk_new_series(),
+            owner,
+            fact.memory_id,
+            [fact.memory_id, foreign_a.memory_id],
+        )?;
+        assert!(engine.derive_memory(&both, mixed).await.is_err());
+
+        let pending_id = {
+            let mut uow = engine.unit_of_work(&both).await?;
+            let pending = uow
+                .derive_memory(sdk_abstraction(
+                    sdk_new_series(),
+                    foreign,
+                    fact.memory_id,
+                    [foreign_a.memory_id],
+                )?)
+                .await?;
+            let wrong_owner = sdk_abstraction(
+                proxiima::MemoryTarget::Revision(pending.memory_id),
+                owner,
+                fact.memory_id,
+                [pending.memory_id],
+            )?;
+            assert!(
+                uow.derive_memory(wrong_owner).await.is_err(),
+                "a revision cannot transfer a pending row to another owner"
+            );
+            pending.memory_id
+        };
+        assert!(
+            engine
+                .get_memories(
+                    &both,
+                    &GetMemoriesReadRequest {
+                        memory_ids: vec![pending_id]
+                    }
+                )
+                .await?
+                .memories
+                .is_empty(),
+            "failed pending revision has no committed side effects"
+        );
+        let perspective = engine
+            .derive_memory(
+                &both,
+                proxiima::DerivedMemory::perspective(
+                    sdk_new_series(),
+                    owner,
+                    "Synthetic policy",
+                    proxiima_core::AgentDerivationV1 {
+                        title: "Policy".into(),
+                        body: "Synthetic policy".into(),
+                        tags: Vec::new(),
+                        idempotency_key: None,
+                        source_memory_ids: vec![allowed.memory_id.into_inner()],
+                        model_id: "fixture".into(),
+                        client_name: "fixture".into(),
+                        client_version: "1".into(),
+                    },
+                    [allowed.memory_id],
+                    proxiima::DerivationIdentity::new(
+                        OperatorId::new(Uuid::now_v7()),
+                        InputContractId::new(Uuid::now_v7()),
+                    ),
+                )?,
+            )
+            .await?;
+        let invalid = sdk_abstraction(
+            sdk_new_series(),
+            owner,
+            fact.memory_id,
+            [perspective.memory_id],
+        )?;
+        assert!(
+            engine.derive_memory(&both, invalid).await.is_err(),
+            "Perspective cannot be an Abstraction premise"
+        );
+        let interpretation = engine
+            .derive_memory(
+                &both,
+                proxiima::DerivedMemory::interpretation(
+                    sdk_new_series(),
+                    owner,
+                    "Synthetic interpretation",
+                    proxiima_core::InterpretationV1 {
+                        claim: "Synthetic interpretation".into(),
+                        confidence: 60,
+                        subject_memory_ids: vec![perspective.memory_id.into_inner()],
+                        subject_kinds: vec![proxiima_core::InterpretationSubjectKind::Perspective],
+                        model_id: "fixture".into(),
+                        client_name: "fixture".into(),
+                        client_version: "1".into(),
+                    },
+                ),
+            )
+            .await?;
+        let page = engine.query(&both, &QueryRequest::readable()).await?;
+        let row = page
+            .memories
+            .iter()
+            .find(|row| row.id == interpretation.memory_id)
+            .expect("interpretation");
+        assert!(row.origins.is_empty());
+        assert_eq!(row.refs, [perspective.memory_id]);
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("typed derivation access");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
+    use proxiima::spiice::{FactWrite, SeriesHandle};
+    let split_db = clone_split_core_db("sdk_fact_series")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let foreign = company_owner(Uuid::now_v7());
+        let built = Proxiima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .served_surface(ServedSurface::All)
+            .build()
+            .await?;
+        let engine = built.host().engine();
+        let authz = authenticated(AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin()), (foreign, Role::admin())],
+            AuthPath::HostBearer,
+        ));
+        let first_payload = sdk_fact();
+        let mut later_payload = first_payload.clone();
+        later_payload.body = "Later observation".into();
+        let mut uow = engine.unit_of_work(&authz).await?;
+        let first = uow
+            .ingest_fact(FactWrite::new(owner, "sdk/versions", &first_payload))
+            .await?;
+        let later = uow
+            .ingest_fact(
+                FactWrite::new(owner, "sdk/versions", &later_payload).refs([first.memory_id]),
+            )
+            .await?;
+        assert_eq!(
+            first.handle, later.handle,
+            "one natural identity has one series inside the transaction"
+        );
+        assert_ne!(
+            first.memory_id, later.memory_id,
+            "distinct deliveries remain distinct Fact rows"
+        );
+        let replay = uow
+            .ingest_fact(FactWrite::new(owner, "sdk/versions", &first_payload))
+            .await?;
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.memory_id, first.memory_id);
+        let elsewhere = uow
+            .ingest_fact(
+                FactWrite::new(foreign, "sdk/versions", &first_payload).refs([first.memory_id]),
+            )
+            .await?;
+        assert_ne!(
+            elsewhere.handle, first.handle,
+            "natural identity is owner-scoped"
+        );
+        let explicit = SeriesHandle::new(Uuid::now_v7());
+        let explicit_row = uow
+            .ingest_fact(FactWrite::new(owner, "sdk/explicit", &sdk_fact()).handle(explicit))
+            .await?;
+        assert_eq!(explicit_row.handle, explicit.into_inner());
+        uow.commit().await?;
+        let mut query = QueryRequest::readable();
+        query.supersession = proxiima::SupersessionStatus::IncludeSuperseded;
+        let rows = engine.query(&authz, &query).await?.memories;
+        assert!(
+            rows.iter().all(|row| row.origins.is_empty()),
+            "Facts never acquire derivation origins"
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.id == later.memory_id)
+                .expect("later observation")
+                .refs,
+            [first.memory_id]
+        );
+        let mut foreign_query = QueryRequest::readable();
+        foreign_query.memory_ids = vec![elsewhere.memory_id];
+        let foreign_rows = engine.query(&authz, &foreign_query).await?.memories;
+        assert_eq!(foreign_rows.len(), 1);
+        assert_eq!(foreign_rows[0].id, elsewhere.memory_id);
+        assert_eq!(foreign_rows[0].owner, foreign);
+        assert_eq!(
+            foreign_rows[0].refs,
+            [first.memory_id],
+            "explicit destination preserves the caller's foreign read access"
+        );
+        let local_only = authenticated(built.single_owner_authz().expect("local context"));
+        let denied = engine
+            .ingest_fact(
+                &local_only,
+                FactWrite::new(foreign, "sdk/denied", &sdk_fact()),
+            )
+            .await
+            .expect_err("destination needs write authority");
+        assert_eq!(denied.code, proxiima::ErrorCode::Forbidden);
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("typed Fact series");
+}
+
+#[tokio::test]
+async fn natural_key_selection_uses_the_authorized_payload() {
+    let split_db = clone_split_core_db("sdk_nk_binding")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxiima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .served_surface(ServedSurface::All)
+            .build()
+            .await?;
+        let engine = built.host().engine();
+        let authz = authenticated(built.single_owner_authz().expect("one owner"));
+        let original = sdk_fact();
+        let draft = proxiima::FactWriteCommand::from_payload("sdk/binding", &original);
+        let sidecars = [SidecarPayload::fact(original.clone())];
+        let authorized = engine
+            .authorize_fact_ingest(&authz, draft.clone(), &sidecars)
+            .await?;
+        let err = engine
+            .authorize_fact_ingest(
+                &authz,
+                draft.clone(),
+                &[sidecars[0].clone(), sidecars[0].clone()],
+            )
+            .await
+            .expect_err("ambiguous matching payloads must be rejected at authorization");
+        assert!(err.message.contains("exactly one"), "{err}");
+        let missing = engine.authorize_fact_ingest(&authz, draft, &[]).await?;
+        let err = engine
+            .ingest_fact_with_typed_sidecar(&missing)
+            .await
+            .expect_err("automatic NK selection requires authorization-time values");
+        assert!(err.message.contains("typed Fact payload"), "{err}");
+        assert!(
+            engine
+                .query(&authz, &QueryRequest::readable())
+                .await?
+                .memories
+                .is_empty()
+        );
+        let valid = engine.ingest_fact_with_typed_sidecar(&authorized).await?;
+        assert_eq!(
+            engine
+                .get_memories(
+                    &authz,
+                    &GetMemoriesReadRequest {
+                        memory_ids: vec![valid.memory_id]
+                    }
+                )
+                .await?
+                .memories
+                .len(),
+            1
+        );
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("natural-key binding");
+}
+
+#[test]
+fn facade_does_not_export_raw_edge_append_surface() {
+    let facade = include_str!("../src/lib.rs");
+    assert!(
+        !facade.contains("pub use proxiima_storage_pg::verbs::edge_append"),
+        "facade must not re-export raw storage edge append APIs"
+    );
+    for forbidden in ["append_edge", "append_edge_in_tx", "EdgeDraft"] {
+        assert!(
+            !facade.contains(forbidden),
+            "facade contains forbidden raw edge append surface {forbidden}"
+        );
+    }
+}
+
+#[allow(unused_imports)]
+mod facade_imports_compile {
+    use proxiima::spiice::{
+        Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, PayloadKeyBuilder,
+        PayloadReference, ReferenceBinding, SpiiceRegistryFrozen, Tool, ToolCtx, ToolError,
+    };
+    use proxiima::{
+        EdgeExistsRequest, EdgeExistsResponse, EdgeFilter, EdgeReadCursor, EdgeReadRequest,
+        EdgeReadResponse, FactCitationReadback, MemoryLineageDirection, MemoryLineageEdge,
+        MemoryLineageNode, MemoryLineageRequest, MemoryLineageResponse, MemoryRow, QueryRequest,
+        QueryResponse, SupersessionStatus, build_instructions, how_to_markdown,
+    };
+
+    #[cfg(feature = "openai-compat-embed")]
+    use proxiima::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct FacadeFact {
+    note_id: Uuid,
+    title: String,
+    body: String,
+    tags: Vec<String>,
+}
+
+impl FactPayload for FacadeFact {
+    const SCHEMA_ID: &'static str = "facade-test/fact-v2";
+    const SCHEMA_VERSION: u32 = 2;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("note_id", self.note_id);
+        key.field_str("body", &self.body);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        let title = &self.title;
+        let body = &self.body;
+        format!("{title}\n\n{body}")
+    }
+
+    fn sidecar_table() -> Option<&'static str> {
+        Some("facade_surface.fact_v1")
+    }
+
+    fn natural_key_columns() -> &'static [&'static str] {
+        &["note_id"]
+    }
+}
+
+impl PgMemorySidecar for FacadeFact {
+    fn insert_memory_sidecar<'t>(
+        &'t self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+        _permit: SidecarInsertPermit,
+    ) -> PgSidecarFuture<'t> {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO facade_surface.fact_v1
+                    (t, note_id, title, body, tags)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (t) DO NOTHING",
+            )
+            .bind(memory_id.into_inner())
+            .bind(self.note_id)
+            .bind(&self.title)
+            .bind(&self.body)
+            .bind(&self.tags)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for FacadeFact {
+    // The column this table stores its memory `t` under, spelled by
+    // every statement below. Freeze holds it equal to the contract
+    // `Surface`'s `KeyShape::MemoryT { column }` for facade_surface.fact_v1.
+    const OWNER: proxiima::spiice::SidecarOwnerMode = proxiima::spiice::SidecarOwnerMode::None;
+    const MEMORY_KEY_COLUMN: &'static str = "t";
+
+    fn load_memory_payload(
+        ctx: PgSidecarReadCtx<'_>,
+        memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async move {
+            let row: Option<(Uuid, String, String, Vec<String>)> = ctx
+                .fetch_optional_by_memory_id(
+                    "SELECT note_id, title, body, tags
+                       FROM facade_surface.fact_v1
+                      WHERE t = $1",
+                    memory_id,
+                )
+                .await?;
+            Ok(row.map(|(note_id, title, body, tags)| {
+                SidecarPayload::fact(FacadeFact {
+                    note_id,
+                    title,
+                    body,
+                    tags,
+                })
+            }))
+        })
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct FacadeSidecarlessFact {
+    observation_id: Uuid,
+    body: String,
+}
+
+impl FactPayload for FacadeSidecarlessFact {
+    const SCHEMA_ID: &'static str = "facade-test/sidecarless-fact-v3";
+    const SCHEMA_VERSION: u32 = 3;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_uuid("observation_id", self.observation_id);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        self.body.clone()
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct FacadeAbstraction {
+    title: String,
+    body: String,
+    source_count: i32,
+    /// The Fact entity this abstraction is *about*, as opposed to the
+    /// observations it was made from. A schema-declared reference field:
+    /// the spiice states it, ingest turns it into one `reference` row, and
+    /// nobody writes an edge. Follow-head, so re-observing the entity does
+    /// not strand the pointer on a frozen observation.
+    observed_entity: Uuid,
+}
+
+impl AbstractionPayload for FacadeAbstraction {
+    const SCHEMA_ID: &'static str = "facade-test/abstraction-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "facade_surface.abstraction_v1"
+    }
+
+    fn references(&self) -> Vec<PayloadReference> {
+        vec![PayloadReference::memory(
+            "observed_entity",
+            EntityKind::Fact,
+            MemoryId::new(self.observed_entity),
+        )]
+    }
+}
+
+impl PgMemorySidecar for FacadeAbstraction {
+    fn insert_memory_sidecar<'t>(
+        &'t self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        memory_id: MemoryId,
+        _permit: SidecarInsertPermit,
+    ) -> PgSidecarFuture<'t> {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO facade_surface.abstraction_v1
+                    (t, title, body, source_count, observed_entity)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (t) DO NOTHING",
+            )
+            .bind(memory_id.into_inner())
+            .bind(&self.title)
+            .bind(&self.body)
+            .bind(self.source_count)
+            .bind(self.observed_entity)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl PgMemoryPayload for FacadeAbstraction {
+    // The column this table stores its memory `t` under, spelled by
+    // every statement below. Freeze holds it equal to the contract
+    // `Surface`'s `KeyShape::MemoryT { column }` for facade_surface.abstraction_v1.
+    const OWNER: proxiima::spiice::SidecarOwnerMode = proxiima::spiice::SidecarOwnerMode::None;
+    const MEMORY_KEY_COLUMN: &'static str = "t";
+
+    fn load_memory_payload(
+        ctx: PgSidecarReadCtx<'_>,
+        memory_id: MemoryId,
+    ) -> PgMemoryPayloadFuture<'_> {
+        Box::pin(async move {
+            let row: Option<(String, String, i32, Uuid)> = ctx
+                .fetch_optional_by_memory_id(
+                    "SELECT title, body, source_count, observed_entity
+                       FROM facade_surface.abstraction_v1
+                      WHERE t = $1",
+                    memory_id,
+                )
+                .await?;
+            Ok(row.map(|(title, body, source_count, observed_entity)| {
+                SidecarPayload::abstraction(FacadeAbstraction {
+                    title,
+                    body,
+                    source_count,
+                    observed_entity,
+                })
+            }))
+        })
+    }
+}
+
+const FACADE_BANDS: &[proxiima_core::spiice::Band] = &[
+    proxiima_core::spiice0::BAND_EXACT,
+    proxiima_core::spiice0::BAND_RESCUE,
+    proxiima_core::spiice0::BAND_SUBSTRING,
+];
+
+const FACADE_PROJECTION: ProjectionSpec = ProjectionSpec {
+    table: "facade_surface.projection",
+    index: "facade_surface_projection_owner_tsv_gin",
+    overfetch_k: 1_000,
+    band_comparability: BandComparability::CoreBands,
+    rank_source: RankSource::Projection,
+};
+
+const fn facade_memory_surface(table: &'static str) -> Surface {
+    Surface {
+        table,
+        key: KeyShape::MemoryT { column: "t" },
+        owner_column: None,
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::ByKey,
+        export: ExportRule::Rows,
+        forget: ForgetRule::DumpThenDelete,
+        lexical_language_column: None,
+        counter: CounterRule::Counted("sidecar_rows"),
+        completeness: None,
+    }
+}
+
+static FACADE_CONTRACT: SpiiceContract = SpiiceContract {
+    spiice_id: "facade-test",
+    ordinal: 7,
+    schemas: &[
+        SchemaContract {
+            id: SchemaRef::new("facade-test", "fact", 2),
+            kind: PayloadKind::Fact,
+            sidecar_table: Some("facade_surface.fact_v1"),
+            search: SearchProjectionDecl::Projected {
+                fields: &[
+                    WeightedField {
+                        column: "title",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: WEIGHT_UNIFORM,
+                    },
+                    WeightedField {
+                        column: "body",
+                        kind: SearchProjectionColumnKind::Text,
+                        weight: WEIGHT_UNIFORM,
+                    },
+                ],
+                tag_column: Some("tags"),
+                language: LanguagePolicy::Pinned("simple"),
+                bands: FACADE_BANDS,
+                substring: SubstringArm::MemoryFirstNestedLoop,
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "the fixture proves lexical hydration, not embedding",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[facade_memory_surface("facade_surface.fact_v1")],
+            natural_key_columns: &["note_id"],
+        },
+        SchemaContract {
+            id: SchemaRef::new("facade-test", "sidecarless-fact", 3),
+            kind: PayloadKind::Fact,
+            sidecar_table: None,
+            search: SearchProjectionDecl::None {
+                why: "a sidecarless Memory has no payload text to project",
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "a sidecarless Memory has no payload text to embed",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: &[],
+        },
+        SchemaContract {
+            id: SchemaRef::new("facade-test", "abstraction", 1),
+            kind: PayloadKind::Abstraction,
+            sidecar_table: Some("facade_surface.abstraction_v1"),
+            search: SearchProjectionDecl::None {
+                why: "the fixture's search proof belongs to its version-two Fact",
+            },
+            embedding: EmbeddingRecipe::Never {
+                why: "the fixture proves derivation without an embedding client",
+            },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::OriginEdges,
+            surfaces: &[facade_memory_surface("facade_surface.abstraction_v1")],
+            natural_key_columns: &[],
+        },
+    ],
+    state_surfaces: &[],
+    scopes: &[],
+    kernel_surfaces: &[],
+    tools: &[],
+    resources: &[],
+    bespoke_erase_legs: &[],
+    bespoke_transfer_legs: &[],
+    projection: ProjectionDecl::Table(FACADE_PROJECTION),
+};
+
+mod facade_fixture_registry {
+    use super::{FACADE_CONTRACT, FacadeAbstraction, FacadeFact, FacadeSidecarlessFact};
+
+    proxiima_core::proxiima_spiice! {
+        name = "facade-test",
+        display_name = "Facade Surface Test",
+        fact_schemas = [FacadeFact, FacadeSidecarlessFact],
+        abstraction_schemas = [FacadeAbstraction],
+        contract = &FACADE_CONTRACT,
+    }
+}
+
+struct FacadeSurfaceApp;
+
+impl SpiiceBundle for FacadeSurfaceApp {
+    fn register(registry: &mut SpiiceRegistry) -> Result<(), proxiima_core::SpiiceRegistryError> {
+        facade_fixture_registry::register(registry)
+    }
+
+    fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
+        registry.add_fact::<FacadeFact>();
+        registry.add_abstraction::<FacadeAbstraction>();
+    }
+
+    fn migrators() -> Vec<proxiima::NamedMigrator> {
+        vec![proxiima::NamedMigrator::new(
+            "facade-test",
+            facade_migrator(),
+        )]
+    }
+}
+
+impl SpiiceApp for FacadeSurfaceApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "facade-surface-test",
+            title: "Facade Surface Test",
+            version: "1",
+        }
+    }
+}
+
+#[test]
+fn facade_spiice_authoring_symbols_are_reachable() {
+    let mut key = PayloadKeyBuilder::new("facade-test/symbol", 1);
+    key.field_str("kind", "proof");
+    assert!(!key.finish().is_empty());
+
+    // The connection vocabulary a spiice is allowed to speak: a reference
+    // field it declares, and the two kinds it may read back. There is no
+    // descriptor to build, because there is no vocabulary to extend.
+    let reference = PayloadReference::memory(
+        "symbol_source",
+        EntityKind::Fact,
+        MemoryId::new(Uuid::nil()),
+    );
+    assert_eq!(reference.binding, ReferenceBinding::Pin);
+    assert_eq!(EdgeKind::Origin.as_str(), "origin");
+    assert_eq!(
+        EdgeEndpoint::memory(EntityKind::Abstraction, MemoryId::new(Uuid::nil())).layer(),
+        Some(1)
+    );
+
+    let advertised_tools = BTreeSet::new();
+    let advertised_resources = BTreeSet::new();
+    assert!(proxiima::build_instructions(&advertised_tools, &advertised_resources).is_empty());
+    assert!(
+        proxiima::how_to_markdown(&advertised_tools, &advertised_resources).contains("Proxiima")
+    );
+    let _ctx_size = std::mem::size_of::<Option<proxiima::spiice::ToolCtx>>();
+    let _ = proxiima::spiice::ToolError::InvalidInput("bad input".to_string());
+
+    #[cfg(feature = "openai-compat-embed")]
+    {
+        let config = proxiima::OpenAiCompatConfig::new(
+            "https://embeddings.example/v1",
+            Some("token".to_string()),
+        );
+        assert_eq!(config.base_url, "https://embeddings.example/v1");
+        let _client_size = std::mem::size_of::<proxiima::OpenAiCompatEmbeddingClient>();
+    }
+}
+
+#[tokio::test]
+async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloads()
+-> Result<(), Box<dyn std::error::Error>> {
+    let split_db = clone_split_core_db("proxiima_facade_sidecar_integrity")
+        .await
+        .expect("PG required for tests");
+    let db_name = split_db.name().to_owned();
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = company_owner(Uuid::now_v7());
+        let built = Proxiima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .served_surface(ServedSurface::All)
+            .build()
+            .await?;
+        let authz = authenticated(AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            AuthPath::HostBearer,
+        ));
+
+        let valid_with_extension = insert_raw_facade_fact(
+            &admin_pool(&db_name).await?,
+            owner,
+            &["facade_surface.fact_v1", "facade_surface.abstraction_v1"],
+            true,
+        )
+        .await?;
+        let missing_stamp =
+            insert_raw_facade_fact(&admin_pool(&db_name).await?, owner, &[], false).await?;
+        let wrong_stamp = insert_raw_facade_fact(
+            &admin_pool(&db_name).await?,
+            owner,
+            &["facade_surface.abstraction_v1"],
+            false,
+        )
+        .await?;
+        let missing_primary_row = insert_raw_facade_fact(
+            &admin_pool(&db_name).await?,
+            owner,
+            &["facade_surface.fact_v1"],
+            false,
+        )
+        .await?;
+
+        let mut valid_query = QueryRequest::readable();
+        valid_query.include_payloads = false;
+        valid_query.memory_ids = vec![valid_with_extension];
+        let valid = built.host().engine().query(&authz, &valid_query).await?;
+        assert_eq!(valid.memories.len(), 1);
+        assert_eq!(valid.memories[0].schema_version.into_inner(), 2);
+        assert!(valid.memories[0].payload.is_none());
+
+        let Err(mixed_err) = built
+            .host()
+            .engine()
+            .get_memories(
+                &authz,
+                &GetMemoriesReadRequest {
+                    memory_ids: vec![valid_with_extension, wrong_stamp],
+                },
+            )
+            .await
+        else {
+            panic!("one corrupt visible row must fail the whole batch");
+        };
+        assert_eq!(mixed_err.code, proxiima_core::ErrorCode::Internal);
+
+        for (label, memory_id) in [
+            ("missing primary stamp", missing_stamp),
+            ("wrong primary stamp", wrong_stamp),
+            ("missing primary row", missing_primary_row),
+        ] {
+            let mut query = QueryRequest::readable();
+            query.include_payloads = false;
+            query.memory_ids = vec![memory_id];
+            let Err(err) = built.host().engine().query(&authz, &query).await else {
+                panic!("{label} must fail closed");
+            };
+            assert_eq!(
+                err.code,
+                proxiima_core::ErrorCode::Internal,
+                "{label}: {err}"
+            );
+        }
+
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+
+    result
+}
+
+async fn insert_raw_facade_fact(
+    pool: &sqlx::PgPool,
+    owner: proxiima::OwnerId,
+    stamped_tables: &[&str],
+    insert_primary_row: bool,
+) -> Result<MemoryId, sqlx::Error> {
+    let memory_id =
+        insert_raw_fact_admission(pool, owner, FacadeFact::SCHEMA_ID, stamped_tables).await?;
+    if !insert_primary_row {
+        // The definitions trigger bundle refuses
+        // both ways into a stamp with no row: the admission above cannot skip
+        // the row, and the DELETE below cannot take it while the stamp
+        // stands. So the fixture writes the pair and deletes the row with the
+        // orphan guard switched off — which is the only shape this state has
+        // in a live database too, one whose trigger someone removed or whose
+        // rows predate it. That IS the state this test needs the reader to
+        // fail closed on.
+        sqlx::query(
+            "ALTER TABLE facade_surface.fact_v1
+                 DISABLE TRIGGER fact_v1_declared_by_memory_on_delete",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("DELETE FROM facade_surface.fact_v1 WHERE t = $1")
+            .bind(memory_id.into_inner())
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "ALTER TABLE facade_surface.fact_v1
+                 ENABLE TRIGGER fact_v1_declared_by_memory_on_delete",
+        )
+        .execute(pool)
+        .await?;
+    }
+    Ok(memory_id)
+}
+
+async fn insert_raw_fact_admission(
+    pool: &sqlx::PgPool,
+    owner: proxiima::OwnerId,
+    schema_id: &str,
+    stamped_tables: &[&str],
+) -> Result<MemoryId, sqlx::Error> {
+    let handle = Uuid::now_v7();
+    let t = Uuid::now_v7();
+    let owner_id = owner.into_inner();
+    sqlx::query(
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal'::proxiima_core.owner_kind)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(owner_id)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'fact', $2, $3, $4)",
+    )
+    .bind(handle)
+    .bind(schema_id)
+    .bind(owner_id)
+    .bind(t)
+    .execute(pool)
+    .await?;
+    let stamped_tables = stamped_tables
+        .iter()
+        .map(|table| (*table).to_owned())
+        .collect::<Vec<_>>();
+    // The stamp and the rows it promises land in one transaction: a memory
+    // row that names a sidecar table it has no row in is refused at COMMIT.
+    let mut stamped = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory
+            (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+         VALUES ($1, $2, 'fact', $3, $4, $5, uuid_extract_timestamp($2), $3, NULL)",
+    )
+    .bind(handle)
+    .bind(t)
+    .bind(owner_id)
+    .bind(schema_id)
+    .bind(&stamped_tables)
+    .execute(&mut *stamped)
+    .await?;
+    for table in &stamped_tables {
+        match table.as_str() {
+            "facade_surface.fact_v1" => {
+                sqlx::query(
+                    "INSERT INTO facade_surface.fact_v1 (t, note_id, title, body)
+                     VALUES ($1, $2, 'integrity fixture', 'payload present')",
+                )
+                .bind(t)
+                .bind(Uuid::now_v7())
+                .execute(&mut *stamped)
+                .await?;
+            }
+            "facade_surface.abstraction_v1" => {
+                sqlx::query(
+                    "INSERT INTO facade_surface.abstraction_v1
+                        (t, title, body, source_count, observed_entity)
+                     VALUES ($1, 'integrity fixture', 'extension present', 1, $2)",
+                )
+                .bind(t)
+                .bind(Uuid::now_v7())
+                .execute(&mut *stamped)
+                .await?;
+            }
+            other => panic!("fixture stamps an unknown sidecar table: {other}"),
+        }
+    }
+    stamped.commit().await?;
+    Ok(MemoryId::new(t))
+}
+
+/// The test spiice's own baseline, as a real spiice ships one.
+///
+/// It used to be a `create_sidecar_tables(pool)` called AFTER `build()`,
+/// which is after boot — so this spiice's tables did not exist while the
+/// substrate was checking the deployment, and the declaration triggers that
+/// guard them did not exist at all. A spiice's DDL belongs in its migrator;
+/// that is the whole of what changed here.
+///
+/// The trigger statements are read off the frozen registry rather than
+/// written out, because that is what a spiice's migration author does:
+/// `declaration_trigger_artifacts` and `presence_trigger_artifacts` emit
+/// them, the migration carries them.
+fn facade_migrator() -> sqlx::migrate::Migrator {
+    use sqlx::SqlSafeStr;
+
+    let mut registry = SpiiceRegistry::new();
+    FacadeSurfaceApp::register(&mut registry).expect("the facade test spiice registers");
+    let registry = registry.try_freeze().expect("and freezes");
+    let mut sidecars = PgSidecarRegistry::new();
+    proxiima_storage_pg::register_core_pg_sidecars(&mut sidecars);
+    FacadeSurfaceApp::register_pg_sidecars(&mut sidecars);
+    let sidecars = sidecars
+        .freeze_against(&registry)
+        .expect("the facade test PG registrations match its contract");
+    let projection = proxiima_storage_pg::projection::projection_artifacts(&FACADE_CONTRACT)
+        .expect("the facade projection declaration is valid")
+        .expect("the facade contract declares a projection table");
+
+    let mut statements = vec![
+        "CREATE SCHEMA facade_surface".to_owned(),
+        "CREATE TABLE facade_surface.fact_v1 (
+            t uuid PRIMARY KEY,
+            note_id uuid NOT NULL,
+            title text NOT NULL,
+            body text NOT NULL,
+            tags text[] NOT NULL DEFAULT '{}'
+        )"
+        .to_owned(),
+        "CREATE TABLE facade_surface.abstraction_v1 (
+            t uuid PRIMARY KEY,
+            title text NOT NULL,
+            body text NOT NULL,
+            source_count integer NOT NULL,
+            observed_entity uuid NOT NULL
+        )"
+        .to_owned(),
+        // A test spiice is a spiice: `memory.sidecar_tables` is constrained
+        // to be a subset of `proxiima_core.spiice_surface`, so a fixture that
+        // stamps a sidecar has to declare it like any other.
+        "INSERT INTO proxiima_core.spiice_surface (table_name, spiice_id) VALUES
+             ('facade_surface.fact_v1', 'facade-test'),
+             ('facade_surface.abstraction_v1', 'facade-test')"
+            .to_owned(),
+    ];
+    statements.extend(
+        projection
+            .forward()
+            .into_iter()
+            .map(|statement| statement.trim_end_matches(';').to_owned()),
+    );
+    statements.extend(
+        sidecars
+            .declaration_trigger_artifacts("facade-test")
+            .expect("the facade test spiice's declaration triggers")
+            .into_iter()
+            .map(|artifact| artifact.forward),
+    );
+    statements.push(
+        "ALTER TABLE facade_surface.fact_v1 ENABLE ROW LEVEL SECURITY;\n\
+         ALTER TABLE facade_surface.fact_v1 FORCE ROW LEVEL SECURITY;\n\
+         ALTER TABLE facade_surface.abstraction_v1 ENABLE ROW LEVEL SECURITY;\n\
+         ALTER TABLE facade_surface.abstraction_v1 FORCE ROW LEVEL SECURITY;\n\
+         ALTER TABLE facade_surface.projection ENABLE ROW LEVEL SECURITY;\n\
+         ALTER TABLE facade_surface.projection FORCE ROW LEVEL SECURITY;\n\
+         CREATE POLICY proxiima_owner_read ON facade_surface.fact_v1 FOR SELECT TO PUBLIC USING (EXISTS (SELECT 1 FROM proxiima_core.memory AS m WHERE m.t = facade_surface.fact_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])));\n\
+         CREATE POLICY proxiima_owner_write ON facade_surface.fact_v1 FOR ALL TO PUBLIC USING (EXISTS (SELECT 1 FROM proxiima_core.memory AS m WHERE m.t = facade_surface.fact_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[]))) WITH CHECK (EXISTS (SELECT 1 FROM proxiima_core.memory AS m WHERE m.t = facade_surface.fact_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])));\n\
+         CREATE POLICY proxiima_platform ON facade_surface.fact_v1 FOR ALL TO CURRENT_USER USING (current_setting('app.proxiima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxiima_scope', true) = 'platform');\n\
+         CREATE POLICY proxiima_owner_read ON facade_surface.abstraction_v1 FOR SELECT TO PUBLIC USING (EXISTS (SELECT 1 FROM proxiima_core.memory AS m WHERE m.t = facade_surface.abstraction_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.read_abstraction', true), '')::uuid[], '{}'::uuid[]))::uuid[])));\n\
+         CREATE POLICY proxiima_owner_write ON facade_surface.abstraction_v1 FOR ALL TO PUBLIC USING (EXISTS (SELECT 1 FROM proxiima_core.memory AS m WHERE m.t = facade_surface.abstraction_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_abstraction', true), '')::uuid[], '{}'::uuid[]))::uuid[]))) WITH CHECK (EXISTS (SELECT 1 FROM proxiima_core.memory AS m WHERE m.t = facade_surface.abstraction_v1.t AND m.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_abstraction', true), '')::uuid[], '{}'::uuid[]))::uuid[])));\n\
+         CREATE POLICY proxiima_platform ON facade_surface.abstraction_v1 FOR ALL TO CURRENT_USER USING (current_setting('app.proxiima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxiima_scope', true) = 'platform');\n\
+         CREATE POLICY proxiima_owner_read ON facade_surface.projection FOR SELECT TO PUBLIC USING (owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[]))::uuid[]));\n\
+         CREATE POLICY proxiima_owner_write ON facade_surface.projection FOR ALL TO PUBLIC USING (owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[])) WITH CHECK (owner_id = ANY((SELECT COALESCE(NULLIF(current_setting('app.write_owner', true), '')::uuid[], '{}'::uuid[]))::uuid[]));\n\
+         CREATE POLICY proxiima_platform ON facade_surface.projection FOR ALL TO CURRENT_USER USING (current_setting('app.proxiima_scope', true) = 'platform') WITH CHECK (current_setting('app.proxiima_scope', true) = 'platform')"
+            .to_owned(),
+    );
+    statements.extend(
+        sidecars
+            .presence_trigger_artifacts("facade-test")
+            .expect("the facade test spiice's presence triggers")
+            .into_iter()
+            .map(|artifact| artifact.forward),
+    );
+    statements.extend(
+        proxiima::spiice::search_candidate_artifacts(&FACADE_CONTRACT)
+            .expect("the facade test spiice's search candidates")
+            .into_iter()
+            .map(|artifact| artifact.forward),
+    );
+
+    sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(vec![sqlx::migrate::Migration::new(
+            FACADE_MIGRATION_VERSION,
+            std::borrow::Cow::Borrowed("facade test surfaces"),
+            sqlx::migrate::MigrationType::Simple,
+            sqlx::AssertSqlSafe(statements.join(";\n")).into_sql_str(),
+            false,
+        )]),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
+}
+
+/// Host/example lane (`docs/build-a-spiice.md` §Migrations: timestamp versions ending
+/// `00..=19`), so this fixture cannot collide with a first-party spiice.
+const FACADE_MIGRATION_VERSION: i64 = 20_260_824_000_010;
+
+async fn admin_pool(database: &str) -> Result<sqlx::PgPool, sqlx::Error> {
+    sqlx::PgPool::connect(&proxiima_pg_testkit::db_url(database)).await
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
+    use proxiima::spiice::{FactWrite, ToolError, authorized_fact_payloads, authorized_memory_ids};
+    let split_db = clone_split_core_db("sdk_read_scope")
+        .await
+        .expect("PG required");
+    let (db_url, platform_url) = (
+        split_db.runtime_url().to_owned(),
+        split_db.platform_url().to_owned(),
+    );
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owners = [
+            company_owner(Uuid::now_v7()),
+            company_owner(Uuid::now_v7()),
+            company_owner(Uuid::now_v7()),
+        ];
+        let built = Proxiima::<FacadeSurfaceApp>::app()
+            .database_url(db_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owners[0])
+            .allow_insecure_single_owner()
+            .served_surface(ServedSurface::All)
+            .build()
+            .await?;
+        let engine = built.host().engine();
+        let mut ids = Vec::new();
+        for owner in owners {
+            let authz = authenticated(AuthzContext::for_subject_with_role(
+                UserId::new(Uuid::now_v7()),
+                [(owner, Role::admin())],
+                AuthPath::HostBearer,
+            ));
+            ids.push(
+                engine
+                    .ingest_fact(&authz, FactWrite::new(owner, "sdk/read", &sdk_fact()))
+                    .await?
+                    .memory_id,
+            );
+        }
+        let authz = authenticated(AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owners[0], Role::admin()), (owners[1], Role::admin())],
+            AuthPath::HostBearer,
+        ));
+        let mut legacy = serde_json::to_value(QueryRequest::readable())?;
+        legacy["owner"] = serde_json::to_value(owners[2])?;
+        legacy["read_owners"] = serde_json::to_value([owners[2]])?;
+        let request: QueryRequest = serde_json::from_value(legacy)?;
+        let encoded = serde_json::to_value(&request)?;
+        assert!(encoded.get("owner").is_none() && encoded.get("read_owners").is_none());
+        let rows = engine.query(&authz, &request).await?.memories;
+        assert_eq!(
+            rows.iter().map(|row| row.id).collect::<BTreeSet<_>>(),
+            BTreeSet::from([ids[0], ids[1]])
+        );
+        let candidates = [
+            ids[2].into_inner(),
+            ids[1].into_inner(),
+            ids[0].into_inner(),
+            ids[1].into_inner(),
+        ];
+        let typed = authorized_fact_payloads::<FacadeFact>(engine, &authz, &candidates, 10).await?;
+        assert_eq!(
+            typed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [ids[1], ids[0]]
+        );
+        let visible = authorized_memory_ids(
+            engine,
+            &authz,
+            &candidates,
+            EntityKind::Fact,
+            Some(FacadeFact::schema_id()),
+            10,
+        )
+        .await?;
+        assert_eq!(visible, [ids[1], ids[0]]);
+        for candidates in [&[][..], &candidates[..]] {
+            assert!(matches!(
+                authorized_fact_payloads::<FacadeFact>(engine, &authz, candidates, 0).await,
+                Err(ToolError::InvalidInput(_))
+            ));
+            assert!(matches!(
+                authorized_memory_ids(engine, &authz, candidates, EntityKind::Fact, None, 0).await,
+                Err(ToolError::InvalidInput(_))
+            ));
+        }
+        assert!(
+            authorized_fact_payloads::<FacadeFact>(engine, &authz, &[], 1)
+                .await?
+                .is_empty()
+        );
+        built.shutdown().await;
+        Ok(())
+    }
+    .await;
+    result.expect("authenticated readable scope");
+}

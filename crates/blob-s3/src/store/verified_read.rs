@@ -1,12 +1,12 @@
 //! Bounded in-process reads that return bytes only after integrity verification.
 
-use proxima_core::count_u64;
+use proxiima_core::count_u64;
 use std::num::NonZeroU64;
 
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     CitedBlobIntegrityMismatch, CitedBlobReadError, CitedBlobReadPort, VerifiedCitedBlob,
 };
-use proxima_core::{AuthzContext, OwnerId};
+use proxiima_core::{AuthzContext, OwnerId};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
@@ -14,7 +14,7 @@ use uuid::Uuid;
 use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
 use super::rows::{BlobReadRecord, load_blob_read_record_on_connection};
-use proxima_storage_pg::begin_owner_transaction;
+use proxiima_storage_pg::begin_owner_transaction;
 
 fn within_ceiling(byte_len: u64, max_bytes: NonZeroU64) -> Result<(), CitedBlobReadError> {
     if byte_len > max_bytes.get() {
@@ -188,7 +188,7 @@ impl CitedBlobReadPort for CitedBlobStore {
 mod tests {
     use super::super::testkit::{lazy_test_pool, store_config};
     use super::*;
-    use proxima_core::{AuthPath, UserId};
+    use proxiima_core::{AuthPath, UserId};
 
     fn record(bytes: &[u8]) -> BlobReadRecord {
         let sha256: [u8; 32] = Sha256::digest(bytes).into();
@@ -212,7 +212,7 @@ mod tests {
         let store = CitedBlobStore::new(
             lazy_test_pool(),
             store_config(None, None),
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect("test store");
         let allowed = OwnerId::from(UserId::new(Uuid::now_v7()));

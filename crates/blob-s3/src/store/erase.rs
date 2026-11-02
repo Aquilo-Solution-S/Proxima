@@ -7,17 +7,17 @@
 //! inverse of storing a blob has to include this half.
 //!
 //! The half lives in ONE place: the erase transaction enqueues every object
-//! key it orphans in `proxima_core.cold_purge_pending` — under the object-key
+//! key it orphans in `proxiima_core.cold_purge_pending` — under the object-key
 //! lock, so the refcount that decided it is true at decision time — and the
 //! wired `ColdObjectStore` drains that queue after the commit. There is no
 //! second, owner-enumerating pass here.
 
-use proxima_core::count_u64;
+use proxiima_core::count_u64;
 use std::collections::{HashMap, HashSet};
 
 use aws_sdk_s3::operation::list_object_versions::ListObjectVersionsOutput;
 use aws_sdk_s3::types::{Delete, DeletedObject, ObjectIdentifier};
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 
 #[cfg(test)]
 #[path = "erase_entry_tests.rs"]

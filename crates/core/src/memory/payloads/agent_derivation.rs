@@ -19,7 +19,7 @@ impl AbstractionPayload for AgentDerivationV1 {
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_core.agent_derivation_v1"
+        "proxiima_core.agent_derivation_v1"
     }
 
     fn json_schema() -> Option<serde_json::Value> {
@@ -35,7 +35,7 @@ impl PerspectivePayload for AgentDerivationV1 {
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_core.agent_derivation_v1"
+        "proxiima_core.agent_derivation_v1"
     }
 
     fn json_schema() -> Option<serde_json::Value> {

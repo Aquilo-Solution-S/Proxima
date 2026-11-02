@@ -4,12 +4,12 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use proxima_core::read_models::MemorySchemaSpec;
-use proxima_core::verbs::query::{
+use proxiima_core::read_models::MemorySchemaSpec;
+use proxiima_core::verbs::query::{
     EntityKind, MemoryRow, QueryCursor, QueryRequest, QueryResponse, SupersessionStatus,
 };
-use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{MemoryId, OwnerId, SchemaId, SidecarPayload, StorageError};
+use proxiima_core::verbs::schema::PayloadKind;
+use proxiima_core::{MemoryId, OwnerId, SchemaId, SidecarPayload, StorageError};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -33,7 +33,7 @@ pub(crate) async fn query_memories_on_connection(
     let owner_ids: Vec<Uuid> = read_owners
         .iter()
         .copied()
-        .map(proxima_core::OwnerId::into_inner)
+        .map(proxiima_core::OwnerId::into_inner)
         .collect();
     if matches!(req.entity_kind, Some(EntityKind::Goal)) {
         let (goals, next_cursor) = query_goals_on_connection(connection, req, &owner_ids).await?;
@@ -137,13 +137,13 @@ impl MemoryFilter {
             Self::Schema(_) => format!(" AND {alias}.schema_id = ${placeholder}"),
             Self::Kind(kind) => {
                 let kind = kind.label();
-                format!(" AND {alias}.kind = '{kind}'::proxima_core.memory_kind")
+                format!(" AND {alias}.kind = '{kind}'::proxiima_core.memory_kind")
             }
             Self::Ids(_) => format!(" AND {alias}.t = ANY(${placeholder}::uuid[])"),
             Self::ReferencedGoalHandles(_) => format!(
                 " AND m.kind = 'fact' \
-                 AND m.goal_refs && ARRAY(SELECT g.t FROM proxima_core.goal g \
-                 JOIN proxima_core.owners go ON go.owner_id = g.owner_id \
+                 AND m.goal_refs && ARRAY(SELECT g.t FROM proxiima_core.goal g \
+                 JOIN proxiima_core.owners go ON go.owner_id = g.owner_id \
                  WHERE g.handle = ANY(${placeholder}::uuid[]) \
                    AND g.owner_id = ANY($1::uuid[]))"
             ),
@@ -215,7 +215,7 @@ async fn project_memory_rows_on_connection(
     let mut schema_versions = HashMap::new();
     for row in &rows {
         let kind = EntityKind::from(row.kind);
-        let spec = proxima_core::resolve_memory_schema(
+        let spec = proxiima_core::resolve_memory_schema(
             schemas,
             kind,
             &SchemaId::new(row.schema_id.clone()),
@@ -237,7 +237,7 @@ async fn project_memory_rows_on_connection(
         let schema_version = schema_versions
             .remove(&id)
             .ok_or_else(|| StorageError::Internal("query schema resolution lost row".into()))?;
-        if proxima_core::resolve_memory_schema(
+        if proxiima_core::resolve_memory_schema(
             schemas,
             EntityKind::from(row.kind),
             &SchemaId::new(row.schema_id.clone()),
@@ -284,7 +284,7 @@ async fn load_row_payloads_batch_on_connection(
     let mut ids_by_key = HashMap::<PgSidecarKey, Vec<MemoryId>>::new();
     for row in rows {
         let entity_kind = EntityKind::from(row.kind);
-        let spec = proxima_core::resolve_memory_schema(
+        let spec = proxiima_core::resolve_memory_schema(
             schemas,
             entity_kind,
             &SchemaId::new(row.schema_id.clone()),
@@ -328,19 +328,19 @@ fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64)
     // Goal-reference predicates start at memory's GIN index. Joining heads
     // here preserves head membership without visiting unrelated heads first.
     let head_join = if heads_only {
-        "JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t "
+        "JOIN proxiima_core.memory_head h ON h.handle = m.handle AND h.t = m.t "
     } else {
         ""
     };
     // SQL-POLICY: fixed-fragment — head_join is chosen between two literals.
     let mut sql = format!(
         "SELECT m.t AS memory_id, m.handle, \
-                proxima_core.memory_created_at(m.t) AS created_at, \
+                proxiima_core.memory_created_at(m.t) AS created_at, \
                 m.owner_id, m.schema_id, m.sidecar_tables, \
                 m.kind AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at, m.\"by\", m.via \
-         FROM proxima_core.memory m \
+         FROM proxiima_core.memory m \
          {head_join}\
-         JOIN proxima_core.owners o ON o.owner_id = m.owner_id \
+         JOIN proxiima_core.owners o ON o.owner_id = m.owner_id \
          WHERE m.owner_id = ANY($1::uuid[])",
     );
     append_memory_filters(&mut sql, filters, false);
@@ -355,12 +355,12 @@ fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64)
 fn head_page_sql(filters: &[MemoryFilter], fetch_limit: u64) -> String {
     let mut sql = String::from(
         "SELECT page.* \
-         FROM proxima_core.owners o CROSS JOIN LATERAL ( \
+         FROM proxiima_core.owners o CROSS JOIN LATERAL ( \
            SELECT m.t AS memory_id, m.handle, \
-                  proxima_core.memory_created_at(m.t) AS created_at, \
+                  proxiima_core.memory_created_at(m.t) AS created_at, \
                   m.owner_id, m.schema_id, m.sidecar_tables, \
                   m.kind AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at, m.\"by\", m.via \
-           FROM (SELECT h.handle, h.t FROM proxima_core.memory_head h \
+           FROM (SELECT h.handle, h.t FROM proxiima_core.memory_head h \
                  WHERE h.owner_id = o.owner_id",
     );
     append_memory_filters(&mut sql, filters, true);
@@ -372,7 +372,7 @@ fn head_page_sql(filters: &[MemoryFilter], fetch_limit: u64) -> String {
         sql,
         " ORDER BY h.t DESC OFFSET 0) h \
            CROSS JOIN LATERAL ( \
-             SELECT m.* FROM proxima_core.memory m \
+             SELECT m.* FROM proxiima_core.memory m \
              WHERE m.handle = h.handle AND m.t = h.t AND m.owner_id = o.owner_id \
              OFFSET 0 \
            ) m \
@@ -443,7 +443,7 @@ pub fn memory_page_sql_for_tests(req: &QueryRequest) -> Result<String, StorageEr
 mod tests {
     use super::{MemorySchemaSpec, validate_row_stamp};
     use crate::sidecars::{PgSidecarRegistryFrozen, core_pg_sidecars};
-    use proxima_core::{AgentNoteV1, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion};
+    use proxiima_core::{AgentNoteV1, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion};
 
     #[test]
     fn required_primary_stamp_is_checked_against_the_frozen_sidecar_registry() {
@@ -480,14 +480,14 @@ mod tests {
         validate_row_stamp(
             &registry,
             &spec,
-            &["proxima_core.write_act_v1".to_owned(), primary.to_owned()],
+            &["proxiima_core.write_act_v1".to_owned(), primary.to_owned()],
             memory_id,
         )
         .expect("an additional declared extension does not select the schema");
         let err = validate_row_stamp(
             &registry,
             &spec,
-            &["proxima_core.write_act_v1".to_owned()],
+            &["proxiima_core.write_act_v1".to_owned()],
             memory_id,
         )
         .expect_err("a different declared table cannot stand in for the primary");
@@ -499,7 +499,7 @@ mod tests {
         let src = include_str!("memories.rs");
         let join = format!(
             "{}{}",
-            "JOIN proxima_core.memory_head h ON h.handle = ", "m.handle\""
+            "JOIN proxiima_core.memory_head h ON h.handle = ", "m.handle\""
         );
         assert!(
             !src.contains(&join),
@@ -527,7 +527,7 @@ mod tests {
             let alias = if heads_only { "h" } else { "m" };
             assert!(
                 sql.contains(&format!(
-                    "{alias}.kind = 'perspective'::proxima_core.memory_kind"
+                    "{alias}.kind = 'perspective'::proxiima_core.memory_kind"
                 )),
                 "kind must be a literal so a generic plan can prove the partial index: {sql}"
             );

@@ -43,9 +43,9 @@ pub struct CloudEventEnvelope {
     /// `CloudEvents` sequence extension).
     pub sequence: Option<String>,
     #[serde(default)]
-    pub proximaowner: Option<String>,
+    pub proxiimaowner: Option<String>,
     #[serde(default)]
-    pub proximamodel: Option<String>,
+    pub proxiimamodel: Option<String>,
     /// Every context attribute the fields above do not name, in name order.
     /// Host-bound extension attributes arrive here; so does anything a
     /// later producer release adds. Values are whatever the `CloudEvents`
@@ -62,12 +62,12 @@ pub struct CloudEventEnvelope {
 /// [`Self::from_record`]; a host reads it.
 ///
 /// ```
-/// use proxima_core::publication::{SubjectPosition, intake::ReceivedEvent};
+/// use proxiima_core::publication::{SubjectPosition, intake::ReceivedEvent};
 /// fn position(event: &ReceivedEvent) -> SubjectPosition { event.position }
 /// ```
 ///
 /// ```compile_fail
-/// use proxima_core::publication::intake::ReceivedEvent;
+/// use proxiima_core::publication::intake::ReceivedEvent;
 /// fn clear_position(event: &mut ReceivedEvent) { event.position = None; }
 /// ```
 #[derive(Debug, Clone)]
@@ -95,20 +95,20 @@ pub struct ReceivedEvent {
     pub position: SubjectPosition,
 }
 
-/// How a [`ReceivedEvent::id`] is spelled: a Fact id in Proxima's canonical
+/// How a [`ReceivedEvent::id`] is spelled: a Fact id in Proxiima's canonical
 /// wire form, or any other string.
 ///
 /// This is a reading of the string, not a verdict on the event. `Fact`
 /// proves syntax, not admission: it does not say a Fact with that id was
 /// admitted, that its schema is listenable, or that the owner owns it.
 /// Checking a signature on [`ReceivedEvent::raw`], and checking that id,
-/// owner and `proximaowner` agree, stay with the intake.
+/// owner and `proxiimaowner` agree, stay with the intake.
 ///
 /// The enum is closed, so a `match` over it must name `Opaque`; there is no
 /// third kind of id in the outbox today.
 ///
 /// ```
-/// use proxima_core::publication::intake::EventIdentity;
+/// use proxiima_core::publication::intake::EventIdentity;
 ///
 /// fn describe(identity: &EventIdentity) -> &'static str {
 ///     match identity {
@@ -122,7 +122,7 @@ pub struct ReceivedEvent {
 /// Setting the `Opaque` case aside is not optional:
 ///
 /// ```compile_fail
-/// use proxima_core::publication::intake::EventIdentity;
+/// use proxiima_core::publication::intake::EventIdentity;
 ///
 /// fn fact_only(identity: &EventIdentity) {
 ///     match identity {

@@ -1,13 +1,13 @@
 //! citation_of_fact is memory ⋈ blob.
 #![allow(clippy::doc_markdown)]
 
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::{CitationPort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{AccessKind, OwnerId, SchemaId, SchemaVersion, UserId};
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::storage_ports::{CitationPort, OwnerWritePermit};
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::{AccessKind, OwnerId, SchemaId, SchemaVersion, UserId};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 fn draft() -> FactWriteCommand {
@@ -26,14 +26,14 @@ fn draft() -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
 
 #[tokio::test]
 async fn citation_of_fact_is_blob_id_and_schema_only() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -47,7 +47,7 @@ async fn citation_of_fact_is_blob_id_and_schema_only() {
 
         let hash = vec![9u8; 32];
         let blob_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/bytes-v1', $2)
              RETURNING blob_id",
         )
@@ -59,7 +59,7 @@ async fn citation_of_fact_is_blob_id_and_schema_only() {
         cited.blob_id = Some(blob_id);
         let written = pg.ingest_fact_atomic(&permit, &cited, None).await?;
 
-        let owner_scope = proxima_core::test_fixtures::owner_scope_for_tests(&[owner]);
+        let owner_scope = proxiima_core::test_fixtures::owner_scope_for_tests(&[owner]);
         let readback = pg
             .citation_of_fact(Some(&owner_scope), &[owner], written.memory_id)
             .await?

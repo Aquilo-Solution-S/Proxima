@@ -7,12 +7,12 @@
 //! to their join), they see rows written earlier in the caller's open
 //! transaction, and they leave that transaction open and usable.
 
-use proxima_core::{
+use proxiima_core::{
     AccessError, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Relation, Role, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db, split_role_urls};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{
+use proxiima_pg_testkit::{db_url, drop_db, split_role_urls};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{
     PgOwnerAccessResolver, PgPlatformScope, PgStorage, group_role, roles_for_subject,
 };
 use sqlx::postgres::PgPoolOptions;
@@ -26,10 +26,10 @@ async fn seed_membership<'e>(
 ) {
     sqlx::query(
         "WITH registered AS (
-              INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')
+              INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'group')
               ON CONFLICT (owner_id) DO NOTHING
           )
-          INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation)
+          INSERT INTO proxiima_core.group_memberships (group_id, member_user_id, relation)
           VALUES ($1, $2, $3)",
     )
     .bind(group.into_inner())
@@ -50,7 +50,7 @@ fn group() -> GroupId {
 
 /// A migrated database and a pool onto it; the caller drops the database.
 async fn fixture() -> (String, sqlx::PgPool, PgPlatformScope) {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
@@ -66,7 +66,7 @@ async fn fixture() -> (String, sqlx::PgPool, PgPlatformScope) {
     let platform_pool = sqlx::PgPool::connect(&platform_url)
         .await
         .expect("platform pool");
-    let platform = PgPlatformScope::new(platform_pool, &["proxima_core"])
+    let platform = PgPlatformScope::new(platform_pool, &["proxiima_core"])
         .await
         .expect("platform scope");
     (db_name, pool, platform)
@@ -254,7 +254,7 @@ async fn group_registered_subject_is_refused_before_personal_role_derivation() {
         let resolver = PgOwnerAccessResolver::new(pool.clone(), platform.clone());
         let mut conn = pool.acquire().await?;
         let registered: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM proxima_core.owners WHERE owner_id = $1)",
+            "SELECT EXISTS (SELECT 1 FROM proxiima_core.owners WHERE owner_id = $1)",
         )
         .bind(ordinary.into_inner())
         .fetch_one(&mut *conn)

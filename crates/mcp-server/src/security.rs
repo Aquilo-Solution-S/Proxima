@@ -16,7 +16,7 @@ use http::header::{
 use http::{HeaderMap, HeaderName, HeaderValue};
 use http_body::{Body as HttpBody, Frame};
 use http_body_util::{BodyStream, StreamBody};
-use proxima_core::{
+use proxiima_core::{
     AuthPath, Authenticator, Identity, OwnerId, RevalidationConfig, revalidate_stream,
 };
 
@@ -26,7 +26,7 @@ use crate::oauth::{ResourceChallenges, ResourceServerMetadata};
 use crate::session::{McpSessionBindings, parse_owner_key};
 
 const MCP_SESSION_ID_HEADER: &str = "Mcp-Session-Id";
-pub(crate) const PROXIMA_OWNER_HEADER: &str = "X-Proxima-Owner";
+pub(crate) const PROXIIMA_OWNER_HEADER: &str = "X-Proxiima-Owner";
 const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 
 /// Browser Origin allowlist: a portless entry accepts any port; an explicit
@@ -680,7 +680,7 @@ async fn mcp_auth(
 }
 
 /// Outcome of resolving the caller's owner selection from the
-/// `Mcp-Session-Id` / `X-Proxima-Owner` headers.
+/// `Mcp-Session-Id` / `X-Proxiima-Owner` headers.
 enum OwnerSelection {
     /// A concrete owner was selected. `bind_new` requests binding the
     /// response's freshly minted session id to this owner. `via_session`
@@ -711,7 +711,7 @@ async fn selected_owner(
     forwarded: Option<OwnerId>,
 ) -> OwnerSelection {
     let owner_header = headers
-        .get(PROXIMA_OWNER_HEADER)
+        .get(PROXIIMA_OWNER_HEADER)
         .map(|raw| raw.to_str().ok().and_then(parse_owner_key));
     if let Some(raw_session_id) = headers.get(MCP_SESSION_ID_HEADER) {
         let Ok(session_id) = raw_session_id.to_str() else {
@@ -959,7 +959,7 @@ mod tests {
     use axum::response::{IntoResponse, Response};
     use axum::routing::any;
     use futures_util::stream;
-    use proxima_core::{
+    use proxiima_core::{
         AccessError, AccessKind, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
         ForwarderRole, GroupId, Identity, OwnerAccessPort, OwnerId, OwnerRoles, RevalidationConfig,
         Role, UserId,
@@ -1154,7 +1154,7 @@ mod tests {
             Ok(AuthzContext::from_verified_forwarded_owner(
                 self.subject,
                 *owner,
-                proxima_core::WriterAttribution {
+                proxiima_core::WriterAttribution {
                     by: uuid::Uuid::from_u128(509),
                     via: None,
                 },
@@ -1246,7 +1246,7 @@ mod tests {
             for selected in [None, Some(owner_key(owner))] {
                 let mut request = mcp_request("Bearer good-token");
                 if let Some(selected) = selected {
-                    request = request.header("X-Proxima-Owner", selected);
+                    request = request.header("X-Proxiima-Owner", selected);
                 }
                 assert_eq!(
                     narrowed_to(app.clone(), request.body(Body::empty()).unwrap()).await,
@@ -1276,7 +1276,7 @@ mod tests {
         ];
         for header in headers {
             let request = mcp_request("Bearer good-token")
-                .header("X-Proxima-Owner", header)
+                .header("X-Proxiima-Owner", header)
                 .body(Body::empty())
                 .unwrap();
             assert_eq!(status_of(app.clone(), request).await, StatusCode::FORBIDDEN);
@@ -1311,7 +1311,7 @@ mod tests {
         for session in ["live-session", "unknown-session"] {
             let mismatching = mcp_request("Bearer other-token")
                 .header("Mcp-Session-Id", session)
-                .header("X-Proxima-Owner", owner_key(other))
+                .header("X-Proxiima-Owner", owner_key(other))
                 .body(Body::empty())
                 .unwrap();
             assert_eq!(
@@ -1340,7 +1340,7 @@ mod tests {
         ] {
             let request = mcp_request("Bearer good-token")
                 .header("Mcp-Session-Id", "live-session")
-                .header("X-Proxima-Owner", header)
+                .header("X-Proxiima-Owner", header)
                 .body(Body::empty())
                 .unwrap();
             assert_eq!(status_of(app.clone(), request).await, StatusCode::FORBIDDEN);
@@ -1366,7 +1366,7 @@ mod tests {
                 let mut request =
                     mcp_request("Bearer good-token").header("Mcp-Session-Id", session.clone());
                 if let Some(header) = header {
-                    request = request.header("X-Proxima-Owner", header);
+                    request = request.header("X-Proxiima-Owner", header);
                 }
                 assert_eq!(
                     status_of(app.clone(), request.body(Body::empty()).unwrap()).await,
@@ -1376,7 +1376,7 @@ mod tests {
         }
         let invalid_token = mcp_request("Bearer bad-token")
             .header("Mcp-Session-Id", "unknown-session")
-            .header("X-Proxima-Owner", "invalid")
+            .header("X-Proxiima-Owner", "invalid")
             .body(Body::empty())
             .unwrap();
         assert_eq!(
@@ -1410,7 +1410,7 @@ mod tests {
 
         for party in [first, second, first] {
             let request = mcp_request("Bearer good-token")
-                .header("X-Proxima-Owner", owner_key(party))
+                .header("X-Proxiima-Owner", owner_key(party))
                 .body(Body::empty())
                 .unwrap();
             let (status, body) = narrowed_to(app.clone(), request).await;
@@ -1423,7 +1423,7 @@ mod tests {
         }
 
         let request = mcp_request("Bearer good-token")
-            .header("X-Proxima-Owner", owner_key(unresolved))
+            .header("X-Proxiima-Owner", owner_key(unresolved))
             .body(Body::empty())
             .unwrap();
         assert_eq!(status_of(app, request).await, StatusCode::UNAUTHORIZED);
@@ -1458,7 +1458,7 @@ mod tests {
         );
 
         let via_header = mcp_request("Bearer good-token")
-            .header("X-Proxima-Owner", owner_key(other))
+            .header("X-Proxiima-Owner", owner_key(other))
             .body(Body::empty())
             .unwrap();
         assert_eq!(
@@ -1516,7 +1516,7 @@ mod tests {
                 ));
 
         let request = mcp_request("Bearer good-token")
-            .header("X-Proxima-Owner", owner_key(party))
+            .header("X-Proxiima-Owner", owner_key(party))
             .body(Body::empty())
             .unwrap();
         assert_eq!(status_of(app, request).await, StatusCode::UNAUTHORIZED);
@@ -1536,7 +1536,7 @@ mod tests {
         );
 
         let request = mcp_request("Bearer good-token")
-            .header("X-Proxima-Owner", owner_key(owner))
+            .header("X-Proxiima-Owner", owner_key(owner))
             .body(Body::empty())
             .unwrap();
         assert_eq!(status_of(app, request).await, StatusCode::OK);
@@ -1636,7 +1636,7 @@ mod tests {
         );
 
         let request = mcp_request("Bearer good-token")
-            .header("X-Proxima-Owner", owner_key(personal))
+            .header("X-Proxiima-Owner", owner_key(personal))
             .body(Body::empty())
             .unwrap();
         assert_eq!(
@@ -1673,7 +1673,7 @@ mod tests {
             McpSessionBindings::new(),
         );
         let request = mcp_request("Bearer good-token")
-            .header("X-Proxima-Owner", "group:not-a-uuid")
+            .header("X-Proxiima-Owner", "group:not-a-uuid")
             .body(Body::empty())
             .unwrap();
         assert_eq!(status_of(with, request).await, StatusCode::FORBIDDEN);
@@ -1717,7 +1717,7 @@ mod tests {
                     .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
                     .header(
                         header::ACCESS_CONTROL_REQUEST_HEADERS,
-                        "authorization,content-type,x-proxima-owner",
+                        "authorization,content-type,x-proxiima-owner",
                     )
                     .body(Body::empty())
                     .unwrap(),
@@ -1738,7 +1738,7 @@ mod tests {
         assert_eq!(
             response.headers().get(header::ACCESS_CONTROL_ALLOW_HEADERS),
             Some(&header::HeaderValue::from_static(
-                "authorization,content-type,x-proxima-owner"
+                "authorization,content-type,x-proxiima-owner"
             ))
         );
         assert!(
@@ -1775,7 +1775,7 @@ mod tests {
             .unwrap();
         request.headers_mut().append(
             header::ACCESS_CONTROL_REQUEST_HEADERS,
-            header::HeaderValue::from_static("content-type, x-proxima-owner"),
+            header::HeaderValue::from_static("content-type, x-proxiima-owner"),
         );
 
         let response = cors_app(Arc::clone(&calls)).oneshot(request).await.unwrap();
@@ -1790,7 +1790,7 @@ mod tests {
             .collect();
         assert_eq!(
             allowed_headers,
-            ["authorization", "content-type, x-proxima-owner"]
+            ["authorization", "content-type, x-proxiima-owner"]
         );
     }
 
@@ -2184,7 +2184,7 @@ mod tests {
         let owner = user_owner();
         let app = auth_app(owner, McpSessionBindings::new());
         let request = mcp_request("Bearer bad-token")
-            .header("X-Proxima-Owner", owner_key(owner))
+            .header("X-Proxiima-Owner", owner_key(owner))
             .body(Body::empty())
             .unwrap();
         assert_eq!(status_of(app, request).await, StatusCode::UNAUTHORIZED);
@@ -2234,7 +2234,7 @@ mod tests {
         let owner = user_owner();
         let app = auth_app(owner, McpSessionBindings::new());
         let request = mcp_request("Bearer good-token")
-            .header("X-Proxima-Owner", owner_key(owner))
+            .header("X-Proxiima-Owner", owner_key(owner))
             .body(Body::empty())
             .unwrap();
         assert_eq!(status_of(app, request).await, StatusCode::OK);
@@ -2269,7 +2269,7 @@ mod tests {
 
         for expected_calls in 1..=2 {
             let request = mcp_request("Bearer good-token")
-                .header("X-Proxima-Owner", owner_key(owner))
+                .header("X-Proxiima-Owner", owner_key(owner))
                 .body(Body::empty())
                 .unwrap();
             assert_eq!(status_of(app.clone(), request).await, StatusCode::OK);
@@ -2320,7 +2320,7 @@ mod tests {
         let foreign_owner = user_owner();
         let app = auth_app(authorized_owner, McpSessionBindings::new());
         let request = mcp_request("Bearer good-token")
-            .header("X-Proxima-Owner", owner_key(foreign_owner))
+            .header("X-Proxiima-Owner", owner_key(foreign_owner))
             .body(Body::empty())
             .unwrap();
 
@@ -2529,7 +2529,7 @@ mod tests {
     fn identity(expires_at: Option<SystemTime>, auth_epoch: u64) -> Identity {
         let principal = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let subject = principal.as_user();
-        proxima_core::AuthzContext::for_subject(subject, proxima_core::AuthPath::HostBearer)
+        proxiima_core::AuthzContext::for_subject(subject, proxiima_core::AuthPath::HostBearer)
             .with_expires_at(expires_at)
             .with_auth_epoch(auth_epoch)
             .identity_for_revalidation()

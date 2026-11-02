@@ -20,7 +20,7 @@
 //!
 //! The port that drains the captured records lives in
 //! [`crate::storage_ports::publication`]; it is host-only and is reachable
-//! from no flavor-facing facade. What a host implements to receive the
+//! from no spiice-facing facade. What a host implements to receive the
 //! drained events is [`intake`].
 
 use std::collections::BTreeMap;
@@ -237,9 +237,9 @@ const CLOUDEVENTS_CORE_ATTRIBUTES: [&str; 10] = [
     "data_base64",
 ];
 
-/// Extension-name prefix this substrate keeps for itself (`proximaowner`,
-/// `proximamodel`, and whatever a later release adds).
-const PROXIMA_EXTENSION_PREFIX: &str = "proxima";
+/// Extension-name prefix this substrate keeps for itself (`proxiimaowner`,
+/// `proxiimamodel`, and whatever a later release adds).
+const PROXIIMA_EXTENSION_PREFIX: &str = "proxiima";
 
 /// Documented `CloudEvents` extension attributes this substrate writes on
 /// every event, which a host therefore cannot bind: `sequence` is the
@@ -488,10 +488,10 @@ fn validate_extension_name(name: &str) -> Result<(), PublicationExtensionsError>
             name: name.to_owned(),
         });
     }
-    if name.starts_with(PROXIMA_EXTENSION_PREFIX) {
+    if name.starts_with(PROXIIMA_EXTENSION_PREFIX) {
         return Err(PublicationExtensionsError::ReservedName {
             name: name.to_owned(),
-            prefix: PROXIMA_EXTENSION_PREFIX,
+            prefix: PROXIIMA_EXTENSION_PREFIX,
         });
     }
     Ok(())
@@ -540,7 +540,7 @@ pub struct PublicationDraft {
     /// make every consumer subscription version-pinned.
     pub event_type: String,
     /// `CloudEvents` `dataschema`. Resolves against this release's own
-    /// catalog (`proxima://schema/{schema_id}/{schema_version}`); no HTTP
+    /// catalog (`proxiima://schema/{schema_id}/{schema_version}`); no HTTP
     /// fetch is required to validate an event.
     pub data_schema: String,
     /// The configured producer identity. Bound here, at authorization time,
@@ -594,7 +594,7 @@ impl PublicationDraft {
 /// exactly ONE authority for the limits — the engine's
 /// [`PublicationConfig`]. An earlier shape let the storage backend hold its
 /// own copy, which meant a deployment could raise
-/// `PROXIMA_OUTBOX_MAX_PAYLOAD_BYTES` in one place and enforce the old
+/// `PROXIIMA_OUTBOX_MAX_PAYLOAD_BYTES` in one place and enforce the old
 /// number in the other, with no way to notice. Storage now reads the limits
 /// off the witness it is already given and cannot have a second opinion.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -672,7 +672,7 @@ impl<'a> PublicationStamp<'a> {
 #[must_use]
 pub fn data_schema_uri(schema_id: &SchemaId, schema_version: SchemaVersion) -> String {
     format!(
-        "proxima://schema/{}/{}",
+        "proxiima://schema/{}/{}",
         schema_id.as_str(),
         schema_version.into_inner()
     )
@@ -698,9 +698,9 @@ struct CloudEventEnvelope<'a> {
     time: &'a str,
     subject: &'a str,
     sequence: &'a str,
-    proximaowner: &'a str,
+    proxiimaowner: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    proximamodel: Option<&'a str>,
+    proxiimamodel: Option<&'a str>,
     /// Host-bound extension attributes, inlined in name order. Serialized
     /// AFTER the substrate's own attributes and BEFORE `data`, so a host
     /// binding a new attribute never reorders the ones already shipping.
@@ -857,8 +857,8 @@ impl SealedPublication {
             time: &time,
             subject: &subject,
             sequence: &sequence,
-            proximaowner: &owner,
-            proximamodel: draft.model_id.as_deref(),
+            proxiimaowner: &owner,
+            proxiimamodel: draft.model_id.as_deref(),
             extensions: &draft.extensions,
             data: &draft.data,
         };
@@ -919,7 +919,7 @@ mod tests {
         PublicationDraft::new(
             SchemaId::new("test/listenable-v1".into()),
             SchemaVersion::new(1),
-            PublicationSource::new("urn:proxima:test").expect("source"),
+            PublicationSource::new("urn:proxiima:test").expect("source"),
             OwnerId::from(UserId::new(Uuid::nil())),
             Some("model-x".into()),
             PublicationExtensions::new(),
@@ -929,14 +929,14 @@ mod tests {
 
     #[test]
     fn a_source_must_be_an_absolute_uri_or_urn() {
-        assert!(PublicationSource::new("https://proxima.example/prod").is_ok());
-        assert!(PublicationSource::new("urn:proxima:prod").is_ok());
+        assert!(PublicationSource::new("https://proxiima.example/prod").is_ok());
+        assert!(PublicationSource::new("urn:proxiima:prod").is_ok());
         assert!(matches!(
             PublicationSource::new(""),
             Err(PublicationSourceError::Empty)
         ));
         assert!(matches!(
-            PublicationSource::new("proxima prod"),
+            PublicationSource::new("proxiima prod"),
             Err(PublicationSourceError::IllegalCharacter { .. })
         ));
         assert!(matches!(
@@ -1041,8 +1041,8 @@ mod tests {
             "\"time\"",
             "\"subject\":\"01930000-0000-8000-8000-0000000000aa\"",
             "\"sequence\":\"00000000000000000007\"",
-            "\"proximaowner\"",
-            "\"proximamodel\"",
+            "\"proxiimaowner\"",
+            "\"proxiimamodel\"",
             // Host-bound extensions: after the substrate's own attributes,
             // before `data`, in NAME order rather than binding order.
             "\"attempt\":2",
@@ -1198,9 +1198,9 @@ mod tests {
             Err(PublicationExtensionsError::SubstrateAttributeName { .. })
         ));
         assert!(matches!(
-            empty.with("proximaowner", "v"),
+            empty.with("proxiimaowner", "v"),
             Err(PublicationExtensionsError::ReservedName {
-                prefix: "proxima",
+                prefix: "proxiima",
                 ..
             })
         ));

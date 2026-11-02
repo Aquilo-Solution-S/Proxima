@@ -1,7 +1,7 @@
 use crate::pg_enums::PgMemoryKind;
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::query::{GoalRow, MemoryRow};
-use proxima_core::{
+use proxiima_core::verbs::goal_write::GoalState;
+use proxiima_core::verbs::query::{GoalRow, MemoryRow};
+use proxiima_core::{
     GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, SidecarPayload, StorageError,
 };
 
@@ -19,7 +19,7 @@ pub(super) fn memory_row_from_db(
         schema_id,
         schema_version,
         owner: owner_from_parts(r.owner_id)?,
-        writer: proxima_core::WriterAttribution {
+        writer: proxiima_core::WriterAttribution {
             by: r.by,
             via: r.via,
         },
@@ -37,7 +37,7 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
         id: GoalId::new(r.goal_id),
         schema_id: SchemaId::new(r.schema_id),
         owner: owner_from_parts(r.owner_id)?,
-        writer: proxima_core::WriterAttribution {
+        writer: proxiima_core::WriterAttribution {
             by: r.by,
             via: r.via,
         },

@@ -2,7 +2,7 @@
 //! before flipping a moving route, and the purge that drops the spaces a
 //! route no longer names.
 
-use proxima_core::{
+use proxiima_core::{
     EmbeddingPurgeOutcome, EmbeddingSpace, EmbeddingSpaceCounts, OwnerId, StorageError,
 };
 use sqlx::{Postgres, Transaction};
@@ -26,22 +26,22 @@ pub(crate) struct RouteSpaces<'a> {
 const EMBEDDING_COVERAGE_SQL: &str = "
 WITH heads AS MATERIALIZED (
      SELECT m.t
-       FROM proxima_core.memory_head mh
-       JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+       FROM proxiima_core.memory_head mh
+       JOIN proxiima_core.memory m ON m.handle = mh.handle AND m.t = mh.t AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
       WHERE m.owner_id = $1
         AND mh.schema_id <> ALL($2::text[])
  ),
  spaces AS (
      SELECT DISTINCT e.model_id, e.dim
-       FROM proxima_core.embeddings e
+       FROM proxiima_core.embeddings e
       WHERE e.owner_id = $1
      UNION
      SELECT DISTINCT h.model_id, h.dim
-       FROM proxima_core.embedding_heads h
+       FROM proxiima_core.embedding_heads h
       WHERE h.owner_id = $1
      UNION
      SELECT DISTINCT j.model_id, j.dim
-       FROM proxima_core.embedding_jobs j
+       FROM proxiima_core.embedding_jobs j
       WHERE j.owner_id = $1
      UNION
      SELECT r.model_id, r.dim
@@ -52,12 +52,12 @@ WITH heads AS MATERIALIZED (
         (SELECT count(*) FROM heads)::bigint AS embeddable,
         (SELECT count(*)
            FROM heads h
-           JOIN proxima_core.embedding_heads eh
+           JOIN proxiima_core.embedding_heads eh
              ON eh.entity_id = h.t
             AND eh.model_id = s.model_id
             AND eh.dim = s.dim)::bigint AS embedded,
         (SELECT count(*)
-           FROM proxima_core.embeddings e
+           FROM proxiima_core.embeddings e
           WHERE e.owner_id = $1
             AND e.model_id = s.model_id
             AND e.dim = s.dim)::bigint AS vectors,
@@ -71,7 +71,7 @@ WITH heads AS MATERIALIZED (
             count(*) FILTER (WHERE status = 'processing')::bigint AS processing,
             count(*) FILTER (WHERE status = 'failed')::bigint AS failed,
             count(*) FILTER (WHERE status = 'failed_permanent')::bigint AS failed_permanent
-       FROM proxima_core.embedding_jobs
+       FROM proxiima_core.embedding_jobs
       WHERE owner_id = $1
         AND model_id = s.model_id
         AND dim = s.dim
@@ -146,7 +146,7 @@ WITH keep AS (
  ),
  doomed_vectors AS (
      SELECT e.entity_id, e.model_id, e.dim, e.embedding_version, e.chunk_ordinal
-       FROM proxima_core.embeddings e
+       FROM proxiima_core.embeddings e
       WHERE e.owner_id = $1
         AND ($4::uuid[] IS NULL OR e.entity_id = ANY($4::uuid[]))
         AND NOT EXISTS (
@@ -155,7 +155,7 @@ WITH keep AS (
       LIMIT $5
  ),
  vectors AS (
-     DELETE FROM proxima_core.embeddings e
+     DELETE FROM proxiima_core.embeddings e
       USING doomed_vectors d
       WHERE e.entity_id = d.entity_id
         AND e.model_id = d.model_id
@@ -166,7 +166,7 @@ WITH keep AS (
  ),
  doomed_heads AS (
      SELECT h.entity_id, h.model_id, h.dim
-       FROM proxima_core.embedding_heads h
+       FROM proxiima_core.embedding_heads h
       WHERE h.owner_id = $1
         AND ($4::uuid[] IS NULL OR h.entity_id = ANY($4::uuid[]))
         AND NOT EXISTS (
@@ -175,7 +175,7 @@ WITH keep AS (
       LIMIT $5
  ),
  heads AS (
-     DELETE FROM proxima_core.embedding_heads h
+     DELETE FROM proxiima_core.embedding_heads h
       USING doomed_heads d
       WHERE h.entity_id = d.entity_id
         AND h.model_id = d.model_id
@@ -184,7 +184,7 @@ WITH keep AS (
  ),
  doomed_jobs AS (
      SELECT j.job_id
-       FROM proxima_core.embedding_jobs j
+       FROM proxiima_core.embedding_jobs j
       WHERE j.owner_id = $1
         AND j.status <> 'processing'
         AND ($4::uuid[] IS NULL OR j.entity_id = ANY($4::uuid[]))
@@ -194,7 +194,7 @@ WITH keep AS (
       LIMIT $5
  ),
  jobs AS (
-     DELETE FROM proxima_core.embedding_jobs j
+     DELETE FROM proxiima_core.embedding_jobs j
       USING doomed_jobs d
       WHERE j.job_id = d.job_id
      RETURNING 1
@@ -227,17 +227,17 @@ pub(crate) async fn purge_embedding_spaces(
 /// so this statement names no space.
 const DROP_SERIES_EMBEDDINGS_SQL: &str = "
 WITH vectors AS (
-     DELETE FROM proxima_core.embeddings
+     DELETE FROM proxiima_core.embeddings
       WHERE owner_id = $1 AND entity_id = ANY($2::uuid[])
      RETURNING 1
  ),
  heads AS (
-     DELETE FROM proxima_core.embedding_heads
+     DELETE FROM proxiima_core.embedding_heads
       WHERE owner_id = $1 AND entity_id = ANY($2::uuid[])
      RETURNING 1
  ),
  jobs AS (
-     DELETE FROM proxima_core.embedding_jobs
+     DELETE FROM proxiima_core.embedding_jobs
       WHERE owner_id = $1 AND entity_id = ANY($2::uuid[]) AND status <> 'processing'
      RETURNING 1
  )
@@ -308,16 +308,16 @@ pub(crate) async fn enqueue_series_head_in_tx(
     }
     let (models, dims) = space_columns(route.spaces);
     sqlx::query(
-        "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
+        "INSERT INTO proxiima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
          SELECT mh.t, r.model_id, r.dim, $2
-           FROM proxima_core.memory_head mh
-           JOIN proxima_core.memory m ON m.handle = mh.handle AND m.t = mh.t AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+           FROM proxiima_core.memory_head mh
+           JOIN proxiima_core.memory m ON m.handle = mh.handle AND m.t = mh.t AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
           CROSS JOIN unnest($3::text[], $4::smallint[]) AS r(model_id, dim)
           WHERE mh.handle = $1
             AND mh.schema_id <> ALL($5::text[])
             AND NOT EXISTS (
                 SELECT 1
-                  FROM proxima_core.embedding_heads h
+                  FROM proxiima_core.embedding_heads h
                  WHERE h.entity_id = mh.t
                    AND h.model_id = r.model_id
                    AND h.dim = r.dim

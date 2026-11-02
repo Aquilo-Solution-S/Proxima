@@ -1,5 +1,5 @@
 [package]
-name = "proxima-blob-s3"
+name = "proxiima-blob-s3"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -13,8 +13,8 @@ workspace = true
 [dependencies]
 async-trait = { workspace = true }
 aws-sdk-s3 = { workspace = true }
-proxima-core = { path = "../core" }
-proxima-storage-pg = { path = "../storage-pg" }
+proxiima-core = { path = "../core" }
+proxiima-storage-pg = { path = "../storage-pg" }
 sqlx = { workspace = true }
 time = { workspace = true }
 tracing = { workspace = true }
@@ -27,9 +27,9 @@ tokio = { workspace = true, features = ["io-util", "sync"] }
 
 [dev-dependencies]
 aws-smithy-runtime-api = "1.12.3"
-proxima-core = { path = "../core", features = ["test-fixtures"] }
-proxima-pg-testkit = { path = "../pg-testkit" }
-proxima-storage-pg = { path = "../storage-pg", features = ["test-fixtures"] }
+proxiima-core = { path = "../core", features = ["test-fixtures"] }
+proxiima-pg-testkit = { path = "../pg-testkit" }
+proxiima-storage-pg = { path = "../storage-pg", features = ["test-fixtures"] }
 # The transfer contract is "the client speaks HTTP to the presigned URL".
 # Without a client here no test ever dereferences one, and the only hop that
 # actually carries bytes goes unexecuted.

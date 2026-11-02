@@ -18,20 +18,20 @@ use aws_lc_rs::signature::{
 use axum::{Router, routing::get};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
-use proxima_auth_oidc::{
+use proxiima_auth_oidc::{
     AuthorizedPartyPolicy, HttpJwksResolver, KeyResolver, OidcAuthConfig, OidcAuthenticator,
     OidcBinding, OidcBindingSet, OidcRejection, OidcSubjectMap, OidcTokenValidator,
     StaticJwksResolver,
 };
-use proxima_core::{
+use proxiima_core::{
     AccessError, AuthError, Authenticator, Credentials, OwnerAccessPort, OwnerRoles, UserId,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 const ISSUER: &str = "https://issuer.example";
-const AUDIENCE: &str = "proxima-api";
-const OTHER_AUDIENCE: &str = "proxima-admin";
+const AUDIENCE: &str = "proxiima-api";
+const OTHER_AUDIENCE: &str = "proxiima-admin";
 
 /// One key pair per family, generated once for the whole file. The kid of
 /// each is its family name.

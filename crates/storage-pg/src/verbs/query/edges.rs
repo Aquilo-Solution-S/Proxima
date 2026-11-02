@@ -1,6 +1,6 @@
-use proxima_core::storage_ports::{InboundPinQuery, PinTargetKind};
-use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
-use proxima_core::{
+use proxiima_core::storage_ports::{InboundPinQuery, PinTargetKind};
+use proxiima_core::verbs::query::{QueryRequest, SupersessionStatus};
+use proxiima_core::{
     Edge, EdgeKind, GoalId, MemoryId, OwnerId, PinNode, StorageError, project_window_edges,
 };
 use sqlx::PgConnection;
@@ -27,7 +27,7 @@ impl PinNodeRow {
         PinNode {
             id: MemoryId::new(self.t),
             kind: self.kind.into(),
-            schema_id: proxima_core::SchemaId::new(self.schema_id),
+            schema_id: proxiima_core::SchemaId::new(self.schema_id),
             origins: self.origins.into_iter().map(MemoryId::new).collect(),
             refs: self.refs.into_iter().map(MemoryId::new).collect(),
             goal_refs: self.goal_refs.into_iter().map(GoalId::new).collect(),
@@ -48,7 +48,7 @@ pub(crate) async fn load_visible_goal_ids_on_connection(
     let ids: Vec<uuid::Uuid> = goal_ids.iter().map(|id| id.into_inner()).collect();
     let owner_ids = owner_ids(read_owners);
     let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.goal WHERE t = ANY($1::uuid[]) AND owner_id = ANY($2::uuid[])",
+        "SELECT t FROM proxiima_core.goal WHERE t = ANY($1::uuid[]) AND owner_id = ANY($2::uuid[])",
     )
     .bind(&ids)
     .bind(&owner_ids)
@@ -70,7 +70,7 @@ pub(crate) async fn load_pin_nodes_on_connection(
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
     let owner_ids = owner_ids(read_owners);
     let rows: Vec<PinNodeRow> = sqlx::query_as(
-        "SELECT t, kind, schema_id, origins, refs, goal_refs FROM proxima_core.memory WHERE t = ANY($1::uuid[]) AND owner_id = ANY($2::uuid[])",
+        "SELECT t, kind, schema_id, origins, refs, goal_refs FROM proxiima_core.memory WHERE t = ANY($1::uuid[]) AND owner_id = ANY($2::uuid[])",
     )
     .bind(&ids).bind(&owner_ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     Ok(rows.into_iter().map(PinNodeRow::into_pin_node).collect())
@@ -140,8 +140,8 @@ fn inbound_pin_sql_memory_targets(
     match (supersession, kind) {
         (SupersessionStatus::HeadsOnly, Some(EdgeKind::Origin)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                   FROM proxiima_core.memory_head h
+                   JOIN proxiima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
                     AND m.origins && $1::uuid[]
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -150,8 +150,8 @@ fn inbound_pin_sql_memory_targets(
         }
         (SupersessionStatus::HeadsOnly, Some(EdgeKind::Reference)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                   FROM proxiima_core.memory_head h
+                   JOIN proxiima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
                     AND m.refs && $1::uuid[]
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -160,8 +160,8 @@ fn inbound_pin_sql_memory_targets(
         }
         (SupersessionStatus::HeadsOnly, None) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                   FROM proxiima_core.memory_head h
+                   JOIN proxiima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
                     AND (m.origins && $1::uuid[] OR m.refs && $1::uuid[])
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -170,7 +170,7 @@ fn inbound_pin_sql_memory_targets(
         }
         (SupersessionStatus::IncludeSuperseded, Some(EdgeKind::Origin)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory m
+                   FROM proxiima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND m.origins && $1::uuid[]
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -179,7 +179,7 @@ fn inbound_pin_sql_memory_targets(
         }
         (SupersessionStatus::IncludeSuperseded, Some(EdgeKind::Reference)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory m
+                   FROM proxiima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND m.refs && $1::uuid[]
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -188,7 +188,7 @@ fn inbound_pin_sql_memory_targets(
         }
         (SupersessionStatus::IncludeSuperseded, None) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory m
+                   FROM proxiima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND (m.origins && $1::uuid[] OR m.refs && $1::uuid[])
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -209,8 +209,8 @@ fn inbound_pin_sql_goal_targets(
     match (supersession, kind) {
         (SupersessionStatus::HeadsOnly, Some(EdgeKind::Origin)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                   FROM proxiima_core.memory_head h
+                   JOIN proxiima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
                     AND m.origins && $1::uuid[]
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -219,8 +219,8 @@ fn inbound_pin_sql_goal_targets(
         }
         (SupersessionStatus::HeadsOnly, Some(EdgeKind::Reference)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                   FROM proxiima_core.memory_head h
+                   JOIN proxiima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
                     AND m.goal_refs && $1::uuid[]
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -229,8 +229,8 @@ fn inbound_pin_sql_goal_targets(
         }
         (SupersessionStatus::HeadsOnly, None) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+                   FROM proxiima_core.memory_head h
+                   JOIN proxiima_core.memory m ON m.handle = h.handle AND m.t = h.t
                   WHERE h.owner_id = ANY($2::uuid[])
                     AND (m.origins && $1::uuid[] OR m.goal_refs && $1::uuid[])
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -239,7 +239,7 @@ fn inbound_pin_sql_goal_targets(
         }
         (SupersessionStatus::IncludeSuperseded, Some(EdgeKind::Origin)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory m
+                   FROM proxiima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND m.origins && $1::uuid[]
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -248,7 +248,7 @@ fn inbound_pin_sql_goal_targets(
         }
         (SupersessionStatus::IncludeSuperseded, Some(EdgeKind::Reference)) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory m
+                   FROM proxiima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND m.goal_refs && $1::uuid[]
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -257,7 +257,7 @@ fn inbound_pin_sql_goal_targets(
         }
         (SupersessionStatus::IncludeSuperseded, None) => {
             "SELECT m.t, m.kind, m.schema_id, m.origins, m.refs, m.goal_refs
-                   FROM proxima_core.memory m
+                   FROM proxiima_core.memory m
                   WHERE m.owner_id = ANY($2::uuid[])
                     AND (m.origins && $1::uuid[] OR m.goal_refs && $1::uuid[])
                     AND ($3::uuid IS NULL OR m.t < $3)
@@ -270,7 +270,7 @@ fn inbound_pin_sql_goal_targets(
 /// Snapshot-mode edges: pins whose two endpoints are both in the Query window.
 pub(super) fn query_edges(
     _req: &QueryRequest,
-    memories: &[proxima_core::verbs::query::MemoryRow],
+    memories: &[proxiima_core::verbs::query::MemoryRow],
     visible_goal_ids: &[uuid::Uuid],
 ) -> Vec<Edge> {
     let visible_goal_ids: Vec<GoalId> = visible_goal_ids.iter().copied().map(GoalId::new).collect();

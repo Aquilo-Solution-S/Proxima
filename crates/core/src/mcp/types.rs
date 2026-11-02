@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::authz::AuthzContext;
-use crate::{FlavorServices, MemoryId, OwnerId, verbs::schema::FlavorRegistryFrozen};
+use crate::{MemoryId, OwnerId, SpiiceServices, verbs::schema::SpiiceRegistryFrozen};
 
 /// Upper bound on the reserved `model_id` operator label, in characters.
 ///
@@ -32,7 +32,7 @@ pub const UNKNOWN_OPERATOR_LABEL: &str = "unknown";
 /// `trusted_model_id` is the authenticated one, present only when the
 /// edge authenticator bound a model identity to the principal; it is
 /// never populated from tool arguments, request headers, MCP
-/// `clientInfo`, or any `_proxima_*` reserved argument.
+/// `clientInfo`, or any `_proxiima_*` reserved argument.
 #[derive(Debug, Clone)]
 pub struct McpAuthorContext {
     pub model_id: String,
@@ -78,7 +78,7 @@ impl OperatorLabelConflict {
     }
 
     /// Refusal text naming the transport's own field (`model_id` on MCP,
-    /// `X-Proxima-Model-Id` on REST).
+    /// `X-Proxiima-Model-Id` on REST).
     #[must_use]
     pub fn detail(&self, field: &str) -> String {
         format!(
@@ -148,13 +148,13 @@ pub struct McpToolCtx {
     /// edge. Tools pass this to engine verbs — never a substituted
     /// engine identity (privilege-escalation guard).
     pub authz: AuthzContext,
-    pub registry: Arc<FlavorRegistryFrozen>,
+    pub registry: Arc<SpiiceRegistryFrozen>,
     pub author: McpAuthorContext,
     pub caller_self_perspective: Option<MemoryId>,
-    /// Backend/flavor services supplied by the host. Core does not name
-    /// concrete service types; PG-aware flavors may downcast their own
+    /// Backend/spiice services supplied by the host. Core does not name
+    /// concrete service types; PG-aware spiices may downcast their own
     /// dependencies here.
-    pub services: FlavorServices,
+    pub services: SpiiceServices,
     /// `Some` when the MCP server was constructed with `with_engine`.
     /// Tools that need to call engine verbs (CRUD-via-MCP) require this;
     /// pure read-only / projection tools can ignore it.

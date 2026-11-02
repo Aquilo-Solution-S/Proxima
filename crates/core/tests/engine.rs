@@ -5,24 +5,24 @@ use std::sync::Arc;
 #[path = "../src/test_fixtures.rs"]
 mod test_fixtures;
 
-use proxima_core::engine::Engine;
-use proxima_core::llm::SingleClientRouter;
-use proxima_core::owner::OwnerId;
-use proxima_core::verbs::query::QueryRequest;
-use proxima_core::verbs::schema::SchemaRequest;
-use proxima_core::{AuthPath, AuthzContext, FlavorRegistry};
+use proxiima_core::engine::Engine;
+use proxiima_core::llm::SingleClientRouter;
+use proxiima_core::owner::OwnerId;
+use proxiima_core::verbs::query::QueryRequest;
+use proxiima_core::verbs::schema::SchemaRequest;
+use proxiima_core::{AuthPath, AuthzContext, SpiiceRegistry};
 use test_fixtures::ConstantEmbedding;
 use uuid::Uuid;
 
 fn fresh_owner() -> (OwnerId, OwnerId) {
-    let user = proxima_core::ids::UserId::new(Uuid::now_v7());
+    let user = proxiima_core::ids::UserId::new(Uuid::now_v7());
     let principal = OwnerId::from(user);
     (principal, principal)
 }
 
 fn boot_engine(principal: OwnerId, owner: OwnerId) -> Engine {
     let _ = (principal, owner);
-    Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+    Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
 }
 
 fn fixed_router() -> Arc<SingleClientRouter> {
@@ -68,7 +68,10 @@ async fn reconcile_embeddings_with_client_reaches_maintenance_port() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner).with_embedding_router(fixed_router());
     let err = engine
-        .reconcile_embeddings(proxima_core::EmbeddingReconcileScope::MissingOnly, Some(10))
+        .reconcile_embeddings(
+            proxiima_core::EmbeddingReconcileScope::MissingOnly,
+            Some(10),
+        )
         .await
         .expect_err("rejecting storage must reject the forwarded reconcile");
     assert!(err.to_string().contains("embedding maintenance"), "{err}");

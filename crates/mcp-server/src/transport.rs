@@ -2,7 +2,7 @@
 //! `rmcp::transport::streamable_http_server::StreamableHttpService`.
 //!
 //! The service is a Tower service composed into
-//! `axum::Router::nest_service("/mcp", service)`. Proxima wraps it
+//! `axum::Router::nest_service("/mcp", service)`. Proxiima wraps it
 //! with shared listener-level Host and Origin validation. rmcp retains its
 //! own `/mcp` DNS-rebinding guard as defense in depth.
 
@@ -51,7 +51,7 @@ pub fn streamable_http_service(
 /// [`streamable_http_service`] with explicit rmcp transport settings.
 ///
 /// The security-bearing fields — Host and Origin allowlists, cancellation —
-/// always come from Proxima's own policy; `transport` only tunes the stream.
+/// always come from Proxiima's own policy; `transport` only tunes the stream.
 #[must_use]
 pub fn streamable_http_service_with_transport(
     server: McpToolHost,
@@ -103,10 +103,10 @@ pub fn guard_listener(
 /// abuse and is refused before auth or JSON parsing runs.
 pub const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 
-/// rmcp Streamable HTTP tuning a host may set (`PROXIMA_MCP_*`).
+/// rmcp Streamable HTTP tuning a host may set (`PROXIIMA_MCP_*`).
 ///
 /// Deliberately not rmcp's own config type: its Host/Origin allowlists and
-/// cancellation are security policy Proxima derives itself, so a host
+/// cancellation are security policy Proxiima derives itself, so a host
 /// cannot hand in a config that widens them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct McpTransportConfig {
@@ -132,7 +132,7 @@ pub struct McpTransportConfig {
 }
 
 impl Default for McpTransportConfig {
-    /// rmcp's defaults, with Proxima's body cap.
+    /// rmcp's defaults, with Proxiima's body cap.
     fn default() -> Self {
         Self {
             sse_keep_alive: Some(Duration::from_secs(15)),
@@ -228,7 +228,7 @@ mod tests {
     use axum::body::{Body, Bytes};
     use axum::http::{Request, StatusCode};
     use axum::routing::any;
-    use proxima_core::RevalidationConfig;
+    use proxiima_core::RevalidationConfig;
     use tower::ServiceExt;
 
     use super::{MAX_REQUEST_BODY_BYTES, enforce_body_limit, guard_listener};
@@ -329,11 +329,11 @@ mod tests {
 
     /// A host serving the core tools plus [`StubTool`].
     fn stub_host() -> crate::server::McpToolHost {
-        let mut registry = proxima_core::FlavorRegistry::new();
-        registry.add_mcp_tool_or_panic_for_tests::<StubTool>("proxima-stub");
+        let mut registry = proxiima_core::SpiiceRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<StubTool>("proxiima-stub");
         crate::server::McpToolHost::from_parts(
             Arc::new(registry.freeze_or_panic_for_tests()),
-            proxima_core::FlavorServices::default(),
+            proxiima_core::SpiiceServices::default(),
         )
     }
 
@@ -342,19 +342,19 @@ mod tests {
     }
 
     /// What `mcp_auth_layer` binds for a verified personal owner.
-    fn auth_for(owner: proxima_core::OwnerId) -> crate::McpAuthContext {
+    fn auth_for(owner: proxiima_core::OwnerId) -> crate::McpAuthContext {
         crate::McpAuthContext {
             owner,
-            authz: proxima_core::AuthzContext::single_owner(
+            authz: proxiima_core::AuthzContext::single_owner(
                 &owner,
-                proxima_core::AuthPath::HostBearer,
+                proxiima_core::AuthPath::HostBearer,
             )
-            .with_tool_scope(proxima_core::ToolScope::All),
+            .with_tool_scope(proxiima_core::ToolScope::All),
         }
     }
 
-    fn personal_owner() -> proxima_core::OwnerId {
-        proxima_core::OwnerId::from(proxima_core::UserId::new(uuid::Uuid::now_v7()))
+    fn personal_owner() -> proxiima_core::OwnerId {
+        proxiima_core::OwnerId::from(proxiima_core::UserId::new(uuid::Uuid::now_v7()))
     }
 
     fn rpc_request(version: &str, body: &serde_json::Value) -> Request<Body> {
@@ -399,19 +399,19 @@ mod tests {
         client_name: String,
     }
 
-    impl proxima_core::mcp::McpTool for StubTool {
+    impl proxiima_core::mcp::McpTool for StubTool {
         const TITLE: &'static str = "Test tool";
-        const NAME: &'static str = "proxima-stub_ping";
+        const NAME: &'static str = "proxiima-stub_ping";
         const DESCRIPTION: &'static str = "Answers with the calling client's name.";
-        const EFFECT: Option<proxima_core::ToolEffect> = Some(proxima_core::ToolEffect::ReadOnly);
+        const EFFECT: Option<proxiima_core::ToolEffect> = Some(proxiima_core::ToolEffect::ReadOnly);
         type Args = StubArgs;
         type Output = StubOutput;
         fn call(
-            ctx: proxima_core::mcp::McpToolCtx,
+            ctx: proxiima_core::mcp::McpToolCtx,
             _: Self::Args,
         ) -> futures_util::future::BoxFuture<
             'static,
-            Result<Self::Output, proxima_core::mcp::McpToolError>,
+            Result<Self::Output, proxiima_core::mcp::McpToolError>,
         > {
             Box::pin(async move {
                 Ok(StubOutput {
@@ -427,13 +427,13 @@ mod tests {
     struct HostFixture {
         catalog: Result<Vec<crate::McpHostTool>, &'static str>,
         /// `None` makes every call fail with `InvalidInput`.
-        reply: Option<proxima_core::ToolReply>,
+        reply: Option<proxiima_core::ToolReply>,
         instructions: Option<String>,
         lists: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl HostFixture {
-        fn new(catalog: Vec<crate::McpHostTool>, reply: proxima_core::ToolReply) -> Self {
+        fn new(catalog: Vec<crate::McpHostTool>, reply: proxiima_core::ToolReply) -> Self {
             Self {
                 catalog: Ok(catalog),
                 reply: Some(reply),
@@ -445,7 +445,7 @@ mod tests {
         fn structured(output: serde_json::Value) -> Self {
             Self::new(
                 vec![host_tool("host_output")],
-                proxima_core::ToolReply::Structured(output),
+                proxiima_core::ToolReply::Structured(output),
             )
         }
 
@@ -460,7 +460,7 @@ mod tests {
             name,
             "Host fixture",
             serde_json::json!({"type": "object"}),
-            proxima_core::ToolEffect::ReadOnly,
+            proxiima_core::ToolEffect::ReadOnly,
         )
         .with_output_schema(serde_json::json!({"type": "object"}))
     }
@@ -471,7 +471,7 @@ mod tests {
             name,
             "Host fixture",
             serde_json::json!({"type": "object"}),
-            proxima_core::ToolEffect::Additive(proxima_core::mcp::Replay::NonIdempotent),
+            proxiima_core::ToolEffect::Additive(proxiima_core::mcp::Replay::NonIdempotent),
         )
         .with_output_schema(serde_json::json!({"type": "object"}))
     }
@@ -482,7 +482,7 @@ mod tests {
             name,
             "Host fixture",
             serde_json::json!({"type": "object"}),
-            proxima_core::ToolEffect::ReadOnly,
+            proxiima_core::ToolEffect::ReadOnly,
         )
     }
 
@@ -491,19 +491,19 @@ mod tests {
         async fn list(
             &self,
             _: &crate::McpAuthContext,
-        ) -> Result<Vec<crate::McpHostTool>, proxima_core::mcp::McpToolError> {
+        ) -> Result<Vec<crate::McpHostTool>, proxiima_core::mcp::McpToolError> {
             self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.catalog
                 .clone()
-                .map_err(|message| proxima_core::mcp::McpToolError::Unavailable(message.into()))
+                .map_err(|message| proxiima_core::mcp::McpToolError::Unavailable(message.into()))
         }
 
         async fn call(
             &self,
-            _: proxima_core::mcp::ToolCall,
-        ) -> Result<proxima_core::ToolReply, proxima_core::mcp::McpToolError> {
+            _: proxiima_core::mcp::ToolCall,
+        ) -> Result<proxiima_core::ToolReply, proxiima_core::mcp::McpToolError> {
             self.reply.clone().ok_or_else(|| {
-                proxima_core::mcp::McpToolError::InvalidInput("bad host input".into())
+                proxiima_core::mcp::McpToolError::InvalidInput("bad host input".into())
             })
         }
 
@@ -513,7 +513,7 @@ mod tests {
     }
 
     /// A `2026-07-28` `tools/call` for `name`, as `owner`.
-    fn tools_call(name: &str, owner: proxima_core::OwnerId) -> Request<Body> {
+    fn tools_call(name: &str, owner: proxiima_core::OwnerId) -> Request<Body> {
         let mut request = per_request_rpc(
             "2026-07-28",
             "tools/call",
@@ -588,7 +588,7 @@ mod tests {
     /// failure adds its object as `structuredContent`.
     #[tokio::test]
     async fn host_content_and_failure_replies_go_out_as_content_blocks() {
-        use proxima_core::{ToolContent, ToolReply};
+        use proxiima_core::{ToolContent, ToolReply};
 
         let blocks = vec![
             ToolContent::text("hello"),
@@ -704,7 +704,7 @@ mod tests {
         let owner = personal_owner();
         let mut host_fixture = HostFixture::new(
             vec![write_host_tool("host_erring")],
-            proxima_core::ToolReply::Structured(serde_json::json!({})),
+            proxiima_core::ToolReply::Structured(serde_json::json!({})),
         );
         host_fixture.reply = None;
         let host = stub_host().with_host_tools(Arc::new(host_fixture));
@@ -728,7 +728,7 @@ mod tests {
         let mut outside = auth_for(owner);
         outside.authz = outside
             .authz
-            .with_tool_scope(proxima_core::ToolScope::Palette(Vec::new()));
+            .with_tool_scope(proxiima_core::ToolScope::Palette(Vec::new()));
         let mut request = tools_call("host_erring", owner);
         request.extensions_mut().insert(outside);
         let message = first_message(mcp_service_for(host), request).await;
@@ -772,33 +772,33 @@ mod tests {
         sent: bool,
     }
 
-    const SEND_TOOL: &str = "proxima-stub_send";
+    const SEND_TOOL: &str = "proxiima-stub_send";
 
-    /// Not a string Proxima would ever write: redaction or a reworded
+    /// Not a string Proxiima would ever write: redaction or a reworded
     /// message would not keep it.
     const SEND_FAILURE: &str = "send refused: token sk-live-1234 rejected (retry after 60s)";
 
-    impl proxima_core::Tool for SendTool {
+    impl proxiima_core::Tool for SendTool {
         const NAME: &'static str = SEND_TOOL;
         const TITLE: &'static str = "Send";
         const DESCRIPTION: &'static str = "Answers the outcome it is asked for.";
-        const EFFECT: Option<proxima_core::ToolEffect> = Some(proxima_core::ToolEffect::ReadOnly);
+        const EFFECT: Option<proxiima_core::ToolEffect> = Some(proxiima_core::ToolEffect::ReadOnly);
         type Args = SendArgs;
         type Output = SendOutput;
         fn call(
-            _: proxima_core::ToolCtx,
+            _: proxiima_core::ToolCtx,
             args: SendArgs,
-        ) -> futures_util::future::BoxFuture<'static, Result<SendOutput, proxima_core::ToolError>>
+        ) -> futures_util::future::BoxFuture<'static, Result<SendOutput, proxiima_core::ToolError>>
         {
             Box::pin(async move {
                 match args.outcome {
                     SendOutcome::Done => Ok(SendOutput { sent: true }),
                     SendOutcome::Failed => {
-                        Err(proxima_core::ToolError::Failure(SEND_FAILURE.into()))
+                        Err(proxiima_core::ToolError::Failure(SEND_FAILURE.into()))
                     }
-                    SendOutcome::Invalid => {
-                        Err(proxima_core::ToolError::InvalidInput("no recipient".into()))
-                    }
+                    SendOutcome::Invalid => Err(proxiima_core::ToolError::InvalidInput(
+                        "no recipient".into(),
+                    )),
                 }
             })
         }
@@ -810,11 +810,11 @@ mod tests {
     /// forms, and a JSON-only surface gets the failure back with its text.
     #[tokio::test]
     async fn a_typed_tool_failure_goes_out_as_is_error_with_its_text() {
-        let mut registry = proxima_core::FlavorRegistry::new();
-        registry.add_tool_or_panic_for_tests::<SendTool>("proxima-stub");
+        let mut registry = proxiima_core::SpiiceRegistry::new();
+        registry.add_tool_or_panic_for_tests::<SendTool>("proxiima-stub");
         let host = crate::server::McpToolHost::from_parts(
             Arc::new(registry.freeze_or_panic_for_tests()),
-            proxima_core::FlavorServices::default(),
+            proxiima_core::SpiiceServices::default(),
         );
         let owner = personal_owner();
         let send = |outcome: &str| {
@@ -855,7 +855,7 @@ mod tests {
             .call_tool(
                 SEND_TOOL,
                 serde_json::json!({"outcome": "failed"}),
-                proxima_core::mcp::McpAuthorContext {
+                proxiima_core::mcp::McpAuthorContext {
                     model_id: "test".into(),
                     trusted_model_id: None,
                     client_name: "test".into(),
@@ -866,7 +866,7 @@ mod tests {
             )
             .await;
         let Err(crate::server::ToolInvocationError::Tool(
-            error @ proxima_core::mcp::McpToolError::Failure(_),
+            error @ proxiima_core::mcp::McpToolError::Failure(_),
         )) = json
         else {
             panic!("a JSON-only surface answers the tool's failure: {json:?}");
@@ -886,14 +886,14 @@ mod tests {
             "host_rich",
             "Host fixture",
             serde_json::json!({"type": "object"}),
-            proxima_core::ToolEffect::Destructive(proxima_core::Replay::Idempotent),
+            proxiima_core::ToolEffect::Destructive(proxiima_core::Replay::Idempotent),
         )
         .with_meta(meta)
         .with_open_world(true);
         let plain = host_tool("host_plain");
         let host = stub_host().with_host_tools(Arc::new(HostFixture::new(
             vec![write, plain],
-            proxima_core::ToolReply::Structured(serde_json::json!({})),
+            proxiima_core::ToolReply::Structured(serde_json::json!({})),
         )));
         let owner = personal_owner();
         let message = first_message(
@@ -948,7 +948,7 @@ mod tests {
         assert_eq!(message["result"]["isError"], false, "{message}");
         assert_eq!(reads(), 2, "host tools/call");
 
-        let message = first_message(service.clone(), tools_call("proxima-stub_ping", owner)).await;
+        let message = first_message(service.clone(), tools_call("proxiima-stub_ping", owner)).await;
         assert_eq!(message["result"]["isError"], false, "{message}");
         assert_eq!(reads(), 2, "registry tools/call");
     }
@@ -963,12 +963,12 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl proxima_core::RequestBehavior for Hiding {
+    impl proxiima_core::RequestBehavior for Hiding {
         async fn handle(
             &self,
-            call: proxima_core::mcp::ToolCall,
-            next: proxima_core::mcp::Next<'_>,
-        ) -> Result<proxima_core::ToolReply, proxima_core::mcp::McpToolError> {
+            call: proxiima_core::mcp::ToolCall,
+            next: proxiima_core::mcp::Next<'_>,
+        ) -> Result<proxiima_core::ToolReply, proxiima_core::mcp::McpToolError> {
             self.handled
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             next.run(call).await
@@ -976,8 +976,8 @@ mod tests {
 
         fn visible(
             &self,
-            _: &proxima_core::mcp::McpToolCtx,
-            tool: &proxima_core::ToolDescriptorView<'_>,
+            _: &proxiima_core::mcp::McpToolCtx,
+            tool: &proxiima_core::ToolDescriptorView<'_>,
         ) -> bool {
             self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             !self.hidden.contains(&tool.name())
@@ -986,14 +986,14 @@ mod tests {
 
     /// A host over [`StubTool`] whose registry carries `behavior`.
     fn stub_host_behaving(
-        behavior: impl proxima_core::RequestBehavior + 'static,
+        behavior: impl proxiima_core::RequestBehavior + 'static,
     ) -> crate::server::McpToolHost {
-        let mut registry = proxima_core::FlavorRegistry::new();
-        registry.add_mcp_tool_or_panic_for_tests::<StubTool>("proxima-stub");
+        let mut registry = proxiima_core::SpiiceRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<StubTool>("proxiima-stub");
         registry.add_request_behavior(behavior);
         crate::server::McpToolHost::from_parts(
             Arc::new(registry.freeze_or_panic_for_tests()),
-            proxima_core::FlavorServices::default(),
+            proxiima_core::SpiiceServices::default(),
         )
     }
 
@@ -1007,13 +1007,13 @@ mod tests {
         let asked = Arc::new(AtomicUsize::new(0));
         let handled = Arc::new(AtomicUsize::new(0));
         let host = stub_host_behaving(Hiding {
-            hidden: &["proxima-stub_ping", "host_hidden"],
+            hidden: &["proxiima-stub_ping", "host_hidden"],
             asked: Arc::clone(&asked),
             handled: Arc::clone(&handled),
         })
         .with_host_tools(Arc::new(HostFixture::new(
             vec![host_tool("host_shown"), host_tool("host_hidden")],
-            proxima_core::ToolReply::Structured(serde_json::json!({})),
+            proxiima_core::ToolReply::Structured(serde_json::json!({})),
         )));
         let service = mcp_service_for(host);
         let owner = personal_owner();
@@ -1028,13 +1028,13 @@ mod tests {
         );
         assert!(!names.contains(&"host_hidden".to_owned()), "{names:?}");
         assert!(
-            !names.contains(&"proxima-stub_ping".to_owned()),
+            !names.contains(&"proxiima-stub_ping".to_owned()),
             "{names:?}"
         );
         let asked_by_the_list = asked.load(Ordering::SeqCst);
         assert!(asked_by_the_list > 0);
 
-        for hidden in ["proxima-stub_ping", "host_hidden"] {
+        for hidden in ["proxiima-stub_ping", "host_hidden"] {
             let message = first_message(service.clone(), tools_call(hidden, owner)).await;
             assert_eq!(message["result"]["isError"], false, "{hidden}: {message}");
         }
@@ -1057,19 +1057,21 @@ mod tests {
         })
         .with_host_tools(Arc::new(HostFixture::new(
             vec![host_tool("host_shown"), write_host_tool("host_other")],
-            proxima_core::ToolReply::Structured(serde_json::json!({})),
+            proxiima_core::ToolReply::Structured(serde_json::json!({})),
         )));
         let mut auth = auth_for(personal_owner());
-        auth.authz = auth.authz.with_tool_scope(proxima_core::ToolScope::Palette(
-            ["host_shown", "proxima-stub_ping"]
-                .map(|id| proxima_core::ScopeKey::parse(id).expect("a scope key"))
-                .to_vec(),
-        ));
+        auth.authz = auth
+            .authz
+            .with_tool_scope(proxiima_core::ToolScope::Palette(
+                ["host_shown", "proxiima-stub_ping"]
+                    .map(|id| proxiima_core::ScopeKey::parse(id).expect("a scope key"))
+                    .to_vec(),
+            ));
         let message = first_message(mcp_service_for(host), authed_rpc("tools/list", auth)).await;
         let names = listed_names(&message);
         assert!(names.iter().any(|name| name == "host_shown"), "{message}");
         assert!(
-            names.iter().any(|name| name == "proxima-stub_ping"),
+            names.iter().any(|name| name == "proxiima-stub_ping"),
             "{message}"
         );
         // Exact caller keys omit reads and writes alike.
@@ -1088,26 +1090,26 @@ mod tests {
     async fn dynamic_host_reads_use_the_same_exact_caller_keys_for_list_and_call() {
         let host = stub_host().with_host_tools(Arc::new(HostFixture::new(
             vec![host_tool("host_read"), write_host_tool("host_write")],
-            proxima_core::ToolReply::Structured(serde_json::json!({})),
+            proxiima_core::ToolReply::Structured(serde_json::json!({})),
         )));
         let service = mcp_service_for(host);
         let owner = personal_owner();
         for (scope, served, admitted) in [
             (
-                proxima_core::ToolScope::Palette(Vec::new()),
-                proxima_core::ServedSurface::All,
+                proxiima_core::ToolScope::Palette(Vec::new()),
+                proxiima_core::ServedSurface::All,
                 false,
             ),
             (
-                proxima_core::ToolScope::Palette(vec![
-                    proxima_core::ScopeKey::parse("host_read").unwrap(),
+                proxiima_core::ToolScope::Palette(vec![
+                    proxiima_core::ScopeKey::parse("host_read").unwrap(),
                 ]),
-                proxima_core::ServedSurface::All,
+                proxiima_core::ServedSurface::All,
                 true,
             ),
             (
-                proxima_core::ToolScope::All,
-                proxima_core::ServedSurface::Palette(Vec::new()),
+                proxiima_core::ToolScope::All,
+                proxiima_core::ServedSurface::Palette(Vec::new()),
                 true,
             ),
         ] {
@@ -1148,14 +1150,16 @@ mod tests {
             let keys = if admitted {
                 vec!["resource:tools", "resource:memory", "resource:how-to"]
             } else {
-                vec!["proxima-stub_ping"]
+                vec!["proxiima-stub_ping"]
             };
             let mut auth = auth_for(owner);
-            auth.authz = auth.authz.with_tool_scope(proxima_core::ToolScope::Palette(
-                keys.into_iter()
-                    .map(|key| proxima_core::ScopeKey::parse(key).unwrap())
-                    .collect(),
-            ));
+            auth.authz = auth
+                .authz
+                .with_tool_scope(proxiima_core::ToolScope::Palette(
+                    keys.into_iter()
+                        .map(|key| proxiima_core::ScopeKey::parse(key).unwrap())
+                        .collect(),
+                ));
             let listed =
                 first_message(service.clone(), authed_rpc("resources/list", auth.clone())).await;
             let resources = listed["result"]["resources"].as_array().unwrap();
@@ -1173,7 +1177,7 @@ mod tests {
                 usize::from(admitted),
                 "{templates}"
             );
-            for uri in ["proxima://tools", crate::selfdoc::HOW_TO_URI] {
+            for uri in ["proxiima://tools", crate::selfdoc::HOW_TO_URI] {
                 let mut request = per_request_rpc(
                     "2026-07-28",
                     "resources/read",
@@ -1233,38 +1237,38 @@ mod tests {
         ]
     }
 
-    /// The instructions `initialize` and `server/discover` serve: Proxima's
+    /// The instructions `initialize` and `server/discover` serve: Proxiima's
     /// text, then the host's after a blank line; the host's alone when
-    /// nothing of Proxima's is advertised; Proxima's alone when the host's
+    /// nothing of Proxiima's is advertised; Proxiima's alone when the host's
     /// is over the cap.
     #[tokio::test]
     async fn host_instructions_reach_initialize_and_discover() {
         let owner = personal_owner();
         // Neither caller scope nor owner authority grants this caller a
-        // Proxima operation; the host's own text remains independent.
+        // Proxiima operation; the host's own text remains independent.
         let nothing_advertised = crate::McpAuthContext {
             owner,
-            authz: proxima_core::AuthzContext::for_subject(
-                proxima_core::UserId::new(uuid::Uuid::now_v7()),
-                proxima_core::AuthPath::HostBearer,
+            authz: proxiima_core::AuthzContext::for_subject(
+                proxiima_core::UserId::new(uuid::Uuid::now_v7()),
+                proxiima_core::AuthPath::HostBearer,
             )
-            .with_tool_scope(proxima_core::ToolScope::Palette(Vec::new())),
+            .with_tool_scope(proxiima_core::ToolScope::Palette(Vec::new())),
         };
 
-        // The text Proxima alone serves this caller.
+        // The text Proxiima alone serves this caller.
         let bare = first_message(
             mcp_service_for(stub_host()),
             authed_rpc("server/discover", auth_for(owner)),
         )
         .await;
-        let proxima_text = instructions_of(&bare).expect("Proxima advertises tools");
+        let proxiima_text = instructions_of(&bare).expect("Proxiima advertises tools");
 
         for (what, request) in instruction_requests(&auth_for(owner)) {
             let host = stub_host().with_host_tools(instructing("Host rules."));
             let message = first_message(mcp_service_for(host), request).await;
             assert_eq!(
                 instructions_of(&message),
-                Some(format!("{proxima_text}\n\nHost rules.")),
+                Some(format!("{proxiima_text}\n\nHost rules.")),
                 "{what}: {message}"
             );
         }
@@ -1285,7 +1289,7 @@ mod tests {
             let message = first_message(mcp_service_for(host), request).await;
             assert_eq!(
                 instructions_of(&message),
-                Some(proxima_text.clone()),
+                Some(proxiima_text.clone()),
                 "{what}"
             );
         }
@@ -1303,11 +1307,11 @@ mod tests {
     }
 
     /// Every piece of generated guidance one caller reads: the `instructions`
-    /// of `server/discover` and `initialize`, the `proxima://how-to`
+    /// of `server/discover` and `initialize`, the `proxiima://how-to`
     /// resource and (with `rest`) `GET /v1/how-to`.
     async fn guidance_of(
         host: crate::server::McpToolHost,
-        owner: proxima_core::OwnerId,
+        owner: proxiima_core::OwnerId,
     ) -> Vec<(&'static str, String)> {
         let mut texts = Vec::new();
         for (what, request) in instruction_requests(&auth_for(owner)) {
@@ -1326,7 +1330,7 @@ mod tests {
         let body = message["result"]["contents"][0]["text"]
             .as_str()
             .unwrap_or_else(|| panic!("no how-to in {message}"));
-        texts.push(("proxima://how-to", body.to_owned()));
+        texts.push(("proxiima://how-to", body.to_owned()));
         #[cfg(feature = "rest")]
         {
             let mut request = Request::builder()
@@ -1357,10 +1361,10 @@ mod tests {
         const REMEMBER: &str = "`core_remember`";
         const SPACES: &str = "Use a returned `space` key in `core_remember`, \
             `core_record_utterance`, `core_search_memories`, `core_derive`, and \
-            `core_interpret`; hydrate a memory by reading `proxima://memory/{id}`.";
+            `core_interpret`; hydrate a memory by reading `proxiima://memory/{id}`.";
         const SPACES_WITHOUT_REMEMBER: &str = "Use a returned `space` key in \
             `core_record_utterance`, `core_search_memories`, `core_derive`, and \
-            `core_interpret`; hydrate a memory by reading `proxima://memory/{id}`.";
+            `core_interpret`; hydrate a memory by reading `proxiima://memory/{id}`.";
         let owner = personal_owner();
 
         let plain = guidance_of(stub_host(), owner).await;
@@ -1389,8 +1393,8 @@ mod tests {
         }
     }
 
-    /// Proxima's instructions follow what behaviors show: behaviors that hide
-    /// every tool leave Proxima nothing to say, and the host's text stands
+    /// Proxiima's instructions follow what behaviors show: behaviors that hide
+    /// every tool leave Proxiima nothing to say, and the host's text stands
     /// alone.
     #[tokio::test]
     async fn instructions_follow_what_behaviors_show() {
@@ -1596,7 +1600,7 @@ mod tests {
             "id": "attempt-1",
             "method": "tools/call",
             "params": {
-                "name": "proxima-stub_ping",
+                "name": "proxiima-stub_ping",
                 "arguments": {},
                 "_meta": {
                     "io.modelcontextprotocol/clientCapabilities": {},
@@ -1607,7 +1611,7 @@ mod tests {
         let mut request = rpc_request("2026-07-28", &body);
         request
             .headers_mut()
-            .insert("Mcp-Name", "proxima-stub_ping".parse().unwrap());
+            .insert("Mcp-Name", "proxiima-stub_ping".parse().unwrap());
         request.extensions_mut().insert(auth_for(personal_owner()));
         let message = first_message(mcp_service(), request).await;
         assert_eq!(message["id"], "attempt-1", "{message}");
@@ -1627,11 +1631,11 @@ mod tests {
         let mut request = per_request_rpc(
             "2026-07-28",
             "tools/call",
-            serde_json::json!({ "name": "proxima-stub_ping", "arguments": {} }),
+            serde_json::json!({ "name": "proxiima-stub_ping", "arguments": {} }),
         );
         request
             .headers_mut()
-            .insert("Mcp-Name", "proxima-stub_ping".parse().unwrap());
+            .insert("Mcp-Name", "proxiima-stub_ping".parse().unwrap());
         request.extensions_mut().insert(auth_for(personal_owner()));
         let message = first_message(mcp_service(), request).await;
         assert_eq!(
@@ -1665,7 +1669,7 @@ mod tests {
     /// stream, as a `2025-11-25` client does.
     async fn open_session(
         service: &super::McpStreamableService,
-        owner: proxima_core::OwnerId,
+        owner: proxiima_core::OwnerId,
     ) -> Messages {
         let mut initialize = rpc_request(
             "2025-11-25",
@@ -1715,7 +1719,7 @@ mod tests {
     /// waits for its acknowledgment.
     async fn open_subscription(
         service: &super::McpStreamableService,
-        owner: proxima_core::OwnerId,
+        owner: proxiima_core::OwnerId,
     ) -> Messages {
         let mut listen = per_request_rpc(
             "2026-07-28",
@@ -1738,7 +1742,7 @@ mod tests {
 
     /// `notify` until `owner`'s listener is registered: a subscription is
     /// acknowledged a moment before `listen` registers it.
-    async fn notify_registered(notifier: &crate::ToolListNotifier, owner: &proxima_core::OwnerId) {
+    async fn notify_registered(notifier: &crate::ToolListNotifier, owner: &proxiima_core::OwnerId) {
         for _ in 0..100 {
             if notifier.notify(owner).await == 1 {
                 return;

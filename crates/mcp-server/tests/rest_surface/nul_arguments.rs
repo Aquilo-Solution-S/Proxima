@@ -6,17 +6,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::http::{Method, StatusCode, header};
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError, ToolEffect};
-use proxima_core::{AuthError, AuthPath, Authenticator, AuthzContext, Credentials};
-use proxima_mcp_server::{McpEdgeAuth, McpToolHost};
+use proxiima_core::mcp::{McpTool, McpToolCtx, McpToolError, ToolEffect};
+use proxiima_core::{AuthError, AuthPath, Authenticator, AuthzContext, Credentials};
+use proxiima_mcp_server::{McpEdgeAuth, McpToolHost};
 use serde_json::{Value, json};
 
-use super::{Answer, FlavorRegistry, FlavorServices, McpAuthContext, app, call};
+use super::{Answer, McpAuthContext, SpiiceRegistry, SpiiceServices, app, call};
 
 #[path = "../common/mod.rs"]
 mod common;
 
-const TOOL: &str = "proxima-nul_echo";
+const TOOL: &str = "proxiima-nul_echo";
 static INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -95,11 +95,11 @@ struct Observation {
 }
 
 async fn observe_transports() -> TestResult<Vec<Observation>> {
-    let mut registry = FlavorRegistry::new();
-    registry.add_mcp_tool_or_panic_for_tests::<EchoTool>("proxima-nul");
+    let mut registry = SpiiceRegistry::new();
+    registry.add_mcp_tool_or_panic_for_tests::<EchoTool>("proxiima-nul");
     let host = McpToolHost::from_parts(
         Arc::new(registry.freeze_or_panic_for_tests()),
-        FlavorServices::default(),
+        SpiiceServices::default(),
     );
     let owner = common::nil_owner();
     let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
@@ -112,7 +112,7 @@ async fn observe_transports() -> TestResult<Vec<Observation>> {
     let (task, address) = common::serve_loopback(
         host,
         Arc::new(auth),
-        proxima_core::RevalidationConfig::default(),
+        proxiima_core::RevalidationConfig::default(),
     )
     .await?;
     let server = ServerGuard(Some(task));

@@ -354,7 +354,7 @@ mod tests {
     use crate::access::Role;
     use crate::mcp::core_tools::memory_spaces::MemorySpaceKey;
     use crate::mcp::{McpAuthorContext, validate_action_args};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerId, UserId};
+    use crate::{AuthPath, AuthzContext, OwnerId, SpiiceRegistry, SpiiceServices, UserId};
 
     use super::*;
 
@@ -432,7 +432,7 @@ mod tests {
         McpToolCtx {
             owner,
             authz: AuthzContext::for_subject_with_role(subject, group_roles, AuthPath::HostBearer),
-            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            registry: Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),
                 trusted_model_id: None,
@@ -441,9 +441,9 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         }
     }
 

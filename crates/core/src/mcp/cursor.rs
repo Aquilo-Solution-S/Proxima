@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// A cursor decode failure carrying its caller-facing message. Always a
 /// caller-input fault: converts to `InvalidInput` for both the core MCP
-/// error and the flavor-facing tool error.
+/// error and the spiice-facing tool error.
 #[derive(Debug)]
 pub struct CursorError(String);
 
@@ -45,7 +45,7 @@ impl From<CursorError> for crate::ToolError {
 
 /// A syntactically broken token: bad base64, bad JSON, or a version this
 /// build does not speak. `source` completes the sentence — e.g.
-/// `"proxima://goals page"` or `"core_search_memories response"`.
+/// `"proxiima://goals page"` or `"core_search_memories response"`.
 #[must_use]
 pub fn malformed_cursor(source: &str) -> CursorError {
     CursorError(format!(
@@ -152,7 +152,7 @@ mod tests {
 
     const CODEC: FingerprintedCursor = FingerprintedCursor {
         version: 1,
-        source: "proxima://example page",
+        source: "proxiima://example page",
         rebind_hint: "repeat the example filter that produced it",
     };
 

@@ -9,8 +9,8 @@
 //! survives the erase or abort plus a drain.
 
 use super::*;
-use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
-use proxima_storage_pg::{ColdPurgeRetryOptions, ColdPurgeRetryOutcome};
+use proxiima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
+use proxiima_storage_pg::{ColdPurgeRetryOptions, ColdPurgeRetryOutcome};
 
 /// A provider that refuses every delete, so a test can inspect the debt an
 /// erase or abort left before the real store drains it.
@@ -18,11 +18,11 @@ struct DeferPurge(Arc<dyn ColdObjectStore>);
 
 #[async_trait::async_trait]
 impl ColdObjectStore for DeferPurge {
-    async fn delete(&self, _key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
+    async fn delete(&self, _key: &str) -> Result<proxiima_core::PurgeDeleted, StorageError> {
         Err(StorageError::Unavailable("test defers deletion".into()))
     }
 
-    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+    fn store_id(&self) -> &proxiima_core::ObjectStoreId {
         self.0.store_id()
     }
 }
@@ -127,7 +127,7 @@ async fn fixture_in(config: S3RuntimeConfig) -> Fixture {
     .expect("valid S3 config");
     let user = UserId::new(Uuid::now_v7());
     let owner = OwnerId::from(user);
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -149,8 +149,8 @@ impl Fixture {
         let refusing = CitedBlobStore::new(
             self.pg.clone_pool_for_backend(),
             S3RuntimeConfig {
-                key_pair: proxima_blob_s3::S3KeyPair::new(
-                    std::env::var("PROXIMA_S3_ACCESS_KEY_ID").expect("access key"),
+                key_pair: proxiima_blob_s3::S3KeyPair::new(
+                    std::env::var("PROXIIMA_S3_ACCESS_KEY_ID").expect("access key"),
                     "not-the-secret".to_owned(),
                 ),
                 ..self.config.clone()
@@ -170,7 +170,7 @@ impl Fixture {
 
     /// Make every debt due and drain it through the real store.
     pub(super) async fn drain(&self) -> ColdPurgeRetryOutcome {
-        sqlx::query("UPDATE proxima_core.cold_purge_pending SET next_attempt_at = now()")
+        sqlx::query("UPDATE proxiima_core.cold_purge_pending SET next_attempt_at = now()")
             .execute(&self.pool)
             .await
             .expect("make debts due");
@@ -184,7 +184,7 @@ impl Fixture {
 
     pub(super) async fn owed_keys(&self) -> Vec<String> {
         sqlx::query_scalar(
-            "SELECT object_key FROM proxima_core.cold_purge_pending ORDER BY object_key",
+            "SELECT object_key FROM proxiima_core.cold_purge_pending ORDER BY object_key",
         )
         .fetch_all(&self.pool)
         .await
@@ -218,7 +218,7 @@ impl Fixture {
 
     /// A source-scoped erase whose post-commit purge is refused.
     async fn erase_source_with_deferred_purge(&self, source: &str) -> OwnerEraseOutcome {
-        let source_id = proxima_core::SourceId::new(source);
+        let source_id = proxiima_core::SourceId::new(source);
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
             user_id: self.user,
             source_id: source_id.clone(),
@@ -249,15 +249,15 @@ impl Fixture {
         );
     }
 
-    async fn erase_series(&self, memory: proxima_core::MemoryId) {
-        let context = proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
+    async fn erase_series(&self, memory: proxiima_core::MemoryId) {
+        let context = proxiima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(
             transfer_surfaces(),
         )
         .expect("no host lifecycle tables");
         let mut tx = self.pool.begin().await.expect("begin series erase");
-        let (erased, plan) = proxima_storage_pg::verbs::forget::erase_memory_series(
+        let (erased, plan) = proxiima_storage_pg::verbs::forget::erase_memory_series(
             &mut tx,
-            &proxima_storage_pg::core_pg_sidecars(),
+            &proxiima_storage_pg::core_pg_sidecars(),
             &context,
             &self.owner,
             &[memory.into_inner()],
@@ -294,12 +294,13 @@ async fn crash_window_row_is_fully_erased(versioned: bool) {
     .await;
     let canonical_key = format!("objects/{upload_id}");
     put_object_via_sdk(&f.config, &canonical_key, body).await;
-    let recorded: String =
-        sqlx::query_scalar("SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1")
-            .bind(Uuid::parse_str(&upload_id).expect("upload id"))
-            .fetch_one(&f.pool)
-            .await
-            .expect("row");
+    let recorded: String = sqlx::query_scalar(
+        "SELECT object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(&upload_id).expect("upload id"))
+    .fetch_one(&f.pool)
+    .await
+    .expect("row");
     assert_eq!(
         recorded, pending_key,
         "the row still names the transfer key"
@@ -328,7 +329,7 @@ async fn crash_window_row_is_fully_erased(versioned: bool) {
 #[tokio::test]
 async fn owner_erase_owes_the_canonical_object_of_a_crash_window_row_versioned() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     crash_window_row_is_fully_erased(true).await;
@@ -337,7 +338,7 @@ async fn owner_erase_owes_the_canonical_object_of_a_crash_window_row_versioned()
 #[tokio::test]
 async fn owner_erase_owes_the_canonical_object_of_a_crash_window_row_unversioned() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     crash_window_row_is_fully_erased(false).await;
@@ -383,7 +384,7 @@ async fn leftover_transfer_key_is_erased(versioned: bool, scope: Scope) {
         .await
         .expect("suspend triggers");
     sqlx::query(
-        "UPDATE proxima_core.memory SET source_id = 'implied-src', ingest_key = 'implied-key'
+        "UPDATE proxiima_core.memory SET source_id = 'implied-src', ingest_key = 'implied-key'
           WHERE t = $1",
     )
     .bind(completed.memory_id.into_inner())
@@ -421,7 +422,7 @@ async fn leftover_transfer_key_is_erased(versioned: bool, scope: Scope) {
 #[tokio::test]
 async fn every_erase_scope_owes_a_leftover_transfer_key_versioned() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     for scope in [Scope::Owner, Scope::Source, Scope::Series] {
@@ -432,7 +433,7 @@ async fn every_erase_scope_owes_a_leftover_transfer_key_versioned() {
 #[tokio::test]
 async fn every_erase_scope_owes_a_leftover_transfer_key_unversioned() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     for scope in [Scope::Owner, Scope::Source, Scope::Series] {
@@ -445,7 +446,7 @@ async fn every_erase_scope_owes_a_leftover_transfer_key_unversioned() {
 #[tokio::test]
 async fn a_key_that_never_existed_clears_as_absent() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let f = fixture(false).await;
@@ -556,7 +557,7 @@ async fn abort_owes_the_canonical_object(versioned: bool) {
 #[tokio::test]
 async fn an_abort_owes_the_canonical_object_versioned() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     abort_owes_the_canonical_object(true).await;
@@ -565,7 +566,7 @@ async fn an_abort_owes_the_canonical_object_versioned() {
 #[tokio::test]
 async fn an_abort_owes_the_canonical_object_unversioned() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     abort_owes_the_canonical_object(false).await;
@@ -639,7 +640,7 @@ async fn source_erase_over_an_aborted_staged_upload(versioned: bool) {
 #[tokio::test]
 async fn a_source_erase_over_an_aborted_staged_upload_leaves_nothing_versioned() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     source_erase_over_an_aborted_staged_upload(true).await;
@@ -648,7 +649,7 @@ async fn a_source_erase_over_an_aborted_staged_upload_leaves_nothing_versioned()
 #[tokio::test]
 async fn a_source_erase_over_an_aborted_staged_upload_leaves_nothing_unversioned() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     source_erase_over_an_aborted_staged_upload(false).await;
@@ -660,7 +661,7 @@ async fn a_source_erase_over_an_aborted_staged_upload_leaves_nothing_unversioned
 #[tokio::test]
 async fn an_erase_waits_on_the_canonical_key_a_crash_window_row_implies() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let f = fixture(false).await;
@@ -677,7 +678,7 @@ async fn an_erase_waits_on_the_canonical_key_a_crash_window_row_implies() {
     .await;
     let canonical_key = format!("objects/{upload_id}");
     let mut fence = f.pool.begin().await.expect("begin fence");
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('proxima-object-key:' || $1, 0))")
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('proxiima-object-key:' || $1, 0))")
         .bind(&canonical_key)
         .execute(&mut *fence)
         .await
@@ -731,7 +732,7 @@ async fn an_erase_waits_on_the_canonical_key_a_crash_window_row_implies() {
 #[tokio::test]
 async fn expiry_owes_both_keys_of_a_crash_window_row() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     for versioned in [true, false] {
@@ -751,7 +752,7 @@ async fn expiry_owes_both_keys_of_a_crash_window_row() {
         let canonical_key = format!("objects/{upload_id}");
         put_object_via_sdk(&f.config, &canonical_key, body).await;
         sqlx::query(
-            "UPDATE proxima_core.blob_uploads SET expires_at = now() - interval '1 second'
+            "UPDATE proxiima_core.blob_uploads SET expires_at = now() - interval '1 second'
               WHERE upload_id = $1",
         )
         .bind(Uuid::parse_str(&upload_id).expect("upload id"))

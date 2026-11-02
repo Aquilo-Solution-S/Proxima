@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use proxima_core::storage_ports::{InMemoryVectorIndex, VectorIndex};
-use proxima_core::{EmbeddableEntityRef, EntityKind, MemoryId, SpaceVector, UserId};
+use proxiima_core::storage_ports::{InMemoryVectorIndex, VectorIndex};
+use proxiima_core::{EmbeddableEntityRef, EntityKind, MemoryId, SpaceVector, UserId};
 use uuid::Uuid;
 
 use super::*;
@@ -46,7 +46,7 @@ async fn an_erase_settles_its_owners_debt_before_commit() {
     let (erased, forgotten, foreign) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     for (entity, owner) in [(erased, owner), (forgotten, owner), (foreign, other)] {
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')
+            "INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')
              ON CONFLICT DO NOTHING",
         )
         .bind(owner.into_inner())
@@ -54,7 +54,7 @@ async fn an_erase_settles_its_owners_debt_before_commit() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_heads (entity_id, model_id, dim, embedding_version, owner_id)
+            "INSERT INTO proxiima_core.embedding_heads (entity_id, model_id, dim, embedding_version, owner_id)
              VALUES ($1, 'debt', 384, 1, $2)",
         )
         .bind(entity)
@@ -74,7 +74,7 @@ async fn an_erase_settles_its_owners_debt_before_commit() {
         index.put(entity, owner, 1, &[vector]).await.unwrap();
     }
     // Earlier, committed: a forget of the owner's and a forget of another's.
-    sqlx::query("DELETE FROM proxima_core.embedding_heads WHERE entity_id = ANY($1)")
+    sqlx::query("DELETE FROM proxiima_core.embedding_heads WHERE entity_id = ANY($1)")
         .bind(vec![forgotten, foreign])
         .execute(pool)
         .await
@@ -82,7 +82,7 @@ async fn an_erase_settles_its_owners_debt_before_commit() {
     let vectors = StoreVectors::Remote(index.clone());
 
     let mut tx = pool.begin().await.unwrap();
-    sqlx::query("DELETE FROM proxima_core.embedding_heads WHERE entity_id = $1")
+    sqlx::query("DELETE FROM proxiima_core.embedding_heads WHERE entity_id = $1")
         .bind(erased)
         .execute(&mut *tx)
         .await
@@ -101,7 +101,7 @@ async fn an_erase_settles_its_owners_debt_before_commit() {
         "the owner's vectors left the index before commit"
     );
     let owed: Vec<Uuid> =
-        sqlx::query_scalar("SELECT entity_id FROM proxima_core.vector_index_debt")
+        sqlx::query_scalar("SELECT entity_id FROM proxiima_core.vector_index_debt")
             .fetch_all(&mut *tx)
             .await
             .unwrap();
@@ -139,7 +139,7 @@ async fn debt_reaches_the_index_in_bounded_calls() {
             _: &[OwnerId],
             _: &SpaceVector,
             _: u32,
-        ) -> Result<Vec<proxima_core::storage_ports::VectorCandidate>, StorageError> {
+        ) -> Result<Vec<proxiima_core::storage_ports::VectorCandidate>, StorageError> {
             Ok(Vec::new())
         }
         async fn entries(
@@ -178,7 +178,7 @@ async fn the_sweep_skips_a_head_its_drain_is_writing() {
     let (pg, _guard) = fresh_pg_host_index("vector_index_sweep_lock", index.clone()).await;
     let pool = pg.pool_for_tests().clone();
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+    sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
         .bind(owner.into_inner())
         .execute(&pool)
         .await
@@ -186,7 +186,7 @@ async fn the_sweep_skips_a_head_its_drain_is_writing() {
     let (writing, lost) = (Uuid::now_v7(), Uuid::now_v7());
     for entity in [writing, lost] {
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_heads (entity_id, model_id, dim, embedding_version, owner_id)
+            "INSERT INTO proxiima_core.embedding_heads (entity_id, model_id, dim, embedding_version, owner_id)
              VALUES ($1, 'debt', 384, 1, $2)",
         )
         .bind(entity)
@@ -207,9 +207,10 @@ async fn the_sweep_skips_a_head_its_drain_is_writing() {
         .unwrap();
     assert_eq!(swept.heads_deleted, 1, "only the head nobody is writing");
     drain.rollback().await.unwrap();
-    let heads: Vec<Uuid> = sqlx::query_scalar("SELECT entity_id FROM proxima_core.embedding_heads")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let heads: Vec<Uuid> =
+        sqlx::query_scalar("SELECT entity_id FROM proxiima_core.embedding_heads")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
     assert_eq!(heads, [writing]);
 }

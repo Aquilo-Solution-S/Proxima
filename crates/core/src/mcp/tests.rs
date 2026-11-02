@@ -7,7 +7,7 @@ mod manifest_tests {
     use crate::protocol::resource as protocol_resource;
     use crate::protocol::tool as protocol_tool;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GoalId, MemoryId, OwnerId, UserId,
+        AuthPath, AuthzContext, GoalId, MemoryId, OwnerId, SpiiceRegistry, SpiiceServices, UserId,
     };
 
     #[test]
@@ -180,7 +180,7 @@ mod manifest_tests {
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            registry: Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "t".into(),
                 trusted_model_id: None,
@@ -189,9 +189,9 @@ mod manifest_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         }
     }
 }

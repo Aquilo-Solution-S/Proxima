@@ -53,7 +53,7 @@ fn host_tool(output_schema: Value) -> McpHostTool {
         "host_shapes",
         "Output contract fixture",
         json!({"type": "object"}),
-        proxima_core::ToolEffect::ReadOnly,
+        proxiima_core::ToolEffect::ReadOnly,
     )
     .with_output_schema(output_schema)
 }
@@ -146,9 +146,9 @@ fn host_instructions_over_the_cap_are_omitted_with_a_warning() {
     let over = "x".repeat(crate::MAX_HOST_INSTRUCTIONS_CHARS + 1);
     let logs = CapturedLogs::default();
     let composed = tracing::subscriber::with_default(logs.clone(), || {
-        crate::selfdoc::compose_instructions("Proxima text.", Some(&over))
+        crate::selfdoc::compose_instructions("Proxiima text.", Some(&over))
     });
-    assert_eq!(composed.as_deref(), Some("Proxima text."));
+    assert_eq!(composed.as_deref(), Some("Proxiima text."));
     let events = logs.0.lock().unwrap();
     assert!(
         events.iter().any(|event| event.contains("WARN")

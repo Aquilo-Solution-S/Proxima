@@ -8,7 +8,7 @@
 /// without its projection row is a memory that is stored and unfindable, so
 /// the write that would produce one must not be reachable on its own.
 ///
-/// The split this type makes is between IMPLEMENTING and INVOKING. A flavor
+/// The split this type makes is between IMPLEMENTING and INVOKING. A spiice
 /// implements [`super::PgMemorySidecar`] (the `pg_sidecar!` macro writes
 /// the body) and names this type in the signature it implements. It
 /// cannot construct one, because the field is crate-private, so it cannot
@@ -23,9 +23,9 @@
 ///
 /// ```compile_fail
 /// // `SidecarInsertPermit`'s constructor is crate-private, so no caller
-/// // outside `proxima-storage-pg` can produce the argument a typed sidecar
+/// // outside `proxiima-storage-pg` can produce the argument a typed sidecar
 /// // insert demands.
-/// let _permit = proxima_storage_pg::sidecars::SidecarInsertPermit::new();
+/// let _permit = proxiima_storage_pg::sidecars::SidecarInsertPermit::new();
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct SidecarInsertPermit {

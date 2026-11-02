@@ -30,7 +30,7 @@ enum Authority<'a> {
 impl Engine {
     /// The one place the owner-inverse lanes learn which tables exist.
     ///
-    /// Every leg, including `owner_pinned`, comes off the flavor contracts —
+    /// Every leg, including `owner_pinned`, comes off the spiice contracts —
     /// via `TransferRule::RetainAtSource` for that one — so the Postgres
     /// adapter's `pg_sidecar!(owner_pinned: true)` flag is a second source
     /// core can see, and it is checked against this one when the sidecar

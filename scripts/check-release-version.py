@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate `proxima_core::RELEASE_VERSION` against the tags already published.
+"""Validate `proxiima_core::RELEASE_VERSION` against the tags already published.
 
 The tag IS the release. `release.yml` cuts `v${RELEASE_VERSION}` when a merge
 to `main` carries a value no tag holds yet, and cuts nothing when the value is

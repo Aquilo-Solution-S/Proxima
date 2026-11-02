@@ -6,11 +6,11 @@
 //! it commits. The sweep repairs what the debt cannot reach: an entry no head
 //! names, an entry under the wrong owner, a head the index lost.
 
-use proxima_core::count_u64;
+use proxiima_core::count_u64;
 use std::collections::BTreeMap;
 
-use proxima_core::storage_ports::{VectorEntry, VectorIndex, VectorKey};
-use proxima_core::{EmbeddingDim, EmbeddingSpace, OwnerId, StorageError};
+use proxiima_core::storage_ports::{VectorEntry, VectorIndex, VectorKey};
+use proxiima_core::{EmbeddingDim, EmbeddingSpace, OwnerId, StorageError};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -115,7 +115,7 @@ pub(crate) async fn settle_owner_debt(
     owner: OwnerId,
 ) -> Result<(), StorageError> {
     let rows: Vec<DebtRow> = sqlx::query_as(
-        "DELETE FROM proxima_core.vector_index_debt
+        "DELETE FROM proxiima_core.vector_index_debt
           WHERE xact = pg_current_xact_id() OR owner_id = $1
          RETURNING entity_id, model_id, dim, owner_id, op",
     )
@@ -139,9 +139,9 @@ pub(crate) async fn drain_debt(
     limit: i64,
 ) -> Result<u64, StorageError> {
     let rows: Vec<DebtRow> = sqlx::query_as(
-        "DELETE FROM proxima_core.vector_index_debt debt
+        "DELETE FROM proxiima_core.vector_index_debt debt
           WHERE (debt.entity_id, debt.model_id, debt.dim) IN (
-                SELECT entity_id, model_id, dim FROM proxima_core.vector_index_debt
+                SELECT entity_id, model_id, dim FROM proxiima_core.vector_index_debt
                  LIMIT $1
                  FOR UPDATE SKIP LOCKED)
          RETURNING entity_id, model_id, dim, owner_id, op",
@@ -200,7 +200,7 @@ async fn heads_after(
 ) -> Result<Vec<(Key, Head)>, StorageError> {
     let rows: Vec<(Uuid, String, i16, Uuid, i32)> = sqlx::query_as(
         "SELECT entity_id, model_id, dim, owner_id, embedding_version
-           FROM proxima_core.embedding_heads
+           FROM proxiima_core.embedding_heads
           WHERE $1::uuid IS NULL
              OR (entity_id, model_id COLLATE \"C\", dim) > ($1, $2::text COLLATE \"C\", $3)
           ORDER BY entity_id, model_id COLLATE \"C\", dim
@@ -260,7 +260,7 @@ async fn repair(
             continue;
         }
         let now: Option<(Uuid, i32)> = sqlx::query_as(
-            "SELECT owner_id, embedding_version FROM proxima_core.embedding_heads
+            "SELECT owner_id, embedding_version FROM proxiima_core.embedding_heads
               WHERE entity_id = $1 AND model_id = $2 AND dim = $3
                 FOR UPDATE",
         )
@@ -294,7 +294,7 @@ async fn repair(
             columns.3.push(version);
         }
         swept.heads_deleted += sqlx::query(
-            "DELETE FROM proxima_core.embedding_heads head
+            "DELETE FROM proxiima_core.embedding_heads head
               USING unnest($1::uuid[], $2::text[], $3::smallint[], $4::int[])
                     AS lost(entity_id, model_id, dim, version)
               WHERE head.entity_id = lost.entity_id

@@ -1,8 +1,8 @@
-//! Current-memory counts for `proxima://memories/counts`: the heads, never
+//! Current-memory counts for `proxiima://memories/counts`: the heads, never
 //! the versions.
 
-use proxima_core::read_models::MemoryCounts;
-use proxima_core::{EntityKind, OwnerId, StorageError};
+use proxiima_core::read_models::MemoryCounts;
+use proxiima_core::{EntityKind, OwnerId, StorageError};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -32,9 +32,9 @@ pub(crate) async fn count_memories_on_connection(
 
     let heads: Vec<(PgMemoryKind, i64)> = sqlx::query_as(
         "SELECT kind, count(*)::bigint
-           FROM proxima_core.memory_head h
+           FROM proxiima_core.memory_head h
           WHERE h.owner_id = ANY($1::uuid[])
-            AND EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)
+            AND EXISTS (SELECT 1 FROM proxiima_core.memory m WHERE m.t = h.t)
           GROUP BY kind",
     )
     .bind(&owner_ids)
@@ -47,7 +47,7 @@ pub(crate) async fn count_memories_on_connection(
 
     let goals: i64 = sqlx::query_scalar(
         "SELECT count(*)::bigint
-           FROM proxima_core.goal_head
+           FROM proxiima_core.goal_head
           WHERE owner_id = ANY($1::uuid[])",
     )
     .bind(&owner_ids)

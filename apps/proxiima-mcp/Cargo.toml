@@ -1,0 +1,45 @@
+[package]
+name = "proxiima-mcp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+proxiima-core = { path = "../../crates/core" }
+proxiima-llm-openai-compat = { path = "../../crates/llm-openai-compat" }
+proxiima-blob-s3 = { path = "../../crates/blob-s3" }
+proxiima-storage-pg = { path = "../../crates/storage-pg", features = ["backend-api"] }
+proxiima = { path = "../../crates/proxiima" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+time = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = []
+# Compile the `/v1` REST surface into the binary. Serving it still needs
+# `PROXIIMA_REST_ENABLED=true` at runtime — see docs/17-rest-surface.md.
+rest = ["proxiima/rest"]
+
+[dev-dependencies]
+boon = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+aws-lc-rs = { workspace = true }
+base64 = { workspace = true }
+proxiima-auth-oidc = { path = "../../crates/auth-oidc" }
+proxiima-core = { path = "../../crates/core", features = ["test-fixtures"] }
+proxiima-pg-testkit = { path = "../../crates/pg-testkit" }
+proxiima-example = { path = "../../spiices/example", features = ["testkit"] }
+jsonwebtoken = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

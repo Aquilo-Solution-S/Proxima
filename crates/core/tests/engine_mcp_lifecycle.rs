@@ -2,7 +2,7 @@
 //! `None` before start; `Engine::stop` aborts the MCP listener task.
 //!
 //! The MCP listener is wired via the `EngineMcpListener` trait so
-//! `proxima-core` need not depend on `proxima-mcp-server` (that
+//! `proxiima-core` need not depend on `proxiima-mcp-server` (that
 //! would be a cycle). The test stub binds a `127.0.0.1:0` TCP
 //! listener and parks until aborted — close enough to exercise the
 //! lifecycle plumbing without pulling the rmcp transport into the
@@ -12,9 +12,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proxima_core::FlavorRegistry;
-use proxima_core::engine::{Engine, EngineMcpListener, RunningMcpListener};
-use proxima_core::error::ProtocolError;
+use proxiima_core::SpiiceRegistry;
+use proxiima_core::engine::{Engine, EngineMcpListener, RunningMcpListener};
+use proxiima_core::error::ProtocolError;
 
 /// Test stub: bind a loopback TCP listener so the OS hands us a real
 /// ephemeral port, spawn an accept loop that ignores connections,
@@ -46,7 +46,7 @@ impl EngineMcpListener for StubListener {
 }
 
 fn make_test_engine() -> Engine {
-    Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+    Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
         .with_mcp_listener(Arc::new(StubListener))
 }
 

@@ -1,6 +1,6 @@
 //! Owner-scoped Goal read atoms used by Engine write preflight.
 
-use proxima_core::{GoalId, MemoryId, OwnerId, StorageError};
+use proxiima_core::{GoalId, MemoryId, OwnerId, StorageError};
 use sqlx::PgConnection;
 
 use crate::error::map_err;
@@ -15,7 +15,7 @@ pub(crate) async fn load_goal_evidence_on_connection(
     goal_id: GoalId,
 ) -> Result<Option<Vec<MemoryId>>, StorageError> {
     let evidence: Option<Vec<uuid::Uuid>> = sqlx::query_scalar(
-        "SELECT evidence_t FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
+        "SELECT evidence_t FROM proxiima_core.goal WHERE t = $1 AND owner_id = $2",
     )
     .bind(goal_id.into_inner())
     .bind(owner.into_inner())

@@ -1,12 +1,12 @@
 //! Forget / erase.
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
-use proxima_core::count_u64;
+use proxiima_core::count_u64;
 use std::collections::BTreeSet;
 
-use proxima_core::flavor::{EraseLeg, ForgetLeg, KeyShape};
-use proxima_core::owner_inverse::OwnerSurfaces;
-use proxima_core::{ColdObjectStore, ObjectStoreId, OwnerId, PurgeDeleted, StorageError};
+use proxiima_core::owner_inverse::OwnerSurfaces;
+use proxiima_core::spiice::{EraseLeg, ForgetLeg, KeyShape};
+use proxiima_core::{ColdObjectStore, ObjectStoreId, OwnerId, PurgeDeleted, StorageError};
 
 use crate::access::owner_columns::{other_upload_implies_key_sql, upload_implied_keys_sql};
 use crate::verbs::maintenance::PurgeBackoff;
@@ -50,7 +50,7 @@ pub(crate) struct Reach {
 }
 
 impl Reach {
-    pub(crate) fn of(permit: &proxima_core::storage_ports::OwnerWritePermit) -> Self {
+    pub(crate) fn of(permit: &proxiima_core::storage_ports::OwnerWritePermit) -> Self {
         Self {
             owner_id: permit.owner().into_inner(),
             kinds: kinds_within(permit.access_kind()),
@@ -59,8 +59,8 @@ impl Reach {
 }
 
 /// The stored Memory kinds at or below `limit`.
-pub(crate) fn kinds_within(limit: proxima_core::AccessKind) -> Vec<PgMemoryKind> {
-    use proxima_core::AccessKind;
+pub(crate) fn kinds_within(limit: proxiima_core::AccessKind) -> Vec<PgMemoryKind> {
+    use proxiima_core::AccessKind;
     [
         (AccessKind::Fact, PgMemoryKind::Fact),
         (AccessKind::Abstraction, PgMemoryKind::Abstraction),
@@ -91,7 +91,7 @@ fn is_owner_pinned(sidecars: &PgSidecarRegistryFrozen, table: &str) -> bool {
 
 /// Blob objects a committed erase still owes the object store.
 ///
-/// An erase marks each locator in `proxima_core.cold_purge_pending` inside the
+/// An erase marks each locator in `proxiima_core.cold_purge_pending` inside the
 /// transaction that deletes its upload row, and destroys the object only
 /// after that transaction commits (`purge_cold_objects_after_commit`).
 /// Deleting from inside the transaction loses the object outright when the
@@ -256,7 +256,7 @@ async fn purge_current_cold_debt(
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
     let version = sqlx::query_as::<_, ColdPurgeVersion>(
         "SELECT xmin::text AS row_xmin, ctid::text AS row_ctid
-           FROM proxima_core.cold_purge_pending
+           FROM proxiima_core.cold_purge_pending
           WHERE object_store = $1 AND object_key = $2",
     )
     .bind(cold.store_id().as_str())
@@ -339,7 +339,7 @@ async fn record_purge_failure(
     // Delay after the nth failure: min(base * 2^(n-1), max). `attempts` is
     // the count before this failure, so it is the exponent.
     let updated = sqlx::query(
-        "UPDATE proxima_core.cold_purge_pending
+        "UPDATE proxiima_core.cold_purge_pending
             SET attempts = attempts + 1,
                 last_attempt_at = now(),
                 last_error = $5,
@@ -377,7 +377,7 @@ async fn clear_cold_purge_pending(
 ) -> Result<bool, StorageError> {
     let mut tx = crate::platform_scope::begin_platform_transaction(pool, platform).await?;
     let deleted = sqlx::query(
-        "DELETE FROM proxima_core.cold_purge_pending
+        "DELETE FROM proxiima_core.cold_purge_pending
           WHERE object_store = $1 AND object_key = $2
             AND xmin::text = $3 AND ctid::text = $4",
     )
@@ -441,7 +441,7 @@ pub(crate) async fn lock_memory_handles_tx(
     tx: &mut Transaction<'_, Postgres>,
     handles: &[Uuid],
 ) -> Result<(), StorageError> {
-    lock_advisory_ids_tx(tx, "proxima-memory-handle:", handles).await
+    lock_advisory_ids_tx(tx, "proxiima-memory-handle:", handles).await
 }
 
 /// Acquire the one lifecycle lock vocabulary used by admission, hydration,
@@ -453,7 +453,7 @@ pub(crate) async fn lock_lifecycle_targets_tx(
     tx: &mut Transaction<'_, Postgres>,
     targets: &[Uuid],
 ) -> Result<(), StorageError> {
-    lock_advisory_ids_tx(tx, "proxima-forget:", targets).await
+    lock_advisory_ids_tx(tx, "proxiima-forget:", targets).await
 }
 
 /// Lock the source and every live or forgotten non-Fact depender before the
@@ -470,7 +470,7 @@ async fn lock_forget_footprint_tx(
     // only the source handle here would invert the order and leave the
     // dependent handle outside this operation's serialization domain.
     let dependent_handles: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT DISTINCT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+        "SELECT DISTINCT handle FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
@@ -486,7 +486,7 @@ async fn lock_forget_footprint_tx(
     lock_memory_handles_tx(tx, &handles).await?;
 
     let grounded: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT t, handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+        "SELECT t, handle FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
@@ -515,7 +515,7 @@ async fn lock_forget_footprint_tx(
     lock_lifecycle_targets_tx(tx, &targets).await?;
 
     let after: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT t, handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+        "SELECT t, handle FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE kind <> 'fact'
             AND t <> $1
             AND (origins @> ARRAY[$1]::uuid[] OR refs @> ARRAY[$1]::uuid[])
@@ -624,7 +624,7 @@ async fn delete_memory_dependents(
 }
 
 /// What a forget deletes: the rows search and embedding derive from the
-/// memory — every linked flavor's search projection row, and its `Deleted`
+/// memory — every linked spiice's search projection row, and its `Deleted`
 /// legs (the embedding triple). The memory row, its sketch and its sidecar
 /// rows stay, hidden by `forgotten_at`; before #488 the projection
 /// went by cascade with the sidecar row the forget deleted.
@@ -640,7 +640,7 @@ async fn delete_derived_dependents(
         .map(|table| {
             (
                 table.as_str(),
-                proxima_core::flavor::PROJECTION_MEMORY_COLUMN,
+                proxiima_core::spiice::PROJECTION_MEMORY_COLUMN,
             )
         })
         .collect();
@@ -668,7 +668,7 @@ async fn run_forget_legs(
 /// The surfaces [`erase_memory`] deletes with a hand-written statement of
 /// its own, because each needs an owner predicate or an ordering the
 /// generated `DELETE ... WHERE <key> = $1` does not carry.
-const ERASE_MEMORY_EXPLICIT: &[&str] = &["proxima_core.memory", "proxima_core.ingest_keys"];
+const ERASE_MEMORY_EXPLICIT: &[&str] = &["proxiima_core.memory", "proxiima_core.ingest_keys"];
 
 /// Every memory-keyed surface a forget KEEPS (its rows outlive a forget) and
 /// owner erase deletes by key, minus the ones [`erase_memory`] deletes
@@ -697,7 +697,7 @@ fn erase_kept_memory_legs(surfaces: &OwnerSurfaces) -> Vec<(&'static str, &'stat
 /// Every identifier here is a `&'static str` from a `const` contract or a
 /// `pg_sidecar!` registration, both freeze-validated, and every contract one
 /// is additionally resolved against `information_schema` by
-/// `flavor_contract_acceptance::every_column_a_declaration_names_is_a_column_the_catalog_has`.
+/// `spiice_contract_acceptance::every_column_a_declaration_names_is_a_column_the_catalog_has`.
 /// `PgIdent`'s whitelist is what makes the substitution `%I`-equivalent.
 fn forget_leg_sql(table: &str, key_column: &str) -> Result<String, StorageError> {
     let table = PgIdent::table(table)?;
@@ -721,7 +721,7 @@ pub(crate) async fn sync_memory_head(
     handle: Uuid,
 ) -> Result<(), StorageError> {
     let remaining: Option<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory WHERE handle = $1 ORDER BY (forgotten_at IS NULL) DESC, t DESC LIMIT 1", /* FORGET-POLICY: includes-forgotten (head sync sees forgotten rows, then skips them) */
+        "SELECT t FROM proxiima_core.memory WHERE handle = $1 ORDER BY (forgotten_at IS NULL) DESC, t DESC LIMIT 1", /* FORGET-POLICY: includes-forgotten (head sync sees forgotten rows, then skips them) */
     )
     .bind(handle)
     .fetch_optional(tx.as_mut())
@@ -729,7 +729,7 @@ pub(crate) async fn sync_memory_head(
     .map_err(map_err)?;
     match remaining {
         Some(t) => {
-            sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+            sqlx::query("UPDATE proxiima_core.memory_head SET t = $2 WHERE handle = $1")
                 .bind(handle)
                 .bind(t)
                 .execute(tx.as_mut())
@@ -737,7 +737,7 @@ pub(crate) async fn sync_memory_head(
                 .map_err(map_err)?;
         }
         None => {
-            sqlx::query("DELETE FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query("DELETE FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(handle)
                 .execute(tx.as_mut())
                 .await
@@ -753,7 +753,7 @@ async fn probe_memory_handle_for_owner(
     owner_id: Uuid,
 ) -> Result<Option<Uuid>, StorageError> {
     sqlx::query_scalar(
-        "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+        "SELECT handle FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE t = $1 AND owner_id = $2",
     )
     .bind(t)
@@ -764,7 +764,7 @@ async fn probe_memory_handle_for_owner(
 }
 
 /// The owner's row for `t`, locked, when it is live.
-const LOCK_LIVE_OWNED_SQL: &str = "SELECT handle, kind FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+const LOCK_LIVE_OWNED_SQL: &str = "SELECT handle, kind FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE t = $1 AND owner_id = $2 AND forgotten_at IS NULL
           FOR UPDATE";
 
@@ -841,7 +841,7 @@ async fn forget_in_lifecycle(
         return Err(StorageError::NotFound);
     }
     sqlx::query(
-        "UPDATE proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+        "UPDATE proxiima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
             SET forgotten_at = now()
           WHERE t = $1 AND owner_id = $2",
     )
@@ -858,7 +858,7 @@ async fn forget_in_lifecycle(
 /// The owner's row for `t`, locked, in either state.
 const LOCK_OWNED_FOR_RESTORE_SQL: &str = "SELECT handle, kind, schema_id, sidecar_tables,
                 lexical_language::text, forgotten_at IS NOT NULL
-           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+           FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
           WHERE t = $1 AND owner_id = $2
           FOR UPDATE";
 
@@ -925,7 +925,7 @@ async fn restore_in_lifecycle(
     }
     if forgotten {
         sqlx::query(
-            "UPDATE proxima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
+            "UPDATE proxiima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */
                 SET forgotten_at = NULL
               WHERE t = $1 AND owner_id = $2",
         )
@@ -938,7 +938,7 @@ async fn restore_in_lifecycle(
             sidecars
                 .rebuild_projection_for_table(
                     tx,
-                    proxima_core::MemoryId::new(t),
+                    proxiima_core::MemoryId::new(t),
                     table,
                     &schema_id,
                     Some(language.as_str()),
@@ -1010,7 +1010,7 @@ async fn erase_memory_in_lifecycle(
         ));
     }
     let content_id = sqlx::query_scalar::<_, Option<Uuid>>(
-        "SELECT content_id FROM proxima_core.memory WHERE t = $1 AND owner_id = $2", /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+        "SELECT content_id FROM proxiima_core.memory WHERE t = $1 AND owner_id = $2", /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
     )
     .bind(t)
     .bind(owner.into_inner())
@@ -1020,7 +1020,7 @@ async fn erase_memory_in_lifecycle(
     .flatten();
     let is_fact: bool = sqlx::query_scalar(
         "SELECT EXISTS (
-             SELECT 1 FROM proxima_core.memory WHERE t = $1 AND owner_id = $2 AND kind = 'fact' /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+             SELECT 1 FROM proxiima_core.memory WHERE t = $1 AND owner_id = $2 AND kind = 'fact' /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
          )",
     )
     .bind(t)
@@ -1040,7 +1040,7 @@ async fn erase_memory_in_lifecycle(
     )
     .await?;
     let stamped: Vec<String> = sqlx::query_scalar(
-        "SELECT unnest(sidecar_tables) FROM proxima_core.memory WHERE t = $1 AND owner_id = $2", /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+        "SELECT unnest(sidecar_tables) FROM proxiima_core.memory WHERE t = $1 AND owner_id = $2", /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
     )
     .bind(t)
     .bind(owner.into_inner())
@@ -1051,7 +1051,7 @@ async fn erase_memory_in_lifecycle(
     // (memory_external_origin) finds its owner through its memory, so its
     // delete must run while that parent is still there.
     delete_memory_dependents(tx, sidecars, surfaces, &stamped, t).await?;
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1 AND owner_id = $2") /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+    sqlx::query("DELETE FROM proxiima_core.memory WHERE t = $1 AND owner_id = $2") /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
         .bind(t)
         .bind(owner.into_inner())
         .execute(tx.as_mut())
@@ -1061,7 +1061,7 @@ async fn erase_memory_in_lifecycle(
         super::content::gc_unreferenced_content(tx, id).await?;
     }
     sync_memory_head(tx, handle).await?;
-    sqlx::query("DELETE FROM proxima_core.ingest_keys WHERE t = $1 AND owner_id = $2")
+    sqlx::query("DELETE FROM proxiima_core.ingest_keys WHERE t = $1 AND owner_id = $2")
         .bind(t)
         .bind(owner.into_inner())
         .execute(tx.as_mut())
@@ -1085,12 +1085,12 @@ async fn erase_memory_in_lifecycle(
     // memory would then walk past a record still holding the full typed
     // payload. The caller has already authorized the erase of this `t`; the
     // record is that `t`'s content whichever owner it was captured for.
-    sqlx::query("DELETE FROM proxima_core.publication_origin WHERE t = $1")
+    sqlx::query("DELETE FROM proxiima_core.publication_origin WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxima_core.publication_outbox WHERE t = $1")
+    sqlx::query("DELETE FROM proxiima_core.publication_outbox WHERE t = $1")
         .bind(t)
         .execute(tx.as_mut())
         .await
@@ -1102,11 +1102,11 @@ async fn erase_memory_in_lifecycle(
 
 /// Hard-delete every version of every series the given admissions belong to.
 ///
-/// The kernel's own erase, applied to a set. A flavor tearing down one of
+/// The kernel's own erase, applied to a set. A spiice tearing down one of
 /// its scopes — a repo, a workspace, a project — knows which of ITS rows
 /// belong to that scope and nothing about the substrate rows behind them;
-/// this is the other half, and it is deliberately flavor-agnostic so the
-/// flavor never writes a `proxima_core` statement to get it.
+/// this is the other half, and it is deliberately spiice-agnostic so the
+/// spiice never writes a `proxiima_core` statement to get it.
 ///
 /// Expansion to the whole series matters: a caller that collected ids from
 /// its own tables, or matched only live versions, would erase some
@@ -1116,7 +1116,7 @@ async fn erase_memory_in_lifecycle(
 /// here rather than in [`erase_memory`] because it is a question about the
 /// SET: erasing one version of a series says nothing about whether the
 /// blob is still cited, and asking per-version would answer "still cited"
-/// for every version but the last. `proxima_core.blob` is referenced by
+/// for every version but the last. `proxiima_core.blob` is referenced by
 /// `memory.blob_id` and `blob_uploads.blob_id` and by nothing else, so once the admissions are gone the reference question is
 /// answerable in one statement, which is what `gc_unreferenced_blobs`
 /// below is.
@@ -1264,10 +1264,10 @@ async fn snapshot_series_for_erase_tx(
 
 const SNAPSHOT_SERIES_FOR_ERASE_SQL: &str = "\
 WITH handles AS (
-    SELECT DISTINCT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+    SELECT DISTINCT handle FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
      WHERE t = ANY($1::uuid[]) AND owner_id = $2
 ), versions AS (
-    SELECT m.handle, m.t FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+    SELECT m.handle, m.t FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
       JOIN handles h ON h.handle = m.handle
      WHERE m.owner_id = $2
 )
@@ -1295,15 +1295,15 @@ async fn snapshot_series_for_handles_tx(
 }
 
 const SNAPSHOT_SERIES_BY_HANDLES_SQL: &str = "\
-SELECT m.handle, m.t FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+SELECT m.handle, m.t FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
   JOIN unnest($1::uuid[]) h(handle) ON h.handle = m.handle
  WHERE m.owner_id = $2
  ORDER BY handle, t";
 
 /// Take a row lock on admissions a scope erase is about to delete.
 ///
-/// Not an optimisation and not a formality, and flavor-agnostic for the
-/// same reason [`erase_memory_series`] is: a flavor computing which of its
+/// Not an optimisation and not a formality, and spiice-agnostic for the
+/// same reason [`erase_memory_series`] is: a spiice computing which of its
 /// rows belong to a scope needs several statements to do it, `READ
 /// COMMITTED` gives each of them its own snapshot, and a row committed in
 /// any of the gaps references a memory that is about to go. With a
@@ -1356,7 +1356,7 @@ pub(crate) async fn lock_admissions_for_erase(
     // it yet; acquire every named series handle here so a later series erase
     // only re-enters handles this transaction already owns.
     let handles: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT DISTINCT handle FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+        "SELECT DISTINCT handle FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
           WHERE t = ANY($1::uuid[]) AND owner_id = $2
           ORDER BY handle",
     )
@@ -1368,7 +1368,7 @@ pub(crate) async fn lock_admissions_for_erase(
     lock_memory_handles_tx(tx, &handles).await?;
 
     let present: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+        "SELECT t FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
           WHERE t = ANY($1::uuid[]) AND owner_id = $2
           ORDER BY t",
     )
@@ -1395,7 +1395,7 @@ pub(crate) async fn lock_admissions_for_erase(
 }
 
 const LOCK_ADMISSIONS_SQL: &str =
-    "SELECT t FROM proxima_core.memory WHERE t = ANY($1::uuid[]) ORDER BY t FOR UPDATE"; /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+    "SELECT t FROM proxiima_core.memory WHERE t = ANY($1::uuid[]) ORDER BY t FOR UPDATE"; /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
 
 /// The blobs the given admissions cite, held.
 ///
@@ -1450,10 +1450,10 @@ pub async fn cited_blobs_locked_for_erase(
 /// rather than in a `UNION` the locking clause could not attach to.
 const CITED_BLOBS_LOCKED_SQL: &str = "\
 WITH cited AS (
-    SELECT m.blob_id FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+    SELECT m.blob_id FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
      WHERE m.t = ANY($1::uuid[]) AND m.owner_id = $2 AND m.blob_id IS NOT NULL
 )
-SELECT b.blob_id FROM proxima_core.blob b
+SELECT b.blob_id FROM proxiima_core.blob b
  WHERE b.blob_id IN (SELECT blob_id FROM cited)
    AND b.owner_id = $2
  ORDER BY b.blob_id
@@ -1464,7 +1464,7 @@ SELECT b.blob_id FROM proxima_core.blob b
 ///
 /// `gc_unreferenced_content`'s idiom, at the blob level, plus the refcount
 /// a shared object needs when several upload rows name it.
-/// `proxima_core.blob` is
+/// `proxiima_core.blob` is
 /// referenced by exactly two columns, `memory.blob_id` and
 /// `blob_uploads.blob_id`, both `NO ACTION` — so "no
 /// admission cites it" is the whole reference question. Citation schemas
@@ -1524,24 +1524,24 @@ const GC_UNREFERENCED_BLOBS_SQL: &str = concat!(
     "\
 WITH orphans AS MATERIALIZED (
     SELECT b.blob_id
-      FROM proxima_core.blob b
+      FROM proxiima_core.blob b
      WHERE b.blob_id = ANY($1::uuid[])
        AND b.owner_id = $2
        AND NOT EXISTS (
-               SELECT 1 FROM proxima_core.memory m WHERE m.blob_id = b.blob_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still cites its content) */
+               SELECT 1 FROM proxiima_core.memory m WHERE m.blob_id = b.blob_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still cites its content) */
            )
 ),
 enqueued AS (
-    INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+    INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
     SELECT DISTINCT ON (u.object_store, k.object_key) k.object_key, u.owner_id, u.object_store
-      FROM proxima_core.blob_uploads u
+      FROM proxiima_core.blob_uploads u
       JOIN orphans o ON o.blob_id = u.blob_id ",
     upload_implied_keys_sql!(),
     "
      WHERE k.object_key IS NOT NULL
        AND NOT EXISTS (
                SELECT 1
-                 FROM proxima_core.blob_uploads other
+                 FROM proxiima_core.blob_uploads other
                 WHERE other.upload_id <> u.upload_id
                   AND NOT EXISTS (
                           SELECT 1 FROM orphans o2 WHERE o2.blob_id = other.blob_id
@@ -1556,12 +1556,12 @@ enqueued AS (
     RETURNING object_key, object_store
 ),
 d_uploads AS (
-    DELETE FROM proxima_core.blob_uploads u
+    DELETE FROM proxiima_core.blob_uploads u
      USING orphans o
      WHERE u.blob_id = o.blob_id
 ),
 d_blobs AS (
-    DELETE FROM proxima_core.blob b
+    DELETE FROM proxiima_core.blob b
      USING orphans o
      WHERE b.blob_id = o.blob_id
 )
@@ -1598,7 +1598,7 @@ mod tests {
 
     fn shipped() -> OwnerSurfaces {
         OwnerSurfaces::for_registry(
-            &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+            &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
         )
     }
 
@@ -1617,9 +1617,9 @@ mod tests {
         assert_eq!(
             shipped().generated_forget_legs(),
             vec![
-                ("proxima_core.embedding_jobs", "entity_id"),
-                ("proxima_core.embedding_heads", "entity_id"),
-                ("proxima_core.embeddings", "entity_id"),
+                ("proxiima_core.embedding_jobs", "entity_id"),
+                ("proxiima_core.embedding_heads", "entity_id"),
+                ("proxiima_core.embeddings", "entity_id"),
             ]
         );
     }
@@ -1651,11 +1651,11 @@ mod tests {
     #[test]
     fn a_forget_leg_deletes_the_declared_key_column() {
         assert_eq!(
-            forget_leg_sql("proxima_core.embeddings", "entity_id").expect("generates"),
-            "DELETE FROM proxima_core.embeddings WHERE entity_id = $1"
+            forget_leg_sql("proxiima_core.embeddings", "entity_id").expect("generates"),
+            "DELETE FROM proxiima_core.embeddings WHERE entity_id = $1"
         );
         assert!(
-            forget_leg_sql("proxima_core.embeddings", "entity_id; DROP TABLE x").is_err(),
+            forget_leg_sql("proxiima_core.embeddings", "entity_id; DROP TABLE x").is_err(),
             "the identifier whitelist is what makes this %I-equivalent"
         );
     }
@@ -1664,8 +1664,8 @@ mod tests {
 #[cfg(test)]
 mod erase_kept_partition_tests {
     use super::{ERASE_MEMORY_EXPLICIT, erase_kept_memory_legs};
-    use proxima_core::flavor::{EraseLeg, ForgetLeg, KeyShape};
-    use proxima_core::owner_inverse::OwnerSurfaces;
+    use proxiima_core::owner_inverse::OwnerSurfaces;
+    use proxiima_core::spiice::{EraseLeg, ForgetLeg, KeyShape};
 
     /// The hard erase of one admission reaches every memory-keyed surface a
     /// forget keeps: either by a named statement of its own or by the
@@ -1673,7 +1673,7 @@ mod erase_kept_partition_tests {
     #[test]
     fn explicit_and_generated_sets_partition_every_kept_memory_keyed_surface() {
         let surfaces = OwnerSurfaces::for_registry(
-            &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+            &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
         );
         let generated: Vec<&str> = erase_kept_memory_legs(&surfaces)
             .into_iter()
@@ -1704,7 +1704,7 @@ mod erase_kept_partition_tests {
             );
         }
         assert!(
-            generated.contains(&"proxima_core.memory_external_origin"),
+            generated.contains(&"proxiima_core.memory_external_origin"),
             "the other-store origins are reached by the generated set: {generated:?}"
         );
     }

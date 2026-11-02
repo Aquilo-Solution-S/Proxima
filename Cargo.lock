@@ -2021,7 +2021,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima"
+name = "proxiima"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -2031,14 +2031,14 @@ dependencies = [
  "base64 0.23.1",
  "futures",
  "http 1.5.0",
- "proxima-auth-oidc",
- "proxima-blob-s3",
- "proxima-core",
- "proxima-example",
- "proxima-llm-openai-compat",
- "proxima-mcp-server",
- "proxima-pg-testkit",
- "proxima-storage-pg",
+ "proxiima-auth-oidc",
+ "proxiima-blob-s3",
+ "proxiima-core",
+ "proxiima-example",
+ "proxiima-llm-openai-compat",
+ "proxiima-mcp-server",
+ "proxiima-pg-testkit",
+ "proxiima-storage-pg",
  "rcgen",
  "reqwest",
  "rmcp",
@@ -2059,7 +2059,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-auth-oidc"
+name = "proxiima-auth-oidc"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -2068,7 +2068,7 @@ dependencies = [
  "base64 0.23.1",
  "futures",
  "jsonwebtoken",
- "proxima-core",
+ "proxiima-core",
  "reqwest",
  "serde",
  "serde_json",
@@ -2079,16 +2079,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-blob-s3"
+name = "proxiima-blob-s3"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "aws-sdk-s3",
  "aws-smithy-runtime-api",
  "blake3",
- "proxima-core",
- "proxima-pg-testkit",
- "proxima-storage-pg",
+ "proxiima-core",
+ "proxiima-pg-testkit",
+ "proxiima-storage-pg",
  "reqwest",
  "serde",
  "sha2 0.11.1",
@@ -2101,7 +2101,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-core"
+name = "proxiima-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -2125,7 +2125,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-dev-idp"
+name = "proxiima-dev-idp"
 version = "0.1.0"
 dependencies = [
  "aws-lc-rs",
@@ -2137,24 +2137,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-dev-migrate"
+name = "proxiima-dev-migrate"
 version = "0.1.0"
 dependencies = [
- "proxima",
- "proxima-core",
- "proxima-example",
- "proxima-pg-testkit",
- "proxima-storage-pg",
+ "proxiima",
+ "proxiima-core",
+ "proxiima-example",
+ "proxiima-pg-testkit",
+ "proxiima-storage-pg",
  "sqlx",
  "tokio",
 ]
 
 [[package]]
-name = "proxima-example"
+name = "proxiima-example"
 version = "0.1.0"
 dependencies = [
- "proxima",
- "proxima-example",
+ "proxiima",
+ "proxiima-example",
  "schemars",
  "serde",
  "serde_json",
@@ -2166,13 +2166,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-llm-openai-compat"
+name = "proxiima-llm-openai-compat"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
  "httpdate",
- "proxima-core",
+ "proxiima-core",
  "reqwest",
  "serde",
  "serde_json",
@@ -2180,7 +2180,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-mcp"
+name = "proxiima-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -2188,14 +2188,14 @@ dependencies = [
  "base64 0.23.1",
  "boon",
  "jsonwebtoken",
- "proxima",
- "proxima-auth-oidc",
- "proxima-blob-s3",
- "proxima-core",
- "proxima-example",
- "proxima-llm-openai-compat",
- "proxima-pg-testkit",
- "proxima-storage-pg",
+ "proxiima",
+ "proxiima-auth-oidc",
+ "proxiima-blob-s3",
+ "proxiima-core",
+ "proxiima-example",
+ "proxiima-llm-openai-compat",
+ "proxiima-pg-testkit",
+ "proxiima-storage-pg",
  "reqwest",
  "serde_json",
  "sqlx",
@@ -2208,7 +2208,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-mcp-server"
+name = "proxiima-mcp-server"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -2217,9 +2217,9 @@ dependencies = [
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
- "proxima-core",
- "proxima-pg-testkit",
- "proxima-storage-pg",
+ "proxiima-core",
+ "proxiima-pg-testkit",
+ "proxiima-storage-pg",
  "reqwest",
  "rmcp",
  "schemars",
@@ -2237,7 +2237,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-pg-testkit"
+name = "proxiima-pg-testkit"
 version = "0.1.0"
 dependencies = [
  "sqlx",
@@ -2249,15 +2249,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-storage-pg"
+name = "proxiima-storage-pg"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
  "pgvector",
- "proxima-core",
- "proxima-pg-testkit",
- "proxima-storage-pg",
+ "proxiima-core",
+ "proxiima-pg-testkit",
+ "proxiima-storage-pg",
  "rust_decimal",
  "serde",
  "serde_json",

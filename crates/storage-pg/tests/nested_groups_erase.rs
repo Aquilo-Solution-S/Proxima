@@ -1,21 +1,21 @@
-use proxima_core::owner_inverse::{
+use proxiima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseOutcome, OwnerEraseRefusal, OwnerEraseTarget, OwnerSurfaces,
 };
-use proxima_core::storage_ports::OwnerInversePort;
-use proxima_core::{FlavorRegistry, GroupId, OwnerId, Relation, UserId};
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::test_fixtures::{create_core_db, register_group_for_tests};
-use proxima_storage_pg::{PgStorage, add_group_member};
+use proxiima_core::storage_ports::OwnerInversePort;
+use proxiima_core::{GroupId, OwnerId, Relation, SpiiceRegistry, UserId};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::test_fixtures::{create_core_db, register_group_for_tests};
+use proxiima_storage_pg::{PgStorage, add_group_member};
 use uuid::Uuid;
 
 fn surfaces() -> OwnerSurfaces {
-    OwnerSurfaces::for_registry(&FlavorRegistry::new().freeze_or_panic_for_tests())
+    OwnerSurfaces::for_registry(&SpiiceRegistry::new().freeze_or_panic_for_tests())
 }
 
 #[tokio::test]
 async fn nested_group_erasure_refuses_parent_and_removes_child_edge()
 -> Result<(), Box<dyn std::error::Error>> {
-    let name = format!("proxima_test_nested_erase_{}", Uuid::now_v7().simple());
+    let name = format!("proxiima_test_nested_erase_{}", Uuid::now_v7().simple());
     create_core_db(&name).await.expect("create test database");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect_for_tests(db_url(&name)).await?;
@@ -47,7 +47,7 @@ async fn nested_group_erasure_refuses_parent_and_removes_child_edge()
             .await?;
         assert!(matches!(erased, OwnerEraseOutcome::Completed { .. }));
         let edge_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.group_edges WHERE child_group_id = $1",
+            "SELECT count(*) FROM proxiima_core.group_edges WHERE child_group_id = $1",
         )
         .bind(child.into_inner())
         .fetch_one(pg.pool_for_tests())
@@ -62,7 +62,7 @@ async fn nested_group_erasure_refuses_parent_and_removes_child_edge()
 
 #[tokio::test]
 async fn erasing_person_removes_projected_roles() -> Result<(), Box<dyn std::error::Error>> {
-    let name = format!("proxima_test_person_erase_{}", Uuid::now_v7().simple());
+    let name = format!("proxiima_test_person_erase_{}", Uuid::now_v7().simple());
     create_core_db(&name).await.expect("create test database");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect_for_tests(db_url(&name)).await?;
@@ -79,7 +79,7 @@ async fn erasing_person_removes_projected_roles() -> Result<(), Box<dyn std::err
         let erased = pg.erase_personal_owner(&auth, person, &surfaces()).await?;
         assert!(matches!(erased, OwnerEraseOutcome::Completed { .. }));
         let rows: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.group_role_projection WHERE member_user_id = $1",
+            "SELECT count(*) FROM proxiima_core.group_role_projection WHERE member_user_id = $1",
         )
         .bind(person.into_inner())
         .fetch_one(pg.pool_for_tests())

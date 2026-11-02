@@ -28,7 +28,7 @@ impl FactPayload for AgentNoteV1 {
     }
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_core.agent_note_v1")
+        Some("proxiima_core.agent_note_v1")
     }
 
     fn natural_key_columns() -> &'static [&'static str] {

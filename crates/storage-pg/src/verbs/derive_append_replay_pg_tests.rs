@@ -5,13 +5,13 @@
 use super::{DerivedDraft, DerivedOutcome};
 use crate::PgStorage;
 use crate::test_fixtures::create_core_db;
-use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{
+use proxiima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::{
     AccessKind, ContentFingerprint, EdgeEndpoint, EntityKind, IdempotencyKey, KeyScope,
     MemoryOperatorKind, OwnerId, RequestKey, SchemaId, SchemaVersion, StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
+use proxiima_pg_testkit::{db_url, drop_db};
 use uuid::Uuid;
 
 fn fact_draft() -> FactWriteCommand {
@@ -30,7 +30,7 @@ fn fact_draft() -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
@@ -98,7 +98,7 @@ async fn append_with_edges(
 }
 
 async fn fresh_pg() -> (String, PgStorage) {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -139,13 +139,13 @@ async fn head_snapshot(
 ) -> Result<(Uuid, String, String, Uuid, i64), sqlx::Error> {
     let row = sqlx::query_as::<_, (Uuid, String, String, Uuid)>(
         "SELECT t, kind::text, schema_id, owner_id
-           FROM proxima_core.memory_head WHERE handle = $1",
+           FROM proxiima_core.memory_head WHERE handle = $1",
     )
     .bind(handle)
     .fetch_one(pool)
     .await?;
     let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE handle = $1")
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory WHERE handle = $1")
             .bind(handle)
             .fetch_one(pool)
             .await?;
@@ -250,7 +250,7 @@ async fn same_origins_different_refs_is_conflict() {
         .expect_err("changed refs must not replay");
         match err {
             StorageError::ReplayChanged(changed) => {
-                assert_eq!(changed, proxima_core::ReplayDrift::DerivedRefs);
+                assert_eq!(changed, proxiima_core::ReplayDrift::DerivedRefs);
             }
             other => panic!("expected ReplayChanged, got {other:?}"),
         }
@@ -305,7 +305,7 @@ async fn different_first_originsppend_new_t_and_each_key_replays_its_version() {
         assert!(!second.idempotent_replay);
         assert_ne!(first.memory_id, second.memory_id);
         let head: Uuid =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(handle)
                 .fetch_one(pool)
                 .await?;

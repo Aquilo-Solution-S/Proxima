@@ -33,12 +33,12 @@ pub(super) struct EvidenceTarget {
 /// as loaded, `None` (unknown) included. Nothing on the way judges it, so a
 /// stored value comes out byte for byte; the one judge is the database CHECK.
 ///
-/// [`GoalDraft`]: proxima_core::verbs::goal_write::GoalDraft
+/// [`GoalDraft`]: proxiima_core::verbs::goal_write::GoalDraft
 #[derive(Clone, Copy)]
 pub(super) struct RowColumns<'a> {
     /// The configured number encoded into this row's minted identity.
     pub(super) store_number: u16,
-    pub(super) writer: proxima_core::WriterAttribution,
+    pub(super) writer: proxiima_core::WriterAttribution,
     pub(super) text: Option<&'a str>,
     pub(super) write_act_t: Option<uuid::Uuid>,
 }

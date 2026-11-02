@@ -8,20 +8,20 @@
 //! registry probe recognises both Personal and Group owners and refuses
 //! unregistered ids, using the resolver's validated platform authority.
 
-use proxima_core::{GroupId, OwnerAccessPort, OwnerId, Relation, Role, UserId};
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{PgOwnerAccessResolver, PgStorage};
+use proxiima_core::{GroupId, OwnerAccessPort, OwnerId, Relation, Role, UserId};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{PgOwnerAccessResolver, PgStorage};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
 async fn seed_membership(pool: &sqlx::PgPool, group: GroupId, member: UserId, relation: Relation) {
     sqlx::query(
         "WITH registered AS (
-              INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')
+              INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'group')
               ON CONFLICT (owner_id) DO NOTHING
           )
-          INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation)
+          INSERT INTO proxiima_core.group_memberships (group_id, member_user_id, relation)
           VALUES ($1, $2, $3)",
     )
     .bind(group.into_inner())
@@ -34,7 +34,7 @@ async fn seed_membership(pool: &sqlx::PgPool, group: GroupId, member: UserId, re
 
 #[tokio::test]
 async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
@@ -54,7 +54,7 @@ async fn per_group_probe_matches_the_eager_map_for_every_group_shape() {
         let personal = OwnerId::from(UserId::new(Uuid::now_v7()));
         let unknown = OwnerId::new(Uuid::now_v7());
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
              VALUES ($1, 'personal')",
         )
         .bind(personal.into_inner())

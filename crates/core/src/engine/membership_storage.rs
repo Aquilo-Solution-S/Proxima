@@ -823,7 +823,7 @@ impl OwnerTransferPort for MembershipStorage {
         _permit: &crate::storage_ports::OwnerWritePermit,
         _entity: EntityId,
         _to_owner: OwnerId,
-        _surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+        _surfaces: &proxiima_core::owner_inverse::OwnerSurfaces,
         _embedding_spaces: &[crate::EmbeddingSpace],
     ) -> Result<bool, StorageError> {
         Err(StorageError::Internal(
@@ -872,10 +872,10 @@ impl SourceCursorPort for MembershipStorage {
 impl OwnerInversePort for MembershipStorage {
     async fn erase_group_owner(
         &self,
-        _auth: &proxima_core::owner_inverse::EraseAuthorization,
+        _auth: &proxiima_core::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
-        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
-    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
+        _tables: &proxiima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxiima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "MembershipStorage rejects writes".into(),
         ))
@@ -883,10 +883,10 @@ impl OwnerInversePort for MembershipStorage {
 
     async fn erase_personal_owner(
         &self,
-        _auth: &proxima_core::owner_inverse::EraseAuthorization,
+        _auth: &proxiima_core::owner_inverse::EraseAuthorization,
         _user_id: UserId,
-        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
-    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
+        _tables: &proxiima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxiima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "MembershipStorage rejects writes".into(),
         ))
@@ -894,11 +894,11 @@ impl OwnerInversePort for MembershipStorage {
 
     async fn erase_group_source_scope(
         &self,
-        _auth: &proxima_core::owner_inverse::EraseAuthorization,
+        _auth: &proxiima_core::owner_inverse::EraseAuthorization,
         _group_id: GroupId,
         _source_id: &SourceId,
-        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
-    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
+        _tables: &proxiima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxiima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "MembershipStorage rejects writes".into(),
         ))
@@ -906,11 +906,11 @@ impl OwnerInversePort for MembershipStorage {
 
     async fn erase_personal_source_scope(
         &self,
-        _auth: &proxima_core::owner_inverse::EraseAuthorization,
+        _auth: &proxiima_core::owner_inverse::EraseAuthorization,
         _user_id: UserId,
         _source_id: &SourceId,
-        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
-    ) -> Result<proxima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
+        _tables: &proxiima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxiima_core::owner_inverse::OwnerEraseOutcome, StorageError> {
         Err(StorageError::Internal(
             "MembershipStorage rejects writes".into(),
         ))
@@ -918,9 +918,9 @@ impl OwnerInversePort for MembershipStorage {
 
     async fn export_owner_bundle(
         &self,
-        _auth: &proxima_core::owner_inverse::ExportAuthorization,
-        _tables: &proxima_core::owner_inverse::OwnerSurfaces,
-    ) -> Result<proxima_core::owner_inverse::OwnerExportBundle, StorageError> {
+        _auth: &proxiima_core::owner_inverse::ExportAuthorization,
+        _tables: &proxiima_core::owner_inverse::OwnerSurfaces,
+    ) -> Result<proxiima_core::owner_inverse::OwnerExportBundle, StorageError> {
         Err(StorageError::Internal(
             "MembershipStorage rejects reads".into(),
         ))

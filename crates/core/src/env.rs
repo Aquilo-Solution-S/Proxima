@@ -5,8 +5,8 @@
 //! was written three times — in the facade's auth module, in the binary's arg
 //! parsing, and in the blob store's config — and bypassed by
 //! `RuntimeBuilder::apply_lookup`, which read nine variables raw. The result was
-//! one process answering two ways about the same variable: `PROXIMA_EMBED_*`
-//! read an empty value as unset while `PROXIMA_EXPOSE_NETWORK=` aborted boot
+//! one process answering two ways about the same variable: `PROXIIMA_EMBED_*`
+//! read an empty value as unset while `PROXIIMA_EXPOSE_NETWORK=` aborted boot
 //! with `must be a boolean, got ""`, and `DATABASE_URL=` reached the pool as an
 //! empty connection string.
 
@@ -23,7 +23,7 @@
 /// process environment, or an injected map in tests and embedded hosts.
 ///
 /// ```
-/// use proxima_core::env_value;
+/// use proxiima_core::env_value;
 ///
 /// let env = |key: &str| match key {
 ///     "SET" => Some("  value  ".to_string()),
@@ -56,7 +56,7 @@ pub fn env_value(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Option<
 /// wherever an `impl Fn(&str) -> Option<String>` is wanted.
 ///
 /// ```
-/// use proxima_core::{env_value, process_env};
+/// use proxiima_core::{env_value, process_env};
 ///
 /// let _configured = env_value(&process_env, "PATH").is_some();
 /// ```
@@ -74,7 +74,7 @@ pub fn process_env(key: &str) -> Option<String> {
 /// tests. When a key appears more than once, the later pair wins.
 ///
 /// ```
-/// use proxima_core::{env_from_pairs, env_value};
+/// use proxiima_core::{env_from_pairs, env_value};
 ///
 /// let env = env_from_pairs(&[("MODE", "a"), ("MODE", "b")]);
 /// assert_eq!(env_value(&env, "MODE").as_deref(), Some("b"));
@@ -97,7 +97,7 @@ pub fn env_from_pairs<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> O
 /// so one setting cannot mean different things to different readers.
 ///
 /// ```
-/// use proxima_core::parse_bool_word;
+/// use proxiima_core::parse_bool_word;
 ///
 /// assert_eq!(parse_bool_word(" On\n"), Some(true));
 /// assert_eq!(parse_bool_word("NO"), Some(false));

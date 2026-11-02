@@ -1,8 +1,8 @@
 # Contributing
 > Status: current.
 
-Proxima has two authorities: the Lean kernel under
-[`docs/lean/Causa`](https://github.com/Aquilo-Solution-S/Proxima/tree/main/docs/lean/Causa)
+Proxiima has two authorities: the Lean kernel under
+[`docs/lean/Causa`](https://github.com/Aquilo-Solution-S/proxiima/tree/main/docs/lean/Causa)
 defines domainless invariants; Rust code, SQL, tests, and the live MCP/REST
 catalog implement and expose them. A prose page explains a contract but does
 not amend the kernel. If the implementation and kernel disagree, stop and
@@ -17,7 +17,7 @@ truth. Keep scratch plans, review notes, and bulky evidence under ignored
 `.local/`; tracked docs contain durable decisions and executable checks.
 
 The core boundary is deliberate: strict F/A/P/Goal layering, server-resolved
-owner scope, typed payloads and sidecars, build-time flavor registration,
+owner scope, typed payloads and sidecars, build-time spiice registration,
 atomic command-port writes, and hard deletion only through an authorized
 `wipeable` path. Similarity is query-time behavior and never authors an edge.
 
@@ -29,7 +29,7 @@ boundary, returning a typed error. Recheck facts that can become stale at the
 commit boundary. Tests should prove intent and boundary refusal, not duplicate
 the implementation.
 
-Do not add a runtime flavor registry, raw flavor SQL against core tables,
+Do not add a runtime spiice registry, raw spiice SQL against core tables,
 caller-supplied owner authorization, a third edge kind, generic JSON payload
 escape hatches, or compatibility aliases for removed ontology. If a feature
 needs a connection with its own reason or confidence, add the node that owns
@@ -86,7 +86,7 @@ python3 -m pip install -r requirements-docs.txt
 python3 -m mkdocs build --strict
 ```
 
-Postgres-backed tests need `PROXIMA_TEST_PG_URL`; the local development
+Postgres-backed tests need `PROXIIMA_TEST_PG_URL`; the local development
 bootstrap is described in [get started](get-started.md).
 
 The suite runs eight test processes at once with no retries
@@ -105,20 +105,20 @@ irrelevant for per-test databases. Do not restore them in CI.
 The PgBouncer lane runs the storage suites that depend on what a connection
 carries between transactions (export/erase fence, maintenance lease, pool
 startup parameters) with their serving pools behind PgBouncer 1.26.1 or later
-in transaction mode. Set `PROXIMA_TEST_PGBOUNCER_URL` to that PgBouncer (in
-front of the `PROXIMA_TEST_PG_URL` server, configured like the `pgbouncer`
+in transaction mode. Set `PROXIIMA_TEST_PGBOUNCER_URL` to that PgBouncer (in
+front of the `PROXIIMA_TEST_PG_URL` server, configured like the `pgbouncer`
 job in `.github/workflows/ci.yml`) and run the job's nextest filter. Without
 the variable, `pgbouncer_pg` returns early and the other suites connect
 direct.
 
-The cited-blob tests return early and pass when the `PROXIMA_S3_*` variables
+The cited-blob tests return early and pass when the `PROXIIMA_S3_*` variables
 are unset. A complete run needs an S3-compatible store with a versioned
 bucket and the five variables CI sets in `.github/workflows/ci.yml`. CI
-serves bucket `proxima-cited-blobs` at `http://localhost:9000`. Locally, the
-dev compose file serves `http://127.0.0.1:9100` (`PROXIMA_DEV_S3_PORT`
-overrides the port) with keys `proxima` / `proxima-dev`, and
+serves bucket `proxiima-cited-blobs` at `http://localhost:9000`. Locally, the
+dev compose file serves `http://127.0.0.1:9100` (`PROXIIMA_DEV_S3_PORT`
+overrides the port) with keys `proxiima` / `proxiima-dev`, and
 `docker compose -f docker-compose.dev.yml --profile init up s3-init` creates
-its versioned bucket `proxima-dev`; region `us-east-1` works for both. Report
+its versioned bucket `proxiima-dev`; region `us-east-1` works for both. Report
 a run without the variables as skipping that lane. Do not hide a failing
 required check. Fix it, record a precise `.local` ledger entry with command
 and output, or escalate the blocker.
@@ -137,15 +137,15 @@ Per-release changes live only in those notes.
 
 Changes are pushed to `main` directly; `verified` names the last `main`
 commit that passed CI, and new work starts from it. A release is cut by a
-commit that bumps `proxima_core::RELEASE_VERSION`: once `verify.yml` advances
+commit that bumps `proxiima_core::RELEASE_VERSION`: once `verify.yml` advances
 `verified` onto it, the value becomes the `v${VERSION}` tag and git-cliff
 generates notes. A commit that leaves the constant unchanged cuts no release.
 Run full local gates before pushing, and `scripts/check-release-version.py`
 for a version bump. Do not tag by hand.
 
-For a flavor change, also verify the served catalog and the host e2e path. For
+For a spiice change, also verify the served catalog and the host e2e path. For
 an outbox or host-state change, exercise the transaction and retry or rollback
 boundary against real Postgres. For an API change, update the facade rustdoc,
 the relevant integration page, and the executable example together.
 
-Continue with [build a flavor](build-a-flavor.md) or [host integration](host-integration.md).
+Continue with [build a spiice](build-a-spiice.md) or [host integration](host-integration.md).

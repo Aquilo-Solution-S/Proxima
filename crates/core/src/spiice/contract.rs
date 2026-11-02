@@ -1,0 +1,1951 @@
+//! The spiice contract — declarations, not code.
+//!
+//! A spiice states, per schema, what its rows *are*: whether they are a
+//! search surface, how their embed text is produced, what a transfer does
+//! to them, and which physical surfaces erase / export / forget must walk.
+//! Core consumes the declarations by iterating the registry, so a surface
+//! cannot be missed by forgetting to add it to a hand-written list.
+//!
+//! Three rules shape every type here:
+//!
+//! 1. **Declared absence is a value.** [`SearchProjectionDecl::None`] and
+//!    [`EmbeddingRecipe::Never`] carry a `why` and are distinct from "nobody
+//!    wrote a declaration". A bare `Option::None` in their place would give
+//!    a stated non-surface and an oversight the same value, and nothing
+//!    downstream could tell the two apart.
+//! 2. **Every rule is non-optional on a [`Surface`].** A new table that
+//!    forgets to say what forget does will not compile.
+//! 3. **A constraint beats a list.** [`Surface::completeness`] names the
+//!    FK/CHECK that already proves the surface is reached; the standing rule
+//!    for generators is that a surface with `completeness: Some(_)`
+//!    contributes zero lines to any emitted enumeration.
+//!
+//! Everything is `const`-constructible: a contract is a `static`, so the
+//! declaration is available before a database connection exists.
+
+use crate::scope::ScopeDecl;
+use crate::verbs::schema::PayloadKind;
+use crate::{ResourceKey, SchemaId, SchemaVersion, ScopeKey, SearchProjectionColumnKind};
+
+// ── Identity ────────────────────────────────────────────────────────────
+
+/// A schema id in its parts. Renders `"<spiice>/<name>-v<version>"` — the
+/// `_vN` idiom the tree already uses (`core/agent-note-v1`), and the shape
+/// `proxiima_spiice!`'s existing compile-time prefix assertion enforces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SchemaRef {
+    pub spiice: &'static str,
+    pub name: &'static str,
+    pub version: u32,
+}
+
+impl SchemaRef {
+    #[must_use]
+    pub const fn new(spiice: &'static str, name: &'static str, version: u32) -> Self {
+        Self {
+            spiice,
+            name,
+            version,
+        }
+    }
+
+    /// `"<spiice>/<name>-v<version>"`.
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!("{}/{}-v{}", self.spiice, self.name, self.version)
+    }
+
+    #[must_use]
+    pub fn schema_id(&self) -> SchemaId {
+        SchemaId::new(self.render())
+    }
+
+    #[must_use]
+    pub fn schema_version(&self) -> SchemaVersion {
+        SchemaVersion::new(self.version)
+    }
+}
+
+// ── Search ──────────────────────────────────────────────────────────────
+
+/// `PostgreSQL`'s four tsvector weight classes, **lowest first**.
+///
+/// `D` leads because `D` is what an unweighted `to_tsvector` produces:
+/// "The default weight is `D` for lexemes that have no explicit weight"
+/// (`PostgreSQL` *12.3.1*). A projection unit that declares one level is
+/// therefore rank-identical to an unweighted vector.
+pub const TSVECTOR_WEIGHT_CLASSES: [&str; 4] = ["D", "C", "B", "A"];
+
+/// `PostgreSQL`'s default `ts_rank` weight array, `{D, C, B, A}`
+/// (*12.3.3 Ranking Search Results*). Classes a projection unit does not
+/// use keep these values.
+pub const DEFAULT_RANK_WEIGHTS: [f32; 4] = [0.1, 0.2, 0.4, 1.0];
+
+/// One projected column with its **relative** weight.
+///
+/// The weight is an arbitrary float, not a letter: `PostgreSQL` forces four
+/// classes on the *storage*, and encoding that limit in the declaration
+/// would make a spiice choose a bucket before it has said what it means.
+/// A spiice states relative importance; the generator buckets the distinct
+/// values it finds into `setweight` classes (lowest → `D`) and the same
+/// floats become `ts_rank`'s weight array at read time. More than
+/// [`TSVECTOR_WEIGHT_CLASSES`]`.len()` distinct levels on one unit is a
+/// freeze error naming the `PostgreSQL` mechanism, not a silent collapse.
+///
+/// `kind` is the existing [`SearchProjectionColumnKind`], so the contract
+/// cannot describe a column shape the search builder cannot render.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeightedField {
+    pub column: &'static str,
+    pub kind: SearchProjectionColumnKind,
+    pub weight: f32,
+}
+
+/// The one weight every spiice #0 field declares.
+///
+/// Uniform ⇒ one distinct level ⇒ every lexeme lands in class `D`, so the
+/// emitted vector is textually the vector an unweighted `to_tsvector`
+/// produces. Honouring non-uniform weights is a separate, measured
+/// retrieval-quality change.
+pub const WEIGHT_UNIFORM: f32 = 1.0;
+
+/// Which lexical configuration produces and ranks a row's vector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LanguagePolicy {
+    /// The row carries its own `regconfig` in `column` on the projection,
+    /// FK-stamped against `proxiima_core.lexical_languages` so
+    /// `lexical_language_forget` enumerates nothing. The value is the
+    /// writing caller's language.
+    ///
+    /// `column` must be the projection table's own language column — the
+    /// generator emits exactly one per projection table and names it — and
+    /// freeze refuses any other value rather than accepting a name nothing
+    /// renders (`SpiiceRegistryError::ProjectionLanguageColumn`).
+    PerRow { column: &'static str },
+    /// One configuration for the whole surface, whatever the caller asked
+    /// for (a code-search spiice would pin `english`: identifier search must
+    /// not follow the deployment's prose configuration).
+    Pinned(&'static str),
+    /// The union of several pinned configurations, concatenated in the
+    /// declared order — `lexical_tsv(c1, txt) || lexical_tsv(c2, txt)`.
+    ///
+    /// Vocabulary extension rather than a generator feature: a spiice's
+    /// `proxiima_notes.body_search_tsv` can index prose under
+    /// `simple` *and* `english` so non-English words survive English
+    /// stop-word rules, and no single-configuration arm can say that. The
+    /// FIRST configuration is the one stamped on the row.
+    PinnedUnion(&'static [&'static str]),
+}
+
+impl LanguagePolicy {
+    /// The configuration stamped on the projection row when the policy
+    /// fixes one, i.e. everything except [`Self::PerRow`].
+    #[must_use]
+    pub const fn pinned_config(&self) -> Option<&'static str> {
+        match self {
+            Self::PerRow { .. } => None,
+            Self::Pinned(config) => Some(*config),
+            Self::PinnedUnion(configs) => {
+                if configs.is_empty() {
+                    None
+                } else {
+                    Some(configs[0])
+                }
+            }
+        }
+    }
+
+    /// Every configuration the emitted vector is built from, in order.
+    /// Empty for [`Self::PerRow`], whose configuration is a row value.
+    #[must_use]
+    pub fn configs(&self) -> Vec<&'static str> {
+        match self {
+            Self::PerRow { .. } => Vec::new(),
+            Self::Pinned(config) => vec![*config],
+            Self::PinnedUnion(configs) => configs.to_vec(),
+        }
+    }
+}
+
+/// Substring / `LIKE` search, opt-in per schema.
+///
+/// Default is [`SubstringArm::Off`]: the arm adds zero rows for natural
+/// multi-word queries and is the only arm for all-stopword and
+/// partial-word classes, so a spiice that needs those says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubstringArm {
+    Off,
+    /// A memory-first nested loop, deliberately NOT routed at the composite
+    /// index (probe-measured regression).
+    MemoryFirstNestedLoop,
+    /// A same-table `LIKE` scan over the sidecar's own text columns, run
+    /// only when the `@@` arm returned zero rows. Naming this shape is what
+    /// keeps a spiice's substring lane a declaration instead of an
+    /// undeclared third mechanism. Core's sidecars carry a `pg_trgm` index on
+    /// the arm's expression and a read policy for the candidate role that lets
+    /// it be used; a spiice's sidecar has neither, so the scan reads every row
+    /// of the owner's memories of that schema.
+    SameTableLike,
+}
+
+/// `ts_rank`'s normalization flag when the argument is omitted
+/// (`PostgreSQL` *12.3.3*: "normalization … default 0", i.e. the rank
+/// ignores document length).
+///
+/// A band declaring this renders NO normalization argument, so declaring
+/// the flag an arm already has cannot move that arm's score by a byte.
+pub const TS_RANK_NORMALIZATION_NONE: i32 = 0;
+/// Flag `32` — "divides the rank by itself + 1", i.e. `rank/(rank+1)`,
+/// which is what maps an unbounded `ts_rank` onto a `[0, 1)` band.
+pub const TS_RANK_NORMALIZATION_SCALE: i32 = 32;
+/// Flag `1|32` — log document length, then `rank/(rank+1)`. Every rescue
+/// arm in the tree renders this one.
+pub const TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE: i32 = 1 | TS_RANK_NORMALIZATION_SCALE;
+
+/// A score band — the cross-spiice merge contract. Raw `ts_rank` is not
+/// comparable across corpora; a band is.
+///
+/// The band values live in the DECLARATION that renders them: spiice #0's
+/// are `spiice0::BAND_EXACT` and its two siblings, and a spiice writing
+/// `proxiima_core::spiice0::BAND_EXACT` in its own declaration is literally
+/// saying "my exact band is core's" — which is what
+/// [`BandComparability::CoreBands`] asserts at spiice level. They are
+/// deliberately NOT `spiice::contract` vocabulary: as module constants they
+/// would read as universal while three renderers spell three different
+/// score functions inside them.
+///
+/// `normalization` is a declared property of the band because it is an
+/// author of what a score means. Core's exact arm passes `32`; the code
+/// spiice's commit arm passes nothing; every rescue arm passes `1|32`.
+/// Three renderers, three conventions, one claimed band.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Band {
+    pub name: &'static str,
+    pub floor: f32,
+    pub ceiling: f32,
+    /// `ts_rank`'s normalization flag for the arm that renders this band.
+    /// [`TS_RANK_NORMALIZATION_NONE`] means the argument is omitted.
+    pub normalization: i32,
+}
+
+impl Band {
+    /// The same window under a different `ts_rank` normalization.
+    ///
+    /// This is how a spiice states "core's band, my flag": the floor and
+    /// ceiling still come from spiice #0's constant — so the comparability
+    /// claim is still a reference to core's numbers rather than a copy of
+    /// them — and the one thing that diverges is the one thing declared.
+    #[must_use]
+    pub const fn with_normalization(self, normalization: i32) -> Self {
+        Self {
+            name: self.name,
+            floor: self.floor,
+            ceiling: self.ceiling,
+            normalization,
+        }
+    }
+
+    /// The band as SQL renders it: the floor, and the width a normalized
+    /// rank is scaled by to fill the window.
+    ///
+    /// Rendered at two decimals rather than through `f32`'s own `Display`,
+    /// because `0.45f32 - 0.25f32` is `0.19999999`, which is a different
+    /// NUMBER from the `0.2` the SQL builders emit. Two decimals is the
+    /// precision the bands are declared at. The spelling does differ —
+    /// `0.5` renders as `0.50` — but `0.5` and `0.50` are the same `numeric`
+    /// to `PostgreSQL`, so no score moves.
+    ///
+    /// One author for this arithmetic, in the crate that owns [`Band`], and
+    /// public so no other crate needs a copy.
+    #[must_use]
+    pub fn parts(self) -> (String, String) {
+        (
+            format!("{:.2}", self.floor),
+            format!("{:.2}", self.ceiling - self.floor),
+        )
+    }
+
+    /// The trailing `ts_rank` normalization argument, or the empty string
+    /// when the band declares [`TS_RANK_NORMALIZATION_NONE`].
+    ///
+    /// Omitted rather than rendered as `, 0` so that declaring the flag an
+    /// arm already renders is provably score-free at the level of the
+    /// emitted TEXT, not just of the value: `ts_rank_cd(v, q)` and
+    /// `ts_rank_cd(v, q, 0)` are the same call.
+    #[must_use]
+    pub fn normalization_arg(self) -> String {
+        if self.normalization == TS_RANK_NORMALIZATION_NONE {
+            String::new()
+        } else {
+            format!(", {}", self.normalization)
+        }
+    }
+}
+
+/// Whether a schema is a search surface — and, when it is not, *why*.
+///
+/// A declared non-surface, distinguishable from a missing declaration. The
+/// registry
+/// refuses to emit a projection row for [`Self::None`] and refuses to
+/// register a schema that declares neither.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SearchProjectionDecl {
+    /// No projection row is ever written for this schema. STRUCTURAL, not a
+    /// filter.
+    None { why: &'static str },
+    Projected {
+        fields: &'static [WeightedField],
+        /// Sidecar column the projection's `tag` array is copied from.
+        tag_column: Option<&'static str>,
+        language: LanguagePolicy,
+        /// CONSUMED. The score windows every arm over this schema renders,
+        /// resolved by [`Band::name`] at query-build time.
+        ///
+        /// A `&[Band]` is an unordered set with a `name` on each member, so
+        /// rendering from it means resolving "which of these is the exact
+        /// arm" by string — and the answer decides what a score MEANS. The
+        /// arm-typed alternative (`Bands { exact, rescue, substring }`) was
+        /// rejected on evidence: chunk search has FOUR arms, so a three-arm
+        /// struct cannot express it and a four-arm one cannot express core.
+        /// The set is the right shape; the NAMES are the contract, and
+        /// freeze checks that a schema served by the core renderer declares
+        /// the three names that renderer resolves
+        /// ([`CoreBandName`]; [`BAND_NAME_EXACT`], [`BAND_NAME_RESCUE`],
+        /// [`BAND_NAME_SUBSTRING`]).
+        bands: &'static [Band],
+        substring: SubstringArm,
+    },
+}
+
+/// The three band names the core renderer resolves. [`Band::name`] stays
+/// open so a non-core renderer can declare other arms; freeze and
+/// [`crate::verbs::schema::RenderBands::resolve`] look these three up by
+/// name rather than by position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CoreBandName {
+    Exact,
+    Rescue,
+    Substring,
+}
+
+impl CoreBandName {
+    /// Declaration order: exact, rescue, substring.
+    pub const ALL: [Self; 3] = [Self::Exact, Self::Rescue, Self::Substring];
+
+    /// The wire / contract spelling this arm is declared under.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Rescue => "rescue",
+            Self::Substring => "substring",
+        }
+    }
+}
+
+impl std::fmt::Display for CoreBandName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for CoreBandName {
+    type Err = CoreBandNameParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "exact" => Ok(Self::Exact),
+            "rescue" => Ok(Self::Rescue),
+            "substring" => Ok(Self::Substring),
+            _ => Err(CoreBandNameParseError),
+        }
+    }
+}
+
+/// A name that is not one of the three core renderer arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreBandNameParseError;
+
+impl std::fmt::Display for CoreBandNameParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("core band name must be exact, rescue, or substring")
+    }
+}
+
+impl std::error::Error for CoreBandNameParseError {}
+
+/// The band the exact `tsquery` arm renders. Resolved by name, not by
+/// position: see [`SearchProjectionDecl::Projected::bands`].
+pub const BAND_NAME_EXACT: &str = CoreBandName::Exact.as_str();
+/// The band the `any_tsq` rescue arm renders.
+pub const BAND_NAME_RESCUE: &str = CoreBandName::Rescue.as_str();
+/// The band the substring arm renders — flat, because it admits rather
+/// than ranks.
+pub const BAND_NAME_SUBSTRING: &str = CoreBandName::Substring.as_str();
+
+impl SearchProjectionDecl {
+    #[must_use]
+    pub const fn is_projected(&self) -> bool {
+        matches!(self, Self::Projected { .. })
+    }
+
+    #[must_use]
+    pub const fn tag_column(&self) -> Option<&'static str> {
+        match self {
+            Self::None { .. } => None,
+            Self::Projected { tag_column, .. } => *tag_column,
+        }
+    }
+
+    #[must_use]
+    pub const fn fields(&self) -> &'static [WeightedField] {
+        match self {
+            Self::None { .. } => &[],
+            Self::Projected { fields, .. } => fields,
+        }
+    }
+
+    /// The score windows this schema declares. Empty for a non-surface.
+    #[must_use]
+    pub const fn bands(&self) -> &'static [Band] {
+        match self {
+            Self::None { .. } => &[],
+            Self::Projected { bands, .. } => bands,
+        }
+    }
+
+    /// The band this schema declares under `name`, if any. Resolved by
+    /// name, in the one place freeze can check.
+    #[must_use]
+    pub fn band(&self, name: &str) -> Option<Band> {
+        self.bands().iter().copied().find(|band| band.name == name)
+    }
+
+    /// The declared substring arm. A non-surface has none, which is not the
+    /// same value as [`SubstringArm::Off`] — a non-surface has no arm to
+    /// turn off.
+    #[must_use]
+    pub const fn substring(&self) -> Option<SubstringArm> {
+        match self {
+            Self::None { .. } => None,
+            Self::Projected { substring, .. } => Some(*substring),
+        }
+    }
+
+    #[must_use]
+    pub const fn language(&self) -> Option<LanguagePolicy> {
+        match self {
+            Self::None { .. } => None,
+            Self::Projected { language, .. } => Some(*language),
+        }
+    }
+
+    /// The projection column a [`LanguagePolicy::PerRow`] names, if this is
+    /// one. Freeze compares it against the projection table's own language
+    /// column; see `SpiiceRegistryError::ProjectionLanguageColumn`.
+    #[must_use]
+    pub const fn per_row_language_column(&self) -> Option<&'static str> {
+        match self {
+            Self::Projected {
+                language: LanguagePolicy::PerRow { column },
+                ..
+            } => Some(*column),
+            _ => None,
+        }
+    }
+
+    /// The distinct declared weight levels, **ascending**.
+    ///
+    /// Ascending because [`TSVECTOR_WEIGHT_CLASSES`] is ascending: the
+    /// lowest declared level becomes `D`, which is what an unweighted
+    /// vector already is.
+    ///
+    /// # Errors
+    ///
+    /// Returns the number of distinct levels when it exceeds
+    /// [`TSVECTOR_WEIGHT_CLASSES`]`.len()`. `PostgreSQL` stores a two-bit
+    /// weight per lexeme position and offers exactly four classes
+    /// (*12.3.1 Parsing Documents*), so a fifth level has nowhere to go and
+    /// silently collapsing two levels into one class would make `ts_rank`'s
+    /// weight array describe a document it is not scoring.
+    pub fn weight_levels(&self) -> Result<Vec<f32>, usize> {
+        let mut levels = self
+            .fields()
+            .iter()
+            .map(|field| field.weight)
+            .collect::<Vec<_>>();
+        levels.sort_by(f32::total_cmp);
+        levels.dedup_by(|a, b| a.total_cmp(b).is_eq());
+        if levels.len() > TSVECTOR_WEIGHT_CLASSES.len() {
+            return Err(levels.len());
+        }
+        Ok(levels)
+    }
+
+    /// `setweight` class for one declared weight, or `None` when the unit
+    /// declares more levels than `PostgreSQL` has classes.
+    #[must_use]
+    pub fn weight_class(&self, weight: f32) -> Option<&'static str> {
+        let levels = self.weight_levels().ok()?;
+        let index = levels
+            .iter()
+            .position(|level| level.total_cmp(&weight).is_eq())?;
+        TSVECTOR_WEIGHT_CLASSES.get(index).copied()
+    }
+
+    /// `ts_rank`'s `{D, C, B, A}` weight array, or `None` when the unit is
+    /// uniform.
+    ///
+    /// Uniform is `None` rather than `[w, .., w]` on purpose: one level
+    /// means every lexeme is class `D`, and `PostgreSQL`'s own default array
+    /// is then the array that reproduces the unweighted score exactly.
+    /// Passing a rewritten array would move every score for no declared
+    /// reason.
+    #[must_use]
+    pub fn rank_weight_array(&self) -> Option<[f32; 4]> {
+        let levels = self.weight_levels().ok()?;
+        if levels.len() < 2 {
+            return None;
+        }
+        let mut weights = DEFAULT_RANK_WEIGHTS;
+        for (index, level) in levels.iter().enumerate() {
+            weights[index] = *level;
+        }
+        Some(weights)
+    }
+}
+
+// ── Embedding recipe ────────────────────────────────────────────────────
+
+/// A named abstract model target, bound to a concrete model by deployment
+/// config. This is what lets a spiice say "embed this field with the code
+/// model" without hardcoding a model id into the declaration.
+///
+/// Exactly one slot is bound, [`SLOT_DEFAULT`]. Per-slot vector storage
+/// needs its own column or table, because dimensionality differs per model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EmbeddingSlot(pub &'static str);
+
+impl EmbeddingSlot {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+/// The only slot bound.
+pub const SLOT_DEFAULT: EmbeddingSlot = EmbeddingSlot("default");
+
+/// One `(column, slot)` pair: the output grain of a recipe.
+///
+/// `column` is a pre-computed column on the schema's sidecar table, read
+/// back by `load_embedding_text` in
+/// `storage-pg/src/verbs/fact_embeddings/text.rs`.
+///
+/// THERE IS NO `EmbedText` ENUM. Every unit resolves to a stored column, and
+/// a one-arm enum over that is a wrapper around one field, destructured
+/// irrefutably at its only reader: a shape with one speaker is a guess about
+/// a future need, and when that need arrives it arrives with a caller, which
+/// is what tells you what to name.
+///
+/// So the field is the field. A second source of embed text becomes an
+/// enum here on the day a second source has a reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EmbedUnit {
+    pub column: &'static str,
+    pub slot: EmbeddingSlot,
+}
+
+impl EmbedUnit {
+    #[must_use]
+    pub const fn stored(column: &'static str, slot: EmbeddingSlot) -> Self {
+        Self { column, slot }
+    }
+}
+
+/// Per schema: typed sidecar in → list of embed units out.
+///
+/// The single declaration of whether a schema embeds, for every kind. Every
+/// write path that can attach a vector — Fact ingest, derived write,
+/// rehydrate — resolves its answer from here, so a second statement of it
+/// anywhere would be a thing to keep equal rather than a thing to read.
+/// `Never` carries a reason, and the unit list is per-field, so a schema may
+/// target more than one column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EmbeddingRecipe {
+    /// Structurally non-embeddable, with the reason attached.
+    ///
+    /// This arm is what `non_embeddable_schema_ids` is built from and what
+    /// the enqueue lane excludes; the `why` is what makes the exclusion
+    /// answerable. Freeze refuses a declaration that disagrees with the
+    /// units the drain resolves
+    /// (`SpiiceRegistryError::EmbeddabilityDisagreement`), so the arm
+    /// governs rather than describes.
+    Never {
+        why: &'static str,
+    },
+    Units(&'static [EmbedUnit]),
+}
+
+/// One resolved embed unit: the concrete `(table, column, slot)` a drain
+/// reads.
+///
+/// `table` is optional because a schema may declare no sidecar. `column`
+/// is not: every unit resolves to a stored column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResolvedEmbedUnit {
+    pub table: Option<&'static str>,
+    pub column: &'static str,
+    pub slot: EmbeddingSlot,
+}
+
+impl EmbeddingRecipe {
+    #[must_use]
+    pub const fn units(&self) -> &'static [EmbedUnit] {
+        match self {
+            Self::Never { .. } => &[],
+            Self::Units(units) => units,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_never(&self) -> bool {
+        matches!(self, Self::Never { .. })
+    }
+
+    /// Typed sidecar in → embed units out, bound to the schema's sidecar
+    /// table. This is the recipe *applied*: the pair a drain would read.
+    #[must_use]
+    pub fn resolve(&self, sidecar_table: Option<&'static str>) -> Vec<ResolvedEmbedUnit> {
+        self.units()
+            .iter()
+            .map(|unit| ResolvedEmbedUnit {
+                table: sidecar_table,
+                column: unit.column,
+                slot: unit.slot,
+            })
+            .collect()
+    }
+}
+
+// ── Enforcement, transfer ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DbConstraint {
+    pub relation: &'static str,
+    pub name: &'static str,
+}
+
+/// A trigger, for the cases where no declarative CHECK/FK is available.
+/// `goal_head_t_only` is the only member: goals-don't-transfer has no CHECK
+/// constraint to name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DbTrigger {
+    pub relation: &'static str,
+    pub name: &'static str,
+}
+
+/// One place a declaration is actually enforced. A declaration that claims
+/// a refusal without naming where it happens is a comment, not a contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Enforcement {
+    Constraint(DbConstraint),
+    Trigger(DbTrigger),
+    /// The engine verb refuses before storage is reached.
+    EngineRefusal {
+        at: &'static str,
+    },
+    /// Storage refuses even when a caller bypasses the engine.
+    StorageBackstop {
+        at: &'static str,
+    },
+}
+
+/// What a transfer does to one surface.
+///
+/// Six arms, and every one of them has a member: vocabulary with no speaker
+/// is not carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransferRule {
+    /// `UPDATE` the surface's `owner_column` to the destination.
+    Follow,
+    /// Move, or — when the destination already owns an identical row —
+    /// remap the referring columns and GC the orphan.
+    ///
+    /// `remaps` names the referring columns this crate can see. A column
+    /// that points at the row by convention rather than by constraint
+    /// cannot be listed here, because the spiice declaring it is not the
+    /// spiice declaring this surface. Freeze refuses the one way such a
+    /// column could arise, a cited-object schema declaring a sidecar table
+    /// (`SpiiceRegistryError::CitationSidecarNotRemappable`).
+    FollowOrDedupe {
+        dedupe_key: &'static [&'static str],
+        remaps: &'static [&'static str],
+    },
+    /// The row is deleted rather than moved (`ingest_keys`: a receipt
+    /// proves admission by *this* owner and does not travel).
+    Drop { why: &'static str },
+    /// The row carries its own owner and stays with the SOURCE. The
+    /// destination must never gain read access to it. This is what
+    /// `pg_sidecar!(owner_pinned: true)` means, lifted out of storage so
+    /// the core registry can see it.
+    RetainAtSource { why: &'static str },
+    /// The entity does not transfer at all; the attempt is refused.
+    /// `enforced_by` must be non-empty — the registry rejects a
+    /// `NotTransferable` that names no enforcement site.
+    NotTransferable {
+        why: &'static str,
+        enforced_by: &'static [Enforcement],
+    },
+    /// Reached through its key's owner; there is nothing to move. A `None`
+    /// `owner_column` is the matching claim.
+    StaysOnKey,
+}
+
+impl TransferRule {
+    /// Whether transfer leaves the row with the source owner because the
+    /// row is PINNED to it. True for [`Self::RetainAtSource`] only.
+    ///
+    /// [`Self::NotTransferable`] also leaves rows behind, but for an
+    /// unrelated reason — the whole entity refuses to move — and its
+    /// surfaces are not the owner-pinned sidecars this predicate selects.
+    /// Both callers want the pinned set: the source-scoped erase leg and
+    /// `retain_at_source_tables`.
+    #[must_use]
+    pub const fn retains_at_source(&self) -> bool {
+        matches!(self, Self::RetainAtSource { .. })
+    }
+
+    #[must_use]
+    pub const fn is_not_transferable(&self) -> bool {
+        matches!(self, Self::NotTransferable { .. })
+    }
+}
+
+/// How a node's provenance is reachable. Declared rather than implied, so
+/// `core_think`'s edge walk does not have to guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Provenance {
+    /// Writes `origins[]` pins; the lineage walk traverses them.
+    OriginEdges,
+    /// Grounds only through payload columns: the ancestor walk follows the
+    /// references in these columns; the descendant walk does not.
+    PayloadOnly {
+        subject_columns: &'static [&'static str],
+    },
+    /// Derives from nothing — a Fact observes.
+    None,
+}
+
+// ── Surfaces ────────────────────────────────────────────────────────────
+
+/// What a surface's rows are keyed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyShape {
+    /// Keyed on a `proxiima_core.memory` t, under the column named here.
+    MemoryT {
+        column: &'static str,
+    },
+    /// Keyed on a `proxiima_core.goal` t, under the column named here.
+    GoalT {
+        column: &'static str,
+    },
+    /// Keyed on a `proxiima_core.blob` id, under the column named here.
+    ///
+    /// Every keyed variant names its column, because the two verbs that
+    /// consume this field have no other way to learn which one carries the
+    /// id: the owner erase reaches keyed sidecars through a selection set,
+    /// and the owner export joins the key's home table to find the owner.
+    /// `blob` calls its key `blob_id`; a code detail table calls its
+    /// memory `plan_memory_id` or `caller_memory_id`. A table declaring
+    /// `Custom(&["memory_id"])` over a column it does not have goes
+    /// undetected for as long as nothing reads the field for a `Cascade`
+    /// surface.
+    BlobId {
+        column: &'static str,
+    },
+    /// Keyed on an entity `t` that is a memory t OR a goal t, under the
+    /// column named here.
+    ///
+    /// Four kernel tables are this shape and no other: `sketch.t`, and
+    /// `entity_id` on the three embedding tables. Each holds a row for a
+    /// memory version and a row for a goal version, in the same column,
+    /// with no discriminator, and no constraint that can span two home
+    /// tables.
+    ///
+    /// Distinct from [`Self::Custom`], the arm for "this crate cannot reason
+    /// about the key at all", which would put `sketch.t` in the same class
+    /// as `blob_uploads.upload_id` — not an entity `t` at all. The
+    /// distinction earns its arm because the two verbs answer it
+    /// differently:
+    ///
+    /// - **Erase** cannot reach it. It builds one selection set per home
+    ///   table, and a key with two homes belongs to neither; all four are
+    ///   declared bespoke erase legs and [`EraseLeg::derive`] keeps
+    ///   returning [`EraseLeg::Unreachable`] for this arm so a spiice that
+    ///   forgot the exemption still gets a boot refusal.
+    /// - **Transfer** can. Goals do not transfer at all — the refusal is
+    ///   the first thing the verb does — so the `t` set a transfer carries
+    ///   contains only memory versions, and a goal-keyed row simply does
+    ///   not match it.
+    EntityT {
+        column: &'static str,
+    },
+    OwnerId,
+    Custom(&'static [&'static str]),
+}
+
+impl KeyShape {
+    /// The table this key lives in and the column it is stored under there,
+    /// for the three keys that name a core entity.
+    ///
+    /// This is what makes a `None` `owner_column` a checkable claim rather
+    /// than a hope: a surface that carries no owner asserts it is reached
+    /// through its key's owner, and the pair returned here is the join that
+    /// reaches it.
+    ///
+    /// One widening, read off the declaration rather than a table name: an
+    /// owner-less `MemoryT` surface whose forget leg is `Keep` outlives the
+    /// forget of the memory it hangs off, so its home is the memory row,
+    /// forgotten or not. Forget keeps the row (#488), so the join is plain
+    /// `proxiima_core.memory`; the readers that must see forgotten parents
+    /// (export, erase, transfer) run in the lifecycle scope.
+    #[must_use]
+    pub const fn home(self) -> Option<(&'static str, &'static str, &'static str)> {
+        match self {
+            Self::MemoryT { column } => Some(("proxiima_core.memory", "t", column)),
+            Self::GoalT { column } => Some(("proxiima_core.goal", "t", column)),
+            Self::BlobId { column } => Some(("proxiima_core.blob", "blob_id", column)),
+            // `EntityT` has two homes, so it has none a join can name.
+            Self::EntityT { .. } | Self::OwnerId | Self::Custom(_) => None,
+        }
+    }
+
+    /// Every column this key is stored under, in declaration order. Row
+    /// order in an export bundle comes off this, so it is part of the
+    /// bundle's bytes.
+    #[must_use]
+    pub fn columns(self) -> Vec<&'static str> {
+        match self {
+            Self::MemoryT { column }
+            | Self::GoalT { column }
+            | Self::BlobId { column }
+            | Self::EntityT { column } => vec![column],
+            Self::OwnerId => vec!["owner_id"],
+            Self::Custom(columns) => columns.to_vec(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HostStateEraseDisposition {
+    /// The host lifecycle callback must remove rows for this scope.
+    Erase,
+    /// The table deliberately retains rows for this scope; receipts must
+    /// report zero deletions and scrubs for it.
+    Retain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EraseRule {
+    /// Deleted through the selection set for its key.
+    ByKey,
+    /// Deleted by the surface's own `owner_id`.
+    ByOwner,
+    /// A constraint removes it; erase emits no statement.
+    Cascade {
+        via: DbConstraint,
+    },
+    /// The declared host-state lifecycle callback owns this table. The two
+    /// dispositions are explicit because a source erase may retain data that
+    /// a whole-owner erase removes (or vice versa).
+    HostState {
+        whole_owner: HostStateEraseDisposition,
+        source: HostStateEraseDisposition,
+        exact_fact: HostStateEraseDisposition,
+    },
+    Never {
+        why: &'static str,
+    },
+}
+
+/// Which leg destroys a surface's rows when its owner is erased.
+///
+/// Derived from [`Surface::erase`] × [`Surface::key`] × the spiice's
+/// declared bespoke-leg table list, and derived in ONE place so the boot
+/// check and the erase itself cannot hold different opinions about which
+/// table is covered.
+///
+/// There are five real answers. [`Self::Unreachable`] is the sixth — the
+/// silence — turned into a value so freeze can refuse it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EraseLeg {
+    /// Generated: join the selection set the key's home table fills. The
+    /// carried shape is always one of the three homed variants.
+    Keyed(KeyShape),
+    /// Generated: filter the surface's own owner column. `source_scoped`
+    /// carries the memory-key column when a source scope can reach the
+    /// surface, and `None` when a source scope cannot reach it at all.
+    Owned { source_scoped: Option<&'static str> },
+    /// A hand-written statement, claimed by the spiice's exemption list.
+    Bespoke,
+    /// A constraint removes it with its parent; erase emits no statement.
+    Cascade,
+    /// Run by the startup-registered host lifecycle participant on the same
+    /// erase transaction. This is never handled by generic UUID-bound SQL.
+    HostState,
+    /// A declared non-erase, with the reason the declaration gave.
+    Never { why: &'static str },
+    /// Nothing deletes it. Always a freeze error, never a runtime state.
+    Unreachable,
+}
+
+impl EraseLeg {
+    /// Classify one surface against a spiice's declared bespoke list.
+    ///
+    /// THE classifier. `validate_erase_legs` calls it at freeze and the
+    /// erase calls it per surface, so "which tables does the erase cover"
+    /// has one answer and the boot check is a check on the code that runs
+    /// rather than on a second description of it.
+    ///
+    /// A `Cascade` or `Never` declaration wins over the bespoke list: those
+    /// two say NO statement runs, and a spiice that also names a
+    /// hand-written leg for such a table is contradicting itself.
+    /// `validate_erase_legs` refuses that rather than letting this silently
+    /// pick a winner.
+    #[must_use]
+    pub fn derive(surface: &Surface, bespoke: &[&'static str]) -> Self {
+        match surface.erase {
+            EraseRule::Cascade { .. } => Self::Cascade,
+            EraseRule::HostState { .. } => Self::HostState,
+            EraseRule::Never { why } => Self::Never { why },
+            EraseRule::ByKey | EraseRule::ByOwner => {
+                if bespoke.contains(&surface.table) {
+                    return Self::Bespoke;
+                }
+                match surface.erase {
+                    EraseRule::ByKey => match surface.key {
+                        KeyShape::MemoryT { .. }
+                        | KeyShape::GoalT { .. }
+                        | KeyShape::BlobId { .. } => Self::Keyed(surface.key),
+                        // Keyed on nothing the erase builds a selection set
+                        // for, and no bespoke leg claimed it. The generator
+                        // has no statement for this shape, so nothing at all
+                        // would delete these rows.
+                        KeyShape::EntityT { .. } | KeyShape::OwnerId | KeyShape::Custom(_) => {
+                            Self::Unreachable
+                        }
+                    },
+                    // A surface that keeps its rows on transfer and is keyed
+                    // on a memory is the owner-pinned shape: erased by its
+                    // OWN owner_id, and asked which source the memory
+                    // belonged to when the scope is a source. Everything
+                    // else owned is owner-scope only, exactly as
+                    // the grants are: a source scope is a
+                    // partial owner, and a row with no source attribution
+                    // belongs to neither half of it.
+                    _ => Self::Owned {
+                        source_scoped: match surface.key {
+                            KeyShape::MemoryT { column }
+                                if surface.transfer.retains_at_source() =>
+                            {
+                                Some(column)
+                            }
+                            _ => None,
+                        },
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// Which leg moves — or deliberately does not move — a surface's rows when
+/// a memory series changes owner.
+///
+/// The exact shape of [`EraseLeg`], for the same reason and against a worse
+/// failure. Erase's hole is a table nothing deletes: rows outliving their
+/// owner, discovered nowhere. Transfer's hole is a table nothing MOVES, and
+/// under a multi-owner deployment that is not a stale row — it is a row the
+/// SOURCE owner can still read after the memory it belongs to became
+/// someone else's. A cross-tenant read, arrived at by silence.
+///
+/// Every arm below is derived in ONE place, so freeze and the verb cannot
+/// hold different opinions about which tables a transfer covers. A table
+/// list written beside the verb instead would let a new `Follow` surface go
+/// unfollowed with no statement, no error, and no way to find out.
+///
+/// [`Self::Unreachable`] is the silence turned into a value, so freeze can
+/// refuse it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransferLeg {
+    /// Generated: set the surface's `owner_column` to the destination, for
+    /// the rows whose `key_column` is in the transferred series' `t` set.
+    Rehomed {
+        key_column: &'static str,
+        owner_column: &'static str,
+    },
+    /// Generated: delete the surface's rows for the transferred series,
+    /// with the reason the declaration gave.
+    Dropped {
+        key_column: &'static str,
+        why: &'static str,
+    },
+    /// Generated dedupe: the destination-owned row is found (or minted)
+    /// under `dedupe_key`, and `remaps` names every referring column a
+    /// generated statement repoints at it. The orchestration around those
+    /// statements — a refcount probe, an object mount, an orphan GC — is
+    /// the spiice's, which is why the surface is also in the bespoke list.
+    Deduped {
+        dedupe_key: &'static [&'static str],
+        remaps: &'static [&'static str],
+    },
+    /// A hand-written statement, claimed by the spiice's exemption list.
+    Bespoke,
+    /// Reached through its key's owner; there is nothing to move.
+    StaysOnKey,
+    /// The row stays with the SOURCE, and the destination must never gain
+    /// read access to it.
+    Retained { why: &'static str },
+    /// The entity does not transfer at all; the attempt is refused.
+    Refused { why: &'static str },
+    /// Nothing moves it and nothing said so. Always a freeze error, never a
+    /// runtime state.
+    Unreachable,
+}
+
+impl TransferLeg {
+    /// Classify one surface against a spiice's declared bespoke list.
+    ///
+    /// THE classifier. `validate_transfer_legs` calls it at freeze and
+    /// `OwnerSurfaces::for_registry` calls it once per surface at registry
+    /// time; the verb reads the resolved answer and never re-derives one.
+    ///
+    /// The three arms that say NO STATEMENT RUNS — `StaysOnKey`,
+    /// `RetainAtSource`, `NotTransferable` — win over the bespoke list,
+    /// exactly as `Cascade` and `Never` do on the erase side. A spiice that
+    /// declares one of those AND names a hand-written leg is contradicting
+    /// itself, and `validate_transfer_legs` refuses that rather than
+    /// letting this pick a winner.
+    ///
+    /// For the three that DO move rows, the exemption list is consulted
+    /// first. That ordering is what lets `memory_head` and `blob_uploads`
+    /// be `Follow` and still be hand-written: both are keyed on a single
+    /// column (`handle`, `upload_id`) that is not an entity `t`, so a
+    /// generated `WHERE <column> = ANY($1)` would match nothing at all —
+    /// silently. Unclaimed, they are [`Self::Unreachable`] and freeze says
+    /// so.
+    #[must_use]
+    pub fn derive(surface: &Surface, bespoke: &[&'static str]) -> Self {
+        match surface.transfer {
+            TransferRule::StaysOnKey => Self::StaysOnKey,
+            TransferRule::RetainAtSource { why } => Self::Retained { why },
+            TransferRule::NotTransferable { why, .. } => Self::Refused { why },
+            TransferRule::Follow | TransferRule::Drop { .. }
+                if bespoke.contains(&surface.table) =>
+            {
+                Self::Bespoke
+            }
+            TransferRule::Follow => match (surface.key, surface.owner_column) {
+                // The two keys that name a memory version. A `Follow` with
+                // no owner column to set is a contradiction, not a leg:
+                // `StaysOnKey` is the arm for "reached through the key's
+                // owner", and it is what a `None` `owner_column` claims.
+                (
+                    KeyShape::MemoryT { column } | KeyShape::EntityT { column },
+                    Some(owner_column),
+                ) => Self::Rehomed {
+                    key_column: column,
+                    owner_column,
+                },
+                _ => Self::Unreachable,
+            },
+            TransferRule::Drop { why } => match surface.key {
+                KeyShape::MemoryT { column } | KeyShape::EntityT { column } => Self::Dropped {
+                    key_column: column,
+                    why,
+                },
+                _ => Self::Unreachable,
+            },
+            // The dedupe arm always needs an orchestrator, so it is always
+            // in the exemption list too — but the two generated halves come
+            // from here, which is what makes `dedupe_key` and `remaps`
+            // consumed rather than described.
+            TransferRule::FollowOrDedupe { dedupe_key, remaps }
+                if bespoke.contains(&surface.table) =>
+            {
+                Self::Deduped { dedupe_key, remaps }
+            }
+            TransferRule::FollowOrDedupe { .. } => Self::Unreachable,
+        }
+    }
+
+    /// Whether this leg runs any statement at all. The three silent arms
+    /// are the ones an exemption list must not claim.
+    #[must_use]
+    pub const fn moves_rows(&self) -> bool {
+        matches!(
+            self,
+            Self::Rehomed { .. } | Self::Dropped { .. } | Self::Deduped { .. } | Self::Bespoke
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExportRule {
+    /// Whole rows.
+    Rows,
+    /// An explicit field allowlist — a storage-only column added later must
+    /// not leak into a supported serialized contract merely because the
+    /// table changed.
+    Allowlist(&'static [&'static str]),
+    /// Deliberately absent from the bundle, with the reason stated. Only a
+    /// surface the erase never deletes (`EraseRule::Never`) may say this:
+    /// what an erase destroys, the export carries (#478).
+    Excluded { why: &'static str },
+    /// Not carried as rows because every row is rebuilt from another
+    /// surface the bundle does carry: `source` names that surface, and the
+    /// chain of sources ends at one that `carries_rows()`. Emits no
+    /// statement, and a host receipt never carries such a table.
+    DerivedFrom {
+        source: &'static str,
+        why: &'static str,
+    },
+}
+
+impl ExportRule {
+    /// Whether the bundle holds this surface's rows (whole or allowlisted).
+    #[must_use]
+    pub const fn carries_rows(self) -> bool {
+        matches!(self, Self::Rows | Self::Allowlist(_))
+    }
+}
+
+/// Which key on the erase receipt a surface's destroyed rows land under.
+///
+/// A declared non-count carries its reason, because "feeds no counter" and
+/// "nobody said" must not be the same value — the exact shape the first rule
+/// of this module forbids. `goal_head` and `owners` are both uncounted for
+/// entirely different reasons: the head is a POINTER into `goal` that
+/// counting would report twice, and the erase never deletes an `owners` row
+/// at all, so there is nothing there to count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CounterRule {
+    /// Rows destroyed here are counted under this receipt key. Several
+    /// surfaces may share one key; the receipt sums them.
+    Counted(&'static str),
+    /// Contributes to no count, with the reason stated.
+    Uncounted { why: &'static str },
+}
+
+impl CounterRule {
+    /// The receipt key, or `None` for a declared non-count.
+    #[must_use]
+    pub const fn key(self) -> Option<&'static str> {
+        match self {
+            Self::Counted(key) => Some(key),
+            Self::Uncounted { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ForgetRule {
+    /// Kept with the forgotten memory row and hidden with it. The name is
+    /// historical (#488 kept it); nothing is dumped.
+    DumpThenDelete,
+    /// Deleted with the memory, not preserved.
+    DeleteWithMemory,
+    /// Child payload of a memory sidecar, removed by the parent's declared
+    /// cascade on erase and kept with the forgotten row on forget. Distinct
+    /// from [`Self::DeleteWithMemory`], whose rows are derived and disposable.
+    DumpThenCascade,
+    /// Untouched by forget, with the reason stated.
+    Keep { why: &'static str },
+}
+
+/// What the forget verb actually does to one surface, resolved once at
+/// registry time. The third partition, after [`EraseLeg`] and
+/// [`TransferLeg`], and the same bargain: the silence becomes a value.
+///
+/// A forget marks the memory row `forgotten_at` and leaves its payload in
+/// place: `Marked` surfaces (declared `DumpThenDelete` or `DumpThenCascade`)
+/// stay with the row and are hidden with it. The `Deleted` legs are the
+/// derived rows search and embedding rebuild; they come off the declaration
+/// because nothing stamps them on the memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ForgetLeg {
+    /// Stays with the forgotten row, hidden by its memory's `forgotten_at`;
+    /// erase removes it.
+    Marked,
+    /// Deleted for the forgotten `t` and not preserved: derived state a
+    /// restore recomputes, or a queue entry with nothing to restore.
+    Deleted { key_column: &'static str },
+    /// Deleted with the memory by a constraint that already proves it.
+    /// Restore does not rebuild this derived relation.
+    Cascaded { via: DbConstraint },
+    /// Untouched, with the reason stated.
+    Kept { why: &'static str },
+    /// `DeleteWithMemory` over a key the forget cannot reach. Refused at
+    /// freeze; a value here only for a hand-assembled registry.
+    Unreachable,
+}
+
+impl ForgetLeg {
+    /// The single classifier. Called at freeze and resolved once into
+    /// [`crate::owner_inverse::OwnerSurfaces`]; the verb reads the answer.
+    #[must_use]
+    pub const fn derive(surface: &Surface) -> Self {
+        match surface.forget {
+            ForgetRule::Keep { why } => Self::Kept { why },
+            // `completeness` is checked FIRST inside the delete arm and only
+            // there: every memory sidecar carries a `t` FK too, and it is
+            // still dumped and still deleted by the stamp walk. A cascade
+            // means "no statement" only where the rule already said "no
+            // preservation".
+            ForgetRule::DeleteWithMemory => match surface.completeness {
+                Some(via) => Self::Cascaded { via },
+                None => match surface.key {
+                    KeyShape::MemoryT { column } | KeyShape::EntityT { column } => {
+                        Self::Deleted { key_column: column }
+                    }
+                    _ => Self::Unreachable,
+                },
+            },
+            ForgetRule::DumpThenCascade => match (surface.key, surface.erase, surface.completeness)
+            {
+                (KeyShape::MemoryT { .. }, EraseRule::Cascade { via: erase_via }, Some(via))
+                    if static_str_eq(erase_via.relation, via.relation)
+                        && static_str_eq(erase_via.name, via.name) =>
+                {
+                    Self::Marked
+                }
+                _ => Self::Unreachable,
+            },
+            ForgetRule::DumpThenDelete => match surface.key {
+                KeyShape::MemoryT { .. } | KeyShape::EntityT { .. } => Self::Marked,
+                _ => Self::Unreachable,
+            },
+        }
+    }
+
+    /// Whether the forget runs a statement built from this declaration.
+    /// `Marked` is false: a forget leaves that surface in place.
+    #[must_use]
+    pub const fn is_generated(&self) -> bool {
+        matches!(self, Self::Deleted { .. })
+    }
+}
+
+/// Compare contract literals in const contexts without surrendering the
+/// classifier's public `const fn` guarantee. The standard `str` equality
+/// implementation is not const, while these values are all frozen static
+/// declarations whose bytes are the constraint identity.
+const fn static_str_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+/// One physical relation a spiice (or the kernel) owns, with every rule the
+/// inverse and transfer lanes need. No field is optional-by-omission:
+/// adding a table without saying what forget does is a compile error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Surface {
+    pub table: &'static str,
+    pub key: KeyShape,
+    /// The one column carrying this surface's owner. `None` IS A CLAIM, not
+    /// an omission: it asserts the row is reached through its key's owner.
+    ///
+    /// AN OWNER IS ONE COLUMN. "Which column decides whose row this is" has
+    /// a single answer or none; a second answer is not a wider claim but an
+    /// undecided one — erase and export would have to pick, and whether the
+    /// two are conjunctive or disjunctive is a scope decision no surface
+    /// declaration makes. A spiice that needs several owner relationships on
+    /// one table models each as a mapping surface of its own: its own table,
+    /// its own single owner column, keyed to the parent. `Option` is what
+    /// makes the alternative unrepresentable rather than merely refused.
+    pub owner_column: Option<&'static str>,
+    pub transfer: TransferRule,
+    pub erase: EraseRule,
+    pub export: ExportRule,
+    pub forget: ForgetRule,
+    /// The `regconfig` column this surface stamps, FK-stamped against
+    /// `proxiima_core.lexical_languages`. `lexical_language_forget` refuses
+    /// through those FKs and so enumerates nothing; the migration guardrail's
+    /// expected FK set is a projection of exactly this field, which is what
+    /// retires its hardcoded five-table `IN (...)`.
+    pub lexical_language_column: Option<&'static str>,
+    /// Which audit counter this surface's destroyed rows are counted under.
+    pub counter: CounterRule,
+    /// A constraint that already proves completeness. Present ⇒ no list is
+    /// generated anywhere; the constraint is the proof.
+    pub completeness: Option<DbConstraint>,
+}
+
+// ── Projection ──────────────────────────────────────────────────────────
+
+/// Where a spiice's search verb ranks, and therefore which shape of
+/// statement serves it.
+///
+/// A declaration rather than prose: a deployment layer that has to know
+/// whether a shard ranks on its projection cannot read a doc comment, and a
+/// freeze check cannot scope itself to a paragraph.
+///
+/// **What this is NOT.** Freeze checks what a `Projection` claim implies
+/// about the rest of the DECLARATION — that the three band names are
+/// present, and that language, bands and the `ts_rank` weight array agree
+/// across the spiice's projected schemas, because one statement can spell
+/// each of those only once. Nothing checks the claim against the SQL a
+/// spiice actually runs: a spiice whose verbs read sidecar columns can
+/// declare [`Self::Projection`] and be believed. The consumer that reads
+/// this is core's renderer deciding whether it can serve the spiice at all,
+/// so a false claim costs that spiice a statement shape it cannot use — not
+/// a leak — but it is a declaration on trust, and `docs/host-integration.md` §Contract Reach
+/// records it as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RankSource {
+    /// Rank the projection ALONE, then join the owning sidecar for the
+    /// surviving top-k. One statement per spiice, `schema_id = ANY(..)` as
+    /// a row predicate. `core_search_memories` serves exactly these
+    /// spiices, and freeze holds them to the invariants one statement
+    /// needs: one [`LanguagePolicy`] and one band set across the spiice's
+    /// projected schemas.
+    Projection,
+    /// Rank on the spiice's own sidecar, reaching the owner through a join
+    /// to the spiice's OWN projection (never `proxiima_core.memory`).
+    ///
+    /// A declared deviation, not an oversight: it is correct when the score
+    /// reads sidecar columns the projection does not carry, or when the
+    /// selective filters are sidecar-side — in both cases a projection-side
+    /// top-k truncates before the deciding half of the score or of the
+    /// predicate is known, which changes WHICH ROWS COME BACK. What the
+    /// projection is for survives either way: both index columns sit on the
+    /// projection alias, so the composite `gin(owner_id, search_tsv)` is
+    /// reached and the owner is an Index Cond.
+    ///
+    /// Such a spiice is not served by `core_search_memories`; it ships its
+    /// own tools.
+    SidecarWithProjectionOwner { why: &'static str },
+}
+
+impl RankSource {
+    /// Whether the core renderer can serve this spiice — one statement per
+    /// spiice over the projection alone.
+    #[must_use]
+    pub const fn is_projection(&self) -> bool {
+        matches!(self, Self::Projection)
+    }
+}
+
+/// How this spiice's score bands compare to spiice #0's.
+///
+/// CONSUMED by the spiice-scan filter in
+/// `storage-pg/src/verbs/query/search.rs`: a non-core projection may enter
+/// core's merge only if its spiice declares [`Self::CoreBands`], so the
+/// exclusion is the declaration doing its job rather than an accident of a
+/// missing `tag_column`. Freeze earns the declaration: a spiice claiming
+/// `CoreBands` whose schemas declare a band outside `[0.0, 1.0]` is a
+/// freeze error naming the schema and the band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BandComparability {
+    /// Every projected surface scores inside spiice #0's `BAND_*` windows,
+    /// so a merge may compare scores directly.
+    CoreBands,
+    /// At least one arm scores outside them; `why` names which.
+    Divergent { why: &'static str },
+}
+
+/// The per-spiice lexical projection table.
+///
+/// One table per spiice, in the spiice's own schema, holding one row per
+/// searchable memory discriminated by `schema_id` — so a spiice's whole
+/// lexical surface is one composite-index scan instead of one scan per
+/// sidecar, and provisioning or tearing a spiice down stays a single
+/// schema-level operation.
+///
+/// It is deliberately NOT seeded into `proxiima_core.spiice_surface`: that
+/// table's domain is "tables a `memory` row may stamp in `sidecar_tables`",
+/// and a projection row is derived, never stamped. Registering it there
+/// would widen `assert_sidecar_stamp_declared` for nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProjectionSpec {
+    /// Qualified table name, e.g. `proxiima_core.projection`.
+    pub table: &'static str,
+    /// The composite `gin (owner_id, search_tsv)` index name.
+    pub index: &'static str,
+    /// CONSUMED. The candidate budget ONE statement over this spiice's
+    /// projection may fetch before the merge trims to the caller's limit.
+    ///
+    /// Per spiice, not per schema: one statement serves the spiice, so the
+    /// merge is handed at most this many rows however many schemas project
+    /// into the table. The request-scaling rule — a caller asking for `n`
+    /// rows overfetches `n * 20` — has no contract home and stays in code;
+    /// this is the CAP that rule is clamped to, which is a shard-level
+    /// property and therefore the spiice's to declare.
+    pub overfetch_k: u32,
+    /// CONSUMED. See [`BandComparability`].
+    pub band_comparability: BandComparability,
+    /// CONSUMED. See [`RankSource`].
+    pub rank_source: RankSource,
+}
+
+impl ProjectionSpec {
+    /// The [`Surface`] the projection table is, so erase / transfer /
+    /// export / forget walk it with no special case.
+    ///
+    /// `erase` is [`EraseRule::Cascade`] through the memory FK, which is
+    /// what makes owner erase, memory forget and spiice repo erase all
+    /// reach the projection with no new list, no new counter and no code
+    /// that knows the word "projection". That is the inverse-at-scope
+    /// property: the owner erase never learns about this table.
+    #[must_use]
+    pub const fn surface(&self) -> Surface {
+        Surface {
+            table: self.table,
+            key: KeyShape::MemoryT {
+                column: PROJECTION_MEMORY_COLUMN,
+            },
+            owner_column: Some("owner_id"),
+            transfer: TransferRule::Follow,
+            erase: EraseRule::Cascade {
+                via: DbConstraint {
+                    relation: self.table,
+                    name: PROJECTION_MEMORY_FK,
+                },
+            },
+            export: ExportRule::DerivedFrom {
+                source: "proxiima_core.memory",
+                why: "a derived lexical index; every byte in it is a function of the \
+                      sidecar rows the bundle already carries for the memory",
+            },
+            forget: ForgetRule::DeleteWithMemory,
+            lexical_language_column: Some("lexical_language"),
+            counter: CounterRule::Uncounted {
+                why: "a derived index, deleted by the cascade the erase never runs a \
+                      statement for. There is no `rows_affected` to report, and a \
+                      count of index rows would say how the deployment tokenizes \
+                      rather than what the owner lost",
+            },
+            completeness: Some(DbConstraint {
+                relation: self.table,
+                name: PROJECTION_MEMORY_FK,
+            }),
+        }
+    }
+}
+
+/// The name `PostgreSQL` mints for the projection's memory FK.
+///
+/// Identical for every spiice because the table is always named
+/// `projection` and the column is always `memory_id`, and constraint names
+/// are per-schema. Two spiices' emitted DDL therefore differ only in the
+/// schema name and the index name.
+pub const PROJECTION_MEMORY_FK: &str = "projection_memory_id_fkey";
+
+/// The bare relation name every spiice's projection table carries.
+pub const PROJECTION_TABLE_NAME: &str = "projection";
+
+/// The column every spiice's projection table keys its memory on.
+///
+/// ONE READER: [`ProjectionSpec::surface`]'s `KeyShape::MemoryT`. Naming it
+/// is what keeps that surface from claiming a column no projection table
+/// has.
+///
+/// It is NOT the single source of the column name. [`PROJECTION_MEMORY_FK`]
+/// is a separate literal, derived from nothing, and the generator spells
+/// `memory_id` inline four more times — in the `CREATE TABLE` column list,
+/// in its `PRIMARY KEY`, in the projection `INSERT`'s column list, and in
+/// `PROJECTION_COLUMNS`, the catalog check's expected list. Those are fixed
+/// SQL text by design; interpolating a constant into them would move four
+/// spellings into four `format!` holes and buy nothing.
+///
+/// What keeps the spellings agreeing is a test rather than a definition:
+/// `the_projection_column_name_has_one_spelling` in `storage-pg`'s
+/// projection module asserts this constant against the FK name and against
+/// the generator's own emitted DDL. A constant plus a check is honest; a
+/// constant plus a claim is not.
+pub const PROJECTION_MEMORY_COLUMN: &str = "memory_id";
+
+/// Whether a spiice has a projection table — and, when it does not, why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProjectionDecl {
+    /// Declared absence: no schema of this spiice is a search surface.
+    None {
+        why: &'static str,
+    },
+    Table(ProjectionSpec),
+}
+
+impl ProjectionDecl {
+    #[must_use]
+    pub const fn spec(&self) -> Option<&ProjectionSpec> {
+        match self {
+            Self::None { .. } => None,
+            Self::Table(spec) => Some(spec),
+        }
+    }
+
+    #[must_use]
+    pub const fn table(&self) -> Option<&'static str> {
+        match self {
+            Self::None { .. } => None,
+            Self::Table(spec) => Some(spec.table),
+        }
+    }
+}
+
+// ── MCP surface ─────────────────────────────────────────────────────────
+
+/// One registered MCP tool, as the contract sees it: a wire name and the
+/// action leaves the scope gate authorizes at.
+///
+/// It states no behaviour. What a tool does is its
+/// [`ToolEffect`](crate::mcp::ToolEffect), declared once on the tool and
+/// per action; the contract names the tool so a spiice-scoped erase can
+/// require that the calling tool is the named spiice's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ToolContract {
+    pub wire_name: &'static str,
+    /// Empty ⇒ flat tool, scope key is the wire name.
+    /// Non-empty ⇒ scope keys are `"<wire_name>:<action>"`.
+    pub actions: &'static [&'static str],
+}
+
+/// One `proxiima://` resource.
+///
+/// `read_resource` funnels through the same flat gate as a tool call, with
+/// the resource's scope key standing in for a tool name. So resources are
+/// first-class contract entries — and they carry a **typed** `read_only`,
+/// which both gates read through [`Self::declaration`] instead of inferring
+/// a read from a `tool.starts_with("resource:")` string test: a read passes
+/// every palette, and needs read access to the owner.
+///
+/// Only spiice #0 may declare resources; the registry rejects a non-empty
+/// list from any other ordinal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResourceContract {
+    /// RFC 6570 template, e.g. `proxiima://memory/{id}{?expand_neighbors,version}`.
+    pub uri_template: &'static str,
+    /// First path segment after `proxiima://` — what dispatch matches on.
+    pub path: &'static str,
+    /// Advertised resource name, e.g. `proxiima-memory`.
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    /// Palette entry, e.g. `resource:memory`.
+    pub scope_key: &'static str,
+    pub is_template: bool,
+    /// TYPED. An MCP resource is a read by definition; saying so here is
+    /// what lets the gate stop inferring it from a string prefix.
+    pub read_only: bool,
+    /// Relations the handler reads, for the erase/export reach argument.
+    pub reads: &'static [&'static str],
+}
+
+impl ResourceContract {
+    /// What this resource's key declares, for every audience: a read when
+    /// [`Self::read_only`] says so, else a write.
+    #[must_use]
+    pub const fn declaration(&self) -> crate::mcp::KeyDeclaration {
+        crate::mcp::KeyDeclaration::shared(if self.read_only {
+            Some(crate::mcp::ToolEffect::ReadOnly)
+        } else {
+            None
+        })
+    }
+
+    /// This resource's palette key, [`Self::scope_key`] parsed.
+    ///
+    /// # Panics
+    ///
+    /// When `scope_key` is not `resource:` plus a valid name. Only spiice #0
+    /// declares resources and its table is static, so
+    /// `every_core_resource_declares_a_resource_key` pins this for all of them.
+    #[must_use]
+    pub fn key(&self) -> ResourceKey {
+        match ScopeKey::parse(self.scope_key) {
+            Ok(ScopeKey::Resource(key)) => key,
+            other => panic!(
+                "resource {} declares scope_key {:?}, which is not a resource key: {other:?}",
+                self.name, self.scope_key
+            ),
+        }
+    }
+}
+
+// ── The two levels ──────────────────────────────────────────────────────
+
+/// Everything a spiice declares about one schema.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SchemaContract {
+    pub id: SchemaRef,
+    pub kind: PayloadKind,
+    /// The schema's own sidecar table, when it has one.
+    pub sidecar_table: Option<&'static str>,
+    pub search: SearchProjectionDecl,
+    pub embedding: EmbeddingRecipe,
+    /// What a transfer does to rows written under this schema.
+    pub transfer: TransferRule,
+    pub provenance: Provenance,
+    /// The physical surfaces this schema owns. Usually one (its sidecar);
+    /// empty for a schema with no storage of its own.
+    pub surfaces: &'static [Surface],
+    pub natural_key_columns: &'static [&'static str],
+}
+
+impl SchemaContract {
+    #[must_use]
+    pub fn schema_id(&self) -> SchemaId {
+        self.id.schema_id()
+    }
+
+    #[must_use]
+    pub fn schema_version(&self) -> SchemaVersion {
+        self.id.schema_version()
+    }
+
+    /// The `(table, column, slot)` triples this schema's recipe resolves to.
+    #[must_use]
+    pub fn embed_units(&self) -> Vec<ResolvedEmbedUnit> {
+        self.embedding.resolve(self.sidecar_table)
+    }
+}
+
+/// A whole spiice's declaration. `ordinal` 0 is core, which is
+/// non-removable and the only declarer of resources.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpiiceContract {
+    pub spiice_id: &'static str,
+    pub ordinal: u16,
+    pub schemas: &'static [SchemaContract],
+    /// Spiice-owned state that is not a memory sidecar (`proxiima_notes.notebooks`,
+    /// `proxiima_core.goal`). Same [`Surface`] rules; erase and transfer walk
+    /// them identically.
+    pub state_surfaces: &'static [Surface],
+    /// The spiice-owned lifecycle scopes this spiice owns, one
+    /// [`ScopeDecl`] per [`crate::ScopeKind`] any of its payloads names
+    /// (docs/build-a-spiice.md).
+    ///
+    /// Separate from `state_surfaces` because it answers a different
+    /// question. A `Surface` says what erase, export, transfer and forget
+    /// do to a table's rows; a `ScopeDecl` says how to ASK whether one of
+    /// those rows still exists and how to key the fence that holds the
+    /// answer still. The registry table is normally a state surface as well
+    /// — `proxiima_notes.notebooks` is both — and the two declarations stay
+    /// independent so a scope whose registry the spiice erases some other
+    /// way is still fenceable.
+    ///
+    /// Freeze refuses a kind a registered payload names and no contract
+    /// declares, and a kind two contracts declare: an admission of a scoped
+    /// payload must resolve exactly one declaration or it cannot be fenced
+    /// at all.
+    pub scopes: &'static [ScopeDecl],
+    /// Kernel relations this spiice's contract speaks for. Only spiice #0
+    /// populates it: the kernel is not a spiice, but its surfaces still have
+    /// to be declared somewhere the registry can walk.
+    pub kernel_surfaces: &'static [Surface],
+    pub tools: &'static [ToolContract],
+    /// Non-empty only for ordinal 0.
+    pub resources: &'static [ResourceContract],
+    /// The spiice's lexical projection table, or a declared absence.
+    ///
+    /// Derived, not stamped: a projection row is a function of a sidecar
+    /// row, so it is deliberately absent from `proxiima_core.spiice_surface`
+    /// (whose domain is "tables a `memory` row may stamp") and present here.
+    pub projection: ProjectionDecl,
+    /// Surfaces of this spiice whose erase is a hand-written statement
+    /// rather than a generated one. Empty for a spiice whose every surface
+    /// the generator reaches, which is the ordinary case — and the only
+    /// case for a non-core spiice: hand-written legs are
+    /// `proxiima-storage-pg` code, which sees no spiice but core, so freeze
+    /// refuses a non-empty list anywhere else
+    /// (`SpiiceRegistryError::BespokeLegsNotPermitted`).
+    pub bespoke_erase_legs: &'static [&'static str],
+    /// Surfaces of this spiice whose transfer is a hand-written statement
+    /// rather than a generated one — the same exemption shape the erase
+    /// side uses, and the same reason it cannot be derived: which tables
+    /// need an interleaved hand-written move is a fact about the substrate
+    /// crate's code, invisible to core's freeze.
+    ///
+    /// Every `FollowOrDedupe` surface belongs here by construction: the
+    /// arm's generated halves come off the declaration, but the refcount
+    /// probe and the object mount between them do not. Core-only, like the
+    /// erase list (`BespokeLegsNotPermitted`, `DedupeNotPermitted`).
+    pub bespoke_transfer_legs: &'static [&'static str],
+}
+
+/// The ordinal that marks the non-removable core contract. Search eligibility
+/// follows each spiice's declared projection; tags narrow eligible rows.
+pub const CORE_ORDINAL: u16 = 0;
+
+impl SpiiceContract {
+    #[must_use]
+    pub const fn is_core(&self) -> bool {
+        self.ordinal == CORE_ORDINAL
+    }
+
+    /// This spiice's declaration for `kind`, if it owns one.
+    #[must_use]
+    pub fn scope_decl(&self, kind: crate::ScopeKind) -> Option<&'static ScopeDecl> {
+        self.scopes.iter().find(|decl| decl.kind == kind)
+    }
+
+    /// Every surface this spiice declares, in declaration order: schema
+    /// sidecars, then spiice state, then (for spiice #0) the kernel spine,
+    /// then the DERIVED projection surface.
+    ///
+    /// The projection surface is computed from [`ProjectionSpec`] rather
+    /// than written down, so it cannot drift from the DDL the generator
+    /// emits from the same spec — and the lexical-stamp guardrail, which
+    /// reads this iterator, follows the `lexical_language` column to its
+    /// new home without being told.
+    pub fn all_surfaces(&self) -> impl Iterator<Item = Surface> {
+        let schemas: &'static [SchemaContract] = self.schemas;
+        let state: &'static [Surface] = self.state_surfaces;
+        let kernel: &'static [Surface] = self.kernel_surfaces;
+        let projection = self.projection.spec().copied();
+        schemas
+            .iter()
+            .flat_map(|schema| schema.surfaces.iter().copied())
+            .chain(state.iter().copied())
+            .chain(kernel.iter().copied())
+            .chain(projection.map(|spec| spec.surface()))
+    }
+
+    /// The [`Surface`] declaring one physical table, wherever in this
+    /// contract it is declared.
+    ///
+    /// Contract-wide rather than per-schema, and that is load-bearing: one
+    /// table may be registered under two `SchemaContract`s — one payload
+    /// type serving the Abstraction and the Perspective layers — and the
+    /// surface is declared on exactly ONE of them so erase and forget
+    /// cannot reach the same rows twice. A lookup rooted in a schema
+    /// therefore finds nothing for the sibling registration, which is a
+    /// silence, not an absence.
+    #[must_use]
+    pub fn surface_for(&self, table: &str) -> Option<Surface> {
+        self.all_surfaces().find(|surface| surface.table == table)
+    }
+
+    /// The column a sidecar stores its memory `t` under, as DECLARED.
+    ///
+    /// Every generated statement that joins a sidecar back to
+    /// `proxiima_core.memory` — the projection `INSERT`, the substring arm,
+    /// the snippet lookup — reads this rather than spelling `t`, so the SQL
+    /// is a function of the contract and not of the contract plus an
+    /// unstated naming convention. [`KeyShape::MemoryT`] already names the
+    /// column for the erase and export lanes; this is the same field, read
+    /// by the lexical lane.
+    ///
+    /// `None` when no surface declares the table, or when the one that does
+    /// keys its rows on something that is not a memory `t`. Consumers
+    /// refuse on `None`; none of them substitutes a default, because the
+    /// default is the defect.
+    #[must_use]
+    pub fn sidecar_memory_key_column(&self, table: &str) -> Option<&'static str> {
+        match self.surface_for(table)?.key {
+            KeyShape::MemoryT { column } => Some(column),
+            _ => None,
+        }
+    }
+
+    /// Which leg destroys `surface`'s rows when its owner is erased.
+    ///
+    /// The single classifier. `validate_erase_legs` calls it at freeze and
+    /// the erase calls it per surface, so "which tables does the erase
+    /// cover" has one answer and the boot check is a check on the thing
+    /// that actually runs, not on a restatement of it.
+    ///
+    /// A `Cascade` or `Never` declaration wins over the bespoke list: those
+    /// two say NO statement runs, and a spiice that lists such a table is
+    /// contradicting itself. `validate_erase_legs` refuses that rather than
+    /// silently picking a winner here.
+    #[must_use]
+    pub fn erase_leg(&self, surface: &Surface) -> EraseLeg {
+        EraseLeg::derive(surface, self.bespoke_erase_legs)
+    }
+
+    /// Which leg moves this surface's rows on a transfer, resolved against
+    /// THIS spiice's exemption list.
+    ///
+    /// The transfer twin of [`Self::erase_leg`], and the same warning
+    /// applies: the three arms that say no statement runs win over the
+    /// exemption list, and `validate_transfer_legs` refuses a spiice that
+    /// claims one of them rather than letting this pick a winner.
+    #[must_use]
+    pub fn transfer_leg(&self, surface: &Surface) -> TransferLeg {
+        TransferLeg::derive(surface, self.bespoke_transfer_legs)
+    }
+
+    /// Every schema of this spiice that is a search surface, paired with
+    /// its sidecar table. The generator's whole input.
+    pub fn projected_schemas(
+        &self,
+    ) -> impl Iterator<Item = (&'static SchemaContract, &'static str)> {
+        let schemas: &'static [SchemaContract] = self.schemas;
+        schemas.iter().filter_map(|schema| {
+            if schema.search.is_projected() {
+                schema.sidecar_table.map(|table| (schema, table))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Sidecar tables whose rows stay with the source owner on transfer.
+    /// This is the list `owner_erase` / `owner_export` / `forget`
+    /// hold out of the Memory-keyed sweep.
+    #[must_use]
+    pub fn retain_at_source_tables(&self) -> Vec<String> {
+        let mut tables = self
+            .schemas
+            .iter()
+            .filter(|schema| schema.transfer.retains_at_source())
+            .filter_map(|schema| schema.sidecar_table)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        tables.sort();
+        tables.dedup();
+        tables
+    }
+
+    /// Surfaces that stamp a `lexical_language` column. The migration
+    /// guardrail's expected FK list is exactly this set, so it stops being
+    /// a hardcoded five-table `IN (...)`.
+    #[must_use]
+    pub fn lexical_stamped_tables(&self) -> Vec<&'static str> {
+        let mut tables = self
+            .all_surfaces()
+            .filter(|surface| surface.lexical_language_column.is_some())
+            .map(|surface| surface.table)
+            .collect::<Vec<_>>();
+        tables.sort_unstable();
+        tables.dedup();
+        tables
+    }
+
+    /// Whether `table` is one of this spiice's schema sidecars.
+    #[must_use]
+    pub fn declares_sidecar_table(&self, table: &str) -> bool {
+        self.schemas
+            .iter()
+            .filter_map(|schema| schema.sidecar_table)
+            .any(|declared| declared == table)
+    }
+
+    /// The resource this spiice declares under `key`, if any.
+    ///
+    /// The authorization gate calls this instead of testing the scope key
+    /// for a `resource:` prefix: a resource read is a read because the
+    /// contract says [`ResourceContract::read_only`], not because of how
+    /// its palette entry is spelled.
+    #[must_use]
+    pub fn resource_by_scope_key(&self, key: &ResourceKey) -> Option<&'static ResourceContract> {
+        self.resources
+            .iter()
+            .find(|resource| resource.key() == *key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CoreBandName, CounterRule, DbConstraint, EraseRule, ExportRule, ForgetLeg, ForgetRule,
+        KeyShape, LanguagePolicy, SearchProjectionDecl, SubstringArm, Surface, TransferRule,
+        WeightedField,
+    };
+
+    #[test]
+    fn dumped_cascade_is_only_a_memory_t_surface_with_a_completeness_proof() {
+        let via = DbConstraint {
+            relation: "detail",
+            name: "detail_parent_fkey",
+        };
+        let mut surface = Surface {
+            table: "detail",
+            key: KeyShape::MemoryT { column: "parent_t" },
+            owner_column: None,
+            transfer: TransferRule::StaysOnKey,
+            erase: EraseRule::Cascade { via },
+            export: ExportRule::Rows,
+            forget: ForgetRule::DumpThenCascade,
+            lexical_language_column: None,
+            counter: CounterRule::Uncounted { why: "detail" },
+            completeness: Some(via),
+        };
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Marked);
+        surface.key = KeyShape::EntityT { column: "entity_t" };
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Unreachable);
+        surface.key = KeyShape::MemoryT { column: "parent_t" };
+        surface.completeness = None;
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Unreachable);
+        surface.completeness = Some(via);
+        surface.erase = EraseRule::ByKey;
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Unreachable);
+        surface.erase = EraseRule::Cascade {
+            via: DbConstraint {
+                relation: "other_detail",
+                name: "other_parent_fkey",
+            },
+        };
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Unreachable);
+        surface.forget = ForgetRule::DeleteWithMemory;
+        surface.completeness = Some(via);
+        surface.erase = EraseRule::Cascade { via };
+        assert_eq!(ForgetLeg::derive(&surface), ForgetLeg::Cascaded { via });
+    }
+
+    fn projected(weights: &'static [f32]) -> SearchProjectionDecl {
+        // A leaked slice keeps the fixture `'static` without a macro.
+        let fields: &'static [WeightedField] = Box::leak(
+            weights
+                .iter()
+                .map(|weight| WeightedField {
+                    column: "c",
+                    kind: crate::SearchProjectionColumnKind::Text,
+                    weight: *weight,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        SearchProjectionDecl::Projected {
+            fields,
+            tag_column: None,
+            language: LanguagePolicy::Pinned("simple"),
+            bands: &[],
+            substring: SubstringArm::Off,
+        }
+    }
+
+    #[test]
+    fn a_fifth_level_has_nowhere_to_go() {
+        assert_eq!(
+            projected(&[1.0, 2.0, 3.0, 4.0, 5.0]).weight_levels(),
+            Err(5)
+        );
+        assert!(
+            projected(&[1.0, 2.0, 3.0, 4.0, 5.0])
+                .weight_class(3.0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn core_band_names_round_trip_their_spellings() {
+        for name in CoreBandName::ALL {
+            assert_eq!(name.to_string().parse(), Ok(name));
+        }
+        assert!("Exact".parse::<CoreBandName>().is_err());
+    }
+}

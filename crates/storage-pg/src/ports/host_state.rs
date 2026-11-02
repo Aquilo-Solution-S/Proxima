@@ -1,7 +1,7 @@
 //! Startup-registered host-state participant for [`super::write_session`].
 
-use proxima_core::StorageError;
-use proxima_core::storage_ports::{
+use proxiima_core::StorageError;
+use proxiima_core::storage_ports::{
     HostStateReply, HostStateRequest, HostStateWritePermit, StateSurfaceName,
 };
 use std::sync::Arc;
@@ -11,15 +11,15 @@ use super::PgHostStateSession;
 /// Trusted host/backend code that mutates declared state surfaces on the
 /// write session's live transaction.
 ///
-/// Registered once at boot on [`crate::PgStorage`]. Flavor tools never
+/// Registered once at boot on [`crate::PgStorage`]. Spiice tools never
 /// receive this trait, the transaction, or a generic SQL hole.
 #[async_trait::async_trait]
 pub trait PgHostStateParticipant: Send + Sync {
-    /// Stable id matched against [`proxima_core::storage_ports::HostStateCommand::PARTICIPANT_ID`].
-    fn participant_id(&self) -> proxima_core::storage_ports::HostStateParticipantId;
+    /// Stable id matched against [`proxiima_core::storage_ports::HostStateCommand::PARTICIPANT_ID`].
+    fn participant_id(&self) -> proxiima_core::storage_ports::HostStateParticipantId;
 
     /// Tables this participant is allowed to touch. Must be a subset of
-    /// some linked flavor's `state_surfaces`.
+    /// some linked spiice's `state_surfaces`.
     fn declared_tables(&self) -> &'static [StateSurfaceName];
 
     /// Optional typed erase/export port for the lifecycle-managed subset of

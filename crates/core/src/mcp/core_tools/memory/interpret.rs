@@ -269,14 +269,14 @@ pub(crate) fn interpretation_memory_id(
 mod tests {
     use super::{InterpretArgs, InterpretTool, default_confidence, reject_self_subject};
     use crate::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerId, UserId};
+    use crate::{AuthPath, AuthzContext, OwnerId, SpiiceRegistry, SpiiceServices, UserId};
     use std::sync::Arc;
 
     fn ctx(owner: OwnerId) -> McpToolCtx {
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            registry: Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test-model".into(),
                 trusted_model_id: None,
@@ -285,9 +285,9 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         }
     }
 

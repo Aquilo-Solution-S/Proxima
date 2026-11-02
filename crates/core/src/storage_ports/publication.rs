@@ -2,7 +2,7 @@
 //!
 //! Deliberately NOT part of [`crate::storage_ports::StoragePorts`]: the
 //! engine never holds it, `ToolCtx`, `WriteSession` and `UnitOfWork` never
-//! see it, and no flavor-facing facade exposes it. The storage BACKEND type
+//! see it, and no spiice-facing facade exposes it. The storage BACKEND type
 //! implements it and the host runtime holds that handle, which is the only
 //! shape in which "claim other owners' rows and hand them to the host's intake" is a
 //! legitimate operation: a publisher is infrastructure, not a caller.
@@ -194,7 +194,7 @@ pub enum PublisherIdError {
     TooLong { bytes: usize },
 }
 
-/// The identity of one Proxima installation, minted once by the schema.
+/// The identity of one Proxiima installation, minted once by the schema.
 ///
 /// This exists because [`PublicationOriginEligibility`] is answered from the
 /// ABSENCE of a row, and an absence carries no scope. "No origin row for
@@ -263,7 +263,7 @@ impl std::fmt::Display for ClaimToken {
 ///
 /// `envelope` is the bytes as captured. The publisher hands them over
 /// unchanged: it does not reload the Fact, re-render the payload with
-/// today's flavor, or substitute today's installation identity.
+/// today's spiice, or substitute today's installation identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimedPublication {
     /// The Fact's `t`.
@@ -493,10 +493,10 @@ mod tests {
     #[test]
     fn a_publisher_id_is_a_validated_label() {
         assert_eq!(
-            PublisherId::new("proxima-mcp@host-1")
+            PublisherId::new("proxiima-mcp@host-1")
                 .expect("valid")
                 .as_str(),
-            "proxima-mcp@host-1"
+            "proxiima-mcp@host-1"
         );
         assert!(matches!(
             PublisherId::new("   "),

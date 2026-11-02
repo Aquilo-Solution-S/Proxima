@@ -10,7 +10,7 @@ impl Engine {
     /// List readable current heads of one declared stateful Fact sidecar.
     ///
     /// A key prefix matches complete natural-key columns in declaration
-    /// order. Flavor tombstones remain heads; forgotten and superseded
+    /// order. Spiice tombstones remain heads; forgotten and superseded
     /// admissions are absent. Pages use descending admission IDs.
     ///
     /// # Errors
@@ -58,10 +58,10 @@ mod tests {
     use crate::verbs::query::{
         ResolvedSidecarHeads, SidecarAtom, SidecarHeadsRequest, SidecarHeadsScope,
     };
-    use crate::{FlavorRegistry, MemoryId, SchemaId, UserId};
+    use crate::{MemoryId, SchemaId, SpiiceRegistry, UserId};
 
     fn engine() -> Engine {
-        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
     }
 
     fn request() -> SidecarHeadsRequest {
@@ -87,7 +87,7 @@ mod tests {
             .expect("stateful core Fact");
 
         assert_eq!(query.schema_id(), &request.schema_id);
-        assert_eq!(query.sidecar_table(), "proxima_core.agent_note_v1");
+        assert_eq!(query.sidecar_table(), "proxiima_core.agent_note_v1");
         assert_eq!(query.memory_key_column(), "t");
         assert_eq!(query.key_columns(), &["note_id"]);
         assert_eq!(query.key_prefix(), request.key_prefix);
@@ -167,7 +167,7 @@ mod tests {
 
     #[tokio::test]
     async fn all_vetoed_readable_owners_return_an_empty_page_before_storage() {
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(Veto));
         let engine = Engine::new(registry.freeze_or_panic_for_tests());
         let subject = UserId::new(uuid::Uuid::new_v4());

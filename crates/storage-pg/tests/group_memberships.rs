@@ -1,16 +1,16 @@
 //! `list_group_members` against the shipped table (no `created_at`).
 
-use proxima_core::storage_ports::{MembershipWritePermit, OwnerMembershipAdminPort};
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::{GroupId, OwnerId, Relation, UserId};
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
+use proxiima_core::storage_ports::{MembershipWritePermit, OwnerMembershipAdminPort};
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::{GroupId, OwnerId, Relation, UserId};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 #[tokio::test]
 async fn list_group_members_runs_against_v008_schema() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -23,9 +23,9 @@ async fn list_group_members_runs_against_v008_schema() {
         pg.bootstrap_group_admin(group, admin, admin.into_inner())
             .await?;
 
-        let permit = proxima_core::storage_ports::OwnerWritePermit::new_for_tests(
+        let permit = proxiima_core::storage_ports::OwnerWritePermit::new_for_tests(
             OwnerId::from(group),
-            proxima_core::AccessKind::Fact,
+            proxiima_core::AccessKind::Fact,
         );
         pg.add_group_member(
             &MembershipWritePermit::new_for_tests(&permit, None, None, None),

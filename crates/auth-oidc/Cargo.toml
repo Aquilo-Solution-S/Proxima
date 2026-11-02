@@ -1,5 +1,5 @@
 [package]
-name = "proxima-auth-oidc"
+name = "proxiima-auth-oidc"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-proxima-core = { path = "../core" }
+proxiima-core = { path = "../core" }
 async-trait = { workspace = true }
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }

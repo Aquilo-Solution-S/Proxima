@@ -3,12 +3,12 @@ use super::{
     PgSidecarFuture, PgSidecarReadCtx, PgSidecarRegistry, PgSidecarRegistryFrozen, Postgres,
     SidecarInsertPermit, SidecarPayload, StorageError, Transaction,
 };
-use proxima_core::verbs::schema::PayloadKind;
+use proxiima_core::verbs::schema::PayloadKind;
 
-fn parse_utterance_speaker(value: &str) -> Result<proxima_core::Speaker, StorageError> {
+fn parse_utterance_speaker(value: &str) -> Result<proxiima_core::Speaker, StorageError> {
     match value {
-        "user" => Ok(proxima_core::Speaker::User),
-        "agent" => Ok(proxima_core::Speaker::Agent),
+        "user" => Ok(proxiima_core::Speaker::User),
+        "agent" => Ok(proxiima_core::Speaker::Agent),
         other => Err(StorageError::Internal(format!(
             "invalid utterance speaker {other}"
         ))),
@@ -16,10 +16,10 @@ fn parse_utterance_speaker(value: &str) -> Result<proxima_core::Speaker, Storage
 }
 
 crate::pg_sidecar! {
-    payload: proxima_core::WriteActV1,
+    payload: proxiima_core::WriteActV1,
     row: WriteActPayloadRow,
     kinds: [Fact],
-    table: "proxima_core.write_act_v1",
+    table: "proxiima_core.write_act_v1",
     key: t,
     fields: {
         episode_id => episode_id: (uuid),
@@ -27,10 +27,10 @@ crate::pg_sidecar! {
 }
 
 crate::pg_sidecar! {
-    payload: proxima_core::AgentNoteV1,
+    payload: proxiima_core::AgentNoteV1,
     row: AgentNotePayloadRow,
     kinds: [Fact],
-    table: "proxima_core.agent_note_v1",
+    table: "proxiima_core.agent_note_v1",
     key: t,
     fields: {
         note_id => note_id: (uuid),
@@ -42,14 +42,14 @@ crate::pg_sidecar! {
 }
 
 crate::pg_sidecar! {
-    payload: proxima_core::UtteranceV1,
+    payload: proxiima_core::UtteranceV1,
     row: UtterancePayloadRow,
     kinds: [Fact],
-    table: "proxima_core.utterance_v1",
+    table: "proxiima_core.utterance_v1",
     key: t,
     fields: {
         speaker => speaker: (enum {
-            to_str: proxima_core::Speaker::as_str,
+            to_str: proxiima_core::Speaker::as_str,
             pg_type: "text",
             from_str: parse_utterance_speaker
         }),
@@ -59,10 +59,10 @@ crate::pg_sidecar! {
 }
 
 crate::pg_sidecar! {
-    payload: proxima_core::AgentDerivationV1,
+    payload: proxiima_core::AgentDerivationV1,
     row: AgentDerivationPayloadRow,
     kinds: [Abstraction, Perspective],
-    table: "proxima_core.agent_derivation_v1",
+    table: "proxiima_core.agent_derivation_v1",
     key: t,
     fields: {
         title => title: (text),
@@ -76,7 +76,7 @@ crate::pg_sidecar! {
     },
 }
 
-impl PgGoalSidecar for proxima_core::TaskGoalV1 {
+impl PgGoalSidecar for proxiima_core::TaskGoalV1 {
     fn insert_goal_sidecar<'t>(
         &'t self,
         tx: &'t mut Transaction<'_, Postgres>,
@@ -84,12 +84,12 @@ impl PgGoalSidecar for proxima_core::TaskGoalV1 {
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
-                "INSERT INTO proxima_core.task_goal_v1 (t, due_at, priority)
-                 VALUES ($1, $2, $3::proxima_core.task_priority)",
+                "INSERT INTO proxiima_core.task_goal_v1 (t, due_at, priority)
+                 VALUES ($1, $2, $3::proxiima_core.task_priority)",
             )
             .bind(goal_id.into_inner())
             .bind(self.due_at)
-            .bind(self.priority.map(proxima_core::TaskPriority::as_str))
+            .bind(self.priority.map(proxiima_core::TaskPriority::as_str))
             .execute(tx.as_mut())
             .await
             .map_err(crate::error::map_err)?;
@@ -104,9 +104,9 @@ impl PgGoalSidecar for proxima_core::TaskGoalV1 {
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             let result = sqlx::query(
-                "INSERT INTO proxima_core.task_goal_v1 (t, due_at, priority)
+                "INSERT INTO proxiima_core.task_goal_v1 (t, due_at, priority)
                  SELECT $1, due_at, priority
-                   FROM proxima_core.task_goal_v1
+                   FROM proxiima_core.task_goal_v1
                   WHERE t = $2",
             )
             .bind(goal_id.into_inner())
@@ -138,13 +138,13 @@ struct InterpretationPayloadRow {
     claim: String,
     confidence: i16,
     subject_memory_ids: Vec<uuid::Uuid>,
-    subject_kinds: Vec<proxima_core::InterpretationSubjectKind>,
+    subject_kinds: Vec<proxiima_core::InterpretationSubjectKind>,
     model_id: String,
     client_name: String,
     client_version: String,
 }
 
-impl PgMemorySidecar for proxima_core::InterpretationV1 {
+impl PgMemorySidecar for proxiima_core::InterpretationV1 {
     fn insert_memory_sidecar<'t>(
         &'t self,
         tx: &'t mut Transaction<'_, Postgres>,
@@ -153,7 +153,7 @@ impl PgMemorySidecar for proxima_core::InterpretationV1 {
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
-                "INSERT INTO proxima_core.interpretation_v1
+                "INSERT INTO proxiima_core.interpretation_v1
                     (t, claim, confidence, subject_memory_ids, subject_kinds,
                      model_id, client_name, client_version)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -174,10 +174,10 @@ impl PgMemorySidecar for proxima_core::InterpretationV1 {
     }
 }
 
-impl PgMemoryPayload for proxima_core::InterpretationV1 {
+impl PgMemoryPayload for proxiima_core::InterpretationV1 {
     // The column this table stores its memory `t` under, spelled by
     // every statement below. Freeze holds it equal to the contract
-    // `Surface`'s `KeyShape::MemoryT { column }` for proxima_core.interpretation_v1.
+    // `Surface`'s `KeyShape::MemoryT { column }` for proxiima_core.interpretation_v1.
     const OWNER: crate::sidecars::SidecarOwnerMode = crate::sidecars::SidecarOwnerMode::None;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
@@ -191,7 +191,7 @@ impl PgMemoryPayload for proxima_core::InterpretationV1 {
                 .fetch_all_by_memory_ids(
                     "SELECT t, claim, confidence, subject_memory_ids, subject_kinds,
                             model_id, client_name, client_version
-                       FROM proxima_core.interpretation_v1
+                       FROM proxiima_core.interpretation_v1
                       WHERE t = ANY($1::uuid[])",
                     memory_ids,
                 )
@@ -206,7 +206,7 @@ impl PgMemoryPayload for proxima_core::InterpretationV1 {
                     })?;
                     Ok((
                         MemoryId::new(row.t),
-                        SidecarPayload::perspective(proxima_core::InterpretationV1 {
+                        SidecarPayload::perspective(proxiima_core::InterpretationV1 {
                             claim: row.claim,
                             confidence,
                             subject_memory_ids: row.subject_memory_ids,
@@ -222,7 +222,7 @@ impl PgMemoryPayload for proxima_core::InterpretationV1 {
     }
 }
 
-/// One goal write, as `proxima_core.goal_change_v1` stores it.
+/// One goal write, as `proxiima_core.goal_change_v1` stores it.
 ///
 /// Hand-written rather than `pg_sidecar!`-generated: `change` is a closed
 /// enum whose `parent` and `pending` live in their own columns, and the macro
@@ -236,13 +236,13 @@ struct GoalChangePayloadRow {
     goal_t: uuid::Uuid,
     prior_t: Option<uuid::Uuid>,
     revision: i32,
-    state: proxima_core::verbs::goal_write::GoalState,
-    change_kind: proxima_core::GoalChangeKind,
+    state: proxiima_core::verbs::goal_write::GoalState,
+    change_kind: proxiima_core::GoalChangeKind,
     parent_t: Option<uuid::Uuid>,
-    pending: Option<proxima_core::PendingWork>,
+    pending: Option<proxiima_core::PendingWork>,
 }
 
-impl PgMemorySidecar for proxima_core::GoalChangeV1 {
+impl PgMemorySidecar for proxiima_core::GoalChangeV1 {
     fn insert_memory_sidecar<'t>(
         &'t self,
         tx: &'t mut Transaction<'_, Postgres>,
@@ -251,7 +251,7 @@ impl PgMemorySidecar for proxima_core::GoalChangeV1 {
     ) -> PgSidecarFuture<'t> {
         Box::pin(async move {
             sqlx::query(
-                "INSERT INTO proxima_core.goal_change_v1
+                "INSERT INTO proxiima_core.goal_change_v1
                     (t, series, goal_t, prior_t, revision, state, change_kind, parent_t, pending)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
             )
@@ -275,9 +275,9 @@ impl PgMemorySidecar for proxima_core::GoalChangeV1 {
     }
 }
 
-impl PgMemoryPayload for proxima_core::GoalChangeV1 {
+impl PgMemoryPayload for proxiima_core::GoalChangeV1 {
     // Freeze holds the key column equal to the contract `Surface`'s
-    // `KeyShape::MemoryT { column }` for proxima_core.goal_change_v1.
+    // `KeyShape::MemoryT { column }` for proxiima_core.goal_change_v1.
     const OWNER: crate::sidecars::SidecarOwnerMode = crate::sidecars::SidecarOwnerMode::None;
     const MEMORY_KEY_COLUMN: &'static str = "t";
 
@@ -291,14 +291,14 @@ impl PgMemoryPayload for proxima_core::GoalChangeV1 {
                 .fetch_all_by_memory_ids(
                     "SELECT t, series, goal_t, prior_t, revision, state, change_kind, parent_t,
                             pending
-                       FROM proxima_core.goal_change_v1
+                       FROM proxiima_core.goal_change_v1
                       WHERE t = ANY($1::uuid[])",
                     memory_ids,
                 )
                 .await?;
             rows.into_iter()
                 .map(|row| {
-                    let change = proxima_core::GoalChange::from_columns(
+                    let change = proxiima_core::GoalChange::from_columns(
                         row.change_kind,
                         row.parent_t.map(GoalId::new),
                         row.pending,
@@ -317,7 +317,7 @@ impl PgMemoryPayload for proxima_core::GoalChangeV1 {
                     })?;
                     Ok((
                         MemoryId::new(row.t),
-                        SidecarPayload::fact(proxima_core::GoalChangeV1 {
+                        SidecarPayload::fact(proxiima_core::GoalChangeV1 {
                             series: row.series,
                             goal: GoalId::new(row.goal_t),
                             prior: row.prior_t.map(GoalId::new),
@@ -343,17 +343,17 @@ pub fn core_pg_sidecars() -> PgSidecarRegistryFrozen {
     let mut registry = PgSidecarRegistry::new();
     register_core_pg_sidecars(&mut registry);
     registry
-        .freeze_against(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
+        .freeze_against(&proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests())
         .expect("core PG sidecars match core schema registry")
 }
 
 pub fn register_core_pg_sidecars(registry: &mut PgSidecarRegistry) {
-    registry.add_fact::<proxima_core::WriteActV1>();
-    registry.add_fact::<proxima_core::GoalChangeV1>();
-    registry.add_fact::<proxima_core::AgentNoteV1>();
-    registry.add_fact::<proxima_core::UtteranceV1>();
-    registry.add_abstraction::<proxima_core::AgentDerivationV1>();
-    registry.add_perspective::<proxima_core::AgentDerivationV1>();
-    registry.add_perspective::<proxima_core::InterpretationV1>();
-    registry.add_goal::<proxima_core::TaskGoalV1>();
+    registry.add_fact::<proxiima_core::WriteActV1>();
+    registry.add_fact::<proxiima_core::GoalChangeV1>();
+    registry.add_fact::<proxiima_core::AgentNoteV1>();
+    registry.add_fact::<proxiima_core::UtteranceV1>();
+    registry.add_abstraction::<proxiima_core::AgentDerivationV1>();
+    registry.add_perspective::<proxiima_core::AgentDerivationV1>();
+    registry.add_perspective::<proxiima_core::InterpretationV1>();
+    registry.add_goal::<proxiima_core::TaskGoalV1>();
 }

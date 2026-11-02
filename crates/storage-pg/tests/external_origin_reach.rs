@@ -1,4 +1,4 @@
-//! #478 item 2: `proxima_core.memory_external_origin` is reached for hot AND
+//! #478 item 2: `proxiima_core.memory_external_origin` is reached for hot AND
 //! forgotten memories by every lifecycle verb, through the runtime role.
 //!
 //! The table carries no owner column; its owner policy finds the owner
@@ -9,27 +9,27 @@
 //! the verbs through `fresh_pg` (runtime role) and count with the admin pool.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::owner_inverse::{
+use proxiima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget,
     OwnerExportTarget, OwnerSurfaces,
 };
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     FactIngestPort, MemoryAuthoringPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
 };
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{AccessKind, EntityId, GroupId, OwnerId, SchemaId, SchemaVersion, UserId};
-use proxima_storage_pg::test_fixtures::{fresh_pg, register_group_for_tests};
-use proxima_storage_pg::verbs::forget::erase_memory_series;
-use proxima_storage_pg::{PgStorage, begin_owner_transaction, core_pg_sidecars};
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::{AccessKind, EntityId, GroupId, OwnerId, SchemaId, SchemaVersion, UserId};
+use proxiima_storage_pg::test_fixtures::{fresh_pg, register_group_for_tests};
+use proxiima_storage_pg::verbs::forget::erase_memory_series;
+use proxiima_storage_pg::{PgStorage, begin_owner_transaction, core_pg_sidecars};
 use uuid::Uuid;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-const TABLE: &str = "proxima_core.memory_external_origin";
+const TABLE: &str = "proxiima_core.memory_external_origin";
 
 fn surfaces() -> OwnerSurfaces {
-    OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
+    OwnerSurfaces::for_registry(&proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests())
 }
 
 fn draft() -> FactWriteCommand {
@@ -48,7 +48,7 @@ fn draft() -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
@@ -57,7 +57,7 @@ fn draft() -> FactWriteCommand {
 /// derive path's privileged insert lands them.
 async fn add_origins(pg: &PgStorage, t: Uuid, n: usize) -> Result<(), sqlx::Error> {
     for _ in 0..n {
-        sqlx::query("INSERT INTO proxima_core.memory_external_origin (t, memory, edge_kind) VALUES ($1, $2, 'origin')")
+        sqlx::query("INSERT INTO proxiima_core.memory_external_origin (t, memory, edge_kind) VALUES ($1, $2, 'origin')")
             .bind(t)
             .bind(Uuid::now_v7())
             .execute(pg.pool_for_tests())
@@ -69,7 +69,7 @@ async fn add_origins(pg: &PgStorage, t: Uuid, n: usize) -> Result<(), sqlx::Erro
 /// Every origin row on `ts`, counted with the admin pool (no RLS).
 async fn origins_on(pg: &PgStorage, ts: &[Uuid]) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.memory_external_origin WHERE t = ANY($1)",
+        "SELECT count(*)::bigint FROM proxiima_core.memory_external_origin WHERE t = ANY($1)",
     )
     .bind(ts)
     .fetch_one(pg.pool_for_tests())
@@ -88,7 +88,7 @@ async fn origins_visible_to(
     )
     .await?;
     let n: i64 = sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.memory_external_origin WHERE t = $1",
+        "SELECT count(*)::bigint FROM proxiima_core.memory_external_origin WHERE t = $1",
     )
     .bind(t)
     .fetch_one(&mut *tx)
@@ -114,7 +114,7 @@ async fn hot_and_forgotten(
     add_origins(pg, forgotten.into_inner(), 2).await?;
     MemoryAuthoringPort::forget_memory(pg, permit, forgotten).await?;
     let forgotten_rows: i64 = sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1 AND forgotten_at IS NOT NULL",
+        "SELECT count(*)::bigint FROM proxiima_core.memory WHERE t = $1 AND forgotten_at IS NOT NULL",
     )
     .bind(forgotten.into_inner())
     .fetch_one(pg.pool_for_tests())
@@ -128,7 +128,7 @@ async fn hot_and_forgotten(
 /// from its delete, so they outlive the memory they described.
 #[tokio::test]
 async fn erasing_a_forgotten_admission_deletes_its_external_origins() -> TestResult {
-    let (pg, _db) = fresh_pg("proxima_ext_origin_erase_one").await;
+    let (pg, _db) = fresh_pg("proxiima_ext_origin_erase_one").await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let (hot, forgotten) = hot_and_forgotten(&pg, &permit).await?;
@@ -138,7 +138,7 @@ async fn erasing_a_forgotten_admission_deletes_its_external_origins() -> TestRes
         &owner_scope_for_tests(&[owner]),
     )
     .await?;
-    let context = proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(surfaces())
+    let context = proxiima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(surfaces())
         .expect("no host lifecycle tables");
     let (erased, _plan) =
         erase_memory_series(&mut tx, &core_pg_sidecars(), &context, &owner, &[forgotten]).await?;
@@ -162,7 +162,7 @@ async fn erasing_a_forgotten_admission_deletes_its_external_origins() -> TestRes
 /// them before #478; this is a guard, plus the new receipt counter.)
 #[tokio::test]
 async fn owner_erase_deletes_a_forgotten_memorys_external_origins() -> TestResult {
-    let (pg, _db) = fresh_pg("proxima_ext_origin_erase").await;
+    let (pg, _db) = fresh_pg("proxiima_ext_origin_erase").await;
     let user = UserId::new(Uuid::now_v7());
     let owner = OwnerId::from(user);
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -194,7 +194,7 @@ async fn owner_erase_deletes_a_forgotten_memorys_external_origins() -> TestResul
 /// The export carries the table, with the hot and the forgotten memory's rows.
 #[tokio::test]
 async fn export_carries_hot_and_forgotten_external_origins() -> TestResult {
-    let (pg, _db) = fresh_pg("proxima_ext_origin_export").await;
+    let (pg, _db) = fresh_pg("proxiima_ext_origin_export").await;
     let user = UserId::new(Uuid::now_v7());
     let owner = OwnerId::from(user);
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -242,7 +242,7 @@ async fn export_carries_hot_and_forgotten_external_origins() -> TestResult {
 /// (`forget_and_restore_keep_external_origins`).
 #[tokio::test]
 async fn forget_keeps_external_origins() -> TestResult {
-    let (pg, _db) = fresh_pg("proxima_ext_origin_forget").await;
+    let (pg, _db) = fresh_pg("proxiima_ext_origin_forget").await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let (_hot, forgotten) = hot_and_forgotten(&pg, &permit).await?;
@@ -259,7 +259,7 @@ async fn forget_keeps_external_origins() -> TestResult {
 /// again; the owner reads them once the memory is back.
 #[tokio::test]
 async fn forget_and_restore_keep_external_origins() -> TestResult {
-    let (pg, _db) = fresh_pg("proxima_ext_origin_restore").await;
+    let (pg, _db) = fresh_pg("proxiima_ext_origin_restore").await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let t = pg
@@ -287,7 +287,7 @@ async fn forget_and_restore_keep_external_origins() -> TestResult {
 /// source no longer does.
 #[tokio::test]
 async fn transfer_moves_read_access_to_external_origins() -> TestResult {
-    let (pg, _db) = fresh_pg("proxima_ext_origin_transfer").await;
+    let (pg, _db) = fresh_pg("proxiima_ext_origin_transfer").await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let group = GroupId::new(Uuid::now_v7());
@@ -319,7 +319,7 @@ async fn transfer_moves_read_access_to_external_origins() -> TestResult {
 /// written in, because the primary key breaks the declared key's ties.
 #[tokio::test]
 async fn several_origins_export_byte_identically_across_insert_orders() -> TestResult {
-    let (pg, _db) = fresh_pg("proxima_ext_origin_order").await;
+    let (pg, _db) = fresh_pg("proxiima_ext_origin_order").await;
     let user = UserId::new(Uuid::now_v7());
     let owner = OwnerId::from(user);
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -339,13 +339,13 @@ async fn several_origins_export_byte_identically_across_insert_orders() -> TestR
         remotes.clone(),
         vec![remotes[2], remotes[0], remotes[4], remotes[1], remotes[3]],
     ] {
-        sqlx::query("DELETE FROM proxima_core.memory_external_origin WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.memory_external_origin WHERE t = $1")
             .bind(t)
             .execute(pg.pool_for_tests())
             .await?;
         for memory in order {
             sqlx::query(
-                "INSERT INTO proxima_core.memory_external_origin (t, memory, edge_kind) VALUES ($1, $2, 'origin')",
+                "INSERT INTO proxiima_core.memory_external_origin (t, memory, edge_kind) VALUES ($1, $2, 'origin')",
             )
             .bind(t)
             .bind(memory)

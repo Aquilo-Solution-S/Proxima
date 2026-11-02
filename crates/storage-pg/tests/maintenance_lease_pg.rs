@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use proxima_core::{ColdObjectStore, ObjectStoreId, PurgeDeleted, StorageError};
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{ColdPurgeRetryOptions, PgStorage};
+use proxiima_core::{ColdObjectStore, ObjectStoreId, PurgeDeleted, StorageError};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{ColdPurgeRetryOptions, PgStorage};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -21,7 +21,7 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const STORE: &str = "s3:test/lease";
 
 async fn fresh() -> TestResult<(String, PgStorage)> {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_core_db(&db_name).await?;
     let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
     Ok((db_name, pg))
@@ -29,7 +29,7 @@ async fn fresh() -> TestResult<(String, PgStorage)> {
 
 async fn lease_rows(admin: &PgPool) -> TestResult<Vec<String>> {
     Ok(
-        sqlx::query_scalar("SELECT name FROM proxima_core.maintenance_lease ORDER BY name")
+        sqlx::query_scalar("SELECT name FROM proxiima_core.maintenance_lease ORDER BY name")
             .fetch_all(admin)
             .await?,
     )
@@ -38,7 +38,7 @@ async fn lease_rows(admin: &PgPool) -> TestResult<Vec<String>> {
 /// Make `name`'s lease look abandoned: its holder stopped renewing a while ago.
 async fn expire(admin: &PgPool, name: &str) -> TestResult {
     let expired = sqlx::query(
-        "UPDATE proxima_core.maintenance_lease
+        "UPDATE proxiima_core.maintenance_lease
             SET expires_at = clock_timestamp() - interval '1 second'
           WHERE name = $1",
     )
@@ -191,7 +191,7 @@ impl ColdObjectStore for StealingStore {
         *self.deletes.lock().expect("deletes") += 1;
         if !self.stolen.swap(true, Ordering::SeqCst) {
             sqlx::query(
-                "UPDATE proxima_core.maintenance_lease
+                "UPDATE proxiima_core.maintenance_lease
                     SET holder = gen_random_uuid(), expires_at = clock_timestamp() + interval '1 minute'
                   WHERE name = 'storage'",
             )
@@ -218,7 +218,7 @@ async fn a_drain_stops_at_the_next_batch_once_its_lease_is_lost() -> TestResult 
         });
         let pg = pg.with_cold(store.clone());
         sqlx::query(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store, enqueued_at)
+            "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store, enqueued_at)
              SELECT 'objects/' || n, NULL, $1, now() - interval '1 hour'
                FROM generate_series(1, 5) AS n",
         )
@@ -232,7 +232,7 @@ async fn a_drain_stops_at_the_next_batch_once_its_lease_is_lost() -> TestResult 
             .expect_err("the drain stops once the lease is gone");
         assert!(matches!(error, StorageError::Unavailable(_)), "{error:?}");
         assert_eq!(*store.deletes.lock().expect("deletes"), 1, "one batch ran");
-        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.cold_purge_pending")
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.cold_purge_pending")
             .fetch_one(pg.pool_for_tests())
             .await?;
         assert_eq!(left, 4);

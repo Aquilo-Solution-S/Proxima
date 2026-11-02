@@ -159,7 +159,7 @@ pub trait MemoryReadPort: Send + Sync {
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
 
     /// Current stateful Fact heads, filtered by the resolved natural-key
-    /// prefix and readable owners before pagination. Flavor tombstones are
+    /// prefix and readable owners before pagination. Spiice tombstones are
     /// included; forgotten admissions and old revisions are absent.
     ///
     /// The descriptor is constructible only through the frozen contract

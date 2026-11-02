@@ -1,14 +1,14 @@
 //! The lifecycle scope: an owner transaction that also sees forgotten
 //! memories.
 //!
-//! The owner read policy on `proxima_core.memory` hides a row whose
+//! The owner read policy on `proxiima_core.memory` hides a row whose
 //! `forgotten_at` is set, and every sidecar policy that reaches its parent
 //! through `memory` inherits that. The verbs that act on forgotten rows —
 //! forget itself, restore, erase, transfer, export and replay — run here
 //! instead. This module is the only writer of the GUC the policy reads; the
-//! type is crate-private, so no host or flavor can construct it.
+//! type is crate-private, so no host or spiice can construct it.
 
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 use sqlx::PgConnection;
 
 use crate::error::map_err;
@@ -37,7 +37,7 @@ impl PgLifecycleScope {
     #[cfg(test)]
     pub(crate) async fn begin(
         pool: &sqlx::PgPool,
-        scope: &proxima_core::OwnerScope,
+        scope: &proxiima_core::OwnerScope,
     ) -> Result<(Self, sqlx::Transaction<'static, sqlx::Postgres>), StorageError> {
         let mut transaction = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
         let lifecycle = Self::enter(&mut transaction).await?;
@@ -47,7 +47,7 @@ impl PgLifecycleScope {
     /// Widen a transaction already bound to owner scope. The setting is
     /// transaction-local: commit and rollback remove it.
     pub(crate) async fn enter(connection: &mut PgConnection) -> Result<Self, StorageError> {
-        sqlx::query("SELECT set_config('app.proxima_lifecycle', 'on', true)")
+        sqlx::query("SELECT set_config('app.proxiima_lifecycle', 'on', true)")
             .execute(connection)
             .await
             .map_err(map_err)?;
@@ -71,7 +71,7 @@ impl PgLifecycleScope {
     }
 
     async fn leave(self, connection: &mut PgConnection) -> Result<(), StorageError> {
-        sqlx::query("SELECT set_config('app.proxima_lifecycle', 'off', true)")
+        sqlx::query("SELECT set_config('app.proxiima_lifecycle', 'off', true)")
             .execute(connection)
             .await
             .map_err(map_err)?;

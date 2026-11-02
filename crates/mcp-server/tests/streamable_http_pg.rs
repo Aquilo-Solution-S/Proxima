@@ -7,11 +7,11 @@ mod common;
 
 use async_trait::async_trait;
 use common::{create_db, initialize, initialized, split_role_urls};
-use proxima_core::{
-    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, FlavorRegistry, OwnerId,
-    RevalidationConfig,
+use proxiima_core::{
+    AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerId, RevalidationConfig,
+    SpiiceRegistry,
 };
-use proxima_mcp_server::{McpEdgeAuth, McpToolHost};
+use proxiima_mcp_server::{McpEdgeAuth, McpToolHost};
 use serde_json::json;
 use tokio::task::JoinHandle;
 
@@ -42,7 +42,7 @@ async fn allowed_browser_preflight_skips_bearer_auth() -> Result<(), Box<dyn std
         .header("Access-Control-Request-Method", "POST")
         .header(
             "Access-Control-Request-Headers",
-            "authorization,content-type,x-proxima-owner",
+            "authorization,content-type,x-proxiima-owner",
         )
         .send()
         .await?;
@@ -59,7 +59,7 @@ async fn allowed_browser_preflight_skips_bearer_auth() -> Result<(), Box<dyn std
             .headers()
             .get("Access-Control-Allow-Headers")
             .and_then(|value| value.to_str().ok()),
-        Some("authorization,content-type,x-proxima-owner")
+        Some("authorization,content-type,x-proxiima-owner")
     );
 
     common::stop_server(handle, &db_name).await?;
@@ -136,7 +136,7 @@ async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std:
         .filter_map(|resource| resource["uri"].as_str())
         .collect();
     assert!(
-        resource_uris.contains(&"proxima://tools"),
+        resource_uris.contains(&"proxiima://tools"),
         "got {resource_uris:?}"
     );
 
@@ -162,16 +162,16 @@ async fn host_bearer_lists_all_tools_without_origin() -> Result<(), Box<dyn std:
                 .and_then(serde_json::Value::as_str)
         })
         .collect();
-    assert!(template_uris.contains(&"proxima://memory/{id}{?expand_neighbors,version}"));
-    assert!(template_uris.contains(&"proxima://memories{?ids}"));
+    assert!(template_uris.contains(&"proxiima://memory/{id}{?expand_neighbors,version}"));
+    assert!(template_uris.contains(&"proxiima://memories{?ids}"));
     assert!(
-        template_uris.contains(&"proxima://memory/{id}/lineage{?direction,depth,limit,cursor}")
+        template_uris.contains(&"proxiima://memory/{id}/lineage{?direction,depth,limit,cursor}")
     );
     assert!(
         !template_uris
             .iter()
-            .any(|uri| uri.contains("proxima://edges")),
-        "proxima://edges is not a resource; catalog is expand_neighbors/lineage: {template_uris:?}"
+            .any(|uri| uri.contains("proxiima://edges")),
+        "proxiima://edges is not a resource; catalog is expand_neighbors/lineage: {template_uris:?}"
     );
 
     common::stop_server(handle, &db_name).await?;
@@ -261,13 +261,13 @@ impl Authenticator for TestHostAuth {
         }
     }
 
-    async fn current_auth_epoch(&self, _principal: &proxima_core::OwnerId) -> u64 {
+    async fn current_auth_epoch(&self, _principal: &proxiima_core::OwnerId) -> u64 {
         self.epoch.load(Ordering::SeqCst)
     }
 }
 
 type HostServer = (
-    JoinHandle<Result<(), proxima_mcp_server::McpServerError>>,
+    JoinHandle<Result<(), proxiima_mcp_server::McpServerError>>,
     SocketAddr,
     String,
 );
@@ -278,7 +278,7 @@ async fn start_host_auth_server(
 ) -> Result<HostServer, Box<dyn std::error::Error>> {
     let db_name = create_db().await?;
     let (runtime_url, platform_url) = split_role_urls(&db_name).await?;
-    let registry = FlavorRegistry::new();
+    let registry = SpiiceRegistry::new();
     let server = McpToolHost::from_database_urls(&runtime_url, &platform_url, registry, 0).await?;
     let auth_store = Arc::new(McpEdgeAuth::headless().with_host(authenticator));
     let (handle, addr) = common::serve_loopback(server, auth_store, revalidation).await?;
@@ -295,7 +295,7 @@ async fn open_standalone_sse(
         .get(url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer)
-        .header("X-Proxima-Owner", common::nil_owner_header())
+        .header("X-Proxiima-Owner", common::nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Mcp-Session-Id", session_id)
         .header("Accept", "text/event-stream")
@@ -313,7 +313,7 @@ async fn initialize_without_origin(
     let response = client
         .post(url)
         .header("Authorization", bearer)
-        .header("X-Proxima-Owner", common::nil_owner_header())
+        .header("X-Proxiima-Owner", common::nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
@@ -349,7 +349,7 @@ async fn initialized_without_origin(
     let response = client
         .post(url)
         .header("Authorization", bearer)
-        .header("X-Proxima-Owner", common::nil_owner_header())
+        .header("X-Proxiima-Owner", common::nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Mcp-Session-Id", session_id)
         .header("Content-Type", "application/json")
@@ -371,7 +371,7 @@ async fn post_rpc_without_origin(
     let mut request = client
         .post(url)
         .header("Authorization", bearer)
-        .header("X-Proxima-Owner", common::nil_owner_header())
+        .header("X-Proxiima-Owner", common::nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")

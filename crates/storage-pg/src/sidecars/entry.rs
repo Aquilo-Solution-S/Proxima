@@ -1,4 +1,4 @@
-use proxima_core::flavor::LanguagePolicy;
+use proxiima_core::spiice::LanguagePolicy;
 
 use super::{
     GoalId, MemoryId, PayloadKind, PgMemoryPayloadBatchFuture, PgMemoryPayloadFuture,
@@ -55,7 +55,7 @@ pub struct PgSidecarEntry {
     /// registration, which hangs off no memory.
     ///
     /// Carried for the same reason `owner` is: the series-head
-    /// lookup joins a sidecar back to `proxima_core.memory` and knows only
+    /// lookup joins a sidecar back to `proxiima_core.memory` and knows only
     /// the table name, so without this the join spells the memory column
     /// `t` and a sidecar keyed on anything else can never be found through
     /// it. Freeze checks it against the contract's `Surface`.
@@ -65,15 +65,15 @@ pub struct PgSidecarEntry {
     pub(super) memory_load_batch: Option<PgMemoryPayloadBatchLoader>,
     pub(super) goal_insert: Option<PgGoalSidecarInserter>,
     pub(super) goal_copy: Option<PgGoalSidecarCopier>,
-    /// The generated `INSERT INTO <flavor>.projection … FROM <sidecar>`
+    /// The generated `INSERT INTO <spiice>.projection … FROM <sidecar>`
     /// statement for this schema, or `None` when the schema is not a search
-    /// surface. Built in `freeze_against` from the flavor contract, so a
+    /// surface. Built in `freeze_against` from the spiice contract, so a
     /// projected schema cannot be written without its projection row: the
     /// two statements are one method call apart in one transaction.
     pub(super) projection_insert: Option<String>,
     /// The projection table this entry maintains. Carried so transfer can
     /// ask the registry which tables follow an owner without knowing which
-    /// flavors are linked.
+    /// spiices are linked.
     pub(super) projection_table: Option<String>,
     /// The projected schema's declared language policy, `None` when the
     /// schema writes no projection row.

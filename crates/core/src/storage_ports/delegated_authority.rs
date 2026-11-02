@@ -25,9 +25,9 @@ use crate::text_bounds::check_trimmed_len;
 const MAX_TOOL_ID_CHARS: usize = 200;
 use crate::{
     AccessError, ActionName, AuthPath, Authenticator, AuthzContext, CapabilitySet, DelegatedPhase,
-    DelegationRuntimeAuthority, FlavorRegistryFrozen, OwnerAccessPort, OwnerId, OwnerRoles,
-    ProtocolError, Role, ScopeKey, ScopeKeyError, ServedSurface, StorageError, ToolName, ToolScope,
-    UserId, WriterAttribution,
+    DelegationRuntimeAuthority, OwnerAccessPort, OwnerId, OwnerRoles, ProtocolError, Role,
+    ScopeKey, ScopeKeyError, ServedSurface, SpiiceRegistryFrozen, StorageError, ToolName,
+    ToolScope, UserId, WriterAttribution,
 };
 
 /// The registered tool or dispatcher leaf `value` names: a [`ScopeKey::Tool`]
@@ -40,7 +40,7 @@ use crate::{
 /// an action the tool does not declare.
 fn registered_tool_key(
     value: &str,
-    registry: &FlavorRegistryFrozen,
+    registry: &SpiiceRegistryFrozen,
 ) -> Result<ScopeKey, ProtocolError> {
     const NOT_CANONICAL: &str = "tool id must be provider-safe canonical id";
     const LEAF_REGISTERED: &str = "leaf action scope required and must be registered";
@@ -58,7 +58,7 @@ fn registered_tool_key(
     };
     match &key {
         // Both halves resolve through the descriptor's own `action_arg_specs`
-        // rather than the substrate `CoreActionMeta` tables, so a flavor
+        // rather than the substrate `CoreActionMeta` tables, so a spiice
         // dispatcher's leaf is nameable in a delegated command.
         ScopeKey::Action { tool, action } => {
             let declared = registry.mcp_tool(tool.as_str()).is_some_and(|descriptor| {
@@ -137,7 +137,7 @@ impl DelegatedCommand {
     /// tool without an action, or action not present in `registry`.
     pub fn parse(
         raw: impl Into<String>,
-        registry: &FlavorRegistryFrozen,
+        registry: &SpiiceRegistryFrozen,
     ) -> Result<Self, ProtocolError> {
         let raw = raw.into();
         let value = check_trimmed_len(&raw, MAX_TOOL_ID_CHARS).map_err(|violation| {
@@ -491,7 +491,7 @@ pub struct DelegatedAuthorityService {
     mutation_permit: Arc<DelegationMutationPermit>,
     owner_access: Arc<dyn OwnerAccessPort>,
     authenticator: Arc<dyn Authenticator>,
-    registry: Arc<FlavorRegistryFrozen>,
+    registry: Arc<SpiiceRegistryFrozen>,
     served_surface: ServedSurface,
     runtime_binding: DelegationRuntimeBinding,
 }
@@ -506,14 +506,14 @@ impl std::fmt::Debug for DelegatedAuthorityService {
 
 impl DelegatedAuthorityService {
     /// Runtime-only composition seam. Applications obtain the shared service
-    /// from `FlavorServices` rather than constructing a second instance.
+    /// from `SpiiceServices` rather than constructing a second instance.
     #[doc(hidden)]
     #[must_use]
     pub fn new(
         store: Arc<dyn DelegationStorePort>,
         owner_access: Arc<dyn OwnerAccessPort>,
         authenticator: Arc<dyn Authenticator>,
-        registry: Arc<FlavorRegistryFrozen>,
+        registry: Arc<SpiiceRegistryFrozen>,
         served_surface: ServedSurface,
         runtime_authority: &DelegationRuntimeAuthority,
     ) -> Self {
@@ -807,7 +807,7 @@ mod tests {
         McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError, Replay, ToolEffect,
     };
     use crate::query::QueryRequest;
-    use crate::{FactPayload, FlavorRegistry, GroupId, PayloadKeyBuilder};
+    use crate::{FactPayload, GroupId, PayloadKeyBuilder, SpiiceRegistry};
 
     const TOOL_NAME: &str = "test-delegation_worker";
     const DISPATCHER_TOOL_NAME: &str = "test-delegation_dispatcher";
@@ -979,8 +979,8 @@ mod tests {
         }
     }
 
-    fn registry(with_tool: bool) -> FlavorRegistryFrozen {
-        let mut registry = FlavorRegistry::new();
+    fn registry(with_tool: bool) -> SpiiceRegistryFrozen {
+        let mut registry = SpiiceRegistry::new();
         registry.add_fact_schema_or_panic_for_tests::<TestFact>();
         if with_tool {
             registry.add_mcp_tool_or_panic_for_tests::<WorkerTool>("test-delegation");
@@ -988,8 +988,8 @@ mod tests {
         registry.freeze_or_panic_for_tests()
     }
 
-    fn dispatcher_registry() -> FlavorRegistryFrozen {
-        let mut registry = FlavorRegistry::new();
+    fn dispatcher_registry() -> SpiiceRegistryFrozen {
+        let mut registry = SpiiceRegistry::new();
         registry.add_mcp_tool_or_panic_for_tests::<DispatcherTool>("test-delegation");
         registry.freeze_or_panic_for_tests()
     }
@@ -1021,7 +1021,7 @@ mod tests {
     }
 
     fn runtime(
-        frozen: FlavorRegistryFrozen,
+        frozen: SpiiceRegistryFrozen,
         store: Arc<MemoryStore>,
         owner_access: Arc<TestOwnerAccess>,
         authenticator: Arc<EpochAuthenticator>,

@@ -369,7 +369,7 @@ async fn internal_operations(
 #[tokio::test]
 async fn public_links_carry_bytes_while_object_io_stays_internal() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let (pg, db_name) = fresh_storage().await;
@@ -382,10 +382,10 @@ async fn public_links_carry_bytes_while_object_io_stays_internal() {
     )
     .await;
     let config = S3RuntimeConfig::from_lookup(&|key| match key {
-        "PROXIMA_S3_PUBLIC_ENDPOINT_URL" => Some(proxy.endpoint.clone()),
-        "PROXIMA_S3_FORCE_PATH_STYLE" => Some("true".into()),
-        "PROXIMA_S3_UPLOAD_TTL_SECONDS" => Some(configured.upload_ttl_seconds.to_string()),
-        "PROXIMA_S3_READ_TTL_SECONDS" => Some(configured.read_ttl_seconds.to_string()),
+        "PROXIIMA_S3_PUBLIC_ENDPOINT_URL" => Some(proxy.endpoint.clone()),
+        "PROXIIMA_S3_FORCE_PATH_STYLE" => Some("true".into()),
+        "PROXIIMA_S3_UPLOAD_TTL_SECONDS" => Some(configured.upload_ttl_seconds.to_string()),
+        "PROXIIMA_S3_READ_TTL_SECONDS" => Some(configured.read_ttl_seconds.to_string()),
         _ => std::env::var(key).ok(),
     })
     .expect("valid public endpoint setting")
@@ -397,7 +397,7 @@ async fn public_links_carry_bytes_while_object_io_stays_internal() {
     )
     .expect("public endpoint config");
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));

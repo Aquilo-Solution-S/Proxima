@@ -2,11 +2,11 @@
 //! goals of one Perspective and of none (#539), and a page of an owner's goals
 //! (#545), read about the goals they return however many goals the store holds.
 
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::query::{EntityKind, GoalAssignmentFilter, QueryRequest};
-use proxima_core::{Credentials, GroupId, MemoryId, OwnerId, OwnerRoles, Role, UserId};
-use proxima_storage_pg::begin_owner_transaction;
-use proxima_storage_pg::verbs::query::goal_page_sql_for_tests;
+use proxiima_core::verbs::goal_write::GoalState;
+use proxiima_core::verbs::query::{EntityKind, GoalAssignmentFilter, QueryRequest};
+use proxiima_core::{Credentials, GroupId, MemoryId, OwnerId, OwnerRoles, Role, UserId};
+use proxiima_storage_pg::begin_owner_transaction;
+use proxiima_storage_pg::verbs::query::goal_page_sql_for_tests;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -20,7 +20,7 @@ const UNASSIGNED_EVERY: i32 = 1_500;
 
 async fn seed(admin: &PgPool, owner: Uuid) {
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')
+        "INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'group')
          ON CONFLICT DO NOTHING",
     )
     .bind(owner)
@@ -48,7 +48,7 @@ async fn seed(admin: &PgPool, owner: Uuid) {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
          SELECT handle, 'core/simple-text-v1', $1, t2 FROM series",
     )
     .bind(owner)
@@ -58,7 +58,7 @@ async fn seed(admin: &PgPool, owner: Uuid) {
     // The first version of each series is Active and superseded; the head is
     // Active for the series marked so, Achieved otherwise.
     sqlx::query(
-        "INSERT INTO proxima_core.goal
+        "INSERT INTO proxiima_core.goal
              (handle, t, owner_id, title, state, request_id, assignment_t, \"by\", text)
          SELECT handle, t1, $1, 'g' || n, 'Active', 'first-' || n, assignment,
                 '00000000-0000-0000-0000-000000000539'::uuid, 'text'
@@ -69,10 +69,10 @@ async fn seed(admin: &PgPool, owner: Uuid) {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO proxima_core.goal
+        "INSERT INTO proxiima_core.goal
              (handle, t, owner_id, title, state, request_id, assignment_t, \"by\", text, close_fact_t)
          SELECT handle, t2, $1, 'g' || n,
-                CASE WHEN active THEN 'Active' ELSE 'Achieved' END::proxima_core.goal_state,
+                CASE WHEN active THEN 'Active' ELSE 'Achieved' END::proxiima_core.goal_state,
                 'head-' || n, assignment, '00000000-0000-0000-0000-000000000539'::uuid, 'text',
                 CASE WHEN active THEN NULL ELSE uuidv7() END
            FROM series",
@@ -124,7 +124,7 @@ async fn run(
         roles: OwnerRoles::for_subject(UserId::new(Uuid::now_v7()), vec![(group, Role::viewer())])
             .unwrap(),
     };
-    let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("goals".into()))
+    let authz = proxiima_core::authenticate(&verifier, &Credentials::Bearer("goals".into()))
         .await
         .unwrap();
     let mut tx = begin_owner_transaction(runtime, authz.owner_scope().unwrap())
@@ -252,7 +252,7 @@ async fn an_owner_of_few_goals_lists_them_without_reading_the_store() {
     let (small, large) = (Uuid::now_v7(), Uuid::now_v7());
     for (owner, series) in [(small, 300), (large, i64::from(SERIES))] {
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')
+            "INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'group')
              ON CONFLICT DO NOTHING",
         )
         .bind(owner)
@@ -274,7 +274,7 @@ async fn an_owner_of_few_goals_lists_them_without_reading_the_store() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
              SELECT handle, 'core/simple-text-v1', $1, t2 FROM listed",
         )
         .bind(owner)
@@ -282,7 +282,7 @@ async fn an_owner_of_few_goals_lists_them_without_reading_the_store() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO proxima_core.goal (handle, t, owner_id, title, state, request_id, \"by\", text)
+            "INSERT INTO proxiima_core.goal (handle, t, owner_id, title, state, request_id, \"by\", text)
              SELECT handle, t1, $1, 'g' || n, 'Active', 'first-' || n,
                     '00000000-0000-0000-0000-000000000545'::uuid, 'text'
                FROM listed",
@@ -292,10 +292,10 @@ async fn an_owner_of_few_goals_lists_them_without_reading_the_store() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO proxima_core.goal
+            "INSERT INTO proxiima_core.goal
                  (handle, t, owner_id, title, state, request_id, \"by\", text, close_fact_t)
              SELECT handle, t2, $1, 'g' || n,
-                    CASE WHEN n % 10 = 0 THEN 'Active' ELSE 'Achieved' END::proxima_core.goal_state,
+                    CASE WHEN n % 10 = 0 THEN 'Active' ELSE 'Achieved' END::proxiima_core.goal_state,
                     'head-' || n, '00000000-0000-0000-0000-000000000545'::uuid, 'text',
                     CASE WHEN n % 10 = 0 THEN NULL ELSE uuidv7() END
                FROM listed",

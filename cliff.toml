@@ -11,20 +11,20 @@
 
 [remote.github]
 owner = "Aquilo-Solution-S"
-repo = "Proxima"
+repo = "Proxiima"
 
 [changelog]
 header = """
 # Changelog
 
-Release notes for Proxima, generated from [Conventional Commits](https://www.conventionalcommits.org) \
-by [git-cliff](https://git-cliff.org). Published notes live in [GitHub Releases](https://github.com/Aquilo-Solution-S/Proxima/releases).
+Release notes for Proxiima, generated from [Conventional Commits](https://www.conventionalcommits.org) \
+by [git-cliff](https://git-cliff.org). Published notes live in [GitHub Releases](https://github.com/Aquilo-Solution-S/proxiima/releases).
 
 Pre-1.0 the git tag (e.g. `v0.0.3`) is the version; workspace crates are unpublished (`publish = false`).\n
 """
 body = """
 {%- macro remote_url() -%}
-  https://github.com/Aquilo-Solution-S/Proxima
+  https://github.com/Aquilo-Solution-S/proxiima
 {%- endmacro -%}
 
 {% if version -%}
@@ -83,7 +83,7 @@ body = """
 """
 footer = """
 {%- macro remote_url() -%}
-  https://github.com/Aquilo-Solution-S/Proxima
+  https://github.com/Aquilo-Solution-S/proxiima
 {%- endmacro -%}
 
 {% for release in releases -%}

@@ -11,7 +11,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = {
-    "index", "concepts", "decisions", "get-started", "agents", "build-a-flavor",
+    "index", "concepts", "decisions", "get-started", "agents", "build-a-spiice",
     "host-integration", "protocol", "operate", "configuration", "data-and-erasure",
     "contributing",
 }

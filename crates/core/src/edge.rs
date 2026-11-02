@@ -24,7 +24,7 @@ use crate::entity::EntityRef;
 use crate::{EntityKind, GoalId, MemoryId, SchemaId};
 
 /// Closed substrate vocabulary for what an edge *is*. Two variants, not
-/// extensible — not by flavors, not by core features. A feature that
+/// extensible — not by spiices, not by core features. A feature that
 /// seems to need a third kind fails the node-home test (docs/concepts.md
 /// Thesis) and is missing a node, not a kind.
 ///
@@ -52,7 +52,7 @@ pub enum EdgeKind {
 
 impl EdgeKind {
     /// SQL discriminator. Stable contract — must match the labels of
-    /// `proxima_core.edge_kind`.
+    /// `proxiima_core.edge_kind`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {

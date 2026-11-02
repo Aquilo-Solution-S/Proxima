@@ -22,6 +22,6 @@ impl FactPayload for WriteActV1 {
     }
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_core.write_act_v1")
+        Some("proxiima_core.write_act_v1")
     }
 }

@@ -1,4 +1,4 @@
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 
 /// Validated Postgres identifier used when dynamic SQL must splice a
 /// build-time sidecar table or column name. Bind parameters cannot
@@ -64,10 +64,10 @@ mod tests {
     #[test]
     fn table_accepts_schema_qualified_identifiers() {
         assert_eq!(
-            PgIdent::table("proxima_fixture.summary_v1")
+            PgIdent::table("proxiima_fixture.summary_v1")
                 .unwrap()
                 .as_str(),
-            "proxima_fixture.summary_v1"
+            "proxiima_fixture.summary_v1"
         );
         assert_eq!(PgIdent::table("_local").unwrap().as_str(), "_local");
     }

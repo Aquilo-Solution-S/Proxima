@@ -1,7 +1,7 @@
 # Operate
 > Status: current.
 
-One deployment links core, storage, transports, and its flavor crates into one
+One deployment links core, storage, transports, and its spiice crates into one
 host binary. [Get started](get-started.md) supplies the local bootstrap;
 [configuration](configuration.md) owns the settings inventory.
 
@@ -16,15 +16,15 @@ owner-scoped transaction; platform maintenance enters the separately authorized
 platform scope. Owner RLS is always enforced.
 
 The boot RLS guard covers composed schemas and schemas recorded in
-`proxima_core.flavor_surface`, including stored flavors absent from the binary.
+`proxiima_core.spiice_surface`, including stored spiices absent from the binary.
 The platform connection reads that catalog; the runtime connection is checked
 against the combined inventory.
 
-`DATABASE_URL`, `PROXIMA_PLATFORM_DATABASE_URL`, and the host-assigned
-`PROXIMA_STORE_NUMBER` are required for the canonical host. Provision the
+`DATABASE_URL`, `PROXIIMA_PLATFORM_DATABASE_URL`, and the host-assigned
+`PROXIIMA_STORE_NUMBER` are required for the canonical host. Provision the
 platform role as the schema/migration owner and
 the runtime role for serving grants. Development provisioning is executable in
-[`scripts/pg-init.sql`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/scripts/pg-init.sql).
+[`scripts/pg-init.sql`](https://github.com/Aquilo-Solution-S/proxiima/blob/main/scripts/pg-init.sql).
 Stop older hosts before changing their role/schema contract.
 
 Before migrating, an administrator provisions the fixed candidate-function
@@ -32,19 +32,19 @@ owner and grants the platform role permission to switch to it. Replace
 `platform_role` below with the deployment's migration role:
 
 ```sql
-CREATE ROLE proxima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
+CREATE ROLE proxiima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
     NOCREATEDB NOCREATEROLE NOINHERIT;
-GRANT proxima_search TO platform_role WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-GRANT USAGE ON SCHEMA public TO proxima_search;
+GRANT proxiima_search TO platform_role WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+GRANT USAGE ON SCHEMA public TO proxiima_search;
 ```
 
 Keep the runtime role outside this membership. Migrations temporarily give
-`proxima_search` schema creation rights while replacing its candidate
+`proxiima_search` schema creation rights while replacing its candidate
 functions, then revoke those rights. Preserve this function ownership when
 reassigning restored objects. Candidate functions have no public execution
 grant; the runtime grant phase grants execution on their catalog signatures
 after migrations. Deployments that manage grants themselves must grant
-`EXECUTE` on the `proxima_search`-owned candidate functions in each composed
+`EXECUTE` on the `proxiima_search`-owned candidate functions in each composed
 schema to their runtime role. These functions find candidates through the
 indexes; ordinary memory RLS still gates every returned id and score.
 
@@ -83,33 +83,33 @@ the storage suites that depend on this through PgBouncer.
   authentication.
 - Set `max_prepared_statements` above zero: queries are protocol-level
   prepared statements.
-- Proxima sends `PROXIMA_PG_STATEMENT_TIMEOUT_MS` as a startup option.
+- Proxiima sends `PROXIIMA_PG_STATEMENT_TIMEOUT_MS` as a startup option.
   PgBouncer refuses a startup option it does not track, so add
   `statement_timeout` to `track_extra_parameters`. Alternatively set
-  `PROXIMA_PG_STATEMENT_TIMEOUT_MS=0` and give the role its timeout
+  `PROXIIMA_PG_STATEMENT_TIMEOUT_MS=0` and give the role its timeout
   (`ALTER ROLE runtime_role SET statement_timeout = '30s'`), which applies to
   every server connection the pooler opens as that role. Do not add
   `options` to `ignore_startup_parameters`: the timeout would be dropped
-  without an error. `extra_float_digits` needs no entry; Proxima does not
+  without an error. `extra_float_digits` needs no entry; Proxiima does not
   send it.
 - Migrations need a direct or session-mode connection. Boot migrates, or
-  with `PROXIMA_SKIP_MIGRATIONS` runs the migration preflight, under a
-  session lock and session settings, on `PROXIMA_MIGRATION_DATABASE_URL` if
-  set and on `PROXIMA_PLATFORM_DATABASE_URL` otherwise. To put the serving
+  with `PROXIIMA_SKIP_MIGRATIONS` runs the migration preflight, under a
+  session lock and session settings, on `PROXIIMA_MIGRATION_DATABASE_URL` if
+  set and on `PROXIIMA_PLATFORM_DATABASE_URL` otherwise. To put the serving
   platform pool behind the transaction pooler too, point
-  `PROXIMA_PLATFORM_DATABASE_URL` at the pooler and
-  `PROXIMA_MIGRATION_DATABASE_URL` at Postgres directly (or at a session-mode
+  `PROXIIMA_PLATFORM_DATABASE_URL` at the pooler and
+  `PROXIIMA_MIGRATION_DATABASE_URL` at Postgres directly (or at a session-mode
   pool: with PgBouncer, a second database entry with `pool_mode = session`),
   as the same role and database; boot refuses another role or database.
-  Without `PROXIMA_MIGRATION_DATABASE_URL`, keep the platform URL direct or
+  Without `PROXIIMA_MIGRATION_DATABASE_URL`, keep the platform URL direct or
   session-mode. The `maintain-*` commands migrate on the same URL and check
   it the same way. `McpToolHost::from_database_urls` (the lower-level
-  `proxima-mcp-server` entry point) takes no migration URL: it migrates on
+  `proxiima-mcp-server` entry point) takes no migration URL: it migrates on
   its platform URL, which must then be direct or session-mode. An
   out-of-band migration job (`tools/dev-migrate`) also needs a direct or
   session-mode connection.
 - Budget connections by where they are held. Each host holds a runtime and
-  a platform pool of up to `PROXIMA_PG_MAX_CONNECTIONS` client connections
+  a platform pool of up to `PROXIIMA_PG_MAX_CONNECTIONS` client connections
   each (default 5), and a migration pool of the same size during boot.
   Behind a transaction pooler the runtime pools of every host share the
   pooler's server pool (`default_pool_size` per database and role), so the
@@ -118,11 +118,11 @@ the storage suites that depend on this through PgBouncer.
 - An idle host keeps few server connections busy: the outbox and embedding
   drains wake on writes the host commits and otherwise back off to one claim
   every 30 s (outbox) and 60 s (embeddings, or
-  `PROXIMA_EMBED_WORKER_INTERVAL_SECONDS` if longer). Work another process
+  `PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS` if longer). Work another process
   enqueues is picked up within those intervals.
 - AWS RDS Proxy pins a client to its server connection when a session sets a
   setting, creates a temporary table or uses prepared statements, which
-  Proxima's transactions do. It works, but pinned clients get little
+  Proxiima's transactions do. It works, but pinned clients get little
   multiplexing; PgBouncer is the tested pooler.
 
 ## Container and network boundary
@@ -130,11 +130,11 @@ the storage suites that depend on this through PgBouncer.
 Build the default substrate-only MCP image:
 
 ```sh
-docker build -t proxima-mcp .
+docker build -t proxiima-mcp .
 ```
 
-The image serves the core only: proxima-mcp links no flavor. A deployment that
-needs a flavor builds its own host that links it.
+The image serves the core only: proxiima-mcp links no spiice. A deployment that
+needs a spiice builds its own host that links it.
 
 Supply the database connections, store number, and OIDC configuration through the
 deployment's secret/config mechanism. Use a loopback bind for local use. A
@@ -154,12 +154,12 @@ request headers.
 
 ## Object storage
 
-Set `PROXIMA_S3_PUBLIC_ENDPOINT_URL` when holders of presigned read links
+Set `PROXIIMA_S3_PUBLIC_ENDPOINT_URL` when holders of presigned read links
 reach a different address from the host. Presigned upload links are signed
-for `PROXIMA_S3_ENDPOINT_URL` and do not use the public endpoint. The
+for `PROXIIMA_S3_ENDPOINT_URL` and do not use the public endpoint. The
 presigner shares the configured credentials, region, bucket, path style and
 lifetimes with the object client. Staging, verified reads, reconciliation
-and object purge use `PROXIMA_S3_ENDPOINT_URL`.
+and object purge use `PROXIIMA_S3_ENDPOINT_URL`.
 
 The upload `PUT` signs the declared `byte_len` as its `Content-Length`, so the
 store refuses a body of any other length before it lands; a proxy in front of
@@ -175,17 +175,17 @@ cannot be rewritten to another address or path. Both endpoint settings use
 the same HTTPS or allowed-plaintext host policy.
 
 Every upload and every purge debt names the object store that holds its
-bytes. By default the name is derived from `PROXIMA_S3_ENDPOINT_URL` and
-`PROXIMA_S3_BUCKET` (scheme and host lowercased, default port and trailing
-slash dropped; `aws/<bucket>` with no endpoint). Set `PROXIMA_S3_STORE_ID`
+bytes. By default the name is derived from `PROXIIMA_S3_ENDPOINT_URL` and
+`PROXIIMA_S3_BUCKET` (scheme and host lowercased, default port and trailing
+slash dropped; `aws/<bucket>` with no endpoint). Set `PROXIIMA_S3_STORE_ID`
 to a stable name (`[A-Za-z0-9._-]`, up to 64 characters) when processes
 that share one store reach it through different endpoint URLs, or when
 several stores share one endpoint and bucket. A purge drain only deletes
 debt owed to the store it is wired to; debt for any other store is left in
 place, never cleared. A store does not move, so a server, or a library host's
-`proxima::object_maintenance_pass`, refuses to start while the queue holds
+`proxiima::object_maintenance_pass`, refuses to start while the queue holds
 debt for another store. The error names the configured store, the store found
-and the count: fix the `PROXIMA_S3_*` settings, or drain that debt with
+and the count: fix the `PROXIIMA_S3_*` settings, or drain that debt with
 `maintain-storage` configured for the store it names.
 
 ## Probes and shutdown
@@ -215,18 +215,18 @@ binding with a new client when configuration changes; mutating the same client
 does not reset the pause. Drains observe changed routes and clear faults once
 their old bindings are no longer active. Healthy clients continue draining.
 Calls through one original client serialize by default. With
-`PROXIMA_EMBED_SEARCH_CONCURRENT=true`, search routes have one dispatch slot
+`PROXIIMA_EMBED_SEARCH_CONCURRENT=true`, search routes have one dispatch slot
 beside the background slot; each lane still serializes its own calls. Enable
 this only where the provider and host admission allow two concurrent requests.
 The HTTP adapter marks the explicit query operation with
-`x-proxima-embedding-purpose: search`; ordinary single and batch operations
+`x-proxiima-embedding-purpose: search`; ordinary single and batch operations
 send no purpose header. With the switch off, engine searches use the ordinary
 embedding operation and serialize with writes as before.
 Both lanes share configuration pauses and backoff; a call already in flight
 can finish, but its success cannot clear a newer refusal. The request deadline
 includes waiting for its dispatch slot and the provider call together.
 
-`proxima::serve` and `RunningProxima::until_shutdown_signal` drain on
+`proxiima::serve` and `RunningProxiima::until_shutdown_signal` drain on
 SIGTERM/SIGINT: readiness fails, listeners stop accepting, requests and streams
 finish, then workers join. Set the orchestrator's grace above the longest
 allowed request. Stream authorization is rechecked during long-lived streams;
@@ -249,7 +249,7 @@ owner between models.
 | Orphan embedding rows | Run authorized embedding maintenance |
 | Poor exact-versus-ANN recall | Inspect canary results and HNSW tuning/index health |
 
-`proxima-mcp maintain-embeddings` performs one maintenance pass. The host's
+`proxiima-mcp maintain-embeddings` performs one maintenance pass. The host's
 operator-only observability APIs expose backlog, coverage, orphan counts, and
 recall checks. Their authorization is distinct from ordinary owner retrieval.
 Vacuum and index rebuild scheduling depend on measured tuples, bytes, latency,
@@ -258,7 +258,7 @@ and recall; they are database operations.
 A store with a [host vector index](host-integration.md#vector-index) keeps no
 local vectors: the recall canary and HNSW tuning apply to the host's index, not
 the store. An unreachable index fails each drain pass and every search with a
-semantic leg; lexical search keeps working. Pending debt in `proxima_core.vector_index_debt` is
+semantic leg; lexical search keeps working. Pending debt in `proxiima_core.vector_index_debt` is
 paid on the next drain pass after the index is reachable again, and a
 maintenance pass repairs whatever the index lost.
 
@@ -276,7 +276,7 @@ disables triggers, run `PgSidecarRegistryFrozen::integrity_check` afterwards;
 disabled triggers cannot validate the restored pairing. Physical backup/PITR
 does not replay table inserts.
 
-After restoring either store, run `proxima-mcp maintain-blobs`. It reports
+After restoring either store, run `proxiima-mcp maintain-blobs`. It reports
 missing referenced objects and unclaimed objects; it does not repair or delete
 them, with one exception. Every pending or completed upload row claims the
 canonical object its id implies, whatever key it records, so a staged upload's
@@ -290,15 +290,15 @@ Embeddings can be rebuilt from retained content; lost content cannot.
 ## External deletion and publication
 
 A server with an object store drains what it owes by itself, as it drains
-embedding jobs: every `PROXIMA_OBJECT_PURGE_INTERVAL_SECS` (default 60, `0`
+embedding jobs: every `PROXIIMA_OBJECT_PURGE_INTERVAL_SECS` (default 60, `0`
 turns it off) it sweeps uploads whose TTL passed before they were staged and
 retries due object-purge debt. The first pass runs at boot, so a restart pays
 what the previous process left owed. Scans and reports stay commands
-(`maintain-blobs`, `maintain-embeddings`). `proxima-mcp maintain-storage` runs
+(`maintain-blobs`, `maintain-embeddings`). `proxiima-mcp maintain-storage` runs
 the same sweep (`--sweep-expired-uploads`) and drain
 (`--retry-cold-object-purges`) for a host that runs no server, to list stuck
 debt by key, or to name and drain another store's debt. Every pass, in-process or not, takes one storage
-maintenance lease (a row of `proxima_core.maintenance_lease`), so passes on one database never overlap; a pass that
+maintenance lease (a row of `proxiima_core.maintenance_lease`), so passes on one database never overlap; a pass that
 finds the lease held skips. The holder renews the lease while it runs and
 before each batch, and deletes it when done. A pass whose lease expired
 (it could not renew for a minute) stops at its next batch. A holder that
@@ -315,17 +315,17 @@ non-zero until a process configured for that store drains it.
 Watch the publication publisher and intake health. An unavailable intake retries
 captured records; a full pending bound refuses a new listenable write atomically.
 Published-record retention reclaims delivered copies only, after seven days unless
-`PROXIMA_OUTBOX_PUBLISHED_RETENTION_SECS` says otherwise (`0` keeps them forever). It is independent of
+`PROXIIMA_OUTBOX_PUBLISHED_RETENTION_SECS` says otherwise (`0` keeps them forever). It is independent of
 the host's erasure and retention promises. Hosts must manage copies already
 accepted downstream. See [data and erasure](data-and-erasure.md).
 
-For command flags, use `proxima-mcp --help` and each maintenance subcommand's
+For command flags, use `proxiima-mcp --help` and each maintenance subcommand's
 `--help`. For a failed check, keep the exact command and error; credentials and
 bearers stay out of diagnostic artifacts.
 
 ### Search stage timing
 
-To diagnose a search deadline, enable `proxima::stage_timing=debug` in the
+To diagnose a search deadline, enable `proxiima::stage_timing=debug` in the
 host's existing tracing filter. It is disabled at the usual info level. Events
 name `stage`, `outcome` (`started`, `finished`, or `cancelled`), and
 `elapsed_us`; cancellation records the stage active when the future was dropped.

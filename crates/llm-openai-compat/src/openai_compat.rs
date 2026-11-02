@@ -3,12 +3,12 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use futures::FutureExt;
-use proxima_core::PlaintextHosts;
-use proxima_core::llm::{
+use proxiima_core::PlaintextHosts;
+use proxiima_core::llm::{
     EMBEDDING_PURPOSE_HEADER, EMBEDDING_SEARCH_PURPOSE, EmbeddingClient,
     EmbeddingConfigurationFault, EmbeddingInputRefusal, LlmError, MIN_EMBED_INPUT_CAP_CHARS,
 };
-use proxima_core::models::EmbedCaps;
+use proxiima_core::models::EmbedCaps;
 use serde::{Deserialize, Serialize};
 
 use crate::{build_client, embedding_endpoint};
@@ -22,7 +22,7 @@ use crate::{build_client, embedding_endpoint};
 /// fast request, and the in-process serial drainer must not stall for
 /// minutes on one wedged call. Override with
 /// [`OpenAiCompatConfig::with_timeout`] for unusually slow local models.
-pub const DEFAULT_EMBED_TIMEOUT: Duration = proxima_core::llm::DEFAULT_EMBED_REQUEST_TIMEOUT;
+pub const DEFAULT_EMBED_TIMEOUT: Duration = proxiima_core::llm::DEFAULT_EMBED_REQUEST_TIMEOUT;
 
 const RESPONSE_ENVELOPE_BYTES: usize = 64 * 1024;
 const BYTES_PER_FLOAT_HEADROOM: usize = 32;
@@ -37,7 +37,7 @@ pub struct OpenAiCompatConfig {
     pub bearer_token: Option<String>,
     /// Hosts, besides loopback, that `base_url` may name over plaintext
     /// `http://`. Redirects are refused. Empty by default; a host reads it from
-    /// `PROXIMA_PLAINTEXT_HOSTS` with [`PlaintextHosts::from_lookup`].
+    /// `PROXIIMA_PLAINTEXT_HOSTS` with [`PlaintextHosts::from_lookup`].
     pub plaintext_hosts: PlaintextHosts,
 }
 
@@ -118,7 +118,7 @@ impl OpenAiCompatEmbeddingClient {
     /// transit), if `config.timeout` is zero, if `config.bearer_token` is
     /// blank, or if
     /// [`EmbedCaps::max_input_chars`] is set below
-    /// [`proxima_core::llm::MIN_EMBED_INPUT_CAP_CHARS`].
+    /// [`proxiima_core::llm::MIN_EMBED_INPUT_CAP_CHARS`].
     pub fn new(
         model_id: impl Into<String>,
         caps: EmbedCaps,
@@ -458,12 +458,12 @@ impl EmbeddingClient for OpenAiCompatEmbeddingClient {
 mod tests {
     use std::num::NonZeroU32;
 
-    use proxima_core::PlaintextHosts;
-    use proxima_core::llm::{
+    use proxiima_core::PlaintextHosts;
+    use proxiima_core::llm::{
         EmbeddingClient, EmbeddingConfigurationFault, EmbeddingInputRefusal, LlmError,
         MIN_EMBED_INPUT_CAP_CHARS,
     };
-    use proxima_core::models::EmbedCaps;
+    use proxiima_core::models::EmbedCaps;
 
     fn decode_vectors(
         data: serde_json::Value,
@@ -1046,9 +1046,9 @@ mod redirect_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use proxima_core::PlaintextHosts;
-    use proxima_core::llm::{EmbeddingClient, LlmError};
-    use proxima_core::models::EmbedCaps;
+    use proxiima_core::PlaintextHosts;
+    use proxiima_core::llm::{EmbeddingClient, LlmError};
+    use proxiima_core::models::EmbedCaps;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
@@ -1253,7 +1253,7 @@ mod redirect_tests {
 
     #[tokio::test]
     async fn only_explicit_query_operations_send_the_search_purpose_header() {
-        use proxima_core::{EMBEDDING_PURPOSE_HEADER, EMBEDDING_SEARCH_PURPOSE};
+        use proxiima_core::{EMBEDDING_PURPOSE_HEADER, EMBEDDING_SEARCH_PURPOSE};
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (captured, mut requests) = tokio::sync::mpsc::unbounded_channel();
@@ -1295,7 +1295,7 @@ mod redirect_tests {
 
     #[tokio::test]
     async fn loopback_query_latency_while_a_writing_response_is_held() {
-        use proxima_core::{EMBEDDING_PURPOSE_HEADER, EMBEDDING_SEARCH_PURPOSE};
+        use proxiima_core::{EMBEDDING_PURPOSE_HEADER, EMBEDDING_SEARCH_PURPOSE};
         const SAMPLES: usize = 32;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1610,7 +1610,7 @@ mod redirect_tests {
             )
             .expect("loopback embedding endpoint");
             let (result, marker) = tokio::join!(
-                proxima_core::llm::embed_with_timeout(&client, "test text", PATIENCE),
+                proxiima_core::llm::embed_with_timeout(&client, "test text", PATIENCE),
                 tokio::time::timeout(PATIENCE, headers_sent),
             );
             marker

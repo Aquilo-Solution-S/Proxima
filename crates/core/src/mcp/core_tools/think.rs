@@ -100,7 +100,7 @@ pub struct ThinkVisit {
 impl McpTool for ThinkTool {
     const NAME: &'static str = protocol_tool::CORE_THINK;
     const TITLE: &'static str = "Think";
-    const DESCRIPTION: &'static str = "Walk provenance links from seed memories and return sketches, page by page. Not a search. Read full bodies via proxima://memory/{id}.";
+    const DESCRIPTION: &'static str = "Walk provenance links from seed memories and return sketches, page by page. Not a search. Read full bodies via proxiima://memory/{id}.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     type Args = ThinkArgs;
     type Output = ThinkOutput;

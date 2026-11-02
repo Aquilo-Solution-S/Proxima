@@ -5,7 +5,7 @@ use sqlx::{PgConnection, PgPool, Row};
 use uuid::Uuid;
 
 const SETTINGS: [&str; 10] = [
-    "app.proxima_scope",
+    "app.proxiima_scope",
     "app.owner",
     "app.read_abstraction",
     "app.read_perspective",
@@ -16,7 +16,7 @@ const SETTINGS: [&str; 10] = [
     "app.write_goal",
     "app.manage_owner",
 ];
-const HELPER: &str = "proxima_core.owner_rls_class_predicates(text,text,text,text,proxima_core.owner_rls_class,text)";
+const HELPER: &str = "proxiima_core.owner_rls_class_predicates(text,text,text,text,proxiima_core.owner_rls_class,text)";
 const MEMORY_TABLE: &str = "memory\"rows;--";
 
 struct Fixture {
@@ -73,13 +73,13 @@ async fn seed_memory(admin: &PgPool, owner: Uuid, kind: &str, anchor: Option<Uui
         None
     } else {
         let content = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.content(content_id,owner_id,schema_id,content_hash) VALUES ($1,$2,'predicate/memory',$3)")
+        sqlx::query("INSERT INTO proxiima_core.content(content_id,owner_id,schema_id,content_hash) VALUES ($1,$2,'predicate/memory',$3)")
             .bind(content).bind(owner).bind(id.as_bytes().repeat(2)).execute(admin).await.unwrap();
         Some(content)
     };
-    sqlx::query("INSERT INTO proxima_core.memory_head(handle,t,kind,owner_id,schema_id) VALUES ($1,$1,$2::text::proxima_core.memory_kind,$3,'predicate/memory')")
+    sqlx::query("INSERT INTO proxiima_core.memory_head(handle,t,kind,owner_id,schema_id) VALUES ($1,$1,$2::text::proxiima_core.memory_kind,$3,'predicate/memory')")
         .bind(id).bind(kind).bind(owner).execute(admin).await.unwrap();
-    sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,content_id,refs,occurred_at, \"by\", via) VALUES ($1,$1,$2::text::proxima_core.memory_kind,$3,'predicate/memory',$4,$5,CASE WHEN $2::text='fact' THEN uuid_extract_timestamp($1) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
+    sqlx::query("INSERT INTO proxiima_core.memory(handle,t,kind,owner_id,schema_id,content_id,refs,occurred_at, \"by\", via) VALUES ($1,$1,$2::text::proxiima_core.memory_kind,$3,'predicate/memory',$4,$5,CASE WHEN $2::text='fact' THEN uuid_extract_timestamp($1) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
         .bind(id).bind(kind).bind(owner).bind(content).bind(anchor.into_iter().collect::<Vec<_>>())
         .execute(admin).await.unwrap();
     id
@@ -87,9 +87,9 @@ async fn seed_memory(admin: &PgPool, owner: Uuid, kind: &str, anchor: Option<Uui
 
 async fn seed_goal(admin: &PgPool, owner: Uuid) -> Uuid {
     let id = Uuid::now_v7();
-    sqlx::query("INSERT INTO proxima_core.goal_head(handle,t,owner_id,schema_id) VALUES ($1,$1,$2,'core/task-goal-v1')")
+    sqlx::query("INSERT INTO proxiima_core.goal_head(handle,t,owner_id,schema_id) VALUES ($1,$1,$2,'core/task-goal-v1')")
         .bind(id).bind(owner).execute(admin).await.unwrap();
-    sqlx::query("INSERT INTO proxima_core.goal(handle,t,owner_id,title,state,request_id, \"by\", via) VALUES ($1,$1,$2,'predicate goal','Active',$3, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
+    sqlx::query("INSERT INTO proxiima_core.goal(handle,t,owner_id,title,state,request_id, \"by\", via) VALUES ($1,$1,$2,'predicate goal','Active',$3, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
         .bind(id).bind(owner).bind(id.to_string()).execute(admin).await.unwrap();
     id
 }
@@ -98,7 +98,7 @@ async fn seed_entities(admin: &PgPool) -> Seed {
     let owners = [Uuid::now_v7(), Uuid::now_v7()];
     let mut entities = Vec::new();
     for owner in owners {
-        sqlx::query("INSERT INTO proxima_core.owners(owner_id,kind) VALUES ($1,'group')")
+        sqlx::query("INSERT INTO proxiima_core.owners(owner_id,kind) VALUES ($1,'group')")
             .bind(owner)
             .execute(admin)
             .await
@@ -125,7 +125,7 @@ async fn seed_entities(admin: &PgPool) -> Seed {
         });
     }
     let goal_memory_rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE t=ANY($1)")
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory WHERE t=ANY($1)")
             .bind(vec![entities[3].id, entities[7].id])
             .fetch_one(admin)
             .await
@@ -164,7 +164,7 @@ async fn predicates(
     class: Option<&str>,
     owner_column: Option<&str>,
 ) -> Result<Predicates, sqlx::Error> {
-    let rows: Vec<(String, String, String)> = sqlx::query_as("SELECT read_expr,write_expr,select_expr FROM proxima_core.owner_rls_class_predicates('predicate test','test classification',$1,$2,$3::text::proxima_core.owner_rls_class,$4)")
+    let rows: Vec<(String, String, String)> = sqlx::query_as("SELECT read_expr,write_expr,select_expr FROM proxiima_core.owner_rls_class_predicates('predicate test','test classification',$1,$2,$3::text::proxiima_core.owner_rls_class,$4)")
         .bind(schema).bind(table).bind(class).bind(owner_column).fetch_all(connection).await?;
     assert_eq!(rows.len(), 1, "one expression record per classification");
     let (read, write, select) = rows.into_iter().next().unwrap();
@@ -193,7 +193,7 @@ async fn assert_envelope(fixture: &Fixture, schema: &str, table: &str) {
     ).bind(&target).fetch_all(&fixture.admin).await.unwrap();
     let mut expected = vec![
         (
-            "proxima_owner_read".into(),
+            "proxiima_owner_read".into(),
             "r".into(),
             true,
             true,
@@ -202,7 +202,7 @@ async fn assert_envelope(fixture: &Fixture, schema: &str, table: &str) {
             false,
         ),
         (
-            "proxima_owner_write".into(),
+            "proxiima_owner_write".into(),
             "*".into(),
             true,
             true,
@@ -211,7 +211,7 @@ async fn assert_envelope(fixture: &Fixture, schema: &str, table: &str) {
             true,
         ),
         (
-            "proxima_platform".into(),
+            "proxiima_platform".into(),
             "*".into(),
             true,
             false,
@@ -221,7 +221,7 @@ async fn assert_envelope(fixture: &Fixture, schema: &str, table: &str) {
         ),
     ];
     let candidate_relation: bool =
-        sqlx::query_scalar("SELECT proxima_core.is_search_candidate_relation($1::regclass)")
+        sqlx::query_scalar("SELECT proxiima_core.is_search_candidate_relation($1::regclass)")
             .bind(&target)
             .fetch_one(&fixture.admin)
             .await
@@ -229,9 +229,9 @@ async fn assert_envelope(fixture: &Fixture, schema: &str, table: &str) {
     if candidate_relation {
         let valid_candidate_policy: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_policy
-              WHERE polrelid = $1::regclass AND polname = 'proxima_search_candidates'
+              WHERE polrelid = $1::regclass AND polname = 'proxiima_search_candidates'
                 AND polcmd = 'r' AND polpermissive
-                AND polroles = ARRAY[to_regrole('proxima_search')::oid]
+                AND polroles = ARRAY[to_regrole('proxiima_search')::oid]
                 AND pg_get_expr(polqual, polrelid) = 'true' AND polwithcheck IS NULL)",
         )
         .bind(&target)
@@ -240,7 +240,7 @@ async fn assert_envelope(fixture: &Fixture, schema: &str, table: &str) {
         .unwrap();
         assert!(valid_candidate_policy, "{target}");
         expected.push((
-            "proxima_search_candidates".into(),
+            "proxiima_search_candidates".into(),
             "r".into(),
             true,
             false,
@@ -272,7 +272,7 @@ async fn assert_helper_acl(fixture: &Fixture) {
     let mut transaction = fixture.runtime.begin().await.unwrap();
     let error = predicates(
         &mut transaction,
-        "proxima_core",
+        "proxiima_core",
         "projection",
         Some("owner_id"),
         Some("owner_id"),
@@ -296,22 +296,22 @@ const CORE_TABLES: [CoreTable; 4] = [
     CoreTable {
         table: "projection",
         key: "memory_id",
-        insert: "INSERT INTO proxima_core.projection(memory_id,owner_id,schema_id,lexical_language,search_tsv) VALUES ($1,$2,$3,'simple'::regconfig,to_tsvector('simple','predicate'))",
+        insert: "INSERT INTO proxiima_core.projection(memory_id,owner_id,schema_id,lexical_language,search_tsv) VALUES ($1,$2,$3,'simple'::regconfig,to_tsvector('simple','predicate'))",
     },
     CoreTable {
         table: "embeddings",
         key: "entity_id",
-        insert: "INSERT INTO proxima_core.embeddings(entity_id,owner_id,model_id,dim,vec) VALUES ($1,$2,$3,384,array_fill(0.25::real,ARRAY[384])::public.vector)",
+        insert: "INSERT INTO proxiima_core.embeddings(entity_id,owner_id,model_id,dim,vec) VALUES ($1,$2,$3,384,array_fill(0.25::real,ARRAY[384])::public.vector)",
     },
     CoreTable {
         table: "embedding_heads",
         key: "entity_id",
-        insert: "INSERT INTO proxima_core.embedding_heads(entity_id,owner_id,model_id,embedding_version,dim) VALUES ($1,$2,$3,1,384)",
+        insert: "INSERT INTO proxiima_core.embedding_heads(entity_id,owner_id,model_id,embedding_version,dim) VALUES ($1,$2,$3,1,384)",
     },
     CoreTable {
         table: "embedding_jobs",
         key: "entity_id",
-        insert: "INSERT INTO proxima_core.embedding_jobs(entity_id,owner_id,model_id,dim) VALUES ($1,$2,$3,384)",
+        insert: "INSERT INTO proxiima_core.embedding_jobs(entity_id,owner_id,model_id,dim) VALUES ($1,$2,$3,384)",
     },
 ];
 
@@ -361,7 +361,7 @@ async fn core_rows(
     table: &CoreTable,
     expression: &str,
 ) -> Vec<(Uuid, Uuid)> {
-    let target = relation("proxima_core", table.table);
+    let target = relation("proxiima_core", table.table);
     // SQL-POLICY: fixed-fragment — closed table keys and the trusted catalog generator's expression.
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {target}.{}, {target}.owner_id FROM {target} WHERE {expression} ORDER BY 1,2",
@@ -505,7 +505,7 @@ async fn assert_core_writes(fixture: &Fixture, seed: &Seed, table: &CoreTable) {
     )
     .await
     .unwrap();
-    let target = relation("proxima_core", table.table);
+    let target = relation("proxiima_core", table.table);
     // SQL-POLICY: fixed-fragment — closed relation/key, bound owner values.
     let update = format!(
         "UPDATE {target} SET owner_id=$1 WHERE {}=$2",
@@ -571,7 +571,7 @@ async fn core_predicates_preserve_kinds_goals_effective_select_and_write_checks(
         expressions.push(
             predicates(
                 &mut generation,
-                "proxima_core",
+                "proxiima_core",
                 table.table,
                 Some("owner_id"),
                 Some("owner_id"),
@@ -579,7 +579,7 @@ async fn core_predicates_preserve_kinds_goals_effective_select_and_write_checks(
             .await
             .unwrap(),
         );
-        assert_envelope(&fixture, "proxima_core", table.table).await;
+        assert_envelope(&fixture, "proxiima_core", table.table).await;
     }
     assert_eq!(settings(&mut generation).await, before);
     generation.rollback().await.unwrap();
@@ -592,7 +592,7 @@ async fn core_predicates_preserve_kinds_goals_effective_select_and_write_checks(
     fixture.close().await;
 }
 
-async fn create_flavor_tables(fixture: &Fixture, schema: &str) {
+async fn create_spiice_tables(fixture: &Fixture, schema: &str) {
     let schema_name = super::quoted_ident(schema);
     super::execute(
         &fixture.admin,
@@ -605,7 +605,7 @@ async fn create_flavor_tables(fixture: &Fixture, schema: &str) {
     let mut platform = fixture.platform.acquire().await.unwrap();
     // SQL-POLICY: fixed-fragment — identifiers are quoted; no supplied value is executable SQL.
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "CREATE TABLE {} (id uuid PRIMARY KEY REFERENCES proxima_core.memory(t),owner_id uuid NOT NULL REFERENCES proxima_core.owners(owner_id)); CREATE TABLE {} (id uuid PRIMARY KEY,owner_id uuid NOT NULL REFERENCES proxima_core.owners(owner_id))",
+        "CREATE TABLE {} (id uuid PRIMARY KEY REFERENCES proxiima_core.memory(t),owner_id uuid NOT NULL REFERENCES proxiima_core.owners(owner_id)); CREATE TABLE {} (id uuid PRIMARY KEY,owner_id uuid NOT NULL REFERENCES proxiima_core.owners(owner_id))",
         relation(schema, MEMORY_TABLE), relation(schema, "projection")
     ))).execute(&mut *platform).await.unwrap();
     super::execute(
@@ -626,19 +626,19 @@ async fn create_flavor_tables(fixture: &Fixture, schema: &str) {
     .await;
 }
 
-async fn install_flavor_tables(connection: &mut PgConnection, schema: &str, whole_schema: bool) {
+async fn install_spiice_tables(connection: &mut PgConnection, schema: &str, whole_schema: bool) {
     if whole_schema {
-        sqlx::query("SELECT proxima_core.install_owner_rls($1,ARRAY['projection']::text[],'{}'::text[],'{}'::text[],$2::text[])")
+        sqlx::query("SELECT proxiima_core.install_owner_rls($1,ARRAY['projection']::text[],'{}'::text[],'{}'::text[],$2::text[])")
             .bind(schema).bind(vec![MEMORY_TABLE]).execute(&mut *connection).await.unwrap();
     } else {
         for (table, class) in [(MEMORY_TABLE, "memory_owner"), ("projection", "owner_id")] {
-            sqlx::query("SELECT proxima_core.install_owner_rls_table($1,$2,$3::text::proxima_core.owner_rls_class)")
+            sqlx::query("SELECT proxiima_core.install_owner_rls_table($1,$2,$3::text::proxiima_core.owner_rls_class)")
                 .bind(schema).bind(table).bind(class).execute(&mut *connection).await.unwrap();
         }
     }
 }
 
-async fn seed_flavor(fixture: &Fixture, schema: &str, seed: &Seed) {
+async fn seed_spiice(fixture: &Fixture, schema: &str, seed: &Seed) {
     for entity in seed.entities.iter().filter(|entity| entity.memory) {
         // This class intentionally derives ownership from memory, not the child owner.
         // SQL-POLICY: fixed-fragment — quoted fixture relation, bound data.
@@ -690,17 +690,17 @@ fn expected_ids(seed: &Seed, indices: &[usize]) -> Vec<Uuid> {
     expected
 }
 
-struct FlavorCase {
+struct SpiiceCase {
     name: &'static str,
     grants: Vec<(&'static str, Uuid)>,
     memory: Vec<usize>,
     owner: Vec<usize>,
 }
 
-fn flavor_cases(owners: [Uuid; 2]) -> Vec<FlavorCase> {
+fn spiice_cases(owners: [Uuid; 2]) -> Vec<SpiiceCase> {
     let [a, b] = owners;
     vec![
-        FlavorCase {
+        SpiiceCase {
             name: "same owner",
             grants: vec![
                 ("app.owner", a),
@@ -710,25 +710,25 @@ fn flavor_cases(owners: [Uuid; 2]) -> Vec<FlavorCase> {
             memory: vec![0, 1, 2],
             owner: vec![0],
         },
-        FlavorCase {
+        SpiiceCase {
             name: "parent RLS hides foreign abstraction",
             grants: vec![("app.owner", a), ("app.read_abstraction", b)],
             memory: vec![0],
             owner: vec![0],
         },
-        FlavorCase {
+        SpiiceCase {
             name: "empty global owner",
             grants: vec![("app.read_abstraction", a)],
             memory: vec![],
             owner: vec![],
         },
-        FlavorCase {
+        SpiiceCase {
             name: "all empty",
             grants: vec![],
             memory: vec![],
             owner: vec![],
         },
-        FlavorCase {
+        SpiiceCase {
             name: "write-only effective SELECT",
             grants: vec![
                 ("app.write_owner", a),
@@ -738,13 +738,13 @@ fn flavor_cases(owners: [Uuid; 2]) -> Vec<FlavorCase> {
             memory: vec![0, 1, 2],
             owner: vec![0],
         },
-        FlavorCase {
-            name: "flavor projection has no Goal shortcut",
+        SpiiceCase {
+            name: "spiice projection has no Goal shortcut",
             grants: vec![("app.read_goal", a)],
             memory: vec![],
             owner: vec![],
         },
-        FlavorCase {
+        SpiiceCase {
             name: "second runtime owner",
             grants: vec![
                 ("app.owner", b),
@@ -757,13 +757,13 @@ fn flavor_cases(owners: [Uuid; 2]) -> Vec<FlavorCase> {
     ]
 }
 
-async fn assert_flavor_cases(
+async fn assert_spiice_cases(
     fixture: &Fixture,
     seed: &Seed,
     schema: &str,
     expressions: &[Predicates],
 ) {
-    for case in flavor_cases(seed.owners) {
+    for case in spiice_cases(seed.owners) {
         let mut transaction = fixture.runtime.begin().await.unwrap();
         set_scope(&mut transaction, "owner", &case.grants).await;
         let before = settings(&mut transaction).await;
@@ -787,15 +787,15 @@ async fn assert_flavor_cases(
 }
 
 #[tokio::test]
-async fn flavor_predicates_keep_parent_rls_through_both_installers_and_quoted_names() {
+async fn spiice_predicates_keep_parent_rls_through_both_installers_and_quoted_names() {
     let fixture = Fixture::new().await;
     let seed = seed_entities(&fixture.admin).await;
     for (schema, whole_schema) in [("predicate bulk", true), ("predicate \"per table", false)] {
-        create_flavor_tables(&fixture, schema).await;
+        create_spiice_tables(&fixture, schema).await;
         let mut generation = fixture.platform.begin().await.unwrap();
         set_scope(&mut generation, "", &[]).await;
         let before = settings(&mut generation).await;
-        install_flavor_tables(&mut generation, schema, whole_schema).await;
+        install_spiice_tables(&mut generation, schema, whole_schema).await;
         let mut expressions = Vec::new();
         for (table, class, column) in [
             (MEMORY_TABLE, "memory_owner", None),
@@ -809,11 +809,11 @@ async fn flavor_predicates_keep_parent_rls_through_both_installers_and_quoted_na
         }
         assert_eq!(settings(&mut generation).await, before);
         generation.commit().await.unwrap();
-        seed_flavor(&fixture, schema, &seed).await;
+        seed_spiice(&fixture, schema, &seed).await;
         for table in [MEMORY_TABLE, "projection"] {
             assert_envelope(&fixture, schema, table).await;
         }
-        assert_flavor_cases(&fixture, &seed, schema, &expressions).await;
+        assert_spiice_cases(&fixture, &seed, schema, &expressions).await;
     }
     fixture.close().await;
 }
@@ -829,11 +829,11 @@ async fn create_fk_tables(fixture: &Fixture) {
     .await;
     let mut platform = fixture.platform.acquire().await.unwrap();
     sqlx::raw_sql(
-        "CREATE TABLE predicate_fk.leading_memory(memory_key uuid PRIMARY KEY REFERENCES proxima_core.memory(t),t uuid REFERENCES proxima_core.memory(t));
-         CREATE TABLE predicate_fk.sole_memory(row_no integer PRIMARY KEY,memory_key uuid REFERENCES proxima_core.memory(t));
+        "CREATE TABLE predicate_fk.leading_memory(memory_key uuid PRIMARY KEY REFERENCES proxiima_core.memory(t),t uuid REFERENCES proxiima_core.memory(t));
+         CREATE TABLE predicate_fk.sole_memory(row_no integer PRIMARY KEY,memory_key uuid REFERENCES proxiima_core.memory(t));
          CREATE TABLE predicate_fk.fallback(t uuid PRIMARY KEY);
-         CREATE TABLE predicate_fk.ambiguous(id integer PRIMARY KEY,one uuid REFERENCES proxima_core.memory(t),two uuid REFERENCES proxima_core.memory(t));
-         CREATE TABLE predicate_fk.competing_t(t uuid PRIMARY KEY,memory_key uuid REFERENCES proxima_core.memory(t));
+         CREATE TABLE predicate_fk.ambiguous(id integer PRIMARY KEY,one uuid REFERENCES proxiima_core.memory(t),two uuid REFERENCES proxiima_core.memory(t));
+         CREATE TABLE predicate_fk.competing_t(t uuid PRIMARY KEY,memory_key uuid REFERENCES proxiima_core.memory(t));
          CREATE TABLE predicate_fk.missing_key(id integer PRIMARY KEY);
          CREATE TABLE predicate_fk.text_key(t text PRIMARY KEY);
          CREATE TABLE predicate_fk.cycle_a(t uuid PRIMARY KEY,parent uuid);
@@ -887,7 +887,7 @@ async fn assert_installer_refusal(
     message: &str,
 ) {
     let mut transaction = fixture.platform.begin().await.unwrap();
-    let error = sqlx::query("SELECT proxima_core.install_owner_rls_table('predicate_fk',$1,$2::text::proxima_core.owner_rls_class,$3)")
+    let error = sqlx::query("SELECT proxiima_core.install_owner_rls_table('predicate_fk',$1,$2::text::proxiima_core.owner_rls_class,$3)")
         .bind(table).bind(class).bind(column).execute(&mut *transaction).await.expect_err("invalid installation must refuse");
     assert!(error.to_string().contains(message), "{error}");
     transaction.rollback().await.unwrap();
@@ -931,7 +931,7 @@ async fn assert_fk_resolution(fixture: &Fixture, seed: &Seed) {
         .await
         .unwrap();
         sqlx::query(
-            "SELECT proxima_core.install_owner_rls_table('predicate_fk',$1,'memory_owner')",
+            "SELECT proxiima_core.install_owner_rls_table('predicate_fk',$1,'memory_owner')",
         )
         .bind(table)
         .execute(&mut *generation)
@@ -984,7 +984,7 @@ async fn assert_quoted_owner_column(fixture: &Fixture, seed: &Seed) {
     .await
     .unwrap();
     sqlx::query(
-        "SELECT proxima_core.install_owner_rls_table('predicate_fk','quoted_owner','owner_id',$1)",
+        "SELECT proxiima_core.install_owner_rls_table('predicate_fk','quoted_owner','owner_id',$1)",
     )
     .bind(column)
     .execute(&mut *generation)
@@ -1061,7 +1061,7 @@ async fn predicate_generation_preserves_fk_springs_and_rejects_invalid_core_inpu
         for column in [Some("another_owner"), None] {
             assert_generation_refusal(
                 &fixture,
-                "proxima_core",
+                "proxiima_core",
                 table.table,
                 Some("owner_id"),
                 column,
@@ -1072,7 +1072,7 @@ async fn predicate_generation_preserves_fk_springs_and_rejects_invalid_core_inpu
     }
     assert_generation_refusal(
         &fixture,
-        "proxima_core",
+        "proxiima_core",
         "projection",
         None,
         Some("owner_id"),

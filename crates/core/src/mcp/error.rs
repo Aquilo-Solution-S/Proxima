@@ -107,7 +107,7 @@ impl McpToolError {
                 // A refused publication capture keeps the split the write
                 // path already draws: an oversized or unexportable payload
                 // and a listenable write on the receipt-only route are the
-                // caller's (or the flavor author's) to fix; an unbound
+                // caller's (or the spiice author's) to fix; an unbound
                 // source and an exhausted outbox are the deployment's.
                 crate::StorageError::PublicationRefused(publication) => match publication {
                     crate::publication::PublicationError::PayloadTooLarge { .. }

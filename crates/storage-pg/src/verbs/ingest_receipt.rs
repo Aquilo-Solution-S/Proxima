@@ -1,6 +1,6 @@
 //! Read a Fact receipt by ingest identity on the caller's transaction.
 
-use proxima_core::{IngestReceipt, MemoryId, OwnerId, SchemaId, StorageError};
+use proxiima_core::{IngestReceipt, MemoryId, OwnerId, SchemaId, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -19,7 +19,7 @@ use crate::error::map_err;
 /// owner either way. A key with no visible admission is `Ok(None)`.
 ///
 /// This is not an ingest replay. Replaying admits or returns
-/// [`proxima_core::FactIngestOutcome`].
+/// [`proxiima_core::FactIngestOutcome`].
 ///
 /// # Errors
 ///
@@ -34,8 +34,8 @@ pub async fn ingest_receipt(
     require_ingest_identity(source_id, ingest_key)?;
     let row: Option<(Uuid, Uuid, String)> = sqlx::query_as(
         "SELECT m.t, m.handle, m.schema_id
-           FROM proxima_core.ingest_keys k
-           JOIN proxima_core.memory m
+           FROM proxiima_core.ingest_keys k
+           JOIN proxiima_core.memory m
              ON m.t = k.t AND m.owner_id = k.owner_id
           WHERE k.owner_id = $1
             AND k.source_id = $2
@@ -83,7 +83,7 @@ fn identity_text(field: &str, value: &str) -> Result<(), StorageError> {
 #[cfg(test)]
 mod tests {
     use super::require_ingest_identity;
-    use proxima_core::StorageError;
+    use proxiima_core::StorageError;
 
     #[test]
     fn an_empty_or_nul_identity_is_refused() {

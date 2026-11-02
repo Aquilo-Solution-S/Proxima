@@ -2,7 +2,7 @@
 //!
 //! Usable by any composite binary (embedded hosts included) so it can
 //! ingest cited blobs directly, independent of any frontend.
-//! Tables: `proxima_core.blob` / `proxima_core.blob_uploads`.
+//! Tables: `proxiima_core.blob` / `proxiima_core.blob_uploads`.
 
 mod config;
 mod error;

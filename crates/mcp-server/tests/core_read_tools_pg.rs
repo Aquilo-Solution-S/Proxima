@@ -3,12 +3,12 @@ mod common;
 use std::sync::Arc;
 
 use common::{create_core_db, db_url, drop_db, storage};
-use proxima_core::FlavorServices;
-use proxima_core::mcp::McpAuthorContext;
-use proxima_core::test_fixtures::authenticated_context;
-use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, MemoryId, OwnerId, UserId};
-use proxima_mcp_server::{McpAuthContext, McpToolHost};
-use proxima_storage_pg::PgStorage;
+use proxiima_core::SpiiceServices;
+use proxiima_core::mcp::McpAuthorContext;
+use proxiima_core::test_fixtures::authenticated_context;
+use proxiima_core::{AuthPath, AuthzContext, Engine, MemoryId, OwnerId, SpiiceRegistry, UserId};
+use proxiima_mcp_server::{McpAuthContext, McpToolHost};
+use proxiima_storage_pg::PgStorage;
 
 fn owner_authz(owner: OwnerId) -> AuthzContext {
     authenticated_context(
@@ -22,35 +22,35 @@ fn owner_authz(owner: OwnerId) -> AuthzContext {
 struct HidesRemember;
 
 #[async_trait::async_trait]
-impl proxima_core::RequestBehavior for HidesRemember {
+impl proxiima_core::RequestBehavior for HidesRemember {
     async fn handle(
         &self,
-        call: proxima_core::mcp::ToolCall,
-        next: proxima_core::mcp::Next<'_>,
-    ) -> Result<proxima_core::ToolReply, proxima_core::mcp::McpToolError> {
+        call: proxiima_core::mcp::ToolCall,
+        next: proxiima_core::mcp::Next<'_>,
+    ) -> Result<proxiima_core::ToolReply, proxiima_core::mcp::McpToolError> {
         next.run(call).await
     }
 
     fn visible(
         &self,
-        _ctx: &proxima_core::mcp::McpToolCtx,
-        tool: &proxima_core::ToolDescriptorView<'_>,
+        _ctx: &proxiima_core::mcp::McpToolCtx,
+        tool: &proxiima_core::ToolDescriptorView<'_>,
     ) -> bool {
-        tool.name() != proxima_core::protocol::tool::CORE_REMEMBER
+        tool.name() != proxiima_core::protocol::tool::CORE_REMEMBER
     }
 }
 
 #[tokio::test]
 async fn graph_and_tool_catalog_share_behavior_visibility() -> Result<(), Box<dyn std::error::Error>>
 {
-    use proxima_core::protocol::tool::CORE_REMEMBER;
+    use proxiima_core::protocol::tool::CORE_REMEMBER;
 
     let db_name = create_core_db().await?;
     let pg = storage(&db_url(&db_name)).await?;
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     insert_memory(&pg, &owner, "catalog owner", &[]).await?;
     for hidden in [false, true] {
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         if hidden {
             registry.add_request_behavior(HidesRemember);
         }
@@ -58,16 +58,16 @@ async fn graph_and_tool_catalog_share_behavior_visibility() -> Result<(), Box<dy
             Engine::new(registry.freeze_or_panic_for_tests())
                 .with_storage_ports(Arc::new(pg.clone()).storage_ports()),
         );
-        let server = McpToolHost::from_engine(engine, FlavorServices::default());
+        let server = McpToolHost::from_engine(engine, SpiiceServices::default());
         let auth = McpAuthContext {
             owner,
             authz: owner_authz(owner),
         };
         let tools = server
-            .read_resource("proxima://tools", author_ctx(), Some(auth.clone()))
+            .read_resource("proxiima://tools", author_ctx(), Some(auth.clone()))
             .await?;
         let graph = server
-            .read_resource("proxima://graph", author_ctx(), Some(auth))
+            .read_resource("proxiima://graph", author_ctx(), Some(auth))
             .await?;
         assert_eq!(graph["substrate_tools"], tools["tools"]);
         assert_eq!(
@@ -95,11 +95,11 @@ async fn core_read_resources_return_bare_uuids_and_author() -> Result<(), Box<dy
     let source = insert_memory(&pg, &owner, "source lineage memory", &[]).await?;
     let derived = insert_memory(&pg, &owner, "derived lineage memory", &[source]).await?;
 
-    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server = McpToolHost::from_engine(engine, FlavorServices::default());
+    let server = McpToolHost::from_engine(engine, SpiiceServices::default());
     // The host is now the authoritative scope chokepoint, so reads need an
     // authenticated full-scope context (production always passes Some(auth);
     // a None context is unauthenticated and correctly denied).
@@ -110,7 +110,7 @@ async fn core_read_resources_return_bare_uuids_and_author() -> Result<(), Box<dy
 
     let fetched = server
         .read_resource(
-            &format!("proxima://memory/{derived}"),
+            &format!("proxiima://memory/{derived}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -126,7 +126,7 @@ async fn core_read_resources_return_bare_uuids_and_author() -> Result<(), Box<dy
 
     let prefixed_uuid_err = server
         .read_resource(
-            &format!("proxima://memory/A:{derived}"),
+            &format!("proxiima://memory/A:{derived}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -139,7 +139,7 @@ async fn core_read_resources_return_bare_uuids_and_author() -> Result<(), Box<dy
 
     let expanded = server
         .read_resource(
-            &format!("proxima://memory/{derived}?expand_neighbors=true"),
+            &format!("proxiima://memory/{derived}?expand_neighbors=true"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -159,7 +159,7 @@ async fn core_read_resources_return_bare_uuids_and_author() -> Result<(), Box<dy
 
     let lineage = server
         .read_resource(
-            &format!("proxima://memory/{derived}/lineage?direction=ancestors&depth=1"),
+            &format!("proxiima://memory/{derived}/lineage?direction=ancestors&depth=1"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -190,11 +190,11 @@ async fn search_results_expose_structured_memory_id() -> Result<(), Box<dyn std:
 
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let memory_id = insert_memory(&pg, &owner, "structured search identity", &[]).await?;
-    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server = McpToolHost::from_engine(engine, FlavorServices::default());
+    let server = McpToolHost::from_engine(engine, SpiiceServices::default());
     let auth = McpAuthContext {
         owner,
         authz: owner_authz(owner),
@@ -269,11 +269,11 @@ async fn goal_resources_list_and_paginate() -> Result<(), Box<dyn std::error::Er
     let foreign_owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let (foreign_handle, _) = insert_active_goal(&pg, &foreign_owner).await?;
 
-    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server = McpToolHost::from_engine(engine, FlavorServices::default());
+    let server = McpToolHost::from_engine(engine, SpiiceServices::default());
     let auth = McpAuthContext {
         owner,
         authz: owner_authz(owner),
@@ -286,8 +286,8 @@ async fn goal_resources_list_and_paginate() -> Result<(), Box<dyn std::error::Er
     let mut cursor: Option<String> = None;
     loop {
         let uri = match &cursor {
-            Some(token) => format!("proxima://goals?state=Active&limit=2&cursor={token}"),
-            None => "proxima://goals?state=Active&limit=2".to_string(),
+            Some(token) => format!("proxiima://goals?state=Active&limit=2&cursor={token}"),
+            None => "proxiima://goals?state=Active&limit=2".to_string(),
         };
         let page = server
             .read_resource(&uri, author_ctx(), Some(auth.clone()))
@@ -316,7 +316,7 @@ async fn goal_resources_list_and_paginate() -> Result<(), Box<dyn std::error::Er
         assert!(seen.contains(&format!("{goal_id}")));
     }
 
-    let paused_head = proxima_core::new_memory_uuid(0);
+    let paused_head = proxiima_core::new_memory_uuid(0);
     insert_goal_version(
         &pg,
         &owner,
@@ -328,7 +328,7 @@ async fn goal_resources_list_and_paginate() -> Result<(), Box<dyn std::error::Er
     .await?;
     let union = server
         .read_resource(
-            "proxima://goals?state=paused,ACTIVE,paused",
+            "proxiima://goals?state=paused,ACTIVE,paused",
             author_ctx(),
             Some(auth.clone()),
         )
@@ -337,17 +337,17 @@ async fn goal_resources_list_and_paginate() -> Result<(), Box<dyn std::error::Er
 
     let goal = server
         .read_resource(
-            &format!("proxima://goal/{}", goal_handles[1]),
+            &format!("proxiima://goal/{}", goal_handles[1]),
             author_ctx(),
             Some(auth.clone()),
         )
         .await?;
     assert_eq!(goal["goal"], format!("{paused_head}"));
 
-    for handle in [foreign_handle, proxima_core::new_memory_uuid(0)] {
+    for handle in [foreign_handle, proxiima_core::new_memory_uuid(0)] {
         let error = server
             .read_resource(
-                &format!("proxima://goal/{handle}"),
+                &format!("proxiima://goal/{handle}"),
                 author_ctx(),
                 Some(auth.clone()),
             )
@@ -393,18 +393,18 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
     )
     .await?;
 
-    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server = McpToolHost::from_engine(engine, FlavorServices::default());
+    let server = McpToolHost::from_engine(engine, SpiiceServices::default());
     let auth = McpAuthContext {
         owner,
         authz: owner_authz(owner),
     };
 
     let listing = server
-        .read_resource("proxima://goals", author_ctx(), Some(auth.clone()))
+        .read_resource("proxiima://goals", author_ctx(), Some(auth.clone()))
         .await?;
     let listed = |goal: uuid::Uuid| {
         listing["goals"]
@@ -441,7 +441,7 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
     // paused version at this point.
     let single = server
         .read_resource(
-            &format!("proxima://goal/{handle}"),
+            &format!("proxiima://goal/{handle}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -450,7 +450,7 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
     assert_version_id_reads_series_head(&server, &auth, set, &series).await;
     let single_unknown = server
         .read_resource(
-            &format!("proxima://goal/{unknown_handle}"),
+            &format!("proxiima://goal/{unknown_handle}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -459,13 +459,13 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
 
     // The stable handle reads the current head rather than a version id.
     let current: uuid::Uuid =
-        sqlx::query_scalar("SELECT t FROM proxima_core.goal_head WHERE handle = $1")
+        sqlx::query_scalar("SELECT t FROM proxiima_core.goal_head WHERE handle = $1")
             .bind(handle)
             .fetch_one(pg.pool_for_tests())
             .await?;
     let current_read = server
         .read_resource(
-            &format!("proxima://goal/{handle}"),
+            &format!("proxiima://goal/{handle}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -481,8 +481,8 @@ async fn goal_resources_carry_text_set_at_and_changed_at() -> Result<(), Box<dyn
 }
 
 /// An interpretation Perspective's implied connections show up as
-/// `reference` `neighbor_edges` on `proxima://memory`. There is no
-/// `proxima://edges` resource.
+/// `reference` `neighbor_edges` on `proxiima://memory`. There is no
+/// `proxiima://edges` resource.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn edge_resources_read_back_interpretation_references()
@@ -495,11 +495,11 @@ async fn edge_resources_read_back_interpretation_references()
     let hub = insert_memory(&pg, &owner, "hub abstraction", &[]).await?;
     let spoke = insert_memory(&pg, &owner, "spoke abstraction", &[]).await?;
 
-    let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+    let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
     let engine = Arc::new(
         Engine::new(registry.clone()).with_storage_ports(Arc::new(pg.clone()).storage_ports()),
     );
-    let server = McpToolHost::from_engine(engine, FlavorServices::default());
+    let server = McpToolHost::from_engine(engine, SpiiceServices::default());
     let auth = McpAuthContext {
         owner,
         authz: owner_authz(owner),
@@ -533,7 +533,7 @@ async fn edge_resources_read_back_interpretation_references()
 
     let listed = server
         .read_resource(
-            &format!("proxima://memory/{handle}?expand_neighbors=true"),
+            &format!("proxiima://memory/{handle}?expand_neighbors=true"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -583,16 +583,16 @@ async fn edge_resources_read_back_interpretation_references()
 
     let retired = server
         .read_resource(
-            &format!("proxima://edges?kind=reference&source={handle}"),
+            &format!("proxiima://edges?kind=reference&source={handle}"),
             author_ctx(),
             Some(auth.clone()),
         )
         .await
-        .expect_err("proxima://edges is not a resource");
+        .expect_err("proxiima://edges is not a resource");
     assert!(
         matches!(
             &retired,
-            proxima_mcp_server::ToolInvocationError::ToolNotFound(_)
+            proxiima_mcp_server::ToolInvocationError::ToolNotFound(_)
         ),
         "retired edges catalog is resource-not-found: {retired}"
     );
@@ -612,7 +612,7 @@ async fn assert_version_id_reads_series_head(
 ) {
     let from_version = server
         .read_resource(
-            &format!("proxima://goal/{version}"),
+            &format!("proxiima://goal/{version}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -624,7 +624,7 @@ async fn assert_version_id_reads_series_head(
     );
     let missing = server
         .read_resource(
-            &format!("proxima://goal/{}", proxima_core::new_memory_uuid(0)),
+            &format!("proxiima://goal/{}", proxiima_core::new_memory_uuid(0)),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -641,7 +641,7 @@ async fn assert_goal_reference_and_state_rejections(
 ) {
     let bare = server
         .read_resource(
-            &format!("proxima://goal/{goal_id}"),
+            &format!("proxiima://goal/{goal_id}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -650,7 +650,7 @@ async fn assert_goal_reference_and_state_rejections(
     assert_eq!(bare["goal"], goal_id.to_string());
     let prefixed = server
         .read_resource(
-            &format!("proxima://goal/G:{goal_id}"),
+            &format!("proxiima://goal/G:{goal_id}"),
             author_ctx(),
             Some(auth.clone()),
         )
@@ -662,7 +662,7 @@ async fn assert_goal_reference_and_state_rejections(
     );
     let bad_state = server
         .read_resource(
-            "proxima://goals?state=Everything",
+            "proxiima://goals?state=Everything",
             author_ctx(),
             Some(auth.clone()),
         )
@@ -675,7 +675,7 @@ async fn assert_goal_reference_and_state_rejections(
     for state in ["", " ", "Active,", "Active,,Paused"] {
         let error = server
             .read_resource(
-                &format!("proxima://goals?state={state}"),
+                &format!("proxiima://goals?state={state}"),
                 author_ctx(),
                 Some(auth.clone()),
             )
@@ -689,18 +689,18 @@ async fn insert_active_goal(
     pg: &PgStorage,
     owner: &OwnerId,
 ) -> Result<(uuid::Uuid, uuid::Uuid), Box<dyn std::error::Error>> {
-    let handle = proxima_core::new_memory_uuid(0);
-    let t = proxima_core::new_memory_uuid(0);
+    let handle = proxiima_core::new_memory_uuid(0);
+    let t = proxiima_core::new_memory_uuid(0);
     let owner_id = owner.into_inner();
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal'::proxiima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
     .bind(owner_id)
     .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
          VALUES ($1, 'core/simple-text-v1', $2, $3)",
     )
     .bind(handle)
@@ -709,7 +709,7 @@ async fn insert_active_goal(
     .execute(pg.pool_for_tests())
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, state, request_id, \"by\", via)
+        "INSERT INTO proxiima_core.goal (handle, t, owner_id, title, state, request_id, \"by\", via)
          VALUES ($1, $2, $3, 'goal', 'Active', $4, $3, NULL)",
     )
     .bind(handle)
@@ -742,16 +742,16 @@ async fn insert_goal_version(
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let owner_id = owner.into_inner();
     let handle = if let Some(handle) = handle {
-        sqlx::query("UPDATE proxima_core.goal_head SET t = $2 WHERE handle = $1")
+        sqlx::query("UPDATE proxiima_core.goal_head SET t = $2 WHERE handle = $1")
             .bind(handle)
             .bind(t)
             .execute(pg.pool_for_tests())
             .await?;
         handle
     } else {
-        let handle = proxima_core::new_memory_uuid(0);
+        let handle = proxiima_core::new_memory_uuid(0);
         sqlx::query(
-            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
              VALUES ($1, 'core/simple-text-v1', $2, $3)",
         )
         .bind(handle)
@@ -762,8 +762,8 @@ async fn insert_goal_version(
         handle
     };
     sqlx::query(
-        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id, \"by\", via)
-         VALUES ($1, $2, $3, 'report', $4, $5::proxima_core.goal_state, $6, $3, NULL)",
+        "INSERT INTO proxiima_core.goal (handle, t, owner_id, title, text, state, request_id, \"by\", via)
+         VALUES ($1, $2, $3, 'report', $4, $5::proxiima_core.goal_state, $6, $3, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -788,8 +788,8 @@ async fn insert_memory_row(
     origins: &[uuid::Uuid],
     sidecars: &[&str],
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
-    let handle = proxima_core::new_memory_uuid(0);
-    let t = proxima_core::new_memory_uuid(0);
+    let handle = proxiima_core::new_memory_uuid(0);
+    let t = proxiima_core::new_memory_uuid(0);
     let mut origins = origins.to_vec();
     if kind != "fact" && origins.is_empty() {
         let fact_t = Box::pin(insert_memory_row(
@@ -818,15 +818,15 @@ async fn insert_memory_row(
     }
     let owner_id = owner.into_inner();
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal'::proxiima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
     .bind(owner_id)
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)",
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, $2::proxiima_core.memory_kind, $3, $4, $5)",
     )
     .bind(handle)
     .bind(kind)
@@ -843,7 +843,7 @@ async fn insert_memory_row(
         hash[16..].copy_from_slice(t.as_bytes());
         Some(
             sqlx::query_scalar(
-                "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+                "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
                  VALUES ($1, $2, $3)
                  RETURNING content_id",
             )
@@ -856,9 +856,9 @@ async fn insert_memory_row(
     };
     let sidecars: Vec<String> = sidecars.iter().map(|table| (*table).to_owned()).collect();
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
              (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables, occurred_at, \"by\", via)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN proxima_core.memory_created_at($2) END, $4, NULL)",
+         VALUES ($1, $2, $3::proxiima_core.memory_kind, $4, $5, $6, $7, $8, CASE WHEN $3::proxiima_core.memory_kind = 'fact' THEN proxiima_core.memory_created_at($2) END, $4, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -888,11 +888,11 @@ async fn insert_memory(
         "abstraction",
         "core/agent-derivation-v1",
         origins,
-        &["proxima_core.agent_derivation_v1"],
+        &["proxiima_core.agent_derivation_v1"],
     )
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.agent_derivation_v1
+        "INSERT INTO proxiima_core.agent_derivation_v1
             (t, title, body, tags, source_memory_ids,
              model_id, client_name, client_version)
          VALUES ($1, $2, $2, ARRAY[]::text[], ARRAY[]::uuid[],

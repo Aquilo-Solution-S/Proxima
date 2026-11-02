@@ -1,6 +1,6 @@
 //! Engine-side trait for hosting an MCP HTTP/SSE listener.
 //!
-//! `proxima-core` cannot depend on `proxima-mcp-server` (the latter
+//! `proxiima-core` cannot depend on `proxiima-mcp-server` (the latter
 //! depends on core, so the reverse would form a cycle). Instead, the
 //! host (an embedded host, headless CLI, or integration test) wires a
 //! concrete listener that knows how to bind/serve, and hands it to

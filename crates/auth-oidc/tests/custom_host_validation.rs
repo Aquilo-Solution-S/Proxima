@@ -9,7 +9,7 @@
 //! proof).
 //!
 //! Stock authenticators retain the verified claim map on the authenticated
-//! context, so a host or Flavor reads application claims without bearer access.
+//! context, so a host or Spiice reads application claims without bearer access.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,12 +20,12 @@ use aws_lc_rs::rsa::KeySize;
 use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
-use proxima_auth_oidc::{
+use proxiima_auth_oidc::{
     OidcAuthConfig, OidcAuthenticator, OidcBinding, OidcBindingSet, OidcClaimMap, OidcRoleShape,
     OidcRoleShaper, OidcSubjectMap, OidcTokenValidator, StaticJwksResolver, SubjectBinding,
     ValidatedOidcToken,
 };
-use proxima_core::{
+use proxiima_core::{
     AccessError, AccessKind, ActionName, AuthError, AuthPath, Authenticator, AuthzContext,
     Credentials, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Role, ScopeKey, ToolName,
     ToolScope, UserId, WriterAttribution,
@@ -104,7 +104,7 @@ fn future_exp() -> u64 {
 
 /// Static in-memory `OwnerAccessPort`: the custom host's own role
 /// resolution, unrelated to the Postgres adapter under
-/// `proxima_storage_pg`.
+/// `proxiima_storage_pg`.
 struct StaticOwnerAccess {
     group: GroupId,
 }
@@ -131,7 +131,7 @@ struct TwoAudienceHost {
 
 impl TwoAudienceHost {
     fn new(
-        keys: Arc<dyn proxima_auth_oidc::KeyResolver>,
+        keys: Arc<dyn proxiima_auth_oidc::KeyResolver>,
         owner_access: Arc<dyn OwnerAccessPort>,
     ) -> Self {
         let agent_config = OidcAuthConfig {
@@ -181,7 +181,7 @@ impl TwoAudienceHost {
     }
 }
 
-fn resolver(decoding: DecodingKey) -> Arc<dyn proxima_auth_oidc::KeyResolver> {
+fn resolver(decoding: DecodingKey) -> Arc<dyn proxiima_auth_oidc::KeyResolver> {
     Arc::new(StaticJwksResolver::new(HashMap::from([(
         KID.to_owned(),
         Arc::new(decoding),
@@ -204,7 +204,10 @@ async fn agent_audience_resolves_narrowed_tool_scope() {
         .expect("agent authenticates");
 
     assert_eq!(ctx.auth_path(), AuthPath::HostBearer);
-    assert!(ctx.may_write(&OwnerId::from(group), proxima_core::AccessKind::Perspective));
+    assert!(ctx.may_write(
+        &OwnerId::from(group),
+        proxiima_core::AccessKind::Perspective
+    ));
     assert!(allows_leaf(ctx.tool_scope(), "core_goal", "set"));
     assert!(!ctx.tool_scope().allows(&key("core_membership")));
     assert!(!allows_leaf(
@@ -288,7 +291,7 @@ fn runner_map(user_id: UserId, trusted: bool) -> OidcSubjectMap {
 
 /// A principal the deployment declared as a configured runner reaches the
 /// engine with that runner identity bound to its `AuthzContext` — the value
-/// flavors read through `ctx.caller()`.
+/// spiices read through `ctx.caller()`.
 #[tokio::test]
 async fn a_mapped_runner_principal_reaches_the_edge_with_its_trusted_model_id() {
     let keys = test_keys();
@@ -368,7 +371,7 @@ async fn a_custom_host_that_binds_nothing_certifies_nothing() {
     }
 }
 
-const FORWARDING_AUDIENCE: &str = "proxima-forwarded";
+const FORWARDING_AUDIENCE: &str = "proxiima-forwarded";
 const FORWARDING_SUBJECT: &str = "forwarder-subject";
 const ORDINARY_SUBJECT: &str = "ordinary-subject";
 const UNAVAILABLE_POLICY_SUBJECT: &str = "unavailable-policy-subject";
@@ -416,7 +419,7 @@ impl OwnerAccessPort for ForwardingOwnerAccess {
         &self,
         _subject: UserId,
         _owner: OwnerId,
-    ) -> Result<Option<proxima_core::access::ForwarderRole>, AccessError> {
+    ) -> Result<Option<proxiima_core::access::ForwarderRole>, AccessError> {
         panic!("the forwarded owner is resolved only after request owner agreement")
     }
 }
@@ -472,7 +475,7 @@ fn forwarding_bindings(keys: &TestKeys, shape: OidcRoleShape) -> OidcBindingSet 
         )
         .expect("forwarding binding"),
         OidcBinding::new(
-            forwarding_config("proxima-other-audience"),
+            forwarding_config("proxiima-other-audience"),
             resolver(keys.decoding.clone()),
             forwarding_subject_map(),
             access,
@@ -537,7 +540,7 @@ async fn stock_authentication_keeps_each_requests_claims_through_owner_narrowing
         let mut retained = Vec::new();
         for claims in &requests {
             let credentials = Credentials::Bearer(signed_claims(&keys, claims, "JWT"));
-            let context = proxima_core::authenticate(authenticator.as_ref(), &credentials)
+            let context = proxiima_core::authenticate(authenticator.as_ref(), &credentials)
                 .await
                 .expect("ordinary mapped subject authenticates");
             assert_eq!(context.verified_claims(), claims.as_object(), "{path}");
@@ -568,7 +571,7 @@ async fn overlapping_stock_requests_keep_separate_verified_claims() {
             let authenticator = authenticator.clone();
             let both_authenticated = both_authenticated.clone();
             async move {
-                let context = proxima_core::authenticate(authenticator.as_ref(), &credentials)
+                let context = proxiima_core::authenticate(authenticator.as_ref(), &credentials)
                     .await
                     .expect("ordinary mapped subject authenticates");
                 // Both contexts exist before either reads its retained request claims.
@@ -590,7 +593,7 @@ async fn forwarded_owner_remains_pending_in_single_and_multiple_bindings() {
     let claims = forwarding_claims(Some(serde_json::json!(owner)));
     let bearer = Credentials::Bearer(signed_claims(&keys, &claims, "JWT"));
     for (path, authenticator) in forwarding_authenticators(&keys) {
-        let context = proxima_core::authenticate(authenticator.as_ref(), &bearer)
+        let context = proxiima_core::authenticate(authenticator.as_ref(), &bearer)
             .await
             .expect("a verified owner claim authenticates");
         assert_eq!(context.verified_claims(), claims.as_object(), "{path}");
@@ -669,7 +672,7 @@ async fn forwarded_writer_requires_by_and_a_present_nullable_via() {
         ] {
             let mut claims = valid.clone();
             claims["via"] = via;
-            let context = proxima_core::authenticate(
+            let context = proxiima_core::authenticate(
                 authenticator.as_ref(),
                 &Credentials::Bearer(signed_claims(&keys, &claims, "JWT")),
             )
@@ -775,7 +778,7 @@ async fn ordinary_writer_ignores_forwarded_attribution_claims() {
             claims["sub"] = serde_json::json!(ORDINARY_SUBJECT);
             claims["by"] = value.clone();
             claims["via"] = value;
-            let context = proxima_core::authenticate(
+            let context = proxiima_core::authenticate(
                 authenticator.as_ref(),
                 &Credentials::Bearer(signed_claims(&keys, &claims, "JWT")),
             )
@@ -900,7 +903,7 @@ impl OidcRoleShaper for ForwardingShape {
             .map_err(|_| AuthError::InvalidCredentials)?;
         context
             .with_publication_extensions(
-                proxima_core::publication::PublicationExtensions::new()
+                proxiima_core::publication::PublicationExtensions::new()
                     .with("forwarding", "verified")
                     .expect("valid publication extension"),
             )
@@ -931,7 +934,9 @@ async fn forwarded_owner_host_shaping_preserves_the_pending_binding() {
     assert_eq!(context.trusted_model_id(), Some(FORWARDING_MODEL));
     assert_eq!(
         context.publication_extensions().get("forwarding"),
-        Some(&proxima_core::publication::ExtensionValue::from("verified"))
+        Some(&proxiima_core::publication::ExtensionValue::from(
+            "verified"
+        ))
     );
     assert!(
         context.expires_at().is_some(),

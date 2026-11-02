@@ -10,7 +10,7 @@ use crate::publication::PublicationError;
 /// Map a refused publication capture onto the public protocol surface.
 ///
 /// - an oversized export, a failed export and a listenable write on the
-///   receipt-only route are things the CALLER (or the flavor author) can
+///   receipt-only route are things the CALLER (or the spiice author) can
 ///   fix, and read as `invalid_argument`;
 /// - an exhausted outbox is backpressure on a legal write, and reads as
 ///   `capacity_exhausted` (MCP `-32000`, REST 503) so a caller backs off

@@ -1,8 +1,8 @@
-# Proxima agent entry point
+# Proxiima agent entry point
 
-Read docs/agents.md, then the running host's proxima://how-to resource.
+Read docs/agents.md, then the running host's proxiima://how-to resource.
 Discover schemas from tools/list, resources/list, resources/templates/list,
-and proxima://tools. REST-enabled hosts publish /v1/openapi.json.
+and proxiima://tools. REST-enabled hosts publish /v1/openapi.json.
 
-Documentation index: https://aquilo-solution-s.github.io/Proxima/
+Documentation index: https://aquilo-solution-s.github.io/Proxiima/
 Repository agent conventions: AGENTS.md

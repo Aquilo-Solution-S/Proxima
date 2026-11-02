@@ -3,7 +3,7 @@ use super::{StorageError, memory_insert_sql, memory_select_batch_sql, validate_s
 #[test]
 fn memory_insert_sql_validates_identifiers() {
     let sql = memory_insert_sql(
-        "proxima_core.agent_note_v1",
+        "proxiima_core.agent_note_v1",
         "memory_id",
         &[("title", Some("text")), ("tags", None)],
         false,
@@ -12,22 +12,22 @@ fn memory_insert_sql_validates_identifiers() {
 
     assert_eq!(
         sql,
-        "INSERT INTO proxima_core.agent_note_v1 (memory_id, title, tags) \
+        "INSERT INTO proxiima_core.agent_note_v1 (memory_id, title, tags) \
              VALUES ($1, $2::text, $3)"
     );
     assert!(
         memory_insert_sql(
-            "proxima_core.agent_note_v1; DROP TABLE x",
+            "proxiima_core.agent_note_v1; DROP TABLE x",
             "memory_id",
             &[],
             false
         )
         .is_err()
     );
-    assert!(memory_insert_sql("proxima_core.agent_note_v1", "memory-id", &[], false).is_err());
+    assert!(memory_insert_sql("proxiima_core.agent_note_v1", "memory-id", &[], false).is_err());
     assert!(
         memory_insert_sql(
-            "proxima_core.agent_note_v1",
+            "proxiima_core.agent_note_v1",
             "memory_id",
             &[("x); DROP TABLE y", None)],
             false
@@ -39,7 +39,7 @@ fn memory_insert_sql_validates_identifiers() {
 #[test]
 fn memory_select_batch_sql_validates_identifiers() {
     let sql = memory_select_batch_sql(
-        "proxima_core.agent_note_v1",
+        "proxiima_core.agent_note_v1",
         "memory_id",
         &["title", "tags"],
     )
@@ -47,7 +47,7 @@ fn memory_select_batch_sql_validates_identifiers() {
 
     assert_eq!(
         sql,
-        "SELECT memory_id, title, tags FROM proxima_core.agent_note_v1 \
+        "SELECT memory_id, title, tags FROM proxiima_core.agent_note_v1 \
              WHERE memory_id = ANY($1)"
     );
     // Enum projection expressions (`<col>::text AS <col>`,
@@ -55,7 +55,7 @@ fn memory_select_batch_sql_validates_identifiers() {
     // expressions and must be accepted verbatim, not rejected as
     // non-identifiers.
     let enum_sql = memory_select_batch_sql(
-        "proxima_core.agent_note_v1",
+        "proxiima_core.agent_note_v1",
         "memory_id",
         &["state::text AS state"],
     )
@@ -64,7 +64,7 @@ fn memory_select_batch_sql_validates_identifiers() {
     // The table and key column are still validated as identifiers.
     assert!(memory_select_batch_sql("bad table;", "memory_id", &["title"]).is_err());
     assert!(
-        memory_select_batch_sql("proxima_core.agent_note_v1", "memory_id;", &["title"]).is_err()
+        memory_select_batch_sql("proxiima_core.agent_note_v1", "memory_id;", &["title"]).is_err()
     );
 }
 
@@ -195,9 +195,12 @@ fn opt_u64_as_i64_rejects_out_of_range_values_in_both_directions() {
 
 #[test]
 fn public_sidecar_batch_read_denies_core_schema_unless_registry_admits_it() {
-    let sql = "SELECT memory_id FROM proxima_core.agent_note_v1 WHERE memory_id = ANY($1)";
+    let sql = "SELECT memory_id FROM proxiima_core.agent_note_v1 WHERE memory_id = ANY($1)";
     let err = validate_sidecar_read_sql(sql, false).expect_err("public helper denies core SQL");
-    assert!(err.to_string().contains("proxima_core.*"), "message: {err}");
+    assert!(
+        err.to_string().contains("proxiima_core.*"),
+        "message: {err}"
+    );
     validate_sidecar_read_sql(sql, true).expect("registered core sidecars may read core tables");
 }
 
@@ -212,7 +215,7 @@ fn public_sidecar_batch_read_denies_core_schema_unless_registry_admits_it() {
 /// declaration is not a second claim.
 #[test]
 fn every_registered_memory_sidecar_keys_on_the_column_its_surface_declares() {
-    let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+    let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
     let sidecars = crate::sidecars::core_pg_sidecars();
 
     let mut checked = 0_usize;
@@ -253,7 +256,7 @@ fn memory_insert_sql_stamps_owner_for_follows() {
     assert!(
         follows.contains("owner_id")
             && follows.contains("SELECT $1, m.owner_id")
-            && follows.contains("FROM proxima_core.memory m WHERE m.t = $1"),
+            && follows.contains("FROM proxiima_core.memory m WHERE m.t = $1"),
         "Follows shares the Pinned stamp arm: {follows}"
     );
     assert!(

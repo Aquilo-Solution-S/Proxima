@@ -7,29 +7,29 @@
 
 use std::sync::Arc;
 
-use proxima_core::MemoryKind;
-use proxima_core::publication::{
+use proxiima_core::MemoryKind;
+use proxiima_core::publication::{
     PublicationExtensions, PublicationLimits, PublicationSource, PublicationStamp,
 };
-use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort};
-use proxima_core::storage_ports::{GoalWritePort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::verbs::goal_write::{
+use proxiima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort};
+use proxiima_core::storage_ports::{GoalWritePort, OwnerWritePermit};
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef,
     GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalTransitionKind, GoalWriteOutcome,
     IdempotencyKey, ModifyGoalAtomicRequest, OperatorKind, SystemOrigin,
     TransitionGoalAtomicRequest,
 };
-use proxima_core::{
-    AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, GoalId, GoalPayload, InputContractId,
-    ModelId, OperatorId, OwnerId, PendingWork, PromptVersion, SchemaId, SchemaVersion,
-    SimpleTextGoalV1, StorageError, ToolId, UserId,
+use proxiima_core::{
+    AccessKind, EdgeEndpoint, EntityKind, GoalId, GoalPayload, InputContractId, ModelId,
+    OperatorId, OwnerId, PendingWork, PromptVersion, SchemaId, SchemaVersion, SimpleTextGoalV1,
+    SpiiceRegistry, StorageError, ToolId, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory};
 use uuid::Uuid;
 
 fn memory_draft(kind: MemoryKind) -> FactWriteCommand {
@@ -56,7 +56,7 @@ fn memory_draft(kind: MemoryKind) -> FactWriteCommand {
 async fn ingest_grounded_perspective(
     pg: &PgStorage,
     permit: &OwnerWritePermit,
-) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, proxima_core::StorageError> {
+) -> Result<proxiima_core::verbs::fact_ingest::FactIngestOutcome, proxiima_core::StorageError> {
     let fact = pg
         .ingest_fact_atomic(permit, &memory_draft(MemoryKind::Fact), None)
         .await?;
@@ -70,7 +70,7 @@ async fn ingest_grounded_perspective(
 }
 
 async fn fresh_pg() -> (String, PgStorage) {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -81,7 +81,7 @@ async fn fresh_pg() -> (String, PgStorage) {
     (db_name, pg)
 }
 
-fn context(registry: &proxima_core::FlavorRegistryFrozen) -> GoalAtomicContext<'_> {
+fn context(registry: &proxiima_core::SpiiceRegistryFrozen) -> GoalAtomicContext<'_> {
     GoalAtomicContext {
         registry,
         author_self_perspective_id: None,
@@ -102,10 +102,10 @@ fn simple_payload(title: &str) -> GoalPayloadWrite {
 
 fn decompose_request<'a>(
     owner: OwnerId,
-    parent_goal_id: proxima_core::GoalId,
-    registry: &'a proxima_core::FlavorRegistryFrozen,
-    assignment: proxima_core::MemoryId,
-    evidence: proxima_core::MemoryId,
+    parent_goal_id: proxiima_core::GoalId,
+    registry: &'a proxiima_core::SpiiceRegistryFrozen,
+    assignment: proxiima_core::MemoryId,
+    evidence: proxiima_core::MemoryId,
     first_title: &str,
     first_request_id: &str,
     second_request_id: &str,
@@ -137,7 +137,7 @@ fn decompose_request<'a>(
 
 fn active_draft(
     owner: OwnerId,
-    assignment: proxima_core::MemoryId,
+    assignment: proxiima_core::MemoryId,
     request_id: &str,
     title: &str,
     evidence: Vec<GoalEvidenceRef>,
@@ -181,12 +181,12 @@ fn assert_exact_replay(first: &GoalWriteOutcome, replay: &GoalWriteOutcome) {
 async fn erase_target(
     pg: &PgStorage,
     owner: &OwnerId,
-    target: proxima_core::MemoryId,
+    target: proxiima_core::MemoryId,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut tx = pg.pool_for_tests().begin().await?;
     erase_memory(
         &mut tx,
-        &proxima_storage_pg::core_pg_sidecars(),
+        &proxiima_storage_pg::core_pg_sidecars(),
         &pg.host_state_erase_context()?,
         owner,
         target.into_inner(),
@@ -201,16 +201,16 @@ type ReplayState = (i64, i64, i64, i64, i64, i64, i64);
 async fn replay_state(pg: &PgStorage, owner: OwnerId) -> Result<ReplayState, sqlx::Error> {
     sqlx::query_as(
         "SELECT
-            (SELECT count(*)::bigint FROM proxima_core.goal WHERE owner_id = $1),
-            (SELECT count(*)::bigint FROM proxima_core.goal_head WHERE owner_id = $1),
+            (SELECT count(*)::bigint FROM proxiima_core.goal WHERE owner_id = $1),
+            (SELECT count(*)::bigint FROM proxiima_core.goal_head WHERE owner_id = $1),
             (SELECT count(*)::bigint
-               FROM proxima_core.goal_replay_declaration d
-               JOIN proxima_core.goal g ON g.t = d.goal_t
+               FROM proxiima_core.goal_replay_declaration d
+               JOIN proxiima_core.goal g ON g.t = d.goal_t
               WHERE g.owner_id = $1),
-            (SELECT count(*)::bigint FROM proxima_core.sketch WHERE owner_id = $1),
-            (SELECT count(*)::bigint FROM proxima_core.memory WHERE owner_id = $1),
-            (SELECT count(*)::bigint FROM proxima_core.memory_head WHERE owner_id = $1),
-            (SELECT count(*)::bigint FROM proxima_core.task_goal_v1)",
+            (SELECT count(*)::bigint FROM proxiima_core.sketch WHERE owner_id = $1),
+            (SELECT count(*)::bigint FROM proxiima_core.memory WHERE owner_id = $1),
+            (SELECT count(*)::bigint FROM proxiima_core.memory_head WHERE owner_id = $1),
+            (SELECT count(*)::bigint FROM proxiima_core.task_goal_v1)",
     )
     .bind(owner.into_inner())
     .fetch_one(pg.pool_for_tests())
@@ -226,10 +226,10 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
-        let mut listenable = FlavorRegistry::new();
+        let mut listenable = SpiiceRegistry::new();
         listenable.publish_goal_changes();
         let registry = listenable.freeze_or_panic_for_tests();
-        let source = PublicationSource::new("urn:proxima:goal-feed-test")?;
+        let source = PublicationSource::new("urn:proxiima:goal-feed-test")?;
         let extensions = PublicationExtensions::default();
         let stamped = || GoalAtomicContext {
             publication: Some(PublicationStamp::new(
@@ -330,7 +330,7 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
             let row: (String, String, i32, Option<Uuid>, Option<Uuid>, Option<String>) =
                 sqlx::query_as(
                     "SELECT change_kind::text, state::text, revision, prior_t, parent_t, pending::text
-                       FROM proxima_core.goal_change_v1 WHERE goal_t = $1",
+                       FROM proxiima_core.goal_change_v1 WHERE goal_t = $1",
                 )
                 .bind(goal.into_inner())
                 .fetch_one(pg.pool_for_tests())
@@ -347,8 +347,8 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
         }
         let counts = || async {
             sqlx::query_as::<_, (i64, i64)>(
-                "SELECT (SELECT count(*) FROM proxima_core.goal_change_v1),
-                        (SELECT count(*) FROM proxima_core.publication_outbox
+                "SELECT (SELECT count(*) FROM proxiima_core.goal_change_v1),
+                        (SELECT count(*) FROM proxiima_core.publication_outbox
                           WHERE schema_id = 'core/goal-change-v1')",
             )
             .fetch_one(pg.pool_for_tests())
@@ -361,8 +361,8 @@ async fn every_goal_verb_writes_one_goal_change_fact_and_a_replay_writes_none() 
         // anything but the envelope.
         let positions: Vec<(Uuid, i32, Vec<u8>)> = sqlx::query_as(
             "SELECT c.series, c.revision, p.envelope
-               FROM proxima_core.goal_change_v1 AS c
-               JOIN proxima_core.publication_outbox AS p ON p.t = c.t",
+               FROM proxiima_core.goal_change_v1 AS c
+               JOIN proxiima_core.publication_outbox AS p ON p.t = c.t",
         )
         .fetch_all(pg.pool_for_tests())
         .await?;
@@ -401,7 +401,7 @@ async fn exact_goal_command_replays_precede_live_admission_for_every_verb() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
 
         // Create: assignment, evidence, may all disappear
         // after the command committed. The declaration still decides replay;
@@ -929,7 +929,7 @@ async fn goal_replay_ignores_host_metadata_but_preserves_authorship_category() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
         let assignment = ingest_grounded_perspective(&pg, &permit).await?;
         let fact = pg
             .ingest_fact_atomic(&permit, &memory_draft(MemoryKind::Fact), None)
@@ -1025,7 +1025,7 @@ async fn a_goal_without_a_replay_declaration_fails_closed() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
         let assignment = ingest_grounded_perspective(&pg, &permit).await?;
         let first = pg
             .create_goal_atomic(
@@ -1044,7 +1044,7 @@ async fn a_goal_without_a_replay_declaration_fails_closed() {
             )
             .await?;
         let update_err = sqlx::query(
-            "UPDATE proxima_core.goal_replay_declaration
+            "UPDATE proxiima_core.goal_replay_declaration
                 SET edge_count = edge_count + 1
               WHERE goal_t = $1",
         )
@@ -1057,7 +1057,7 @@ async fn a_goal_without_a_replay_declaration_fails_closed() {
                 || update_err.to_string().contains("25006"),
             "unexpected declaration update error: {update_err}"
         );
-        sqlx::query("DELETE FROM proxima_core.goal_replay_declaration WHERE goal_t = $1")
+        sqlx::query("DELETE FROM proxiima_core.goal_replay_declaration WHERE goal_t = $1")
             .bind(first.goal_id.into_inner())
             .execute(pg.pool_for_tests())
             .await?;
@@ -1123,7 +1123,7 @@ async fn concurrent_identical_goal_writes_replay() {
 
         let mut fence = pool.begin().await?;
         sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('proxima-owner-fence:' || $1::text, 0))",
+            "SELECT pg_advisory_xact_lock(hashtextextended('proxiima-owner-fence:' || $1::text, 0))",
         )
         .bind(owner.into_inner())
         .execute(fence.as_mut())
@@ -1133,7 +1133,7 @@ async fn concurrent_identical_goal_writes_replay() {
         let writer = |pg: PgStorage, barrier: Arc<tokio::sync::Barrier>| {
             tokio::spawn(async move {
                 let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
-                let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+                let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
                 let req = CreateGoalAtomicRequest {
                     draft: active_draft(owner, assignment, "race-create", "race", Vec::new())
                         .expect("draft"),

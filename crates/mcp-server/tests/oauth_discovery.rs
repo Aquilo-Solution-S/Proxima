@@ -4,8 +4,8 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use axum::routing::any;
-use proxima_core::RevalidationConfig;
-use proxima_mcp_server::{
+use proxiima_core::RevalidationConfig;
+use proxiima_mcp_server::{
     AuthorizationServers, MCP_PATH, McpEdgeAuth, ResourceServerMetadata,
     mcp_auth_layer_with_metadata, public_discovery_router,
 };
@@ -59,7 +59,7 @@ async fn challenge(app: Router, path: &str) -> String {
         .to_owned()
 }
 
-fn auth_layer() -> proxima_mcp_server::McpAuthLayer {
+fn auth_layer() -> proxiima_mcp_server::McpAuthLayer {
     mcp_auth_layer_with_metadata(
         Arc::new(McpEdgeAuth::headless()),
         RevalidationConfig::default(),
@@ -73,7 +73,7 @@ const ORIGIN_CHALLENGE: &str =
     "Bearer resource_metadata=\"https://p.example.com/.well-known/oauth-protected-resource\"";
 
 // The 401 points each surface at its own document. Both stack shapes hosts
-// use are covered: the layer over the whole router (Proxima's runtime) and
+// use are covered: the layer over the whole router (Proxiima's runtime) and
 // a route layer over a nested `/mcp` service (an embedding host), where the
 // nested service would otherwise see a stripped path.
 #[tokio::test]
@@ -102,14 +102,14 @@ fn public_client_metadata() -> ResourceServerMetadata {
     ResourceServerMetadata {
         public_url: "https://p.example.com/".into(),
         authorization_servers: AuthorizationServers::PublicClient(
-            proxima_mcp_server::PublicClientFacade::try_new(
+            proxiima_mcp_server::PublicClientFacade::try_new(
                 "shared-client",
                 "https://idp.example.com/authorize?x=1",
                 "https://idp.example.com/token",
             )
             .unwrap(),
         ),
-        additional_scopes: vec![proxima_mcp_server::ScopeToken::parse("extra").unwrap()],
+        additional_scopes: vec![proxiima_mcp_server::ScopeToken::parse("extra").unwrap()],
     }
 }
 

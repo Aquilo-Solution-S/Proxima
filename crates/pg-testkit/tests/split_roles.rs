@@ -1,10 +1,10 @@
-use proxima_pg_testkit::{
+use proxiima_pg_testkit::{
     DbGuard, SplitRoleDb, create_db, db_url, split_role_urls_for, unique_db_name,
 };
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
 
 async fn admin_database() -> (DbGuard, PgConnection) {
-    let name = unique_db_name("proxima_test_split_roles");
+    let name = unique_db_name("proxiima_test_split_roles");
     create_db(&name).await.expect("create cutover database");
     let guard = DbGuard::adopt(name);
     let admin = PgConnection::connect(&db_url(guard.name()))
@@ -83,7 +83,7 @@ async fn assert_ledger_access(
 #[tokio::test]
 async fn split_roles_transfer_all_existing_public_migration_ledgers() {
     // Establish the shared fixture roles before seeding the old runtime grants.
-    let _roles = SplitRoleDb::create("proxima_test_split_role_seed", &[])
+    let _roles = SplitRoleDb::create("proxiima_test_split_role_seed", &[])
         .await
         .expect("provision reusable fixture roles");
     let (guard, mut admin) = admin_database().await;
@@ -102,29 +102,29 @@ async fn split_roles_transfer_all_existing_public_migration_ledgers() {
            CREATE TABLE public._sqlx_migrations
                (LIKE public._sqlx_migrations_custom INCLUDING ALL);
            INSERT INTO public._sqlx_migrations SELECT * FROM public._sqlx_migrations_custom;
-           CREATE TABLE public._sqlx_migrations_proxima_example
+           CREATE TABLE public._sqlx_migrations_proxiima_example
                (LIKE public._sqlx_migrations_custom INCLUDING ALL);
-           INSERT INTO public._sqlx_migrations_proxima_example SELECT * FROM public._sqlx_migrations_custom;
+           INSERT INTO public._sqlx_migrations_proxiima_example SELECT * FROM public._sqlx_migrations_custom;
            GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON
                public._sqlx_migrations_custom, public."_sqlx_migrations_custom""quoted",
-               public._sqlx_migrations, public._sqlx_migrations_proxima_example
-               TO proxima_test_runtime"#,
+               public._sqlx_migrations, public._sqlx_migrations_proxiima_example
+               TO proxiima_test_runtime"#,
     )
     .execute(&mut admin)
     .await
     .expect("seed admin-owned ledgers with existing runtime grants");
     admin.close().await.expect("close admin");
 
-    let (runtime_url, platform_url) = split_role_urls_for(guard.name(), &["proxima_example"])
+    let (runtime_url, platform_url) = split_role_urls_for(guard.name(), &["proxiima_example"])
         .await
-        .expect("cut over existing flavor ledgers");
+        .expect("cut over existing spiice ledgers");
     let mut runtime = PgConnection::connect(&runtime_url).await.expect("runtime");
     let mut platform = PgConnection::connect(&platform_url)
         .await
         .expect("platform");
     for ledger in [
         "public._sqlx_migrations",
-        "public._sqlx_migrations_proxima_example",
+        "public._sqlx_migrations_proxiima_example",
         "public._sqlx_migrations_custom",
         r#"public."_sqlx_migrations_custom""quoted""#,
     ] {
@@ -143,8 +143,8 @@ async fn split_roles_only_transfer_public_tables_with_the_literal_ledger_prefix(
          CREATE TABLE public._sqlx_migration (id integer);
          CREATE VIEW public._sqlx_migrations_view AS SELECT 1 AS id;
          CREATE SEQUENCE public._sqlx_migrations_sequence;
-         CREATE SCHEMA other_flavor;
-         CREATE TABLE other_flavor._sqlx_migrations_custom (id integer);
+         CREATE SCHEMA other_spiice;
+         CREATE TABLE other_spiice._sqlx_migrations_custom (id integer);
          CREATE TABLE public._sqlx_migrations_partitioned (version bigint)
              PARTITION BY RANGE (version)",
     )
@@ -161,7 +161,7 @@ async fn split_roles_only_transfer_public_tables_with_the_literal_ledger_prefix(
         "public._sqlx_migration",
         "public._sqlx_migrations_view",
         "public._sqlx_migrations_sequence",
-        "other_flavor._sqlx_migrations_custom",
+        "other_spiice._sqlx_migrations_custom",
     ] {
         let admin_owns: bool = sqlx::query_scalar(
             "SELECT pg_get_userbyid(relowner) = current_user
@@ -174,7 +174,7 @@ async fn split_roles_only_transfer_public_tables_with_the_literal_ledger_prefix(
         assert!(admin_owns, "fixture must leave {relation} with admin");
     }
     let platform_owns_partitioned: bool = sqlx::query_scalar(
-        "SELECT pg_get_userbyid(relowner) = 'proxima_test_platform'
+        "SELECT pg_get_userbyid(relowner) = 'proxiima_test_platform'
            FROM pg_class WHERE oid = 'public._sqlx_migrations_partitioned'::regclass",
     )
     .fetch_one(&mut admin)
@@ -184,13 +184,13 @@ async fn split_roles_only_transfer_public_tables_with_the_literal_ledger_prefix(
     admin.close().await.expect("close admin");
 }
 
-/// A passed flavor schema gets its ledger pre-created and handed to the
-/// platform role; no other flavor's ledger appears.
+/// A passed spiice schema gets its ledger pre-created and handed to the
+/// platform role; no other spiice's ledger appears.
 #[tokio::test]
-async fn a_passed_flavor_schema_gets_its_ledger_and_no_other_does() {
+async fn a_passed_spiice_schema_gets_its_ledger_and_no_other_does() {
     let (guard, admin) = admin_database().await;
     admin.close().await.expect("close admin");
-    let (runtime_url, platform_url) = split_role_urls_for(guard.name(), &["proxima_example"])
+    let (runtime_url, platform_url) = split_role_urls_for(guard.name(), &["proxiima_example"])
         .await
         .expect("split roles");
     let runtime = PgConnection::connect(&runtime_url).await.expect("runtime");
@@ -199,10 +199,10 @@ async fn a_passed_flavor_schema_gets_its_ledger_and_no_other_does() {
         .expect("platform");
     let (platform_owns, runtime_reads, runtime_writes): (bool, bool, bool) = sqlx::query_as(
         "SELECT pg_get_userbyid(relowner) = current_user,
-                has_table_privilege('proxima_test_runtime', oid, 'SELECT'),
-                has_table_privilege('proxima_test_runtime', oid,
+                has_table_privilege('proxiima_test_runtime', oid, 'SELECT'),
+                has_table_privilege('proxiima_test_runtime', oid,
                                     'INSERT, UPDATE, DELETE, TRUNCATE')
-           FROM pg_class WHERE oid = 'public._sqlx_migrations_proxima_example'::regclass",
+           FROM pg_class WHERE oid = 'public._sqlx_migrations_proxiima_example'::regclass",
     )
     .fetch_one(&mut platform)
     .await
@@ -210,7 +210,7 @@ async fn a_passed_flavor_schema_gets_its_ledger_and_no_other_does() {
     assert!(platform_owns, "platform owns the pre-created ledger");
     assert!(runtime_reads && !runtime_writes, "runtime reads it only");
     let other_ledger: bool = sqlx::query_scalar(
-        "SELECT to_regclass('public._sqlx_migrations_proxima_notes') IS NOT NULL",
+        "SELECT to_regclass('public._sqlx_migrations_proxiima_notes') IS NOT NULL",
     )
     .fetch_one(&mut platform)
     .await
@@ -220,13 +220,13 @@ async fn a_passed_flavor_schema_gets_its_ledger_and_no_other_does() {
     platform.close().await.expect("close platform");
 }
 
-/// With no flavor schema passed, only `proxima_core` is prepared: a schema
+/// With no spiice schema passed, only `proxiima_core` is prepared: a schema
 /// already in the database that nobody passed stays with its owner, and the
 /// runtime role gets nothing on it.
 #[tokio::test]
-async fn no_flavor_schema_passed_grants_only_core() {
+async fn no_spiice_schema_passed_grants_only_core() {
     let (guard, mut admin) = admin_database().await;
-    sqlx::raw_sql("CREATE SCHEMA proxima_notes; CREATE SCHEMA proxima_core")
+    sqlx::raw_sql("CREATE SCHEMA proxiima_notes; CREATE SCHEMA proxiima_core")
         .execute(&mut admin)
         .await
         .expect("seed schemas");
@@ -240,8 +240,8 @@ async fn no_flavor_schema_passed_grants_only_core() {
     let owners: Vec<(String, bool, bool)> = sqlx::query_as(
         "SELECT nspname,
                 pg_get_userbyid(nspowner) = current_user,
-                has_schema_privilege('proxima_test_runtime', oid, 'USAGE')
-           FROM pg_namespace WHERE nspname IN ('proxima_core', 'proxima_notes')
+                has_schema_privilege('proxiima_test_runtime', oid, 'USAGE')
+           FROM pg_namespace WHERE nspname IN ('proxiima_core', 'proxiima_notes')
           ORDER BY nspname",
     )
     .fetch_all(&mut platform)
@@ -250,8 +250,8 @@ async fn no_flavor_schema_passed_grants_only_core() {
     assert_eq!(
         owners,
         vec![
-            ("proxima_core".to_owned(), true, true),
-            ("proxima_notes".to_owned(), false, false),
+            ("proxiima_core".to_owned(), true, true),
+            ("proxiima_notes".to_owned(), false, false),
         ]
     );
     platform.close().await.expect("close platform");

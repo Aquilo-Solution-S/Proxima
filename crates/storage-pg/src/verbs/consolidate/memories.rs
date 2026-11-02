@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use proxima_core::read_models::{MemorySchemaSpec, MemorySnapshot, resolve_memory_schema};
-use proxima_core::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow};
-use proxima_core::{EntityKind, MemoryId, OwnerId, SchemaId, SidecarPayload, StorageError};
+use proxiima_core::read_models::{MemorySchemaSpec, MemorySnapshot, resolve_memory_schema};
+use proxiima_core::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow};
+use proxiima_core::{EntityKind, MemoryId, OwnerId, SchemaId, SidecarPayload, StorageError};
 use sqlx::PgConnection;
 
 use crate::error::map_err;
@@ -18,7 +18,7 @@ pub(crate) async fn load_memory_by_id_on_connection(
     schemas: &[MemorySchemaSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
     let raw: Option<StoredMemoryRow> = sqlx::query_as(
-        "SELECT m.t, m.handle, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
+        "SELECT m.t, m.handle, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxiima_core.memory m JOIN proxiima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
     ).bind(memory_id.into_inner()).fetch_optional(&mut *connection).await.map_err(map_err)?;
     let Some(row) = raw.map(StoredMemoryRow::into_hydration) else {
         return Ok(None);
@@ -34,7 +34,7 @@ pub(crate) async fn load_memory_by_id_on_connection(
 pub(crate) async fn load_memories_by_ids_on_connection(
     connection: &mut PgConnection,
     pg_sidecars: &PgSidecarRegistryFrozen,
-    read_owners: &[proxima_core::OwnerId],
+    read_owners: &[proxiima_core::OwnerId],
     memory_ids: &[MemoryId],
     schemas: &[MemorySchemaSpec],
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
@@ -44,11 +44,11 @@ pub(crate) async fn load_memories_by_ids_on_connection(
     let owner_ids: Vec<uuid::Uuid> = read_owners
         .iter()
         .copied()
-        .map(proxima_core::OwnerId::into_inner)
+        .map(proxiima_core::OwnerId::into_inner)
         .collect();
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
     let raw: Vec<StoredMemoryRow> = sqlx::query_as(
-        "SELECT m.t, m.handle, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxima_core.memory m JOIN proxima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
+        "SELECT m.t, m.handle, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxiima_core.memory m JOIN proxiima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
     ).bind(&owner_ids).bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     let rows = raw
         .into_iter()
@@ -63,7 +63,7 @@ pub(crate) async fn load_memories_by_ids_on_connection(
 /// Returns storage errors from query execution.
 pub(crate) async fn load_series_head_on_connection(
     connection: &mut PgConnection,
-    read_owners: &[proxima_core::OwnerId],
+    read_owners: &[proxiima_core::OwnerId],
     memory_id: MemoryId,
 ) -> Result<Option<MemoryId>, StorageError> {
     if read_owners.is_empty() {
@@ -72,12 +72,12 @@ pub(crate) async fn load_series_head_on_connection(
     let owner_ids: Vec<uuid::Uuid> = read_owners
         .iter()
         .copied()
-        .map(proxima_core::OwnerId::into_inner)
+        .map(proxiima_core::OwnerId::into_inner)
         .collect();
     let head: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT h.t
-           FROM proxima_core.memory m
-           JOIN proxima_core.memory_head h ON h.handle = m.handle
+           FROM proxiima_core.memory m
+           JOIN proxiima_core.memory_head h ON h.handle = m.handle
           WHERE m.t = $1 AND m.owner_id = ANY($2::uuid[])",
     )
     .bind(memory_id.into_inner())
@@ -104,7 +104,7 @@ pub(crate) async fn load_memory_graph_payloads_on_connection(
         .iter()
         .map(|i| i.memory_id.into_inner())
         .collect();
-    let raw: Vec<(uuid::Uuid, PgMemoryKind, String, Vec<String>)> = sqlx::query_as("SELECT m.t, m.kind, m.schema_id, m.sidecar_tables FROM proxima_core.memory m WHERE m.t = ANY($1::uuid[])").bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
+    let raw: Vec<(uuid::Uuid, PgMemoryKind, String, Vec<String>)> = sqlx::query_as("SELECT m.t, m.kind, m.schema_id, m.sidecar_tables FROM proxiima_core.memory m WHERE m.t = ANY($1::uuid[])").bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
     let by_id = raw
         .into_iter()
         .map(|(id, kind, schema_id, tables)| (id, (EntityKind::from(kind), schema_id, tables)))
@@ -199,11 +199,11 @@ impl StoredMemoryRow {
     fn into_hydration(self) -> MemoryHydrationRow {
         MemoryHydrationRow {
             memory_id: self.t,
-            series: proxima_core::SeriesHandle::new(self.handle),
+            series: proxiima_core::SeriesHandle::new(self.handle),
             kind: self.kind.into(),
             schema_id: self.schema_id,
             owner: OwnerId::new(self.owner_id),
-            writer: proxima_core::WriterAttribution {
+            writer: proxiima_core::WriterAttribution {
                 by: self.by,
                 via: self.via,
             },
@@ -216,11 +216,11 @@ impl StoredMemoryRow {
 #[derive(Debug)]
 struct MemoryHydrationRow {
     memory_id: uuid::Uuid,
-    series: proxima_core::SeriesHandle,
+    series: proxiima_core::SeriesHandle,
     kind: EntityKind,
     schema_id: String,
     owner: OwnerId,
-    writer: proxima_core::WriterAttribution,
+    writer: proxiima_core::WriterAttribution,
     sidecar_tables: Vec<String>,
     occurred_at: Option<time::OffsetDateTime>,
 }
@@ -344,8 +344,8 @@ async fn load_memory_sidecar_payloads_batch_on_connection(
 mod tests {
     use super::{MemoryHydrationRow, snapshot_payload_keys};
     use crate::sidecars::core_pg_sidecars;
-    use proxima_core::read_models::MemorySchemaSpec;
-    use proxima_core::{
+    use proxiima_core::read_models::MemorySchemaSpec;
+    use proxiima_core::{
         AgentNoteV1, EntityKind, FactPayload, OwnerId, SchemaVersion, UploadV1, UserId,
     };
 
@@ -365,7 +365,7 @@ mod tests {
             MemoryHydrationRow {
                 writer: crate::test_fixtures::writer(),
                 memory_id: uuid::Uuid::now_v7(),
-                series: proxima_core::SeriesHandle::new(uuid::Uuid::now_v7()),
+                series: proxiima_core::SeriesHandle::new(uuid::Uuid::now_v7()),
                 kind: EntityKind::Fact,
                 schema_id: UploadV1::SCHEMA_ID.to_owned(),
                 owner,
@@ -375,11 +375,11 @@ mod tests {
             MemoryHydrationRow {
                 writer: crate::test_fixtures::writer(),
                 memory_id: uuid::Uuid::now_v7(),
-                series: proxima_core::SeriesHandle::new(uuid::Uuid::now_v7()),
+                series: proxiima_core::SeriesHandle::new(uuid::Uuid::now_v7()),
                 kind: EntityKind::Fact,
                 schema_id: AgentNoteV1::SCHEMA_ID.to_owned(),
                 owner,
-                sidecar_tables: vec!["proxima_core.write_act_v1".to_owned()],
+                sidecar_tables: vec!["proxiima_core.write_act_v1".to_owned()],
                 occurred_at: None,
             },
         ];

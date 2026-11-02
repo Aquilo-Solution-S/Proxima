@@ -6,27 +6,27 @@
     clippy::used_underscore_binding
 )]
 
-use proxima_core::MemoryKind;
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{
+use proxiima_core::MemoryKind;
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::storage_ports::{OwnerTransferPort, OwnerWritePermit};
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::verbs::goal_write::GoalState;
+use proxiima_core::{
     AccessKind, EntityId, EntityKind, GroupId, OwnerId, SchemaId, SchemaVersion, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
-use proxima_storage_pg::verbs::query_timeseries::query_heads;
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
+use proxiima_storage_pg::verbs::query_timeseries::query_heads;
 use uuid::Uuid;
 
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.
-fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
-    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
-        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+fn transfer_surfaces() -> proxiima_core::owner_inverse::OwnerSurfaces {
+    proxiima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
     )
 }
 
@@ -46,7 +46,10 @@ fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: MemoryKind) -> 
         additional_references: origins
             .into_iter()
             .map(|t| {
-                proxima_core::EdgeEndpoint::memory(EntityKind::Fact, proxima_core::MemoryId::new(t))
+                proxiima_core::EdgeEndpoint::memory(
+                    EntityKind::Fact,
+                    proxiima_core::MemoryId::new(t),
+                )
             })
             .collect(),
         refs,
@@ -58,7 +61,7 @@ fn fact(schema: &str, refs: Vec<Uuid>, origins: Vec<Uuid>, kind: MemoryKind) -> 
 
 #[tokio::test]
 async fn walk_query_history_and_transfer_over_one_corpus() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -136,7 +139,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
         let _g = write_goal(
             &mut tx,
             &owner,
-            proxima_storage_pg::test_fixtures::writer(),
+            proxiima_storage_pg::test_fixtures::writer(),
             &GoalWriteCommand {
                 handle: None,
                 schema_id: "task".into(),
@@ -181,19 +184,19 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
             "an owner transfer moves the existing series in place"
         );
         let new_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(file.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(new_owner, dest.into_inner());
         let handle_after: Uuid =
-            sqlx::query_scalar("SELECT handle FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT handle FROM proxiima_core.memory WHERE t = $1")
                 .bind(file.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(handle_after, file.handle);
         let still_private: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory
+            "SELECT count(*)::bigint FROM proxiima_core.memory
               WHERE t = $1 AND owner_id = $2",
         )
         .bind(file.memory_id.into_inner())
@@ -205,7 +208,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
         for dead in ["edges", "fact_entities", "change_event", "fact_receipts"] {
             let n: i64 = sqlx::query_scalar(
                 "SELECT count(*)::bigint FROM information_schema.tables
-                  WHERE table_schema = 'proxima_core' AND table_name = $1",
+                  WHERE table_schema = 'proxiima_core' AND table_name = $1",
             )
             .bind(dead)
             .fetch_one(pool)

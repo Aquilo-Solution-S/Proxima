@@ -4,8 +4,8 @@
 //! relation name. Its private execution role can scan the derived projection;
 //! ordinary memory RLS authorizes every id before the function returns it.
 
-use proxima_core::StorageError;
-use proxima_core::flavor::FlavorContract;
+use proxiima_core::StorageError;
+use proxiima_core::spiice::SpiiceContract;
 
 use crate::pg_ident::PgIdent;
 use crate::projection::Artifact;
@@ -51,7 +51,7 @@ pub(crate) fn call_sql(table: &str, substring: bool) -> Result<String, StorageEr
     ))
 }
 
-/// Generate the lexical and declared substring functions for one flavor.
+/// Generate the lexical and declared substring functions for one spiice.
 ///
 /// Migration files carry these artifacts. Serving boot only verifies them;
 /// this function never accesses a database or installs objects at runtime.
@@ -59,12 +59,12 @@ pub(crate) fn call_sql(table: &str, substring: bool) -> Result<String, StorageEr
 /// # Errors
 /// Refuses invalid declared identifiers or inconsistent search projections.
 pub fn candidate_artifacts(
-    contract: &'static FlavorContract,
+    contract: &'static SpiiceContract,
 ) -> Result<Vec<Artifact>, StorageError> {
     let Some(spec) = contract.projection.spec() else {
         return Ok(Vec::new());
     };
-    let projections = proxima_core::verbs::schema::contract_search_projections(&[contract])
+    let projections = proxiima_core::verbs::schema::contract_search_projections(&[contract])
         .map_err(|error| StorageError::Internal(error.to_string()))?;
     candidate_artifacts_for_projection(spec.table, spec.overfetch_k, &projections)
 }
@@ -76,7 +76,7 @@ pub fn candidate_artifacts(
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 #[doc(hidden)]
 pub fn candidate_artifacts_for_tests(
-    projections: &[proxima_core::verbs::schema::MemorySearchProjection],
+    projections: &[proxiima_core::verbs::schema::MemorySearchProjection],
 ) -> Result<Vec<Artifact>, StorageError> {
     let Some(head) = projections.first() else {
         return Ok(Vec::new());
@@ -87,7 +87,7 @@ pub fn candidate_artifacts_for_tests(
 fn candidate_artifacts_for_projection(
     table: &str,
     cap: u32,
-    projections: &[proxima_core::verbs::schema::MemorySearchProjection],
+    projections: &[proxiima_core::verbs::schema::MemorySearchProjection],
 ) -> Result<Vec<Artifact>, StorageError> {
     let mut artifacts = Vec::new();
     for substring in [false, true] {
@@ -101,14 +101,14 @@ fn candidate_artifacts_for_projection(
                 .ok_or_else(missing_recency)?;
             // The candidate role reads the core sidecars through their
             // trigram indexes, which row security would otherwise keep out of
-            // reach. A flavor's sidecar has no such index (see `SubstringArm`)
+            // reach. A spiice's sidecar has no such index (see `SubstringArm`)
             // and stays under owner row security.
             let mut tables = vec![table.to_owned()];
             tables.extend(
                 relevance
                     .legs
                     .iter()
-                    .filter(|leg| leg.table.starts_with("proxima_core."))
+                    .filter(|leg| leg.table.starts_with("proxiima_core."))
                     .map(|leg| leg.table.clone()),
             );
             (
@@ -145,7 +145,7 @@ fn candidate_artifacts_for_projection(
              SET search_path TO pg_catalog, pg_temp\n\
              AS $candidate_function$\n\
              BEGIN\n\
-                 PERFORM proxima_core.assert_search_scope(requested_owners);\n\
+                 PERFORM proxiima_core.assert_search_scope(requested_owners);\n\
                  IF candidate_limit IS NULL OR candidate_limit < 1 OR candidate_limit > {cap} THEN\n\
                      RAISE EXCEPTION 'candidate limit must be between 1 and {cap}' USING ERRCODE = '22023';\n\
                  END IF;\n\
@@ -159,10 +159,10 @@ fn candidate_artifacts_for_projection(
         );
         let signature = format!("{name}({ARGUMENT_TYPES})");
         let mut read_tables = vec![
-            "proxima_core.memory",
-            "proxima_core.memory_head",
-            "proxima_core.lexical_languages",
-            "proxima_core.lexical_default",
+            "proxiima_core.memory",
+            "proxiima_core.memory_head",
+            "proxiima_core.lexical_languages",
+            "proxiima_core.lexical_default",
             table,
         ];
         read_tables.extend(
@@ -272,8 +272,8 @@ pub(crate) fn installation_sql(
         let table = PgIdent::table(table)?;
         // SQL-POLICY: PgIdent — the candidate table is contract-derived.
         Ok(format!(
-            "DROP POLICY IF EXISTS proxima_search_candidates ON {table};\n\
-             CREATE POLICY proxima_search_candidates ON {table} FOR SELECT TO proxima_search USING (true);",
+            "DROP POLICY IF EXISTS proxiima_search_candidates ON {table};\n\
+             CREATE POLICY proxiima_search_candidates ON {table} FOR SELECT TO proxiima_search USING (true);",
             table = table.as_str()
         ))
     }).collect::<Result<Vec<_>, StorageError>>()?.join("\n");
@@ -282,14 +282,14 @@ pub(crate) fn installation_sql(
         "DO $install_candidate$\n\
          DECLARE original_role name := current_user;\n\
          BEGIN\n\
-             GRANT USAGE, CREATE ON SCHEMA {schema} TO proxima_search;\n\
-             GRANT SELECT ON {grants} TO proxima_search;\n\
+             GRANT USAGE, CREATE ON SCHEMA {schema} TO proxiima_search;\n\
+             GRANT SELECT ON {grants} TO proxiima_search;\n\
              {policies}\n\
-             SET LOCAL ROLE proxima_search;\n\
+             SET LOCAL ROLE proxiima_search;\n\
              EXECUTE $generated_function${function_ddl}$generated_function$;\n\
              REVOKE ALL ON FUNCTION {signature} FROM PUBLIC;\n\
              EXECUTE format('SET LOCAL ROLE %I', original_role);\n\
-             REVOKE CREATE ON SCHEMA {schema} FROM proxima_search;\n\
+             REVOKE CREATE ON SCHEMA {schema} FROM proxiima_search;\n\
          END\n\
          $install_candidate$;",
         schema = schema.as_str(),

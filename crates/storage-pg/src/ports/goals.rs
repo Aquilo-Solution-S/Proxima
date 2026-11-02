@@ -1,11 +1,11 @@
-use proxima_core::read_models::ActiveGoalSummary;
-use proxima_core::storage_ports::{GoalReadPort, GoalWritePort, OwnerWritePermit};
-use proxima_core::verbs::goal_write::{
+use proxiima_core::read_models::ActiveGoalSummary;
+use proxiima_core::storage_ports::{GoalReadPort, GoalWritePort, OwnerWritePermit};
+use proxiima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
     ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
-use proxima_core::{MemoryId, OwnerId, StorageError};
+use proxiima_core::{MemoryId, OwnerId, StorageError};
 
 use super::validate_permit_owner;
 use crate::{PgStorage, verbs};
@@ -112,7 +112,7 @@ impl GoalWritePort for PgStorage {
 impl GoalReadPort for PgStorage {
     async fn list_active_goals(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
         self_perspective_memory_id: MemoryId,
         limit: usize,
@@ -137,9 +137,9 @@ impl GoalReadPort for PgStorage {
 
     async fn load_goal_evidence(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
-        goal_id: proxima_core::GoalId,
+        goal_id: proxiima_core::GoalId,
     ) -> Result<Option<Vec<MemoryId>>, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,

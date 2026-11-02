@@ -5,11 +5,11 @@
 //! delegates to the inherent verb, and maps the error — so a behaviour
 //! change belongs in `upload.rs` or `read.rs`, never in this file.
 
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobStaged, CitedBlobUploadAborted,
     CitedBlobUploadHeader, CitedBlobUploadPrepared,
 };
-use proxima_core::{AuthzContext, OwnerId, StorageError};
+use proxiima_core::{AuthzContext, OwnerId, StorageError};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;

@@ -176,7 +176,7 @@ fn fixture() -> Fixture {
     // Keep the individual timeout beyond the call-wide deadline so only the batch bound can win.
     let service =
         OtherStoresService::new(port.clone()).with_timeout(DEFAULT_REMOTE_BATCH_DEADLINE * 2);
-    ctx.services = crate::FlavorServices::with(service);
+    ctx.services = crate::SpiiceServices::with(service);
     Fixture {
         ctx,
         port,

@@ -168,7 +168,7 @@ jobs:
           shellcheck scripts/changelog.sh
           python3 scripts/check-upgrade-notes.py --self-test
           git cliff --offline --unreleased --output "${RUNNER_TEMP}/release-notes.md"
-      # A bump to `proxima_core::RELEASE_VERSION` cuts that tag and publishes
+      # A bump to `proxiima_core::RELEASE_VERSION` cuts that tag and publishes
       # its notes once `verified` reaches it (.github/workflows/release.yml).
       # This check is the last moment the number is still free to change.
       - name: release version
@@ -253,10 +253,10 @@ jobs:
           docker build \
             --build-arg VERSION="$(sed -n 's/^pub const RELEASE_VERSION: &str = "\(.*\)";$/\1/p' crates/core/src/lib.rs)" \
             --build-arg REVISION="$(git rev-parse HEAD)" \
-            -t proxima-mcp:ci .
+            -t proxiima-mcp:ci .
       - name: image reports its release
         run: |
-          docker image inspect proxima-mcp:ci \
+          docker image inspect proxiima-mcp:ci \
             --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' \
             | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'
 
@@ -272,18 +272,18 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg18@sha256:212765b63c1462883de295c4c415edcd22191b8d8d46853e86ad05d4b577a4cb
         env:
-          POSTGRES_USER: proxima
-          POSTGRES_PASSWORD: proxima
-          POSTGRES_DB: proxima
+          POSTGRES_USER: proxiima
+          POSTGRES_PASSWORD: proxiima
+          POSTGRES_DB: proxiima
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U proxima"
+          --health-cmd "pg_isready -U proxiima"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
       # S3-compatible object store for the cited-blob lane. Without it every
-      # test in crates/blob-s3 returns early on `PROXIMA_S3_*` being unset and
+      # test in crates/blob-s3 returns early on `PROXIIMA_S3_*` being unset and
       # nextest reports the lane PASSED having executed nothing — including the
       # versioned-bucket `purge_owner_objects` erase, which is a compliance
       # guarantee. RustFS rather than MinIO: Apache-2.0, so it carries none of
@@ -292,23 +292,23 @@ jobs:
       s3:
         image: rustfs/rustfs:1.0.0-beta.11@sha256:84ce557a0245a06a9aae5516f55ee0f007fca78d41df356f419306fdc0cb168c
         env:
-          RUSTFS_ACCESS_KEY: proxima
-          RUSTFS_SECRET_KEY: proxima-dev
+          RUSTFS_ACCESS_KEY: proxiima
+          RUSTFS_SECRET_KEY: proxiima-dev
         ports:
           - 9000:9000
     env:
       # pg-testkit clones per-test DBs from this template (admin) URL.
-      PROXIMA_TEST_PG_URL: postgres://proxima:proxima@localhost:5432/proxima
+      PROXIIMA_TEST_PG_URL: postgres://proxiima:proxiima@localhost:5432/proxiima
       # The catalog, OIDC and multi-owner e2e suites create their own
       # pg-testkit databases, so all-feature and shipped-default hosts can run
       # in the same job.
       # Cited-blob lane. `S3RuntimeConfig::present_in_env()` gates those tests
       # on these being set, so they run here rather than silently skipping.
-      PROXIMA_S3_BUCKET: proxima-cited-blobs
-      PROXIMA_S3_REGION: us-east-1
-      PROXIMA_S3_ENDPOINT_URL: http://localhost:9000
-      PROXIMA_S3_ACCESS_KEY_ID: proxima
-      PROXIMA_S3_SECRET_ACCESS_KEY: proxima-dev
+      PROXIIMA_S3_BUCKET: proxiima-cited-blobs
+      PROXIIMA_S3_REGION: us-east-1
+      PROXIIMA_S3_ENDPOINT_URL: http://localhost:9000
+      PROXIIMA_S3_ACCESS_KEY_ID: proxiima
+      PROXIIMA_S3_SECRET_ACCESS_KEY: proxiima-dev
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -332,23 +332,23 @@ jobs:
         # takes effect on a restart, and a service container takes no
         # command-line flags, so the step restarts it.
         run: |
-          psql "postgres://proxima:proxima@localhost:5432/proxima" -v ON_ERROR_STOP=1 \
+          psql "postgres://proxiima:proxiima@localhost:5432/proxiima" -v ON_ERROR_STOP=1 \
             -c 'ALTER SYSTEM SET fsync = off' \
             -c 'ALTER SYSTEM SET synchronous_commit = off' \
             -c 'ALTER SYSTEM SET full_page_writes = off' \
             -c 'ALTER SYSTEM SET max_connections = 200'
           docker restart "${{ job.services.postgres.id }}"
           for _ in $(seq 1 30); do
-            pg_isready -h localhost -p 5432 -U proxima && break
+            pg_isready -h localhost -p 5432 -U proxiima && break
             sleep 2
           done
-          test "$(psql "postgres://proxima:proxima@localhost:5432/proxima" -Atc 'SHOW max_connections')" = 200
+          test "$(psql "postgres://proxiima:proxiima@localhost:5432/proxiima" -Atc 'SHOW max_connections')" = 200
       - name: create cited-blob bucket
         # The AWS CLI reads only its own variable names; this step alone
         # gets the configured pair under them.
         env:
-          AWS_ACCESS_KEY_ID: ${{ env.PROXIMA_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ env.PROXIMA_S3_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ env.PROXIIMA_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.PROXIIMA_S3_SECRET_ACCESS_KEY }}
         run: |
           # Any HTTP response means it is up. Not `curl -f`: an S3 root
           # request is unauthenticated, so a healthy server answers 403.
@@ -356,9 +356,9 @@ jobs:
             curl -s -o /dev/null http://localhost:9000 && break
             sleep 2
           done
-          aws --endpoint-url http://localhost:9000 s3 mb s3://proxima-cited-blobs
+          aws --endpoint-url http://localhost:9000 s3 mb s3://proxiima-cited-blobs
           aws --endpoint-url http://localhost:9000 s3api put-bucket-versioning \
-            --bucket proxima-cited-blobs \
+            --bucket proxiima-cited-blobs \
             --versioning-configuration Status=Enabled
       - name: install nextest
         # taiki-e/install-action@v2. The tool is an input, not the `@nextest`
@@ -374,13 +374,13 @@ jobs:
       - name: test
         run: cargo nextest run --workspace --all-targets --all-features --locked
       - name: test shipped host defaults
-        run: cargo nextest run -p proxima-mcp --all-targets --locked
+        run: cargo nextest run -p proxiima-mcp --all-targets --locked
 
   # The storage suites whose correctness depends on what a connection carries
   # between transactions (the export/erase fence, the maintenance lease, the
   # pool's startup parameters), run with their serving pools behind PgBouncer
   # in transaction mode. pg-testkit routes the fixtures' runtime and platform
-  # pools through PROXIMA_TEST_PGBOUNCER_URL; migrations and the admin pool
+  # pools through PROXIIMA_TEST_PGBOUNCER_URL; migrations and the admin pool
   # stay direct, as production migrations must.
   pgbouncer:
     name: test (pgbouncer transaction mode)
@@ -392,19 +392,19 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg18@sha256:212765b63c1462883de295c4c415edcd22191b8d8d46853e86ad05d4b577a4cb
         env:
-          POSTGRES_USER: proxima
-          POSTGRES_PASSWORD: proxima
-          POSTGRES_DB: proxima
+          POSTGRES_USER: proxiima
+          POSTGRES_PASSWORD: proxiima
+          POSTGRES_DB: proxiima
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U proxima"
+          --health-cmd "pg_isready -U proxiima"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
     env:
-      PROXIMA_TEST_PG_URL: postgres://proxima:proxima@localhost:5432/proxima
-      PROXIMA_TEST_PGBOUNCER_URL: postgres://proxima:proxima@127.0.0.1:6433/proxima
+      PROXIIMA_TEST_PG_URL: postgres://proxiima:proxiima@localhost:5432/proxiima
+      PROXIIMA_TEST_PGBOUNCER_URL: postgres://proxiima:proxiima@127.0.0.1:6433/proxiima
     steps:
       # actions/checkout@v7
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -435,7 +435,7 @@ jobs:
         # against its published fingerprint.
         #
         # SCRAM end to end: clients authenticate against the server's
-        # secrets (auth_query as proxima), and PgBouncer logs in to Postgres
+        # secrets (auth_query as proxiima), and PgBouncer logs in to Postgres
         # with the client's SCRAM keys. extra_float_digits is deliberately
         # NOT ignored: the serving pools must not send it.
         run: |
@@ -454,7 +454,7 @@ jobs:
           dpkg --compare-versions "$version" ge 1.26.1
           dir="$RUNNER_TEMP/pgbouncer"
           mkdir -p "$dir"
-          printf '"proxima" "proxima"\n' > "$dir/userlist.txt"
+          printf '"proxiima" "proxiima"\n' > "$dir/userlist.txt"
           cat > "$dir/pgbouncer.ini" <<INI
           [databases]
           * = host=localhost port=5432
@@ -465,7 +465,7 @@ jobs:
           unix_socket_dir =
           auth_type = scram-sha-256
           auth_file = $dir/userlist.txt
-          auth_user = proxima
+          auth_user = proxiima
           pool_mode = transaction
           max_client_conn = 2000
           default_pool_size = 20
@@ -480,7 +480,7 @@ jobs:
             pg_isready -h 127.0.0.1 -p 6433 && break
             sleep 1
           done
-          test "$(psql "$PROXIMA_TEST_PGBOUNCER_URL" -Atc 'SELECT 1')" = 1
+          test "$(psql "$PROXIIMA_TEST_PGBOUNCER_URL" -Atc 'SELECT 1')" = 1
       - name: install nextest
         # taiki-e/install-action@v2
         uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68
@@ -488,19 +488,19 @@ jobs:
           tool: nextest
       - name: test through pgbouncer
         run: >-
-          cargo nextest run -p proxima-storage-pg --all-features --locked
+          cargo nextest run -p proxiima-storage-pg --all-features --locked
           -E 'binary(pgbouncer_pg) | binary(maintenance_lease_pg) | binary(host_state_lifecycle)
           | binary(purge_backoff) | binary(owner_export) | binary(owner_erase)'
       - name: boot through pgbouncer, migrations direct
-        run: cargo nextest run -p proxima --all-features --locked -E 'binary(pooler_boot_pg)'
+        run: cargo nextest run -p proxiima --all-features --locked -E 'binary(pooler_boot_pg)'
       - name: every client went through the pooler
         # A lane that silently connected direct would pass and prove nothing.
         run: |
           log="$RUNNER_TEMP/pgbouncer/pgbouncer.log"
-          logins="$(grep -c 'login attempt: db=proxima_test' "$log" || true)"
+          logins="$(grep -c 'login attempt: db=proxiima_test' "$log" || true)"
           echo "pooled logins: $logins"
           test "$logins" -gt 100
-          boot="$(grep -c 'login attempt: db=proxima_pooler_boot' "$log" || true)"
+          boot="$(grep -c 'login attempt: db=proxiima_pooler_boot' "$log" || true)"
           echo "pooled boot logins: $boot"
           test "$boot" -gt 0
       - name: pgbouncer log

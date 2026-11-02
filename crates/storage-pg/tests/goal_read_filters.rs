@@ -1,20 +1,20 @@
 //! Goal series selectors, mutation-safe paging, and Fact reference filters.
 #![allow(clippy::missing_errors_doc, clippy::too_many_lines)]
 
-use proxima_core::read_models::MemorySchemaSpec;
-use proxima_core::storage_ports::{FactIngestPort, MemoryReadPort, OwnerWritePermit};
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::fact_ingest::{
+use proxiima_core::read_models::MemorySchemaSpec;
+use proxiima_core::storage_ports::{FactIngestPort, MemoryReadPort, OwnerWritePermit};
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, AuthorizedNodeLinks, FactWriteCommand,
 };
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::query::{EntityKind, QueryRequest, SupersessionStatus};
-use proxima_core::{
+use proxiima_core::verbs::goal_write::GoalState;
+use proxiima_core::verbs::query::{EntityKind, QueryRequest, SupersessionStatus};
+use proxiima_core::{
     AccessKind, EdgeEndpoint, GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId,
 };
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::fresh_pg;
-use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, GoalWriteOutcome, write_goal};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::fresh_pg;
+use proxiima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, GoalWriteOutcome, write_goal};
 use uuid::Uuid;
 
 const FACT_SCHEMA: &str = "core/test-fact-v1";
@@ -56,7 +56,7 @@ async fn fact(pg: &PgStorage, owner: OwnerId, schema: &str, targets: &[Uuid]) ->
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     };
     let links = AuthorizedNodeLinks::new_for_tests(
@@ -89,7 +89,7 @@ async fn goal(
     let result = write_goal(
         &mut tx,
         &owner,
-        proxima_storage_pg::test_fixtures::writer(),
+        proxiima_storage_pg::test_fixtures::writer(),
         &GoalWriteCommand {
             handle,
             schema_id: "core/task-v1".into(),
@@ -116,7 +116,7 @@ async fn goal(
 #[tokio::test]
 async fn goal_handles_find_latest_and_open_pages_survive_lifecycle_writes() -> Result<(), TestError>
 {
-    let (pg, _db) = fresh_pg("proxima_goal_reads").await;
+    let (pg, _db) = fresh_pg("proxiima_goal_reads").await;
     let reader = owner();
     let reader_scope = owner_scope_for_tests(&[reader]);
     let a = goal(&pg, reader, None, GoalState::Active).await;
@@ -231,7 +231,7 @@ async fn goal_handles_find_latest_and_open_pages_survive_lifecycle_writes() -> R
 #[tokio::test]
 async fn fact_goal_series_filters_match_all_versions_before_paging_and_respect_scope()
 -> Result<(), TestError> {
-    let (pg, _db) = fresh_pg("proxima_goal_fact_reads").await;
+    let (pg, _db) = fresh_pg("proxiima_goal_fact_reads").await;
     let reader = owner();
     let reader_scope = owner_scope_for_tests(&[reader]);
     let foreign_owner = owner();
@@ -314,17 +314,17 @@ async fn fact_goal_series_filters_match_all_versions_before_paging_and_respect_s
     Ok(())
 }
 
-struct Verifier(proxima_core::OwnerRoles);
+struct Verifier(proxiima_core::OwnerRoles);
 
 #[async_trait::async_trait]
-impl proxima_core::Authenticator for Verifier {
+impl proxiima_core::Authenticator for Verifier {
     async fn authenticate(
         &self,
-        _: &proxima_core::Credentials,
-    ) -> Result<proxima_core::AuthzContext, proxima_core::AuthError> {
-        Ok(proxima_core::AuthzContext::server_resolved(
+        _: &proxiima_core::Credentials,
+    ) -> Result<proxiima_core::AuthzContext, proxiima_core::AuthError> {
+        Ok(proxiima_core::AuthzContext::server_resolved(
             self.0.clone(),
-            proxima_core::AuthPath::HostBearer,
+            proxiima_core::AuthPath::HostBearer,
         ))
     }
 }
@@ -332,12 +332,12 @@ impl proxima_core::Authenticator for Verifier {
 #[tokio::test]
 async fn goal_reference_filters_preserve_kind_and_owner_nondisclosure_under_rls()
 -> Result<(), TestError> {
-    use proxima_core::{Credentials, GroupId, OwnerRoles, Role};
-    use proxima_pg_testkit::SplitRoleDb;
-    use proxima_storage_pg::{PgPoolConfig, PgTuning};
+    use proxiima_core::{Credentials, GroupId, OwnerRoles, Role};
+    use proxiima_pg_testkit::SplitRoleDb;
+    use proxiima_storage_pg::{PgPoolConfig, PgTuning};
 
-    let db = SplitRoleDb::create("proxima_goal_rls", &[]).await?;
-    let platform = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+    let db = SplitRoleDb::create("proxiima_goal_rls", &[]).await?;
+    let platform = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
         db.platform_url(),
         PgPoolConfig::default(),
         PgTuning::default(),
@@ -352,13 +352,13 @@ async fn goal_reference_filters_preserve_kind_and_owner_nondisclosure_under_rls(
         let handle = Uuid::now_v7();
         let t = Uuid::now_v7();
         let mut tx = admin.begin().await?;
-        sqlx::query("INSERT INTO proxima_core.owners(owner_id,kind) VALUES ($1,'group')")
+        sqlx::query("INSERT INTO proxiima_core.owners(owner_id,kind) VALUES ($1,'group')")
             .bind(owner)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO proxima_core.goal_head(handle,t,owner_id,schema_id) VALUES ($1,$2,$3,'core/task-v1')")
+        sqlx::query("INSERT INTO proxiima_core.goal_head(handle,t,owner_id,schema_id) VALUES ($1,$2,$3,'core/task-v1')")
             .bind(handle).bind(t).bind(owner).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO proxima_core.goal(handle,t,owner_id,title,state,request_id, \"by\", via) VALUES ($1,$2,$3,'RLS goal','Active',$4, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
+        sqlx::query("INSERT INTO proxiima_core.goal(handle,t,owner_id,title,state,request_id, \"by\", via) VALUES ($1,$2,$3,'RLS goal','Active',$4, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
             .bind(handle).bind(t).bind(owner).bind(t.to_string()).execute(&mut *tx).await?;
         tx.commit().await?;
         handles.push(handle);
@@ -373,15 +373,15 @@ async fn goal_reference_filters_preserve_kind_and_owner_nondisclosure_under_rls(
     ] {
         let t = Uuid::now_v7();
         let mut tx = admin.begin().await?;
-        sqlx::query("INSERT INTO proxima_core.memory_head(handle,t,owner_id,schema_id,kind) VALUES ($1,$1,$2,$3,'fact')")
+        sqlx::query("INSERT INTO proxiima_core.memory_head(handle,t,owner_id,schema_id,kind) VALUES ($1,$1,$2,$3,'fact')")
             .bind(t).bind(source).bind(FACT_SCHEMA).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO proxima_core.memory(handle,t,owner_id,schema_id,kind,goal_refs,occurred_at, \"by\", via) VALUES ($1,$1,$2,$3,'fact',ARRAY[$4]::uuid[],uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
+        sqlx::query("INSERT INTO proxiima_core.memory(handle,t,owner_id,schema_id,kind,goal_refs,occurred_at, \"by\", via) VALUES ($1,$1,$2,$3,'fact',ARRAY[$4]::uuid[],uuid_extract_timestamp($1), '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
             .bind(t).bind(source).bind(FACT_SCHEMA).bind(target).execute(&mut *tx).await?;
         tx.commit().await?;
         facts.push(MemoryId::new(t));
     }
     let owner_ids = owners.map(|id| OwnerId::from(GroupId::new(id)));
-    let authz = proxima_core::authenticate(
+    let authz = proxiima_core::authenticate(
         &Verifier(OwnerRoles::for_subject(
             UserId::new(Uuid::now_v7()),
             [
@@ -441,7 +441,7 @@ async fn goal_reference_filters_preserve_kind_and_owner_nondisclosure_under_rls(
 /// neither repeat nor skip a series, and never shows an owner the reader lacks.
 #[tokio::test]
 async fn goal_pages_merge_the_heads_of_every_readable_owner() -> Result<(), TestError> {
-    let (pg, _db) = fresh_pg("proxima_goal_owner_merge").await;
+    let (pg, _db) = fresh_pg("proxiima_goal_owner_merge").await;
     let (one, two, outsider) = (owner(), owner(), owner());
     let scope = owner_scope_for_tests(&[one, two]);
     let mut written = Vec::new();

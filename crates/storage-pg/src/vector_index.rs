@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use proxima_core::storage_ports::{VectorCandidate, VectorIndex};
-use proxima_core::{EmbeddingDim, MemoryId, OwnerId, SpaceVector, StorageError};
+use proxiima_core::storage_ports::{VectorCandidate, VectorIndex};
+use proxiima_core::{EmbeddingDim, MemoryId, OwnerId, SpaceVector, StorageError};
 use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
@@ -22,7 +22,7 @@ pub(crate) enum StoreVectors {
     /// transaction that changes their rows.
     Local,
     /// A host index; the store keeps the heads and pays index debt (see
-    /// [`proxima_core::storage_ports::VectorIndex`]).
+    /// [`proxiima_core::storage_ports::VectorIndex`]).
     Remote(Arc<dyn VectorIndex>),
 }
 
@@ -51,7 +51,7 @@ pub(crate) async fn local_nearest(
     // SQL-POLICY: fixed-fragment — the width comes from the closed Lane.
     let sql = format!(
         "SELECT memory_id, similarity_score
-           FROM proxima_core.vector_candidates_d{}($1, $2, $3, $4)",
+           FROM proxiima_core.vector_candidates_d{}($1, $2, $3, $4)",
         lane.width
     );
     // SQL-POLICY: fixed-fragment — only the closed width is interpolated above.
@@ -74,7 +74,7 @@ pub(crate) async fn local_nearest(
 
 /// Candidate functions for every supported width, with their inverses.
 ///
-/// Provision `proxima_search` before installing these artifacts. Memory RLS remains enabled for that role. Runtime roles need
+/// Provision `proxiima_search` before installing these artifacts. Memory RLS remains enabled for that role. Runtime roles need
 /// explicit execution grants; no candidate function is public.
 /// # Errors
 /// Propagates invalid generated SQL identifiers.
@@ -83,7 +83,7 @@ pub fn vector_candidate_artifacts() -> Result<Vec<Artifact>, StorageError> {
         .into_iter()
         .map(|dim| {
             let lane = Lane::of(dim);
-            let name = format!("proxima_core.vector_candidates_d{}", lane.width);
+            let name = format!("proxiima_core.vector_candidates_d{}", lane.width);
             let signature = format!("{name}(uuid[], text, public.vector, bigint)");
             let body = nearest_sql(lane);
             // SQL-POLICY: fixed-fragment — names and body derive from closed width lanes.
@@ -97,15 +97,15 @@ pub fn vector_candidate_artifacts() -> Result<Vec<Artifact>, StorageError> {
             // SQL-POLICY: fixed-fragment — the signature derives from a closed width lane.
             let inverse = format!("DROP FUNCTION IF EXISTS {signature};");
             let forward = crate::search_candidates::installation_sql(
-                "proxima_core",
+                "proxiima_core",
                 &forward,
                 &signature,
                 &[
-                    "proxima_core.embeddings",
-                    "proxima_core.embedding_heads",
-                    "proxima_core.memory",
+                    "proxiima_core.embeddings",
+                    "proxiima_core.embedding_heads",
+                    "proxiima_core.memory",
                 ],
-                &["proxima_core.embeddings", "proxima_core.embedding_heads"],
+                &["proxiima_core.embeddings", "proxiima_core.embedding_heads"],
             )?;
             Ok(Artifact { forward, inverse })
         })
@@ -124,7 +124,7 @@ DECLARE
     scanned_ids uuid[];
     fetched bigint;
 BEGIN
-    PERFORM proxima_core.assert_search_scope($1);
+    PERFORM proxiima_core.assert_search_scope($1);
     IF public.vector_dims($3) IS DISTINCT FROM {width} THEN
         RAISE EXCEPTION 'query vector does not match index width'
             USING ERRCODE = '22023';
@@ -181,19 +181,19 @@ fn best_chunk_scores_sql(lane: Lane, candidates_only: bool) -> String {
         "        WITH owned_embeddings AS MATERIALIZED (
             SELECT emb.entity_id, emb.model_id, emb.dim, emb.embedding_version,
                    NULLIF(1 - (emb.vec OPERATOR(public.<=>) $3), 'NaN'::float8) AS chunk_score
-              FROM proxima_core.embeddings emb
+              FROM proxiima_core.embeddings emb
              WHERE emb.owner_id = ANY($1)
                AND emb.model_id = $2
                AND {predicate}{candidate_filter}
         ), eligible_chunks AS (
         SELECT emb.entity_id, emb.chunk_score
           FROM owned_embeddings emb
-          JOIN proxima_core.embedding_heads head
+          JOIN proxiima_core.embedding_heads head
             ON head.entity_id = emb.entity_id
            AND head.model_id = emb.model_id
            AND head.dim = emb.dim
            AND head.embedding_version = emb.embedding_version
-          JOIN proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
+          JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */{chunk_limit}
         )
@@ -211,19 +211,19 @@ fn candidate_scan_sql(lane: Lane, limit: &str) -> String {
     // SQL-POLICY: fixed-fragment — only closed lane fields and a fixed limit expression.
     format!(
         r"            SELECT emb.entity_id
-              FROM proxima_core.embeddings emb
+              FROM proxiima_core.embeddings emb
              WHERE {predicate}
                AND emb.owner_id = ANY($1)
                AND emb.model_id = $2
                AND EXISTS (
-                   SELECT 1 FROM proxima_core.embedding_heads head
+                   SELECT 1 FROM proxiima_core.embedding_heads head
                     WHERE head.entity_id = emb.entity_id
                       AND head.model_id = emb.model_id
                       AND head.dim = emb.dim
                       AND head.embedding_version = emb.embedding_version
                )
                AND EXISTS (
-                   SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+                   SELECT 1 FROM proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
                     WHERE m.t = emb.entity_id
                       AND m.owner_id = ANY($1)
                       AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */

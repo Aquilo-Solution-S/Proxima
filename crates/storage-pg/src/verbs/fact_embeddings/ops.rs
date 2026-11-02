@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use proxima_core::{
+use proxiima_core::{
     EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
     EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, StorageError,
 };
@@ -84,15 +84,15 @@ async fn embedding_ann_observability_on_connection(
         "WITH source_entities AS MATERIALIZED (
              SELECT 'goal'::text AS entity_kind,
                     t AS entity_id
-               FROM proxima_core.goal
+               FROM proxiima_core.goal
              UNION ALL
              SELECT kind::text AS entity_kind,
                     t AS entity_id
-               FROM proxima_core.memory WHERE forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+               FROM proxiima_core.memory WHERE forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
          ),
          orphan_embeddings AS (
              SELECT count(*)::bigint AS count
-               FROM proxima_core.embeddings emb
+               FROM proxiima_core.embeddings emb
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
@@ -101,7 +101,7 @@ async fn embedding_ann_observability_on_connection(
          ),
          orphan_heads AS (
              SELECT count(*)::bigint AS count
-               FROM proxima_core.embedding_heads head
+               FROM proxiima_core.embedding_heads head
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
@@ -110,7 +110,7 @@ async fn embedding_ann_observability_on_connection(
          ),
          orphan_jobs AS (
              SELECT count(*)::bigint AS count
-               FROM proxima_core.embedding_jobs job
+               FROM proxiima_core.embedding_jobs job
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
@@ -118,37 +118,37 @@ async fn embedding_ann_observability_on_connection(
               )
          )
          SELECT
-             (SELECT count(*)::bigint FROM proxima_core.embeddings)
+             (SELECT count(*)::bigint FROM proxiima_core.embeddings)
                  AS embedding_rows,
-             (SELECT count(*)::bigint FROM proxima_core.embedding_heads)
+             (SELECT count(*)::bigint FROM proxiima_core.embedding_heads)
                  AS embedding_head_rows,
-             (SELECT count(*)::bigint FROM proxima_core.embedding_jobs)
+             (SELECT count(*)::bigint FROM proxiima_core.embedding_jobs)
                  AS embedding_job_rows,
-             pg_relation_size('proxima_core.embeddings'::regclass)::bigint
+             pg_relation_size('proxiima_core.embeddings'::regclass)::bigint
                  AS embedding_table_bytes,
-             pg_total_relation_size('proxima_core.embeddings'::regclass)::bigint
+             pg_total_relation_size('proxiima_core.embeddings'::regclass)::bigint
                  AS embedding_total_relation_bytes,
              (SELECT COALESCE(sum(pg_relation_size(i.indexrelid)), 0)::bigint
                 FROM pg_index i
                 JOIN pg_class c ON c.oid = i.indexrelid
                 JOIN pg_am am ON am.oid = c.relam
-               WHERE i.indrelid = 'proxima_core.embeddings'::regclass
+               WHERE i.indrelid = 'proxiima_core.embeddings'::regclass
                  AND am.amname = 'hnsw')
                  AS hnsw_index_bytes,
              (SELECT count(*)::bigint
-                FROM proxima_core.embedding_jobs
+                FROM proxiima_core.embedding_jobs
                WHERE status = 'pending')
                  AS pending_jobs,
              (SELECT count(*)::bigint
-                FROM proxima_core.embedding_jobs
+                FROM proxiima_core.embedding_jobs
                WHERE status = 'processing')
                  AS processing_jobs,
              (SELECT count(*)::bigint
-                FROM proxima_core.embedding_jobs
+                FROM proxiima_core.embedding_jobs
                WHERE status IN ('failed', 'failed_permanent'))
                  AS failed_jobs,
              (SELECT count(*)::bigint
-                FROM proxima_core.embedding_jobs
+                FROM proxiima_core.embedding_jobs
                WHERE status = 'processing'
                  AND (
                      claimed_at IS NULL
@@ -211,8 +211,8 @@ async fn embedding_recall_canary(
 ) -> Result<Option<EmbeddingRecallCanary>, StorageError> {
     let Some(sample) = sqlx::query_as::<_, RecallSampleRow>(
         "SELECT emb.owner_id, emb.model_id, emb.dim, emb.vec
-           FROM proxima_core.embeddings emb
-           JOIN proxima_core.embedding_heads head
+           FROM proxiima_core.embeddings emb
+           JOIN proxiima_core.embedding_heads head
              ON head.entity_id = emb.entity_id
             AND head.model_id = emb.model_id
             AND head.dim = emb.dim
@@ -321,8 +321,8 @@ async fn current_embedding_ids_by_distance(
     // so another chunk of the same memory cannot count as an exact match.
     let sql = format!(
         "SELECT emb.entity_id, emb.embedding_version, emb.chunk_ordinal
-           FROM proxima_core.embeddings emb
-           JOIN proxima_core.embedding_heads head
+           FROM proxiima_core.embeddings emb
+           JOIN proxiima_core.embedding_heads head
              ON head.entity_id = emb.entity_id
             AND head.model_id = emb.model_id
             AND head.dim = emb.dim
@@ -368,14 +368,14 @@ pub(crate) async fn sweep_orphan_embedding_rows(
         "WITH source_entities AS MATERIALIZED (
              SELECT 'goal'::text AS entity_kind,
                     t AS entity_id
-               FROM proxima_core.goal
+               FROM proxiima_core.goal
              UNION ALL
              SELECT kind::text AS entity_kind,
                     t AS entity_id
-               FROM proxima_core.memory WHERE forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+               FROM proxiima_core.memory WHERE forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
          ),
          deleted_jobs AS (
-             DELETE FROM proxima_core.embedding_jobs job
+             DELETE FROM proxiima_core.embedding_jobs job
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
@@ -384,7 +384,7 @@ pub(crate) async fn sweep_orphan_embedding_rows(
               RETURNING 1
          ),
          deleted_heads AS (
-             DELETE FROM proxima_core.embedding_heads head
+             DELETE FROM proxiima_core.embedding_heads head
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src
@@ -393,7 +393,7 @@ pub(crate) async fn sweep_orphan_embedding_rows(
               RETURNING 1
          ),
          deleted_embeddings AS (
-             DELETE FROM proxima_core.embeddings emb
+             DELETE FROM proxiima_core.embeddings emb
               WHERE NOT EXISTS (
                     SELECT 1
                       FROM source_entities src

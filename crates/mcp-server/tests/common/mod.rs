@@ -1,12 +1,12 @@
 //! Shared test helpers for mcp-server integration tests.
 
-use proxima_mcp_server::owner_key;
+use proxiima_mcp_server::owner_key;
 #[allow(unused_imports)]
-pub use proxima_pg_testkit::{db_url, drop_db, split_role_urls};
+pub use proxiima_pg_testkit::{db_url, drop_db, split_role_urls};
 use serde_json::json;
 
-use proxima_core::OwnerId;
-use proxima_core::test_fixtures::owner_fixture;
+use proxiima_core::OwnerId;
+use proxiima_core::test_fixtures::owner_fixture;
 
 /// Returns a nil owner for token tests.
 #[allow(dead_code)]
@@ -22,25 +22,25 @@ pub fn nil_owner_header() -> String {
 #[allow(dead_code)]
 pub async fn storage(
     database_url: &str,
-) -> Result<proxima_storage_pg::PgStorage, Box<dyn std::error::Error>> {
+) -> Result<proxiima_storage_pg::PgStorage, Box<dyn std::error::Error>> {
     let options = database_url.parse::<sqlx::postgres::PgConnectOptions>()?;
     let database = options.get_database().ok_or("missing database name")?;
     let (runtime_url, platform_url) = split_role_urls(database).await?;
-    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+    let migration = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
         &platform_url,
-        proxima_storage_pg::PgPoolConfig::from_env()?,
-        proxima_storage_pg::PgTuning::from_env()?,
+        proxiima_storage_pg::PgPoolConfig::from_env()?,
+        proxiima_storage_pg::PgTuning::from_env()?,
     )
     .await?;
     migration.run_migrations().await?;
     migration.initialize_store_number(0).await?;
-    let scope = proxima_storage_pg::PgPlatformScope::new(
+    let scope = proxiima_storage_pg::PgPlatformScope::new(
         sqlx::PgPool::connect(&platform_url).await?,
-        &["proxima_core"],
+        &["proxiima_core"],
     )
     .await?;
-    let storage = proxima_storage_pg::PgStorage::connect(&runtime_url, scope, 0).await?;
-    let admin_pool = sqlx::PgPool::connect(&proxima_pg_testkit::db_url(database)).await?;
+    let storage = proxiima_storage_pg::PgStorage::connect(&runtime_url, scope, 0).await?;
+    let admin_pool = sqlx::PgPool::connect(&proxiima_pg_testkit::db_url(database)).await?;
     Ok(storage.with_admin_pool_for_tests(admin_pool))
 }
 
@@ -55,7 +55,7 @@ pub async fn initialize(
         .post(url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer)
-        .header("X-Proxima-Owner", nil_owner_header())
+        .header("X-Proxiima-Owner", nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
@@ -94,7 +94,7 @@ pub async fn initialized(
         .post(url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer)
-        .header("X-Proxima-Owner", nil_owner_header())
+        .header("X-Proxiima-Owner", nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Mcp-Session-Id", session)
         .header("Content-Type", "application/json")
@@ -119,7 +119,7 @@ pub async fn post_rpc(
         .post(url)
         .header("Origin", "http://localhost")
         .header("Authorization", bearer)
-        .header("X-Proxima-Owner", nil_owner_header())
+        .header("X-Proxiima-Owner", nil_owner_header())
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
@@ -153,8 +153,8 @@ pub async fn sse_json(
 /// Create a fresh test database.
 #[allow(dead_code)]
 pub async fn create_db() -> Result<String, Box<dyn std::error::Error>> {
-    let db_name = proxima_pg_testkit::unique_db_name("proxima_test");
-    proxima_pg_testkit::create_db(&db_name)
+    let db_name = proxiima_pg_testkit::unique_db_name("proxiima_test");
+    proxiima_pg_testkit::create_db(&db_name)
         .await
         .expect("PG required for tests");
     Ok(db_name)
@@ -170,42 +170,42 @@ pub async fn create_core_db() -> Result<String, Box<dyn std::error::Error>> {
 
 /// The serve task returned by [`start_server`].
 #[allow(dead_code)]
-pub type ServeHandle = tokio::task::JoinHandle<Result<(), proxima_mcp_server::McpServerError>>;
+pub type ServeHandle = tokio::task::JoinHandle<Result<(), proxiima_mcp_server::McpServerError>>;
 
 /// Serve `server` on a loopback port behind the production listener stack:
-/// bearer auth on `/mcp`, wrapped by [`proxima_mcp_server::guard_listener`]
+/// bearer auth on `/mcp`, wrapped by [`proxiima_mcp_server::guard_listener`]
 /// with the loopback Host policy and the default Origin allowlist.
 #[allow(dead_code)]
 pub async fn serve_loopback(
-    server: proxima_mcp_server::McpToolHost,
-    auth: std::sync::Arc<proxima_mcp_server::McpEdgeAuth>,
-    revalidation: proxima_core::RevalidationConfig,
+    server: proxiima_mcp_server::McpToolHost,
+    auth: std::sync::Arc<proxiima_mcp_server::McpEdgeAuth>,
+    revalidation: proxiima_core::RevalidationConfig,
 ) -> Result<(ServeHandle, std::net::SocketAddr), Box<dyn std::error::Error>> {
-    let origins = proxima_mcp_server::default_allowlist();
-    let hosts = proxima_mcp_server::HostAllowlist::default();
-    let service = proxima_mcp_server::streamable_http_service(
+    let origins = proxiima_mcp_server::default_allowlist();
+    let hosts = proxiima_mcp_server::HostAllowlist::default();
+    let service = proxiima_mcp_server::streamable_http_service(
         server,
         &origins,
         &hosts,
         &tokio_util::sync::CancellationToken::new(),
     );
-    let app = proxima_mcp_server::guard_listener(
+    let app = proxiima_mcp_server::guard_listener(
         axum::Router::new()
-            .nest_service(proxima_mcp_server::MCP_PATH, service)
-            .layer(proxima_mcp_server::mcp_auth_layer_with_config(
+            .nest_service(proxiima_mcp_server::MCP_PATH, service)
+            .layer(proxiima_mcp_server::mcp_auth_layer_with_config(
                 auth,
                 revalidation,
             )),
         origins,
         hosts,
-        proxima_mcp_server::MAX_REQUEST_BODY_BYTES,
+        proxiima_mcp_server::MAX_REQUEST_BODY_BYTES,
     );
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let handle = tokio::spawn(async move {
         axum::serve(listener, app)
             .await
-            .map_err(|err| proxima_mcp_server::McpServerError::Axum(err.to_string()))
+            .map_err(|err| proxiima_mcp_server::McpServerError::Axum(err.to_string()))
     });
     Ok((handle, addr))
 }
@@ -215,21 +215,21 @@ pub async fn serve_loopback(
 /// [`stop_server`].
 #[allow(dead_code)]
 pub async fn start_server(
-    auth_store: std::sync::Arc<proxima_mcp_server::McpEdgeAuth>,
+    auth_store: std::sync::Arc<proxiima_mcp_server::McpEdgeAuth>,
 ) -> Result<(ServeHandle, std::net::SocketAddr, String), Box<dyn std::error::Error>> {
     let db_name = create_db().await?;
     let (runtime_url, platform_url) = split_role_urls(&db_name).await?;
-    let server = proxima_mcp_server::McpToolHost::from_database_urls(
+    let server = proxiima_mcp_server::McpToolHost::from_database_urls(
         &runtime_url,
         &platform_url,
-        proxima_core::FlavorRegistry::new(),
+        proxiima_core::SpiiceRegistry::new(),
         0,
     )
     .await?;
     let (handle, addr) = serve_loopback(
         server,
         auth_store,
-        proxima_core::RevalidationConfig::default(),
+        proxiima_core::RevalidationConfig::default(),
     )
     .await?;
     Ok((handle, addr, db_name))

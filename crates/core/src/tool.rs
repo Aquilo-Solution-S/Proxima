@@ -1,4 +1,4 @@
-//! Transport-neutral flavor tool SDK.
+//! Transport-neutral spiice tool SDK.
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ use crate::access::AccessKind;
 use crate::authz::TrustedModelIdError;
 use crate::storage_ports::OwnerWritePermit;
 use crate::text_bounds::check_trimmed_len;
-use crate::{AuthzContext, Engine, FlavorRegistryFrozen, MemoryId, OwnerId};
+use crate::{AuthzContext, Engine, MemoryId, OwnerId, SpiiceRegistryFrozen};
 
 #[derive(Clone)]
 struct ServiceEntry {
@@ -20,32 +20,32 @@ struct ServiceEntry {
 
 type ServiceValues = Arc<HashMap<TypeId, ServiceEntry>>;
 
-/// One immutable-at-runtime service set composed by the linked flavors.
+/// One immutable-at-runtime service set composed by the linked spiices.
 ///
 /// Values are keyed by their concrete Rust type. Composition is fallible:
-/// two linked flavors cannot silently replace one another's service, and a
-/// flavor cannot replace a substrate service such as `CitedBlobService`.
+/// two linked spiices cannot silently replace one another's service, and a
+/// spiice cannot replace a substrate service such as `CitedBlobService`.
 #[derive(Clone, Default)]
-pub struct FlavorServices {
+pub struct SpiiceServices {
     values: ServiceValues,
 }
 
-impl std::fmt::Debug for FlavorServices {
+impl std::fmt::Debug for SpiiceServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FlavorServices")
+        f.debug_struct("SpiiceServices")
             .field("len", &self.values.len())
             .finish_non_exhaustive()
     }
 }
 
-/// Failure to compose the runtime services of linked flavors.
+/// Failure to compose the runtime services of linked spiices.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum FlavorServiceError {
-    #[error("duplicate flavor service type `{type_name}`")]
+pub enum SpiiceServiceError {
+    #[error("duplicate spiice service type `{type_name}`")]
     DuplicateService { type_name: &'static str },
 }
 
-impl FlavorServices {
+impl SpiiceServices {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -72,15 +72,15 @@ impl FlavorServices {
     ///
     /// # Errors
     ///
-    /// Returns [`FlavorServiceError::DuplicateService`] when the type is
+    /// Returns [`SpiiceServiceError::DuplicateService`] when the type is
     /// already present. The set is unchanged on failure.
-    pub fn try_insert<T>(&mut self, value: T) -> Result<(), FlavorServiceError>
+    pub fn try_insert<T>(&mut self, value: T) -> Result<(), SpiiceServiceError>
     where
         T: Send + Sync + 'static,
     {
         let type_id = TypeId::of::<T>();
         if self.values.contains_key(&type_id) {
-            return Err(FlavorServiceError::DuplicateService {
+            return Err(SpiiceServiceError::DuplicateService {
                 type_name: std::any::type_name::<T>(),
             });
         }
@@ -100,7 +100,7 @@ impl FlavorServices {
     ///
     /// Returns the lexically first duplicate concrete type. The receiver is
     /// unchanged on failure.
-    pub fn try_extend(&mut self, other: Self) -> Result<(), FlavorServiceError> {
+    pub fn try_extend(&mut self, other: Self) -> Result<(), SpiiceServiceError> {
         let duplicate = other
             .values
             .iter()
@@ -108,7 +108,7 @@ impl FlavorServices {
             .map(|(_, entry)| entry.type_name)
             .min();
         if let Some(type_name) = duplicate {
-            return Err(FlavorServiceError::DuplicateService { type_name });
+            return Err(SpiiceServiceError::DuplicateService { type_name });
         }
         let other_values = Arc::unwrap_or_clone(other.values);
         Arc::make_mut(&mut self.values).extend(other_values);
@@ -197,8 +197,8 @@ where
 /// Allowlisted inbound request headers of one served call, as opaque values.
 ///
 /// The serving host copies exactly the headers its allowlist names
-/// (`PROXIMA_REQUEST_HEADERS`) off the inbound HTTP request; nothing else
-/// crosses. Proxima neither parses nor authenticates a value, so a tool may
+/// (`PROXIIMA_REQUEST_HEADERS`) off the inbound HTTP request; nothing else
+/// crosses. Proxiima neither parses nor authenticates a value, so a tool may
 /// forward one (a ticket to an egress gateway) but must never authorize on
 /// one: the credential decides access, a header never does.
 ///
@@ -285,7 +285,7 @@ pub struct ToolCaller {
 impl ToolCaller {
     /// Caller provenance with no authenticated model identity.
     ///
-    /// The three-argument shape is load-bearing: out-of-tree flavors and
+    /// The three-argument shape is load-bearing: out-of-tree spiices and
     /// direct hosts call it. Authenticated provenance is layered on with
     /// [`Self::with_trusted_model_id`].
     #[must_use]
@@ -312,7 +312,7 @@ impl ToolCaller {
     /// and for the same reasons: a `String` rather than an `Option` so no
     /// later builder step can clear provenance, trimmed once so every
     /// comparison is on the same string, and bounded so a value that a
-    /// tool would later refuse cannot reach a flavor's policy check
+    /// tool would later refuse cannot reach a spiice's policy check
     /// looking legitimate. The only in-tree caller already holds a value
     /// that passed those checks at the authenticating edge; validating
     /// again here costs a trim and buys the same guarantee for
@@ -335,7 +335,7 @@ impl ToolCaller {
 pub struct ToolCtx {
     owner: OwnerId,
     authz: AuthzContext,
-    registry: Arc<FlavorRegistryFrozen>,
+    registry: Arc<SpiiceRegistryFrozen>,
     caller: Option<ToolCaller>,
     caller_self_perspective: Option<MemoryId>,
     services: ToolServices,
@@ -359,7 +359,7 @@ impl ToolCtx {
     pub fn new(
         owner: OwnerId,
         authz: AuthzContext,
-        registry: Arc<FlavorRegistryFrozen>,
+        registry: Arc<SpiiceRegistryFrozen>,
         services: ToolServices,
     ) -> Self {
         Self {
@@ -396,7 +396,7 @@ impl ToolCtx {
     pub(crate) fn from_parts(
         owner: OwnerId,
         authz: AuthzContext,
-        registry: Arc<FlavorRegistryFrozen>,
+        registry: Arc<SpiiceRegistryFrozen>,
         caller: Option<ToolCaller>,
         caller_self_perspective: Option<MemoryId>,
         services: ToolServices,
@@ -428,7 +428,7 @@ impl ToolCtx {
     }
 
     #[must_use]
-    pub fn registry(&self) -> &FlavorRegistryFrozen {
+    pub fn registry(&self) -> &SpiiceRegistryFrozen {
         &self.registry
     }
 
@@ -450,7 +450,7 @@ impl ToolCtx {
     /// Authorize this tool context for a storage-tier owner write.
     ///
     /// The permit is minted by the engine from this context's real transport
-    /// authorization and scoped owner; flavor code cannot construct it.
+    /// authorization and scoped owner; spiice code cannot construct it.
     ///
     /// # Errors
     ///
@@ -477,7 +477,7 @@ impl ToolCtx {
 
     /// Resolve the operator label this call's writes are recorded under.
     ///
-    /// The transport-neutral entry point, and the one a flavor [`Tool`]
+    /// The transport-neutral entry point, and the one a spiice [`Tool`]
     /// that accepts its own `model_id` argument must use instead of
     /// reading [`ToolCaller::model_id`]. A transport edge only ever
     /// inspects a *top-level* `model_id`, so a nested or per-item one —
@@ -537,7 +537,7 @@ pub(crate) fn validate_trusted_model_id(
 /// The one implementation of "which operator label does this write carry".
 ///
 /// Both tool traits reach it — [`ToolCtx::operator_label`] for a
-/// transport-neutral [`Tool`], `proxima_core::operator_label` for an
+/// transport-neutral [`Tool`], `proxiima_core::operator_label` for an
 /// [`McpTool`](crate::mcp::McpTool) — so a tool cannot pick a different
 /// answer by picking a different trait.
 ///
@@ -591,8 +591,8 @@ pub(crate) fn resolve_recorded_operator_label(
 /// This lives on `ToolError` rather than `McpToolError` so one
 /// implementation serves both tool traits: `From<ToolError> for
 /// McpToolError` maps `InvalidInput` straight through, so an
-/// `McpTool` body can `?` this directly. It is `pub` because every flavor
-/// with a paged read needs the same rule, and a rule an out-of-tree flavor
+/// `McpTool` body can `?` this directly. It is `pub` because every spiice
+/// with a paged read needs the same rule, and a rule an out-of-tree spiice
 /// cannot reach is a rule it will reimplement differently.
 ///
 /// The engine has enforced this from the start (`engine::query`,
@@ -619,9 +619,9 @@ pub const MAX_QUERY_CHARS: usize = 512;
 
 /// Longest text cap a caller may ask a search result to carry, in
 /// characters — `core_search_memories`' `body_max_chars` and whatever a
-/// flavor names its own snippet cap.
+/// spiice names its own snippet cap.
 ///
-/// Shared rather than copied so a flavor's cap cannot drift apart from
+/// Shared rather than copied so a spiice's cap cannot drift apart from
 /// core's unnoticed. Defaults are deliberately NOT shared: a short snippet
 /// and an 8,000-character memory body differ because the objects do.
 pub const MAX_TEXT_CAP_CHARS: usize = 8_000;
@@ -697,7 +697,7 @@ pub enum ToolError {
     Unavailable(String),
     /// The tool ran and failed, and says why in its own words. Answered as
     /// MCP's tool-execution error, a result with `isError: true` and this
-    /// text as its one content block, never as a protocol error. Proxima
+    /// text as its one content block, never as a protocol error. Proxiima
     /// neither redacts nor rewords it; the tool owns the text.
     #[error("{0}")]
     Failure(String),
@@ -724,7 +724,7 @@ pub trait Tool: Send + Sync + 'static {
     /// their own ([`crate::mcp::McpActionArgSpec::title`]); this names the
     /// tool as a whole. One line of at most
     /// [`crate::mcp::MAX_TITLE_CHARS`] characters, checked by
-    /// `FlavorRegistry::try_freeze`.
+    /// `SpiiceRegistry::try_freeze`.
     const TITLE: &'static str;
     const DESCRIPTION: &'static str;
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
@@ -732,7 +732,7 @@ pub trait Tool: Send + Sync + 'static {
     /// hint and route derives from (see [`crate::mcp::ToolEffect`]).
     ///
     /// Required on a flat tool and refused on a dispatcher by
-    /// `FlavorRegistry::try_freeze`: a dispatcher declares one effect per
+    /// `SpiiceRegistry::try_freeze`: a dispatcher declares one effect per
     /// action ([`Self::ACTION_ARG_SPECS`], [`Self::ARGV_ACTION_SPECS`]) and
     /// its tool-level effect is their join, so a tool-level value would be a
     /// second answer nothing reads.
@@ -746,7 +746,7 @@ pub trait Tool: Send + Sync + 'static {
     /// internally tagged enum tagged on `action`, its arguments are
     /// validated per action before decode, and its scope keys become
     /// `tool:action` leaves rather than the bare tool name.
-    /// `FlavorRegistry::try_freeze` refuses a registry where these and the
+    /// `SpiiceRegistry::try_freeze` refuses a registry where these and the
     /// schemars-derived dispatcher schema disagree. Each spec's `effect`
     /// is the sole behaviour authority for that action.
     const ACTION_ARG_SPECS: &'static [crate::mcp::McpActionArgSpec] = &[];
@@ -767,7 +767,7 @@ pub trait Tool: Send + Sync + 'static {
     const ARGV_ACTION_SPECS: &'static [crate::mcp::McpArgvActionSpec] = &[];
     /// Tool-level audience: [`crate::mcp::McpToolAudience::Owner`] declares
     /// every key of this tool the owner's alone. Descriptor data for hosts
-    /// that compute separate tool surfaces per audience — Proxima's own
+    /// that compute separate tool surfaces per audience — Proxiima's own
     /// gating does not read it. See
     /// [`crate::mcp::McpToolDescriptor::audience`].
     const AUDIENCE: crate::mcp::McpToolAudience = crate::mcp::McpToolAudience::Shared;
@@ -801,10 +801,10 @@ pub trait Tool: Send + Sync + 'static {
 }
 
 #[cfg(test)]
-mod flavor_service_tests {
+mod spiice_service_tests {
     use std::sync::Arc;
 
-    use super::{FlavorServiceError, FlavorServices};
+    use super::{SpiiceServiceError, SpiiceServices};
 
     #[derive(Debug)]
     struct Alpha(&'static str);
@@ -817,14 +817,14 @@ mod flavor_service_tests {
 
     #[test]
     fn duplicate_insert_is_typed_and_keeps_the_original() {
-        let mut services = FlavorServices::with(Alpha("first"));
+        let mut services = SpiiceServices::with(Alpha("first"));
         let original = services.get::<Alpha>().expect("alpha present");
 
         let err = services.try_insert(Alpha("second")).unwrap_err();
 
         assert_eq!(
             err,
-            FlavorServiceError::DuplicateService {
+            SpiiceServiceError::DuplicateService {
                 type_name: std::any::type_name::<Alpha>(),
             }
         );
@@ -835,8 +835,8 @@ mod flavor_service_tests {
 
     #[test]
     fn duplicate_extend_is_atomic() {
-        let mut services = FlavorServices::with(Alpha("first"));
-        let mut incoming = FlavorServices::with(Beta);
+        let mut services = SpiiceServices::with(Alpha("first"));
+        let mut incoming = SpiiceServices::with(Beta);
         incoming.try_insert(Alpha("second")).unwrap();
         incoming.try_insert(Gamma).unwrap();
 
@@ -844,7 +844,7 @@ mod flavor_service_tests {
 
         assert!(matches!(
             err,
-            FlavorServiceError::DuplicateService { type_name }
+            SpiiceServiceError::DuplicateService { type_name }
                 if type_name == std::any::type_name::<Alpha>()
         ));
         assert!(services.get::<Beta>().is_none());
@@ -960,7 +960,7 @@ mod operator_label_tests {
     use super::{ToolCaller, ToolCtx, ToolError, ToolServices};
     use crate::authz::TrustedModelIdError;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, MAX_OPERATOR_LABEL_CHARS, OwnerId, UserId,
+        AuthPath, AuthzContext, MAX_OPERATOR_LABEL_CHARS, OwnerId, SpiiceRegistry, UserId,
     };
 
     fn owner() -> OwnerId {
@@ -982,17 +982,17 @@ mod operator_label_tests {
         ToolCtx::new(
             owner,
             authz,
-            Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
             ToolServices::default(),
         )
         .with_caller(caller_label.map(|label| ToolCaller::new(label, "test-client", "0")))
     }
 
     #[test]
-    fn a_flavor_tool_cannot_relabel_a_bound_identity() {
+    fn a_spiice_tool_cannot_relabel_a_bound_identity() {
         let err = ctx(Some("acme/runner-v3"), Some("acme/runner-v3"))
             .operator_label(Some("openai/gpt-9"))
-            .expect_err("a flavor argument may not relabel an authenticated runner");
+            .expect_err("a spiice argument may not relabel an authenticated runner");
 
         let ToolError::InvalidInput(message) = err else {
             panic!("a bad reserved argument is invalid input");
@@ -1006,7 +1006,7 @@ mod operator_label_tests {
 
     /// Reads the binding from the authorization context, not from the
     /// caller struct: `ToolCaller` is a copy handed to the tool, and a
-    /// flavor that mutated its own copy must not change what is recorded.
+    /// spiice that mutated its own copy must not change what is recorded.
     #[test]
     fn the_binding_is_read_from_the_credential_not_the_caller_copy() {
         let ctx = ctx(Some("acme/runner-v3"), Some("stale/label"));
@@ -1018,7 +1018,7 @@ mod operator_label_tests {
     }
 
     #[test]
-    fn an_over_long_flavor_argument_is_refused() {
+    fn an_over_long_spiice_argument_is_refused() {
         assert!(
             ctx(None, Some("caller/model"))
                 .operator_label(Some(&"m".repeat(MAX_OPERATOR_LABEL_CHARS + 1)))
@@ -1027,7 +1027,7 @@ mod operator_label_tests {
     }
 
     /// The caller copy is bound by the same rule as the credential, so an
-    /// out-of-tree adapter cannot hand a flavor a value that
+    /// out-of-tree adapter cannot hand a spiice a value that
     /// `AuthzContext` would have refused.
     #[test]
     fn the_caller_builder_validates_what_it_binds() {

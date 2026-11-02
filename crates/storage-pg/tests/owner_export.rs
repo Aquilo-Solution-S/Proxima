@@ -1,32 +1,32 @@
 //! Export projects pins from memory rows; no reconstructed Edge table.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::MemoryKind;
-use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportTarget, OwnerSurfaces};
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerInversePort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::verbs::query::EntityKind;
-use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
+use proxiima_core::MemoryKind;
+use proxiima_core::owner_inverse::{ExportAuthorization, OwnerExportTarget, OwnerSurfaces};
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::storage_ports::{MemoryAuthoringPort, OwnerInversePort, OwnerWritePermit};
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::verbs::query::EntityKind;
+use proxiima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 /// The five sidecar legs exactly as the engine assembles them: from the
-/// frozen flavor registry. Passing empty slices here would silently skip
+/// frozen spiice registry. Passing empty slices here would silently skip
 /// the owner-pinned leg, which is the difference these tests exist to
 /// measure.
 fn contract_sidecar_tables() -> OwnerSurfaces {
-    OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
+    OwnerSurfaces::for_registry(&proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests())
 }
 
-/// The two synthetic citation surfaces, declared exactly as a flavor would:
+/// The two synthetic citation surfaces, declared exactly as a spiice would:
 /// keyed on a blob under a column of their own naming, carrying no `owner_id`
 /// of their own, so the generated statement reaches the owner through
-/// `proxima_core.blob`.
+/// `proxiima_core.blob`.
 fn citation_surfaces() -> OwnerSurfaces {
-    use proxima_core::flavor::{
+    use proxiima_core::spiice::{
         CounterRule, EraseRule, ExportRule, ForgetRule, KeyShape, Surface, TransferRule,
     };
     const fn citation(table: &'static str, column: &'static str) -> Surface {
@@ -46,8 +46,8 @@ fn citation_surfaces() -> OwnerSurfaces {
         }
     }
     OwnerSurfaces::from_surfaces(vec![
-        citation("proxima_core.test_cited_object_v1", "cited_object_id"),
-        citation("proxima_core.test_cited_span_v1", "span_blob_id"),
+        citation("proxiima_core.test_cited_object_v1", "cited_object_id"),
+        citation("proxiima_core.test_cited_span_v1", "span_blob_id"),
     ])
 }
 
@@ -77,7 +77,7 @@ fn draft(kind: MemoryKind, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteComm
 
 #[tokio::test]
 async fn export_edges_are_the_pins_already_on_memory() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -108,9 +108,9 @@ async fn export_edges_are_the_pins_already_on_memory() {
         let bundle = pg
             .export_owner_bundle(&auth, &contract_sidecar_tables())
             .await?;
-        assert_eq!(bundle.count("proxima_core.memory"), 2);
+        assert_eq!(bundle.count("proxiima_core.memory"), 2);
         let writer = permit.owner_scope().expect("sealed fixture scope").writer();
-        for row in &bundle.tables["proxima_core.memory"] {
+        for row in &bundle.tables["proxiima_core.memory"] {
             assert_eq!(row["by"].as_str(), Some(writer.by.to_string()).as_deref());
             assert!(row["via"].is_null());
         }
@@ -147,7 +147,7 @@ fn sketched(kind: MemoryKind, text: &str) -> FactWriteCommand {
 /// No storage locator of any kind enters the bundle.
 #[tokio::test]
 async fn export_carries_forgotten_rows_and_sketches() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -182,7 +182,7 @@ async fn export_carries_forgotten_rows_and_sketches() {
         let witnessed_t = Uuid::now_v7();
         let witnessed_handle = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', 'core/test-fact-v1', $2, $3)",
         )
         .bind(witnessed_handle)
@@ -191,7 +191,7 @@ async fn export_carries_forgotten_rows_and_sketches() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+            "INSERT INTO proxiima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
              VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(witnessed_handle)
@@ -199,12 +199,12 @@ async fn export_carries_forgotten_rows_and_sketches() {
         .bind(owner.into_inner())
         .execute(pool)
         .await?;
-        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.memory WHERE t = $1")
             .bind(witnessed_t)
             .execute(pool)
             .await?;
         let witness_kind: String = sqlx::query_scalar(
-            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+            "SELECT kind::text FROM proxiima_core.erased_pin_target WHERE t = $1",
         )
         .bind(witnessed_t)
         .fetch_one(pool)
@@ -214,7 +214,7 @@ async fn export_carries_forgotten_rows_and_sketches() {
         // A completed upload names where its bytes live (bucket, object key,
         // etag). The export carries the upload row, never those locators.
         let upload_blob: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'opaque/archive-v1', $2)
              RETURNING blob_id",
         )
@@ -223,7 +223,7 @@ async fn export_carries_forgotten_rows_and_sketches() {
         .fetch_one(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads
+            "INSERT INTO proxiima_core.blob_uploads
                 (owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len, status,
                  blob_id, sha256, etag, expires_at, completed_at, content_hash)
              VALUES ($1, 'leak-scan-bucket', 's3:test/leak-scan-bucket', 'uploads/leak-scan-object', 'a.zip',
@@ -243,12 +243,12 @@ async fn export_carries_forgotten_rows_and_sketches() {
             .await?;
 
         assert_eq!(
-            bundle.count("proxima_core.memory"),
+            bundle.count("proxiima_core.memory"),
             2,
             "the forgotten admission stays in memory, and only the owner's are exported"
         );
         let mut marked: Vec<(String, bool)> = bundle
-            .table("proxima_core.memory")
+            .table("proxiima_core.memory")
             .iter()
             .map(|row| {
                 (
@@ -264,7 +264,7 @@ async fn export_carries_forgotten_rows_and_sketches() {
         ];
         expected.sort();
         assert_eq!(marked, expected, "the forgotten row carries forgotten_at");
-        let uploads = bundle.table("proxima_core.blob_uploads");
+        let uploads = bundle.table("proxiima_core.blob_uploads");
         assert_eq!(uploads.len(), 1, "the completed upload is exported");
         assert_eq!(uploads[0]["status"].as_str(), Some("completed"));
         let mut upload_fields: Vec<&str> = uploads[0]
@@ -305,9 +305,9 @@ async fn export_carries_forgotten_rows_and_sketches() {
             );
         }
 
-        let sketches = bundle.table("proxima_core.sketch");
+        let sketches = bundle.table("proxiima_core.sketch");
         assert_eq!(
-            bundle.count("proxima_core.sketch"),
+            bundle.count("proxiima_core.sketch"),
             2,
             "forget keeps the sketch (#488 S14); the neighbour's is not exported"
         );
@@ -334,7 +334,7 @@ async fn export_carries_forgotten_rows_and_sketches() {
             sketches[0]
         );
         assert!(
-            !bundle.tables.contains_key("proxima_core.erased_pin_target"),
+            !bundle.tables.contains_key("proxiima_core.erased_pin_target"),
             "populated erased-target witnesses never enter the public export"
         );
         Ok(())
@@ -344,14 +344,14 @@ async fn export_carries_forgotten_rows_and_sketches() {
     result.expect("forgotten/sketch export test failed");
 }
 
-/// A citation is the `proxima_core.blob` row a Fact names, so citation
+/// A citation is the `proxiima_core.blob` row a Fact names, so citation
 /// sidecar tables key on `blob_id` and are owner-filtered through
 /// `blob.owner_id`. Export must act on the registered table lists it receives:
-/// discarding them drops a flavor's typed cited-object payloads from the
+/// discarding them drops a spiice's typed cited-object payloads from the
 /// bundle.
 #[tokio::test]
 async fn export_carries_registered_citation_sidecar_rows() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -364,26 +364,26 @@ async fn export_carries_registered_citation_sidecar_rows() {
 
         // No core payload registers a citation sidecar, so the coverage is a
         // synthetic registration: the export takes the table lists as
-        // arguments, exactly as a flavor's frozen registry supplies them.
+        // arguments, exactly as a spiice's frozen registry supplies them.
         sqlx::query(
-            "CREATE TABLE proxima_core.test_cited_object_v1 (
+            "CREATE TABLE proxiima_core.test_cited_object_v1 (
                  cited_object_id uuid PRIMARY KEY
-                     REFERENCES proxima_core.blob (blob_id),
+                     REFERENCES proxiima_core.blob (blob_id),
                  body text NOT NULL
              )",
         )
         .execute(pool)
         .await?;
         sqlx::query(
-            "CREATE TABLE proxima_core.test_cited_span_v1 (
+            "CREATE TABLE proxiima_core.test_cited_span_v1 (
                  span_blob_id uuid PRIMARY KEY
-                     REFERENCES proxima_core.blob (blob_id),
+                     REFERENCES proxiima_core.blob (blob_id),
                  page_from integer NOT NULL
              )",
         )
         .execute(pool)
         .await?;
-        sqlx::query("GRANT ALL PRIVILEGES ON TABLE proxima_core.test_cited_object_v1, proxima_core.test_cited_span_v1 TO PUBLIC")
+        sqlx::query("GRANT ALL PRIVILEGES ON TABLE proxiima_core.test_cited_object_v1, proxiima_core.test_cited_span_v1 TO PUBLIC")
             .execute(pool)
             .await?;
 
@@ -396,7 +396,7 @@ async fn export_carries_registered_citation_sidecar_rows() {
             pg.ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
                 .await?;
             let blob_id: Uuid = sqlx::query_scalar(
-                "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+                "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
                  VALUES ($1, $2, $3)
                  RETURNING blob_id",
             )
@@ -406,7 +406,7 @@ async fn export_carries_registered_citation_sidecar_rows() {
             .fetch_one(pool)
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.test_cited_object_v1 (cited_object_id, body)
+                "INSERT INTO proxiima_core.test_cited_object_v1 (cited_object_id, body)
                  VALUES ($1, $2)",
             )
             .bind(blob_id)
@@ -414,7 +414,7 @@ async fn export_carries_registered_citation_sidecar_rows() {
             .execute(pool)
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.test_cited_span_v1
+                "INSERT INTO proxiima_core.test_cited_span_v1
                      (span_blob_id, page_from)
                  VALUES ($1, $2)",
             )
@@ -432,13 +432,13 @@ async fn export_carries_registered_citation_sidecar_rows() {
         assert_eq!(
             tables,
             vec![
-                "proxima_core.test_cited_object_v1",
-                "proxima_core.test_cited_span_v1"
+                "proxiima_core.test_cited_object_v1",
+                "proxiima_core.test_cited_span_v1"
             ],
             "the bundle carries exactly the declared surfaces"
         );
-        let span = bundle.table("proxima_core.test_cited_span_v1");
-        let cited = bundle.table("proxima_core.test_cited_object_v1");
+        let span = bundle.table("proxiima_core.test_cited_span_v1");
+        let cited = bundle.table("proxiima_core.test_cited_object_v1");
         assert_eq!(span.len(), 1);
         assert_eq!(span[0]["page_from"].as_i64(), Some(4));
         assert_eq!(cited.len(), 1);
@@ -459,7 +459,7 @@ async fn export_carries_registered_citation_sidecar_rows() {
 /// identity; export must include it without leaking a neighbouring owner's row.
 #[tokio::test]
 async fn export_carries_owner_scoped_opaque_blob_metadata() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -478,7 +478,7 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
         }
 
         let blob_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'opaque/archive-v1', $2)
              RETURNING blob_id",
         )
@@ -487,7 +487,7 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
         .fetch_one(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'opaque/archive-v1', $2)",
         )
         .bind(other.into_inner())
@@ -501,8 +501,8 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
             .export_owner_bundle(&auth, &contract_sidecar_tables())
             .await?;
 
-        assert_eq!(bundle.count("proxima_core.blob"), 1);
-        let blobs = bundle.table("proxima_core.blob");
+        assert_eq!(bundle.count("proxiima_core.blob"), 1);
+        let blobs = bundle.table("proxiima_core.blob");
         assert_eq!(blobs.len(), 1);
         let blob = &blobs[0];
         assert_eq!(
@@ -527,7 +527,7 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
             "the blob export is a stable allowlist"
         );
         assert!(
-            bundle.table("proxima_core.agent_note_v1").is_empty(),
+            bundle.table("proxiima_core.agent_note_v1").is_empty(),
             "an opaque schema registers no sidecar, so its declared families stay empty"
         );
         Ok(())
@@ -553,11 +553,11 @@ async fn export_carries_owner_scoped_opaque_blob_metadata() {
 /// visited; a seeded owner would let a present-but-unwritten table hide
 /// behind a present-and-empty one.
 ///
-/// This is the flavor-#0 half. The full-registry half, where the code
-/// flavor's surfaces are visible too, is in `crates/proxima`.
+/// This is the spiice-#0 half. The full-registry half, where the code
+/// spiice's surfaces are visible too, is in `crates/proxiima`.
 #[tokio::test]
 async fn the_bundle_carries_every_exportable_surface_even_when_empty() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -573,7 +573,7 @@ async fn the_bundle_carries_every_exportable_surface_even_when_empty() {
             .collect();
         assert!(
             expected.len() > 10,
-            "flavor 0 declares more than ten exportable surfaces, got {}",
+            "spiice 0 declares more than ten exportable surfaces, got {}",
             expected.len()
         );
 
@@ -640,7 +640,7 @@ fn storage_locators(value: &serde_json::Value, path: &str, out: &mut Vec<String>
 /// rows are in the bundle, field by allowlisted field.
 #[tokio::test]
 async fn export_carries_the_owners_content_rows() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -663,7 +663,7 @@ async fn export_carries_the_owners_content_rows() {
         )
         .await?;
         let content_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/test-abs-v1', $2)
              RETURNING content_id",
         )
@@ -673,7 +673,7 @@ async fn export_carries_the_owners_content_rows() {
         .await?;
         // A neighbour's content stays out.
         sqlx::query(
-            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/test-abs-v1', $2)",
         )
         .bind(neighbour.into_inner())
@@ -686,7 +686,7 @@ async fn export_carries_the_owners_content_rows() {
         let bundle = pg
             .export_owner_bundle(&auth, &contract_sidecar_tables())
             .await?;
-        let rows = bundle.table("proxima_core.content");
+        let rows = bundle.table("proxiima_core.content");
         assert_eq!(rows.len(), 1, "the owner's content row, nobody else's");
         let mut fields: Vec<&str> = rows[0]
             .as_object()
@@ -711,7 +711,7 @@ async fn export_carries_the_owners_content_rows() {
 /// rows as well as live ones (#478; since #488 both are `memory` rows).
 #[tokio::test]
 async fn a_forgotten_memorys_origins_and_refs_are_edges() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -751,7 +751,7 @@ async fn a_forgotten_memorys_origins_and_refs_are_edges() {
             .export_owner_bundle(&auth, &contract_sidecar_tables())
             .await?;
         let forgotten_rows = bundle
-            .table("proxima_core.memory")
+            .table("proxiima_core.memory")
             .iter()
             .filter(|row| {
                 row["t"].as_str() == Some(derived.to_string().as_str())

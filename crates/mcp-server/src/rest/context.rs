@@ -11,20 +11,20 @@
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, header};
-use proxima_core::mcp::{McpAuthorContext, resolve_operator_label};
-use proxima_core::{MemoryId, RELEASE_VERSION};
+use proxiima_core::mcp::{McpAuthorContext, resolve_operator_label};
+use proxiima_core::{MemoryId, RELEASE_VERSION};
 
 use crate::auth::McpAuthContext;
 use crate::handler::{MODEL_ID_ARG, SELF_PERSPECTIVE_ARGS};
 use crate::rest::error::Problem;
 
 /// Model label for the write's provenance.
-pub const MODEL_ID_HEADER: &str = "X-Proxima-Model-Id";
+pub const MODEL_ID_HEADER: &str = "X-Proxiima-Model-Id";
 /// The caller's own Self Perspective, as a bare UUID.
-pub const SELF_PERSPECTIVE_HEADER: &str = "X-Proxima-Self-Perspective";
+pub const SELF_PERSPECTIVE_HEADER: &str = "X-Proxiima-Self-Perspective";
 
 /// Recorded as `client_name` when the caller sends no `User-Agent`.
-const ADAPTER_CLIENT_NAME: &str = "proxima-rest";
+const ADAPTER_CLIENT_NAME: &str = "proxiima-rest";
 
 /// Argument names that are call context on this surface, paired with the
 /// header that carries them.
@@ -51,7 +51,7 @@ pub const RESERVED_ARGUMENTS: &[(&str, &str)] = &[
 /// The full [`McpAuthContext`] — owner and authz — as injected by the
 /// shared `mcp_auth` layer.
 ///
-/// Deliberately the whole context rather than `proxima::app::Authz`'s
+/// Deliberately the whole context rather than `proxiima::app::Authz`'s
 /// `AuthzContext` alone: the dispatch seam needs the bound `Owner` to build
 /// an `McpToolCtx`. Nothing here authenticates — the layer already did, and
 /// re-implementing authentication here is forbidden.
@@ -76,7 +76,7 @@ where
 
 /// Build the author context for one REST call from its headers.
 ///
-/// `X-Proxima-Model-Id` is a caller *claim*. When the bearer token binds a
+/// `X-Proxiima-Model-Id` is a caller *claim*. When the bearer token binds a
 /// model identity, that identity is the persisted label and a differing
 /// header is refused. The precedence itself lives in
 /// [`resolve_operator_label`], shared with the MCP surface so the two
@@ -84,8 +84,8 @@ where
 ///
 /// # Errors
 ///
-/// Returns a `400` problem when `X-Proxima-Model-Id` names a model other
-/// than the one the token binds, or when `X-Proxima-Self-Perspective` is
+/// Returns a `400` problem when `X-Proxiima-Model-Id` names a model other
+/// than the one the token binds, or when `X-Proxiima-Self-Perspective` is
 /// not a bare UUID.
 pub fn author_from_headers(
     headers: &HeaderMap,
@@ -118,7 +118,7 @@ fn self_perspective(headers: &HeaderMap, instance: &str) -> Result<Option<Memory
     let Some(raw) = header_str(headers, SELF_PERSPECTIVE_HEADER) else {
         return Ok(None);
     };
-    proxima_core::mcp::parse_wire_uuid(raw)
+    proxiima_core::mcp::parse_wire_uuid(raw)
         .map(|id| Some(MemoryId::new(id)))
         .map_err(|err| {
             Problem::invalid_input(
@@ -182,7 +182,7 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_core::{AuthPath, AuthzContext, OwnerId, UserId};
+    use proxiima_core::{AuthPath, AuthzContext, OwnerId, UserId};
 
     fn auth(trusted_model_id: Option<&str>) -> McpAuthContext {
         let owner: OwnerId = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
@@ -285,7 +285,10 @@ mod tests {
 
         let json = err.to_json();
         assert_eq!(json["status"], 400);
-        assert_eq!(json["type"], "https://proxima.dev/errors/model-id-conflict");
+        assert_eq!(
+            json["type"],
+            "https://proxiima.dev/errors/model-id-conflict"
+        );
         let detail = json["detail"].as_str().expect("detail");
         assert!(detail.contains(MODEL_ID_HEADER), "{detail}");
         assert!(detail.contains("claimed/model"), "{detail}");
@@ -330,7 +333,10 @@ mod tests {
                 .expect_err("reserved argument must be refused");
             let json = err.to_json();
             assert_eq!(json["status"], 400);
-            assert_eq!(json["type"], "https://proxima.dev/errors/reserved-argument");
+            assert_eq!(
+                json["type"],
+                "https://proxiima.dev/errors/reserved-argument"
+            );
             let detail = json["detail"].as_str().expect("detail");
             assert!(detail.contains(field), "{detail}");
             assert!(detail.contains(header_name), "{detail}");

@@ -19,11 +19,11 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     HostStateCommand, HostStateOutcome, HostStateParticipantId, HostStatePayloadOwners,
     HostStateReply, HostStateRequest, HostStateWritePermit, StateSurfaceName,
 };
-use proxima_core::{OwnerId, StorageError};
+use proxiima_core::{OwnerId, StorageError};
 
 use super::{PgHostStateLifecyclePort, PgHostStateParticipant, PgHostStateSession};
 
@@ -34,9 +34,9 @@ use super::{PgHostStateLifecyclePort, PgHostStateParticipant, PgHostStateSession
 ///
 /// ```compile_fail
 /// # use async_trait::async_trait;
-/// # use proxima_core::storage_ports::{HostStateCommand, HostStateOutcome, HostStateParticipantId, HostStateWritePermit, StateSurfaceName};
-/// # use proxima_core::{OwnerId, StorageError};
-/// # use proxima_storage_pg::{AgreedCommand, HostStateHandler, PgHostStateSession};
+/// # use proxiima_core::storage_ports::{HostStateCommand, HostStateOutcome, HostStateParticipantId, HostStateWritePermit, StateSurfaceName};
+/// # use proxiima_core::{OwnerId, StorageError};
+/// # use proxiima_storage_pg::{AgreedCommand, HostStateHandler, PgHostStateSession};
 /// # struct Bump { owner: OwnerId }
 /// # impl HostStateCommand for Bump {
 /// #     const PARTICIPANT_ID: HostStateParticipantId = HostStateParticipantId::new("example");
@@ -89,7 +89,7 @@ pub trait HostStateHandler<C: HostStateCommand>: Send + Sync + 'static {
 /// cannot be called with a command that skipped the comparison:
 ///
 /// ```compile_fail
-/// use proxima_storage_pg::AgreedCommand;
+/// use proxiima_storage_pg::AgreedCommand;
 ///
 /// // The field is private; the dispatcher is the only constructor.
 /// let _forged = AgreedCommand { command: 7_u8 };
@@ -252,12 +252,12 @@ fn reply_for<T: Send + 'static>(outcome: HostStateOutcome<T>) -> HostStateReply 
 ///
 /// ```
 /// use async_trait::async_trait;
-/// use proxima_core::storage_ports::{
+/// use proxiima_core::storage_ports::{
 ///     HostStateCommand, HostStateOutcome, HostStateParticipantId, HostStatePayloadOwners,
 ///     HostStateWritePermit, StateSurfaceName,
 /// };
-/// use proxima_core::{OwnerId, StorageError};
-/// use proxima_storage_pg::{
+/// use proxiima_core::{OwnerId, StorageError};
+/// use proxiima_storage_pg::{
 ///     AgreedCommand, CommandRegistrationError, HostStateHandler, PgCommandDispatcher,
 ///     PgHostStateSession,
 /// };
@@ -307,12 +307,12 @@ fn reply_for<T: Send + 'static>(outcome: HostStateOutcome<T>) -> HostStateReply 
 ///
 /// ```compile_fail
 /// # use async_trait::async_trait;
-/// # use proxima_core::storage_ports::{
+/// # use proxiima_core::storage_ports::{
 /// #     HostStateCommand, HostStateOutcome, HostStateParticipantId, HostStateWritePermit,
 /// #     StateSurfaceName,
 /// # };
-/// # use proxima_core::{OwnerId, StorageError};
-/// # use proxima_storage_pg::{AgreedCommand, HostStateHandler, PgCommandDispatcher, PgHostStateSession};
+/// # use proxiima_core::{OwnerId, StorageError};
+/// # use proxiima_storage_pg::{AgreedCommand, HostStateHandler, PgCommandDispatcher, PgHostStateSession};
 /// # const PARTICIPANT: HostStateParticipantId = HostStateParticipantId::new("example");
 /// # const TABLES: &[StateSurfaceName] = &[StateSurfaceName::new("example.counter")];
 /// # struct Bump { owner: OwnerId }
@@ -472,7 +472,7 @@ impl PgHostStateParticipant for PgCommandDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_core::{GroupId, UserId};
+    use proxiima_core::{GroupId, UserId};
     use uuid::Uuid;
 
     const PARTICIPANT: HostStateParticipantId = HostStateParticipantId::new("dispatch_test");

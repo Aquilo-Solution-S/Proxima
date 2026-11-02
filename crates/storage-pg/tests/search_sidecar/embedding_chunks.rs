@@ -1,8 +1,8 @@
 use super::*;
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::query::SearchCursor;
-use proxima_core::{EmbeddingDim, EmbeddingSpace, SpaceVector};
-use proxima_storage_pg::test_fixtures::fresh_pg;
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::query::SearchCursor;
+use proxiima_core::{EmbeddingDim, EmbeddingSpace, SpaceVector};
+use proxiima_storage_pg::test_fixtures::fresh_pg;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -28,7 +28,7 @@ async fn seed_chunks(
 ) -> Result<(), sqlx::Error> {
     let width = i16::try_from(dim.width()).expect("supported dimension fits i16");
     sqlx::query(
-        "INSERT INTO proxima_core.embeddings
+        "INSERT INTO proxiima_core.embeddings
             (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
          SELECT $1, 'test-embed', $2, 1, (chunk.ordinality - 1)::integer,
                 chunk.vec, $4
@@ -41,7 +41,7 @@ async fn seed_chunks(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.embedding_heads
+        "INSERT INTO proxiima_core.embedding_heads
             (entity_id, model_id, dim, embedding_version, owner_id)
          VALUES ($1, 'test-embed', $2, 1, $3)",
     )

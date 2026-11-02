@@ -56,7 +56,7 @@ pub struct StoreInfo {
 /// schema rendering share this inventory without choosing a local number again.
 ///
 /// ```compile_fail
-/// use proxima_core::storage_ports::other_stores::StoreInventory;
+/// use proxiima_core::storage_ports::other_stores::StoreInventory;
 /// StoreInventory { local_number: 0, remotes: Vec::new() };
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,7 +129,7 @@ pub struct RemoteSearch {
 /// The fallback fact is required for an empty answer too.
 ///
 /// ```compile_fail,E0063
-/// use proxima_core::storage_ports::other_stores::RemoteSearchResult;
+/// use proxiima_core::storage_ports::other_stores::RemoteSearchResult;
 /// let _ = RemoteSearchResult { hits: Vec::new() };
 /// ```
 #[derive(Debug, Clone, PartialEq)]
@@ -207,9 +207,9 @@ impl RemoteMemory {
 /// prepared, and its layer is the one the store reported.
 ///
 /// ```compile_fail
-/// use proxima_core::storage_ports::other_stores::ReadOrigin;
+/// use proxiima_core::storage_ports::other_stores::ReadOrigin;
 /// fn forge(handle: uuid::Uuid) -> ReadOrigin {
-///     ReadOrigin { handle, kind: proxima_core::verbs::query::EntityKind::Fact }
+///     ReadOrigin { handle, kind: proxiima_core::verbs::query::EntityKind::Fact }
 /// }
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,0 +1,62 @@
+// Each integration-test binary independently includes this module via
+// `mod common;`. Items unused by a particular binary would otherwise trip
+// `dead_code` even though another binary uses them.
+#![allow(dead_code)]
+
+pub async fn split_roles(admin_url: &str) -> Result<(String, String), sqlx::Error> {
+    let options = admin_url.parse::<sqlx::postgres::PgConnectOptions>()?;
+    proxiima_pg_testkit::split_role_urls(options.get_database().expect("fixture database")).await
+}
+
+pub fn schemas() -> &'static [&'static str] {
+    &["proxiima_core"]
+}
+
+pub async fn runtime_storage(
+    runtime_url: &str,
+    platform_url: &str,
+) -> Result<proxiima_storage_pg::PgStorage, Box<dyn std::error::Error>> {
+    let migration = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
+        platform_url,
+        proxiima_storage_pg::PgPoolConfig::from_env()?,
+        proxiima_storage_pg::PgTuning::from_env()?,
+    )
+    .await?;
+    migration.run_migrations().await?;
+    migration.initialize_store_number(0).await?;
+    let scope = proxiima_storage_pg::PgPlatformScope::new(
+        sqlx::PgPool::connect(platform_url).await?,
+        schemas(),
+    )
+    .await?;
+    Ok(proxiima_storage_pg::PgStorage::connect_with_config(
+        runtime_url,
+        proxiima_storage_pg::PgPoolConfig::from_env()?,
+        proxiima_storage_pg::PgTuning::from_env()?,
+        scope,
+        0,
+    )
+    .await?)
+}
+
+pub async fn owner_access(
+    runtime_url: &str,
+    platform_url: &str,
+) -> Result<proxiima_storage_pg::PgOwnerAccessResolver, Box<dyn std::error::Error>> {
+    let migration = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
+        platform_url,
+        proxiima_storage_pg::PgPoolConfig::from_env()?,
+        proxiima_storage_pg::PgTuning::from_env()?,
+    )
+    .await?;
+    migration.run_migrations().await?;
+    let scope = proxiima_storage_pg::PgPlatformScope::new(
+        sqlx::PgPool::connect(platform_url).await?,
+        schemas(),
+    )
+    .await?;
+    Ok(proxiima_storage_pg::PgOwnerAccessResolver::new(
+        sqlx::PgPool::connect(runtime_url).await?,
+        scope,
+    ))
+}

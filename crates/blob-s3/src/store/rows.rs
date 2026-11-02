@@ -1,13 +1,13 @@
 //! The Postgres side of the lane: the shapes it reads back, and the
 //! queries behind them.
 //!
-//! Citation is `proxima_core.blob` + `memory.blob_id`. Upload staging
-//! lives in `proxima_core.blob_uploads`. Every query is owner-scoped.
+//! Citation is `proxiima_core.blob` + `memory.blob_id`. Upload staging
+//! lives in `proxiima_core.blob_uploads`. Every query is owner-scoped.
 
-use proxima_core::citations::UploadedBlobPayload;
-use proxima_core::storage_ports::{CitedBlobHeld, CitedBlobStaged};
-use proxima_core::{OwnerId, UPLOADED_BLOB_SCHEMA_ID};
-use proxima_storage_pg::verbs::forget::ColdPurgeEntry;
+use proxiima_core::citations::UploadedBlobPayload;
+use proxiima_core::storage_ports::{CitedBlobHeld, CitedBlobStaged};
+use proxiima_core::{OwnerId, UPLOADED_BLOB_SCHEMA_ID};
+use proxiima_storage_pg::verbs::forget::ColdPurgeEntry;
 use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -45,7 +45,7 @@ impl UploadRow {
     }
 }
 
-pub(super) use proxima_storage_pg::access::owner_columns::UploadStatus;
+pub(super) use proxiima_storage_pg::access::owner_columns::UploadStatus;
 
 /// A stored bigint length as the length it is. A negative one is a corrupt row, refused where
 /// it is read rather than replaced by a length nobody stored.
@@ -107,7 +107,7 @@ pub(super) async fn load_upload_optional_on_connection(
     let row = sqlx::query(
         "SELECT bucket, object_key, filename, mime, expected_byte_len, \
                 status, blob_id, expires_at \
-           FROM proxima_core.blob_uploads \
+           FROM proxiima_core.blob_uploads \
           WHERE owner_id = $1 \
             AND upload_id = $2",
     )
@@ -149,7 +149,7 @@ pub(super) async fn load_upload_optional_for_update(
     let row = sqlx::query(
         "SELECT bucket, object_key, filename, mime, expected_byte_len, \
                 status, blob_id, expires_at \
-           FROM proxima_core.blob_uploads \
+           FROM proxiima_core.blob_uploads \
           WHERE owner_id = $1 \
             AND upload_id = $2 \
           FOR UPDATE",
@@ -176,7 +176,7 @@ pub(super) async fn load_upload_optional_for_update(
 /// expiry owes, for the caller to purge after commit.
 pub(super) async fn mark_upload_expired_on_connection(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    store: &proxima_core::ObjectStoreId,
+    store: &proxiima_core::ObjectStoreId,
     owner: &OwnerId,
     upload_id: Uuid,
 ) -> Result<(UploadStatus, Vec<ColdPurgeEntry>), BlobError> {
@@ -192,7 +192,7 @@ pub(super) async fn mark_upload_expired_on_connection(
     // A staged row is not expirable: its bytes are verified and published
     // under the canonical key, and only a finish (or an abort) may decide it.
     let expired = sqlx::query(
-        "UPDATE proxima_core.blob_uploads SET status = 'expired', error_message = 'upload expired'
+        "UPDATE proxiima_core.blob_uploads SET status = 'expired', error_message = 'upload expired'
           WHERE owner_id = $1 AND upload_id = $2 AND status = 'pending'
             AND content_hash IS NULL",
     )
@@ -205,7 +205,7 @@ pub(super) async fn mark_upload_expired_on_connection(
     if expired != 1 {
         return Ok((UploadStatus::Pending, Vec::new()));
     }
-    let owed = proxima_storage_pg::access::owner_columns::owe_terminal_upload_keys_tx(
+    let owed = proxiima_storage_pg::access::owner_columns::owe_terminal_upload_keys_tx(
         tx, store, owner, upload_id,
     )
     .await
@@ -224,8 +224,8 @@ pub(super) async fn load_staged_payload_on_connection(
         "SELECT b.content_hash, u.bucket, u.object_key, u.sha256, \
                 u.expected_byte_len AS byte_len, u.mime, u.filename, u.etag, \
                 u.completed_at AS uploaded_at \
-           FROM proxima_core.blob b \
-           JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id \
+           FROM proxiima_core.blob b \
+           JOIN proxiima_core.blob_uploads u ON u.blob_id = b.blob_id \
           WHERE b.blob_id = $1 \
             AND b.owner_id = $2 \
             AND u.owner_id = $2 \
@@ -276,7 +276,7 @@ pub(super) async fn find_held_blobs_on_connection(
     const SQL: &str = with_live_blob_upload!(
         "SELECT b.content_hash, b.blob_id,
                 u.expected_byte_len AS byte_len, u.mime, u.filename
-           FROM proxima_core.blob b
+           FROM proxiima_core.blob b
            JOIN",
         "WHERE b.owner_id = $1
             AND b.schema_id = $2
@@ -315,7 +315,7 @@ pub(super) async fn load_blob_location_on_connection(
     // for the blob's new owner.
     const SQL: &str = with_live_blob_upload!(
         "SELECT u.bucket, u.object_store, u.object_key, u.upload_id, u.mounted_from_upload_id
-           FROM proxima_core.blob b
+           FROM proxiima_core.blob b
            JOIN",
         "WHERE b.blob_id = $1
             AND b.owner_id = $2
@@ -355,7 +355,7 @@ pub(super) async fn load_blob_read_record_on_connection(
         "SELECT b.blob_id, b.content_hash, u.bucket, u.object_store, u.object_key, u.upload_id,
                 u.mounted_from_upload_id,
                 u.sha256, u.expected_byte_len AS byte_len, u.mime, u.filename
-           FROM proxima_core.blob b
+           FROM proxiima_core.blob b
            JOIN",
         "WHERE b.blob_id = $1
             AND b.owner_id = $2
@@ -391,9 +391,9 @@ pub(super) async fn load_blob_read_record_on_connection(
 
 #[cfg(test)]
 mod tests {
-    use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
-    use proxima_storage_pg::PgStorage;
-    use proxima_storage_pg::test_fixtures::create_core_db;
+    use proxiima_pg_testkit::{db_url, drop_db, unique_db_name};
+    use proxiima_storage_pg::PgStorage;
+    use proxiima_storage_pg::test_fixtures::create_core_db;
 
     use super::*;
 
@@ -408,7 +408,7 @@ mod tests {
     /// refuse it, not return zeros or the current time as if they had been stored.
     #[tokio::test]
     async fn a_completed_row_without_its_digest_or_time_is_refused_not_invented() {
-        let db_name = unique_db_name("proxima_blob_rows_test");
+        let db_name = unique_db_name("proxiima_blob_rows_test");
         create_core_db(&db_name).await.expect("test database");
         let pg = PgStorage::connect_for_tests(db_url(&db_name))
             .await
@@ -416,13 +416,13 @@ mod tests {
         let pool = pg.pool_for_tests().clone();
         let owner_id = Uuid::now_v7();
         let upload_id = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner_id)
             .execute(&pool)
             .await
             .expect("owner");
         let blob_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (schema_id, owner_id, content_hash)
+            "INSERT INTO proxiima_core.blob (schema_id, owner_id, content_hash)
              VALUES ($1, $2, $3) RETURNING blob_id",
         )
         .bind(UPLOADED_BLOB_SCHEMA_ID)
@@ -432,7 +432,7 @@ mod tests {
         .await
         .expect("blob");
         sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads
+            "INSERT INTO proxiima_core.blob_uploads
                 (upload_id, owner_id, bucket, object_key, filename, mime, expected_byte_len,
                  status, blob_id, sha256, expires_at, completed_at, object_store)
              VALUES ($1, $2, 'bucket', 'objects/key', 'f.pdf', 'application/pdf', 4,
@@ -445,7 +445,7 @@ mod tests {
         .execute(&pool)
         .await
         .expect("completed upload");
-        let owner = OwnerId::from(proxima_core::UserId::new(owner_id));
+        let owner = OwnerId::from(proxiima_core::UserId::new(owner_id));
 
         let mut connection = pool.acquire().await.expect("connection");
         let staged = load_staged_payload_on_connection(&mut connection, &owner, upload_id, blob_id)
@@ -454,7 +454,7 @@ mod tests {
         assert_eq!(staged.payload.sha256, [2; 32]);
         assert_eq!(staged.payload.byte_len, 4);
 
-        sqlx::query("UPDATE proxima_core.blob_uploads SET sha256 = NULL WHERE upload_id = $1")
+        sqlx::query("UPDATE proxiima_core.blob_uploads SET sha256 = NULL WHERE upload_id = $1")
             .bind(upload_id)
             .execute(&pool)
             .await
@@ -469,7 +469,7 @@ mod tests {
         assert!(error.to_string().contains("no sha256"), "{error}");
 
         sqlx::query(
-            "UPDATE proxima_core.blob_uploads SET sha256 = $2, completed_at = NULL
+            "UPDATE proxiima_core.blob_uploads SET sha256 = $2, completed_at = NULL
               WHERE upload_id = $1",
         )
         .bind(upload_id)

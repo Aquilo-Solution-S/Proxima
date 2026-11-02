@@ -1,8 +1,8 @@
-use proxima_core::verbs::goal_write::{
+use proxiima_core::verbs::goal_write::{
     GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, GoalWriteBuildError,
     IdempotencyKey,
 };
-use proxima_core::{
+use proxiima_core::{
     GoalPayload, MemoryId, OwnerId, PayloadKeyBuilder, TrimmedLenViolation, UserId,
 };
 

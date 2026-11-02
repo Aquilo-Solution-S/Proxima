@@ -74,7 +74,7 @@ pub trait OwnerTransferPort: Send + Sync {
     /// in the transfer, and its head is queued for each of them it has no
     /// vector in.
     ///
-    /// [`TransferLeg`]: crate::flavor::TransferLeg
+    /// [`TransferLeg`]: crate::spiice::TransferLeg
     async fn transfer_to_owner(
         &self,
         permit: &OwnerWritePermit,

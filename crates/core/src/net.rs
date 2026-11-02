@@ -5,7 +5,7 @@ use std::net::IpAddr;
 
 /// Environment variable naming the hosts that may use plaintext HTTP in
 /// addition to loopback. Comma-separated exact host names; empty by default.
-pub const PROXIMA_PLAINTEXT_HOSTS: &str = "PROXIMA_PLAINTEXT_HOSTS";
+pub const PROXIIMA_PLAINTEXT_HOSTS: &str = "PROXIIMA_PLAINTEXT_HOSTS";
 
 /// Plaintext policy for an outbound HTTP endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +20,7 @@ pub enum EndpointUrlPolicy {
 
 /// Failure to parse a [`PlaintextHosts`] setting.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{PROXIMA_PLAINTEXT_HOSTS} entry {entry:?} is not an exact host name: {reason}")]
+#[error("{PROXIIMA_PLAINTEXT_HOSTS} entry {entry:?} is not an exact host name: {reason}")]
 pub struct PlaintextHostsError {
     entry: String,
     reason: &'static str,
@@ -61,7 +61,7 @@ impl PlaintextHosts {
             .map(Self)
     }
 
-    /// Read [`PROXIMA_PLAINTEXT_HOSTS`] through `lookup`; unset or blank
+    /// Read [`PROXIIMA_PLAINTEXT_HOSTS`] through `lookup`; unset or blank
     /// names no host.
     ///
     /// # Errors
@@ -70,7 +70,7 @@ impl PlaintextHosts {
     pub fn from_lookup(
         lookup: &impl Fn(&str) -> Option<String>,
     ) -> Result<Self, PlaintextHostsError> {
-        match crate::env_value(lookup, PROXIMA_PLAINTEXT_HOSTS) {
+        match crate::env_value(lookup, PROXIIMA_PLAINTEXT_HOSTS) {
             Some(raw) => Self::parse(&raw),
             None => Ok(Self::none()),
         }
@@ -418,7 +418,7 @@ mod tests {
     fn lookup_reads_the_setting_and_blank_names_nothing() {
         let env = |value: Option<&'static str>| {
             move |key: &str| {
-                (key == PROXIMA_PLAINTEXT_HOSTS)
+                (key == PROXIIMA_PLAINTEXT_HOSTS)
                     .then_some(value)
                     .flatten()
                     .map(str::to_string)

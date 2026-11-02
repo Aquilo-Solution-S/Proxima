@@ -377,7 +377,7 @@ mod tests {
         });
         let mut ctx = ctx_for(UserId::new(uuid::Uuid::now_v7()), Vec::new());
         ctx.engine = Some(Arc::new(crate::Engine::new(ctx.registry.as_ref().clone())));
-        ctx.services = crate::FlavorServices::with(OtherStoresService::new(port.clone()));
+        ctx.services = crate::SpiiceServices::with(OtherStoresService::new(port.clone()));
         (ctx, port)
     }
 
@@ -600,7 +600,7 @@ mod tests {
     async fn derive_origin_admission_refuses_255_slow_origins_before_writing() {
         let mut ctx = ctx_for(UserId::new(uuid::Uuid::now_v7()), Vec::new());
         ctx.services =
-            crate::FlavorServices::with(OtherStoresService::new(Arc::new(SlowOriginStore)));
+            crate::SpiiceServices::with(OtherStoresService::new(Arc::new(SlowOriginStore)));
         ctx.engine = Some(Arc::new(crate::Engine::new(ctx.registry.as_ref().clone())));
         let origins = (0..MAX_SOURCE_HANDLES - 1)
             .map(|_| crate::new_memory_uuid(1).to_string())
@@ -680,7 +680,7 @@ mod tests {
     fn read_reply_ctx(reply: ReadReply) -> McpToolCtx {
         let mut ctx = ctx_for(UserId::new(uuid::Uuid::now_v7()), Vec::new());
         ctx.services =
-            crate::FlavorServices::with(OtherStoresService::new(Arc::new(ReadReplyStore(reply))));
+            crate::SpiiceServices::with(OtherStoresService::new(Arc::new(ReadReplyStore(reply))));
         ctx.engine = Some(Arc::new(crate::Engine::new(ctx.registry.as_ref().clone())));
         ctx
     }

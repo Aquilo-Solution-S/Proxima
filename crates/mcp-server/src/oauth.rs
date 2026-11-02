@@ -91,7 +91,7 @@ impl ProtectedResource {
 /// The constructor is the only way in; a literal cannot skip its checks:
 ///
 /// ```compile_fail,E0423
-/// let _ = proxima_mcp_server::ScopeToken(String::from("two scopes"));
+/// let _ = proxiima_mcp_server::ScopeToken(String::from("two scopes"));
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScopeToken(String);
@@ -135,7 +135,7 @@ pub enum ScopeTokenError {
 /// `additional_scopes`:
 ///
 /// ```
-/// use proxima_mcp_server::{AuthorizationServers, ProtectedResource, ResourceServerMetadata, ScopeToken};
+/// use proxiima_mcp_server::{AuthorizationServers, ProtectedResource, ResourceServerMetadata, ScopeToken};
 ///
 /// let metadata = ResourceServerMetadata {
 ///     public_url: "https://erp.example.com".to_string(),
@@ -146,11 +146,11 @@ pub enum ScopeTokenError {
 ///     metadata.to_json(ProtectedResource::Mcp)["scopes_supported"],
 ///     serde_json::json!(["openid", "offline_access", "urn:zitadel:iam:org:project:id:42:aud"]),
 /// );
-/// # Ok::<(), proxima_mcp_server::ScopeTokenError>(())
+/// # Ok::<(), proxiima_mcp_server::ScopeTokenError>(())
 /// ```
 #[derive(Clone, Debug)]
 pub struct ResourceServerMetadata {
-    /// Public base URL (scheme+host, no trailing slash), e.g. `https://proxima.example.com`.
+    /// Public base URL (scheme+host, no trailing slash), e.g. `https://proxiima.example.com`.
     pub public_url: String,
     /// Direct issuer URLs or this origin's stateless public-client facade.
     pub authorization_servers: AuthorizationServers,
@@ -233,7 +233,7 @@ pub enum AuthorizationServers {
 ///
 /// The constructor is the only way in; a literal cannot skip validation:
 /// ```compile_fail,E0451
-/// let _ = proxima_mcp_server::PublicClientFacade {
+/// let _ = proxiima_mcp_server::PublicClientFacade {
 ///     client_id: String::new(),
 ///     authorization_endpoint: String::new(),
 ///     token_endpoint: String::new(),
@@ -503,7 +503,7 @@ mod tests {
 
     fn metadata() -> ResourceServerMetadata {
         ResourceServerMetadata {
-            public_url: "https://proxima.example.com".to_string(),
+            public_url: "https://proxiima.example.com".to_string(),
             authorization_servers: AuthorizationServers::Issuers(vec![
                 "https://idp.example.com".to_string(),
             ]),
@@ -603,24 +603,24 @@ mod tests {
     fn each_resource_names_the_url_its_clients_connect_to() {
         assert_eq!(
             metadata().resource(ProtectedResource::Origin),
-            "https://proxima.example.com"
+            "https://proxiima.example.com"
         );
         assert_eq!(
             metadata().resource(ProtectedResource::Mcp),
-            "https://proxima.example.com/mcp"
+            "https://proxiima.example.com/mcp"
         );
 
         let trailing = ResourceServerMetadata {
-            public_url: "https://proxima.example.com/".to_string(),
+            public_url: "https://proxiima.example.com/".to_string(),
             ..metadata()
         };
         assert_eq!(
             trailing.resource(ProtectedResource::Origin),
-            "https://proxima.example.com"
+            "https://proxiima.example.com"
         );
         assert_eq!(
             trailing.resource(ProtectedResource::Mcp),
-            "https://proxima.example.com/mcp"
+            "https://proxiima.example.com/mcp"
         );
     }
 
@@ -630,11 +630,11 @@ mod tests {
     fn metadata_urls_insert_the_well_known_suffix_before_the_path() {
         assert_eq!(
             metadata().metadata_url(ProtectedResource::Origin),
-            "https://proxima.example.com/.well-known/oauth-protected-resource"
+            "https://proxiima.example.com/.well-known/oauth-protected-resource"
         );
         assert_eq!(
             metadata().metadata_url(ProtectedResource::Mcp),
-            "https://proxima.example.com/.well-known/oauth-protected-resource/mcp"
+            "https://proxiima.example.com/.well-known/oauth-protected-resource/mcp"
         );
     }
 
@@ -715,11 +715,11 @@ mod tests {
         let challenges = ResourceChallenges::new(&metadata()).expect("valid header values");
         assert_eq!(
             challenges.for_path("/mcp"),
-            "Bearer resource_metadata=\"https://proxima.example.com/.well-known/oauth-protected-resource/mcp\""
+            "Bearer resource_metadata=\"https://proxiima.example.com/.well-known/oauth-protected-resource/mcp\""
         );
         assert_eq!(
             challenges.for_path("/v1/tools"),
-            "Bearer resource_metadata=\"https://proxima.example.com/.well-known/oauth-protected-resource\""
+            "Bearer resource_metadata=\"https://proxiima.example.com/.well-known/oauth-protected-resource\""
         );
     }
 }

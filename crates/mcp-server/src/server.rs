@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 #[cfg(test)]
-use proxima_core::AuthPath;
-use proxima_core::flavor::flavor0::resource as core_resource;
-use proxima_core::mcp::core_tools::{
+use proxiima_core::AuthPath;
+use proxiima_core::mcp::core_tools::{
     get_graph::{GetGraphArgs, get_graph},
     get_memories::{GetMemoriesArgs, get_memories},
     get_memory::{GetMemoryArgs, get_memory},
@@ -13,14 +12,15 @@ use proxima_core::mcp::core_tools::{
     memory_counts::memory_counts,
     walk_memory_lineage::{WalkMemoryLineageArgs, walk_memory_lineage},
 };
-use proxima_core::mcp::{
+use proxiima_core::mcp::{
     McpAuthorContext, McpHostToolCall, McpToolCtx, McpToolDescriptor, McpToolError,
     McpToolErrorKind, Next, TerminalDispatch, ToolCall, ToolContent, ToolReply,
     resolve_operator_label, tool_name_matches,
 };
-use proxima_core::protocol::resource as protocol_resource;
-use proxima_core::{
-    Engine, FlavorRegistry, FlavorRegistryFrozen, FlavorServices, composed_schema_names,
+use proxiima_core::protocol::resource as protocol_resource;
+use proxiima_core::spiice::spiice0::resource as core_resource;
+use proxiima_core::{
+    Engine, SpiiceRegistry, SpiiceRegistryFrozen, SpiiceServices, composed_schema_names,
 };
 use serde::Serialize;
 
@@ -31,8 +31,8 @@ use crate::tool_list::ToolListNotifier;
 
 #[derive(Clone)]
 pub struct McpToolHost {
-    registry: Arc<FlavorRegistryFrozen>,
-    services: FlavorServices,
+    registry: Arc<SpiiceRegistryFrozen>,
+    services: SpiiceServices,
     engine: Option<Arc<Engine>>,
     request_headers: RequestHeaderAllowlist,
     host_tools: Option<Arc<dyn McpHostTools>>,
@@ -54,7 +54,7 @@ impl std::fmt::Debug for McpToolHost {
 
 impl McpToolHost {
     #[must_use]
-    pub fn from_parts(registry: Arc<FlavorRegistryFrozen>, services: FlavorServices) -> Self {
+    pub fn from_parts(registry: Arc<SpiiceRegistryFrozen>, services: SpiiceServices) -> Self {
         Self {
             registry,
             services,
@@ -66,7 +66,7 @@ impl McpToolHost {
     }
 
     #[must_use]
-    pub fn from_engine(engine: Arc<Engine>, services: FlavorServices) -> Self {
+    pub fn from_engine(engine: Arc<Engine>, services: SpiiceServices) -> Self {
         Self::from_parts(Arc::new(engine.registry().clone()), services).with_engine(engine)
     }
 
@@ -140,7 +140,7 @@ impl McpToolHost {
     }
 
     /// Copy the allowlisted inbound headers of each served call into its
-    /// [`RequestHeaders`](proxima_core::RequestHeaders) service. Default:
+    /// [`RequestHeaders`](proxiima_core::RequestHeaders) service. Default:
     /// none.
     #[must_use]
     pub fn with_request_headers(mut self, allowlist: RequestHeaderAllowlist) -> Self {
@@ -149,7 +149,7 @@ impl McpToolHost {
     }
 
     /// The per-request service set of one served call: the
-    /// [`FlavorServices`] a host middleware placed in the request's
+    /// [`SpiiceServices`] a host middleware placed in the request's
     /// extensions, plus the allowlisted headers. Merged onto the boot set by
     /// [`Self::call_tool_in_request`] / [`Self::read_resource_in_request`].
     ///
@@ -162,7 +162,7 @@ impl McpToolHost {
         &self,
         headers: &http::HeaderMap,
         extensions: &http::Extensions,
-    ) -> Result<FlavorServices, McpToolError> {
+    ) -> Result<SpiiceServices, McpToolError> {
         crate::request_scope::request_services(&self.request_headers, headers, extensions)
     }
 
@@ -173,9 +173,9 @@ impl McpToolHost {
     /// settings, before it opens the platform pool on the same URL. So
     /// `platform_url` must reach Postgres directly or through a session-mode
     /// pool, never a transaction-mode pooler; `runtime_url` may go through
-    /// one. This constructor does not read `PROXIMA_MIGRATION_DATABASE_URL`:
+    /// one. This constructor does not read `PROXIIMA_MIGRATION_DATABASE_URL`:
     /// to put the platform pool behind a transaction-mode pooler, boot
-    /// through the `proxima` facade with its migration URL
+    /// through the `proxiima` facade with its migration URL
     /// (docs/operate.md, "Behind a connection pooler").
     ///
     /// # Errors
@@ -184,12 +184,12 @@ impl McpToolHost {
     pub async fn from_database_urls(
         runtime_url: &str,
         platform_url: &str,
-        registry: FlavorRegistry,
+        registry: SpiiceRegistry,
         store_number: u16,
     ) -> Result<Self, crate::McpServerError> {
-        let pool_config = proxima_storage_pg::PgPoolConfig::from_env()?;
-        let tuning = proxima_storage_pg::PgTuning::from_env()?;
-        let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        let pool_config = proxiima_storage_pg::PgPoolConfig::from_env()?;
+        let tuning = proxiima_storage_pg::PgTuning::from_env()?;
+        let migration = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
             platform_url,
             pool_config,
             tuning,
@@ -202,8 +202,8 @@ impl McpToolHost {
         let schema_refs: Vec<&str> = schema_names.iter().map(String::as_str).collect();
         let platform_pool = pool_config.connect_lazy(platform_url)?;
         let platform =
-            proxima_storage_pg::PgPlatformScope::new(platform_pool, &schema_refs).await?;
-        let pg = proxima_storage_pg::PgStorage::connect_with_config(
+            proxiima_storage_pg::PgPlatformScope::new(platform_pool, &schema_refs).await?;
+        let pg = proxiima_storage_pg::PgStorage::connect_with_config(
             runtime_url,
             pool_config,
             tuning,
@@ -213,11 +213,11 @@ impl McpToolHost {
         .await?;
         let engine =
             Arc::new(Engine::new(frozen.clone()).with_storage_ports(Arc::new(pg).storage_ports()));
-        Ok(Self::from_engine(engine, FlavorServices::default()))
+        Ok(Self::from_engine(engine, SpiiceServices::default()))
     }
 
     #[must_use]
-    pub fn registry(&self) -> &FlavorRegistryFrozen {
+    pub fn registry(&self) -> &SpiiceRegistryFrozen {
         &self.registry
     }
 
@@ -230,8 +230,8 @@ impl McpToolHost {
     /// [`McpAuthorContext`] documents — the bound identity, and
     /// `model_id` equalling it when present — are restored here, because
     /// an out-of-tree host builds this struct by hand and
-    /// [`ToolCaller`](proxima_core::ToolCaller) hands `model_id` on to
-    /// flavor tools as the label to record.
+    /// [`ToolCaller`](proxiima_core::ToolCaller) hands `model_id` on to
+    /// spiice tools as the label to record.
     ///
     /// # Errors
     ///
@@ -244,11 +244,11 @@ impl McpToolHost {
         author: McpAuthorContext,
         auth: &McpAuthContext,
     ) -> Result<McpToolCtx, McpToolError> {
-        self.ctx_for_request(author, auth, FlavorServices::default())
+        self.ctx_for_request(author, auth, SpiiceServices::default())
     }
 
     /// [`Self::ctx_for`] with a per-request service set merged onto the boot
-    /// set ([`FlavorServices::try_extend`]).
+    /// set ([`SpiiceServices::try_extend`]).
     ///
     /// # Errors
     ///
@@ -259,7 +259,7 @@ impl McpToolHost {
         &self,
         mut author: McpAuthorContext,
         auth: &McpAuthContext,
-        request: FlavorServices,
+        request: SpiiceServices,
     ) -> Result<McpToolCtx, McpToolError> {
         let mut services = self.services.clone();
         services
@@ -279,7 +279,7 @@ impl McpToolHost {
             services,
             author,
             engine: self.engine.clone(),
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         })
     }
 
@@ -296,7 +296,7 @@ impl McpToolHost {
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
     ) -> Result<serde_json::Value, ToolInvocationError> {
-        self.call_tool_in_request(name, args, author, auth, FlavorServices::default())
+        self.call_tool_in_request(name, args, author, auth, SpiiceServices::default())
             .await
     }
 
@@ -312,7 +312,7 @@ impl McpToolHost {
         args: serde_json::Value,
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
-        request: FlavorServices,
+        request: SpiiceServices,
     ) -> Result<serde_json::Value, ToolInvocationError> {
         let reply = self
             .call_tool_reply_in_request(name, args, author, auth, request)
@@ -340,7 +340,7 @@ impl McpToolHost {
         args: serde_json::Value,
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
-        request: FlavorServices,
+        request: SpiiceServices,
     ) -> Result<ToolReply, ToolInvocationError> {
         self.call_tool_reply_observed_in_request(name, args, author, auth, request)
             .1
@@ -350,7 +350,7 @@ impl McpToolHost {
     /// Start [`Self::call_tool_reply_in_request`] with a fresh observation of
     /// the scope gate.
     ///
-    /// Retain the returned [`JudgedKey`](proxima_core::mcp::JudgedKey), await
+    /// Retain the returned [`JudgedKey`](proxiima_core::mcp::JudgedKey), await
     /// the future, then read the cell after success or refusal. It is the exact
     /// cell used by the gate and stays empty if the request fails before the
     /// gate derives a key. Each invocation creates its own cell; callers cannot
@@ -365,12 +365,12 @@ impl McpToolHost {
         args: serde_json::Value,
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
-        request: FlavorServices,
+        request: SpiiceServices,
     ) -> (
-        proxima_core::mcp::JudgedKey,
+        proxiima_core::mcp::JudgedKey,
         impl Future<Output = Result<ToolReply, ToolInvocationError>> + Send + use<'a>,
     ) {
-        let judged = proxima_core::mcp::JudgedKey::default();
+        let judged = proxiima_core::mcp::JudgedKey::default();
         let observation = judged.clone();
         let call = async move {
             let auth = auth.ok_or_else(|| ToolInvocationError::NotAuthorized(name.to_string()))?;
@@ -425,8 +425,8 @@ impl McpToolHost {
         args: serde_json::Value,
         author: McpAuthorContext,
         auth: McpAuthContext,
-        mut request: FlavorServices,
-        judged: proxima_core::mcp::JudgedKey,
+        mut request: SpiiceServices,
+        judged: proxiima_core::mcp::JudgedKey,
     ) -> Result<ToolReply, ToolInvocationError> {
         let declares_output_schema = target.declares_output_schema();
         let (name, terminal): (String, TerminalDispatch<'_>) = match target {
@@ -491,7 +491,7 @@ impl McpToolHost {
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
     ) -> Result<serde_json::Value, ToolInvocationError> {
-        self.read_resource_in_request(uri, author, auth, FlavorServices::default())
+        self.read_resource_in_request(uri, author, auth, SpiiceServices::default())
             .await
     }
 
@@ -508,7 +508,7 @@ impl McpToolHost {
         uri: &str,
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
-        request: FlavorServices,
+        request: SpiiceServices,
     ) -> Result<serde_json::Value, ToolInvocationError> {
         let parsed = parse_resource_uri(uri).map_err(|err| err.into_invocation_error(uri))?;
         let auth =
@@ -640,7 +640,7 @@ fn json_reply(name: &str, reply: ToolReply) -> Result<serde_json::Value, McpTool
 }
 
 fn host_tool_name_refusal(
-    registry: &FlavorRegistryFrozen,
+    registry: &SpiiceRegistryFrozen,
     name: &str,
     served: &[McpHostTool],
 ) -> Option<&'static str> {
@@ -648,12 +648,12 @@ fn host_tool_name_refusal(
     // `ToolName` is what makes that so. The grammar has no `:`, so the name
     // is never the spelling of a `tool:action` leaf or a `resource:` key.
     if name.chars().count() > MAX_HOST_TOOL_NAME_CHARS
-        || proxima_core::ToolName::parse(name).is_err()
+        || proxiima_core::ToolName::parse(name).is_err()
     {
         return Some("a host tool name is 1..=128 characters of [A-Za-z0-9_.-]");
     }
     if registry.list_mcp_tools().iter().any(|descriptor| {
-        descriptor.name == name || proxima_core::provider_safe_tool_name(descriptor.name) == name
+        descriptor.name == name || proxiima_core::provider_safe_tool_name(descriptor.name) == name
     }) {
         return Some("a registry tool serves this name");
     }
@@ -758,7 +758,7 @@ impl ToolInvocationError {
     }
 }
 
-/// Why a `proxima://` URI failed to parse into a resource read. Each
+/// Why a `proxiima://` URI failed to parse into a resource read. Each
 /// failure keeps its shape instead of collapsing into a generic "unknown
 /// resource": an unmatched path is a JSON-RPC `resource_not_found`, while
 /// a bad or missing query parameter on a known template is an
@@ -858,7 +858,7 @@ impl ParsedResource {
     }
 }
 
-/// The dispatch paths, read out of flavor #0's declaration at compile time.
+/// The dispatch paths, read out of spiice #0's declaration at compile time.
 ///
 /// A `match` arm needs a constant, so the paths are named here — but each
 /// name is a projection of the same `ResourceContract` that supplies the
@@ -892,7 +892,7 @@ mod resource_path {
 
 fn parse_resource_uri(uri: &str) -> Result<ParsedResource, ResourceUriError> {
     let rest = uri
-        .strip_prefix("proxima://")
+        .strip_prefix("proxiima://")
         .ok_or(ResourceUriError::UnknownPath)?;
     let (path, query) = rest
         .split_once('?')
@@ -1147,11 +1147,11 @@ mod tests {
 
     use super::*;
     use crate::auth::McpAuthContext;
-    use proxima_core::mcp::core_tools::get_memory::VersionSelector;
-    use proxima_core::mcp::core_tools::walk_memory_lineage::WalkMemoryLineageDirectionArg;
-    use proxima_core::mcp::{McpAuthorContext, ToolContent};
-    use proxima_core::{
-        AuthzContext, FlavorRegistry, OwnerId, ScopeKey, ServedSurface, ToolScope, UserId,
+    use proxiima_core::mcp::core_tools::get_memory::VersionSelector;
+    use proxiima_core::mcp::core_tools::walk_memory_lineage::WalkMemoryLineageDirectionArg;
+    use proxiima_core::mcp::{McpAuthorContext, ToolContent};
+    use proxiima_core::{
+        AuthzContext, OwnerId, ScopeKey, ServedSurface, SpiiceRegistry, ToolScope, UserId,
     };
 
     fn fake_owner() -> OwnerId {
@@ -1162,7 +1162,7 @@ mod tests {
     struct RecordingBehavior(Arc<std::sync::Mutex<Vec<String>>>);
 
     #[async_trait::async_trait]
-    impl proxima_core::RequestBehavior for RecordingBehavior {
+    impl proxiima_core::RequestBehavior for RecordingBehavior {
         async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<ToolReply, McpToolError> {
             self.0.lock().expect("lock").push(call.name.clone());
             next.run(call).await
@@ -1224,11 +1224,11 @@ mod tests {
         }
     }
 
-    const READ: proxima_core::ToolEffect = proxima_core::ToolEffect::ReadOnly;
-    const WRITE: proxima_core::ToolEffect =
-        proxima_core::ToolEffect::Additive(proxima_core::Replay::NonIdempotent);
+    const READ: proxiima_core::ToolEffect = proxiima_core::ToolEffect::ReadOnly;
+    const WRITE: proxiima_core::ToolEffect =
+        proxiima_core::ToolEffect::Additive(proxiima_core::Replay::NonIdempotent);
 
-    fn host_tool(name: &str, effect: proxima_core::ToolEffect) -> McpHostTool {
+    fn host_tool(name: &str, effect: proxiima_core::ToolEffect) -> McpHostTool {
         McpHostTool::new(
             name,
             format!("{name} fixture"),
@@ -1287,7 +1287,7 @@ mod tests {
     /// one that would parse to a leaf or a resource key is refused.
     #[test]
     fn no_served_host_tool_name_can_spell_a_leaf_or_a_resource_key() {
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
         let alphabet = ['a', 'b', ':', '.', '-', ' ', '/'];
         let mut names = vec![String::new()];
         let mut layer = vec![String::new()];
@@ -1330,11 +1330,11 @@ mod tests {
     #[tokio::test]
     async fn a_host_tool_dispatches_through_the_request_behaviors() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_request_behavior(RecordingBehavior(Arc::clone(&seen)));
         let server = McpToolHost::from_parts(
             Arc::new(registry.freeze_or_panic_for_tests()),
-            FlavorServices::default(),
+            SpiiceServices::default(),
         )
         .with_host_tools(Arc::new(EchoHostTools));
         let owner = fake_owner();
@@ -1385,12 +1385,12 @@ mod tests {
         ));
 
         // A viewer reads through a read-only host tool and cannot write.
-        let group = OwnerId::from(proxima_core::GroupId::new(uuid::Uuid::now_v7()));
+        let group = OwnerId::from(proxiima_core::GroupId::new(uuid::Uuid::now_v7()));
         let viewer = McpAuthContext {
             owner: group,
             authz: AuthzContext::for_subject_with_role(
                 UserId::new(uuid::Uuid::now_v7()),
-                [(group, proxima_core::Role::viewer())],
+                [(group, proxiima_core::Role::viewer())],
                 AuthPath::HostBearer,
             )
             .narrowed_to_owner(group)
@@ -1426,8 +1426,8 @@ mod tests {
 
     fn make_server() -> McpToolHost {
         McpToolHost::from_parts(
-            Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
-            FlavorServices::default(),
+            Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
+            SpiiceServices::default(),
         )
     }
 
@@ -1472,7 +1472,7 @@ mod tests {
     }
 
     /// The author context is a per-call struct an out-of-tree host builds
-    /// by hand, and `ToolCaller::model_id` — the label a flavor tool
+    /// by hand, and `ToolCaller::model_id` — the label a spiice tool
     /// records — is copied straight out of it. Restoring only
     /// `trusted_model_id` would leave the documented invariant ("when
     /// present, `model_id` equals it") false for exactly the callers that
@@ -1507,7 +1507,7 @@ mod tests {
 
         let err = server
             .ctx_for(author("openai/gpt-9"), &auth)
-            .expect_err("a stale label may not reach a flavor as the one to record");
+            .expect_err("a stale label may not reach a spiice as the one to record");
         assert_eq!(err.kind(), McpToolErrorKind::InvalidInput);
     }
 
@@ -1542,7 +1542,7 @@ mod tests {
     #[test]
     fn parse_resource_uri_projects_known_resources() {
         let memory = parse_resource_uri(
-            "proxima://memory/018f0000-0000-7000-8000-000000000001?expand_neighbors=true",
+            "proxiima://memory/018f0000-0000-7000-8000-000000000001?expand_neighbors=true",
         )
         .expect("memory resource");
         assert!(matches!(
@@ -1554,7 +1554,7 @@ mod tests {
         ));
 
         let head = parse_resource_uri(
-            "proxima://memory/018f0000-0000-7000-8000-000000000001?version=head",
+            "proxiima://memory/018f0000-0000-7000-8000-000000000001?version=head",
         )
         .expect("head resource");
         assert!(matches!(
@@ -1566,13 +1566,13 @@ mod tests {
         ));
         assert!(
             parse_resource_uri(
-                "proxima://memory/018f0000-0000-7000-8000-000000000001?version=newest"
+                "proxiima://memory/018f0000-0000-7000-8000-000000000001?version=newest"
             )
             .is_err()
         );
 
         let lineage =
-            parse_resource_uri("proxima://memory/018f0000-0000-7000-8000-000000000001/lineage?direction=descendants&depth=2&limit=7")
+            parse_resource_uri("proxiima://memory/018f0000-0000-7000-8000-000000000001/lineage?direction=descendants&depth=2&limit=7")
                 .expect("lineage resource");
         assert!(matches!(
             lineage,
@@ -1585,41 +1585,41 @@ mod tests {
         ));
 
         assert_eq!(
-            parse_resource_uri("proxima://memory//lineage").unwrap_err(),
+            parse_resource_uri("proxiima://memory//lineage").unwrap_err(),
             ResourceUriError::UnknownPath
         );
         assert_eq!(
-            parse_resource_uri("proxima://memory/one/two/lineage").unwrap_err(),
+            parse_resource_uri("proxiima://memory/one/two/lineage").unwrap_err(),
             ResourceUriError::UnknownPath
         );
     }
 
-    /// `proxima://memories/counts` shares the `memories` path key with the
+    /// `proxiima://memories/counts` shares the `memories` path key with the
     /// batch read and is the only tail under it; the batch read keeps its
     /// exact path, its required `ids` and its own scope key.
     #[test]
     fn parse_resource_uri_serves_memories_batch_and_counts() {
-        let counts = parse_resource_uri("proxima://memories/counts").expect("counts resource");
+        let counts = parse_resource_uri("proxiima://memories/counts").expect("counts resource");
         assert!(matches!(counts, ParsedResource::MemoryCounts));
         assert_eq!(counts.scope_key(), protocol_resource::MEMORY_COUNTS);
 
-        // Parameterless like `proxima://tools`: a query is not read, and a
+        // Parameterless like `proxiima://tools`: a query is not read, and a
         // malformed one is still refused by the shared query parser.
         assert!(matches!(
-            parse_resource_uri("proxima://memories/counts?ids=unused"),
+            parse_resource_uri("proxiima://memories/counts?ids=unused"),
             Ok(ParsedResource::MemoryCounts)
         ));
         assert_eq!(
-            parse_resource_uri("proxima://memories/counts?ids").unwrap_err(),
+            parse_resource_uri("proxiima://memories/counts?ids").unwrap_err(),
             ResourceUriError::MalformedQueryPair { pair: "ids".into() }
         );
 
         for other in [
-            "proxima://memories/other",
-            "proxima://memories/",
-            "proxima://memories/counts/",
-            "proxima://memories/counts/more",
-            "proxima://memories/Counts",
+            "proxiima://memories/other",
+            "proxiima://memories/",
+            "proxiima://memories/counts/",
+            "proxiima://memories/counts/more",
+            "proxiima://memories/Counts",
         ] {
             assert_eq!(
                 parse_resource_uri(other).unwrap_err(),
@@ -1628,14 +1628,14 @@ mod tests {
             );
         }
 
-        let batch = parse_resource_uri("proxima://memories?ids=00000000-0000-8000-8000-000000000001,00000000-0000-8000-8000-000000000002").expect("batch read");
+        let batch = parse_resource_uri("proxiima://memories?ids=00000000-0000-8000-8000-000000000001,00000000-0000-8000-8000-000000000002").expect("batch read");
         assert_eq!(batch.scope_key(), protocol_resource::MEMORIES);
         assert!(matches!(
             batch,
             ParsedResource::Memories(GetMemoriesArgs { memories }) if memories == ["00000000-0000-8000-8000-000000000001", "00000000-0000-8000-8000-000000000002"]
         ));
         assert_eq!(
-            parse_resource_uri("proxima://memories").unwrap_err(),
+            parse_resource_uri("proxiima://memories").unwrap_err(),
             ResourceUriError::MissingParam { param: "ids" }
         );
     }
@@ -1645,7 +1645,7 @@ mod tests {
         assert_eq!(
             core_resource(protocol_resource::MEMORY_COUNTS).uri_template,
             format!(
-                "proxima://{}/{}",
+                "proxiima://{}/{}",
                 resource_path::MEMORIES,
                 resource_path::MEMORY_COUNTS_TAIL
             )
@@ -1658,7 +1658,7 @@ mod tests {
     /// arguments: core's defaults apply to both, none is restated here.
     #[test]
     fn a_memory_resource_without_a_query_takes_the_tools_defaults() {
-        let lineage = parse_resource_uri(&format!("proxima://memory/{MEMORY}/lineage"))
+        let lineage = parse_resource_uri(&format!("proxiima://memory/{MEMORY}/lineage"))
             .expect("lineage resource");
         let ParsedResource::MemoryLineage(args) = lineage else {
             panic!("expected a lineage resource");
@@ -1668,7 +1668,7 @@ mod tests {
         assert_eq!(format!("{args:?}"), format!("{tool:?}"));
 
         let memory =
-            parse_resource_uri(&format!("proxima://memory/{MEMORY}")).expect("memory resource");
+            parse_resource_uri(&format!("proxiima://memory/{MEMORY}")).expect("memory resource");
         let ParsedResource::Memory(args) = memory else {
             panic!("expected a memory resource");
         };
@@ -1681,7 +1681,7 @@ mod tests {
     fn expand_neighbors_is_true_or_false_and_nothing_else() {
         for (value, expected) in [("true", true), ("false", false)] {
             let parsed = parse_resource_uri(&format!(
-                "proxima://memory/{MEMORY}?expand_neighbors={value}"
+                "proxiima://memory/{MEMORY}?expand_neighbors={value}"
             ))
             .expect("memory resource");
             assert!(
@@ -1693,7 +1693,7 @@ mod tests {
             assert!(
                 matches!(
                     parse_resource_uri(&format!(
-                        "proxima://memory/{MEMORY}?expand_neighbors={value}"
+                        "proxiima://memory/{MEMORY}?expand_neighbors={value}"
                     )),
                     Err(ResourceUriError::InvalidParam { param, .. }) if param == "expand_neighbors"
                 ),
@@ -1705,7 +1705,7 @@ mod tests {
     #[test]
     fn a_bad_lineage_number_names_its_parameter_and_the_path_id_cannot_be_overridden() {
         assert_eq!(
-            parse_resource_uri(&format!("proxima://memory/{MEMORY}/lineage?depth=deep"))
+            parse_resource_uri(&format!("proxiima://memory/{MEMORY}/lineage?depth=deep"))
                 .unwrap_err(),
             ResourceUriError::InvalidParam {
                 param: "depth".into(),
@@ -1714,7 +1714,7 @@ mod tests {
             }
         );
         assert!(matches!(
-            parse_resource_uri(&format!("proxima://memory/{MEMORY}?memory=other")),
+            parse_resource_uri(&format!("proxiima://memory/{MEMORY}?memory=other")),
             Err(ResourceUriError::InvalidQuery(_))
         ));
     }
@@ -1727,7 +1727,7 @@ mod tests {
     #[test]
     fn parse_resource_uri_distinguishes_error_classes() {
         assert_eq!(
-            parse_resource_uri("proxima://no-such-resource").unwrap_err(),
+            parse_resource_uri("proxiima://no-such-resource").unwrap_err(),
             ResourceUriError::UnknownPath
         );
         assert_eq!(
@@ -1737,7 +1737,7 @@ mod tests {
         // depth=300 does not collapse into "unknown resource": it parses
         // as a wide integer and the tool clamps it to the documented 1..=8.
         let lineage = parse_resource_uri(
-            "proxima://memory/018f0000-0000-7000-8000-000000000001/lineage?depth=300",
+            "proxiima://memory/018f0000-0000-7000-8000-000000000001/lineage?depth=300",
         )
         .expect("oversized depth parses; the tool clamps");
         assert!(matches!(
@@ -1746,7 +1746,7 @@ mod tests {
         ));
         assert_eq!(
             parse_resource_uri(
-                "proxima://memory/018f0000-0000-7000-8000-000000000001/lineage?direction=sideways"
+                "proxiima://memory/018f0000-0000-7000-8000-000000000001/lineage?direction=sideways"
             )
             .unwrap_err(),
             ResourceUriError::InvalidParam {
@@ -1756,15 +1756,15 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_resource_uri("proxima://goals?limit").unwrap_err(),
+            parse_resource_uri("proxiima://goals?limit").unwrap_err(),
             ResourceUriError::MalformedQueryPair {
                 pair: "limit".into()
             }
         );
 
-        let unknown = ResourceUriError::UnknownPath.into_invocation_error("proxima://nope");
+        let unknown = ResourceUriError::UnknownPath.into_invocation_error("proxiima://nope");
         assert!(
-            matches!(unknown, ToolInvocationError::ToolNotFound(uri) if uri == "proxima://nope")
+            matches!(unknown, ToolInvocationError::ToolNotFound(uri) if uri == "proxiima://nope")
         );
     }
 
@@ -1787,14 +1787,14 @@ mod tests {
         let auth = McpAuthContext { owner, authz };
 
         let result = server
-            .read_resource("proxima://schemas", author, Some(auth))
+            .read_resource("proxiima://schemas", author, Some(auth))
             .await;
 
         assert!(
             !matches!(result, Err(ToolInvocationError::NotAuthorized(_))),
             "an empty served palette must not deny a resource read: {result:?}"
         );
-        result.expect("the owner reads proxima://schemas under an empty served palette");
+        result.expect("the owner reads proxiima://schemas under an empty served palette");
     }
 
     #[tokio::test]
@@ -1818,7 +1818,7 @@ mod tests {
         let ctx = server
             .ctx_for(author, &auth)
             .expect("no binding, no conflict");
-        let id = proxima_core::MemoryId::new(uuid::Uuid::now_v7());
+        let id = proxiima_core::MemoryId::new(uuid::Uuid::now_v7());
         let wire = id.into_inner().to_string();
         assert_eq!(wire, format!("{}", id.into_inner()));
         assert_eq!(ctx.resolve_memory(&wire).expect("round trip"), id);
@@ -2016,7 +2016,7 @@ mod tests {
         async fn list(&self, _: &McpAuthContext) -> Result<Vec<McpHostTool>, McpToolError> {
             let listed = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(vec![
-                host_tool("host_rev", READ).with_services(FlavorServices::with(Revision(listed))),
+                host_tool("host_rev", READ).with_services(SpiiceServices::with(Revision(listed))),
             ])
         }
 
@@ -2037,7 +2037,7 @@ mod tests {
     struct RevisionBehavior(Arc<std::sync::Mutex<Vec<u64>>>);
 
     #[async_trait::async_trait]
-    impl proxima_core::RequestBehavior for RevisionBehavior {
+    impl proxiima_core::RequestBehavior for RevisionBehavior {
         async fn handle(&self, call: ToolCall, next: Next<'_>) -> Result<ToolReply, McpToolError> {
             if let Some(revision) = call.ctx.services.get::<Revision>() {
                 self.0.lock().expect("lock").push(revision.0);
@@ -2051,11 +2051,11 @@ mod tests {
     #[tokio::test]
     async fn a_host_call_carries_the_entry_it_resolved_to_although_the_catalog_moved() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_request_behavior(RevisionBehavior(Arc::clone(&seen)));
         let server = McpToolHost::from_parts(
             Arc::new(registry.freeze_or_panic_for_tests()),
-            FlavorServices::default(),
+            SpiiceServices::default(),
         )
         .with_host_tools(Arc::new(MovingHostTools(
             std::sync::atomic::AtomicU64::new(1),
@@ -2078,7 +2078,7 @@ mod tests {
     /// the call fails before any behavior or the source's `call` runs.
     #[tokio::test]
     async fn a_listed_entry_cannot_replace_a_call_service() {
-        let forged = host_tool("host_forged", WRITE).with_services(FlavorServices::with(
+        let forged = host_tool("host_forged", WRITE).with_services(SpiiceServices::with(
             McpHostToolCall::new("host_forged", READ),
         ));
         let (server, _) = scripted(
@@ -2125,7 +2125,7 @@ mod tests {
                 serde_json::json!({}),
                 author(),
                 Some(auth.clone()),
-                FlavorServices::default(),
+                SpiiceServices::default(),
             )
             .await
             .expect("content from a tool that declared no schema");
@@ -2155,7 +2155,7 @@ mod tests {
                 serde_json::json!({}),
                 author(),
                 Some(auth.clone()),
-                FlavorServices::default(),
+                SpiiceServices::default(),
             )
             .await
             .expect_err("content against a declared schema is refused");
@@ -2173,7 +2173,7 @@ mod tests {
                 serde_json::json!({}),
                 author(),
                 Some(auth),
-                FlavorServices::default(),
+                SpiiceServices::default(),
             )
             .await
             .expect("a failure passes");
@@ -2202,7 +2202,7 @@ mod tests {
                 serde_json::json!({}),
                 author(),
                 Some(auth.clone()),
-                FlavorServices::default(),
+                SpiiceServices::default(),
             )
             .await
             .expect("a structured failure from a tool that declared no schema");
@@ -2230,7 +2230,7 @@ mod tests {
                 serde_json::json!({}),
                 author(),
                 Some(auth),
-                FlavorServices::default(),
+                SpiiceServices::default(),
             )
             .await
             .expect_err("a structured failure against a declared schema is refused");
@@ -2246,7 +2246,7 @@ mod tests {
     struct ContentBehavior;
 
     #[async_trait::async_trait]
-    impl proxima_core::RequestBehavior for ContentBehavior {
+    impl proxiima_core::RequestBehavior for ContentBehavior {
         async fn handle(&self, _: ToolCall, _: Next<'_>) -> Result<ToolReply, McpToolError> {
             Ok(ToolReply::Content(vec![ToolContent::text("replaced")]))
         }
@@ -2256,11 +2256,11 @@ mod tests {
     /// a behavior that replaces either with content makes an internal error.
     #[tokio::test]
     async fn a_behavior_cannot_turn_a_registry_tool_or_a_resource_into_content() {
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_request_behavior(ContentBehavior);
         let server = McpToolHost::from_parts(
             Arc::new(registry.freeze_or_panic_for_tests()),
-            FlavorServices::default(),
+            SpiiceServices::default(),
         );
         let auth = owner_auth();
 
@@ -2270,7 +2270,7 @@ mod tests {
                 serde_json::json!({}),
                 author(),
                 Some(auth.clone()),
-                FlavorServices::default(),
+                SpiiceServices::default(),
             )
             .await;
         assert!(
@@ -2281,7 +2281,7 @@ mod tests {
             "{tool:?}"
         );
         let resource = server
-            .read_resource("proxima://schemas", author(), Some(auth))
+            .read_resource("proxiima://schemas", author(), Some(auth))
             .await;
         assert!(
             matches!(

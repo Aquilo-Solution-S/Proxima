@@ -62,7 +62,7 @@ def normalize_id(schema_id: str) -> str:
 
 def production_src_files(root: Path) -> list[Path]:
     files: list[Path] = []
-    for child in ("crates", "apps", "flavors", "examples"):
+    for child in ("crates", "apps", "spiices", "examples"):
         base = root / child
         if not base.exists():
             continue
@@ -127,7 +127,7 @@ def resolve_schema_id(expr: str, package: str, aliases: dict[str, str]) -> str |
     literal = re.fullmatch(r'"([^"]+)"', expr)
     if literal:
         return literal.group(1)
-    macro = re.fullmatch(r'(?:[\w:]+::)?proxima_schema_id!\("([^"]+)"\)', expr)
+    macro = re.fullmatch(r'(?:[\w:]+::)?proxiima_schema_id!\("([^"]+)"\)', expr)
     if macro:
         return f"{package}/{macro.group(1)}"
     return aliases.get(expr)
@@ -277,7 +277,7 @@ def write_fixture(root: Path, body: str) -> None:
     crate = root / "crates" / "demo"
     (crate / "src").mkdir(parents=True)
     (crate / "Cargo.toml").write_text(
-        '[package]\nname = "demo-flavor"\nversion = "0.0.0"\nedition = "2024"\n',
+        '[package]\nname = "demo-spiice"\nversion = "0.0.0"\nedition = "2024"\n',
         encoding="utf-8",
     )
     (crate / "src" / "lib.rs").write_text(body, encoding="utf-8")
@@ -287,11 +287,11 @@ def self_test() -> int:
     ok_fixture = """
 struct Shared;
 impl FactPayload for Shared {
-    const SCHEMA_ID: &'static str = proxima_schema_id!("shared-v1");
+    const SCHEMA_ID: &'static str = proxiima_schema_id!("shared-v1");
     const SCHEMA_VERSION: u32 = 1;
 }
 impl PerspectivePayload for Shared {
-    const SCHEMA_ID: &'static str = proxima_schema_id!("shared-v1");
+    const SCHEMA_ID: &'static str = proxiima_schema_id!("shared-v1");
     const SCHEMA_VERSION: u32 = 1;
 }
 """
@@ -299,19 +299,19 @@ impl PerspectivePayload for Shared {
 struct Multiline;
 impl FactPayload for Multiline
 {
-    const SCHEMA_ID: &'static str = proxima_schema_id!("multiline-v1");
+    const SCHEMA_ID: &'static str = proxiima_schema_id!("multiline-v1");
     const SCHEMA_VERSION: u32 = 1;
 }
 """
     collision_fixture = """
 struct A;
 impl FactPayload for A {
-    const SCHEMA_ID: &'static str = "demo-flavor/collision-v1";
+    const SCHEMA_ID: &'static str = "demo-spiice/collision-v1";
     const SCHEMA_VERSION: u32 = 1;
 }
 struct B;
 impl FactPayload for B {
-    const SCHEMA_ID: &'static str = "Demo-Flavor/ collision-v1 ";
+    const SCHEMA_ID: &'static str = "Demo-Spiice/ collision-v1 ";
     const SCHEMA_VERSION: u32 = 1;
 }
 """

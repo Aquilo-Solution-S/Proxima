@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fast cargo build wrapper for Proxima workspace
+# Fast cargo build wrapper for Proxiima workspace
 # Usage:
 #   ./scripts/cargo-fast.sh [cargo args]  # Run directly
 #   source scripts/cargo-fast.sh          # Source to set env vars, then run cargo manually

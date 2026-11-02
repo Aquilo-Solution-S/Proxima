@@ -45,7 +45,7 @@ pub struct RememberArgs {
     pub supersedes: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional typed citation linking this Fact to an external artifact. Either inline (object_schema_id + object_schema_version + object_payload describing the artifact) or by reference (cited_object_id of an already-stored object, e.g. from core_upload's complete action). The object schema must be registered (`CitedObject` kind — discover it via the `proxima://schemas{?kind}` resource)."
+        description = "Optional typed citation linking this Fact to an external artifact. Either inline (object_schema_id + object_schema_version + object_payload describing the artifact) or by reference (cited_object_id of an already-stored object, e.g. from core_upload's complete action). The object schema must be registered (`CitedObject` kind — discover it via the `proxiima://schemas{?kind}` resource)."
     )]
     pub citation: Option<RememberCitation>,
     #[serde(default)]
@@ -72,7 +72,7 @@ pub struct RememberCitation {
     pub cited_object_id: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Schema id of the cited external object (a registered `CitedObject` schema — discover via `proxima://schemas{?kind}`). For an inline citation, required together with object_schema_version and object_payload; omit all three when citing by cited_object_id."
+        description = "Schema id of the cited external object (a registered `CitedObject` schema — discover via `proxiima://schemas{?kind}`). For an inline citation, required together with object_schema_version and object_payload; omit all three when citing by cited_object_id."
     )]
     pub object_schema_id: Option<String>,
     #[serde(default)]

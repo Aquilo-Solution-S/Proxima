@@ -1,7 +1,7 @@
 use crate::{GoalPayload, PayloadKeyBuilder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.task_priority")]
+#[sqlx(type_name = "proxiima_core.task_priority")]
 pub enum TaskPriority {
     Low,
     Medium,
@@ -38,6 +38,6 @@ impl GoalPayload for TaskGoalV1 {
     }
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_core.task_goal_v1")
+        Some("proxiima_core.task_goal_v1")
     }
 }

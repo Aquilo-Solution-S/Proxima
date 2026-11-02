@@ -2,7 +2,7 @@
 //! from that single pass: the content address, the audit digest, and the
 //! true byte length.
 
-use proxima_core::count_u64;
+use proxiima_core::count_u64;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 

@@ -1,9 +1,9 @@
 //! Work bound for the substring arm under the shipped RLS policies (#490).
 
-use proxima_core::verbs::query::like_pattern;
-use proxima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
-use proxima_storage_pg::begin_owner_transaction;
-use proxima_storage_pg::verbs::query::substring_candidate_sql_for_tests;
+use proxiima_core::verbs::query::like_pattern;
+use proxiima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
+use proxiima_storage_pg::begin_owner_transaction;
+use proxiima_storage_pg::verbs::query::substring_candidate_sql_for_tests;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -17,7 +17,7 @@ async fn seed_utterances(admin: &PgPool, owner: Uuid, count: i32) {
         owner,
         count,
         "core/utterance-v1",
-        "proxima_core.utterance_v1",
+        "proxiima_core.utterance_v1",
     )
     .await;
 }
@@ -28,7 +28,7 @@ async fn seed_notes(admin: &PgPool, owner: Uuid, count: i32) {
         owner,
         count,
         "core/agent-note-v1",
-        "proxima_core.agent_note_v1",
+        "proxiima_core.agent_note_v1",
     )
     .await;
 }
@@ -37,12 +37,12 @@ async fn seed(admin: &PgPool, owner: Uuid, count: i32, schema: &str, table: &str
     // One coarse-locked transaction: a write otherwise takes one advisory
     // lock per memory, so the corpus used to go in in 1_000-row batches.
     let mut stamped = admin.begin().await.unwrap();
-    sqlx::query("LOCK TABLE proxima_core.memory, proxima_core.goal IN SHARE ROW EXCLUSIVE MODE")
+    sqlx::query("LOCK TABLE proxiima_core.memory, proxiima_core.goal IN SHARE ROW EXCLUSIVE MODE")
         .execute(&mut *stamped)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
          VALUES ($1, 'group') ON CONFLICT DO NOTHING",
     )
     .bind(owner)
@@ -50,7 +50,7 @@ async fn seed(admin: &PgPool, owner: Uuid, count: i32, schema: &str, table: &str
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
          SELECT uuidv7(), 'fact', $3, $1, uuidv7()
            FROM generate_series(1, $2)",
     )
@@ -61,13 +61,13 @@ async fn seed(admin: &PgPool, owner: Uuid, count: i32, schema: &str, table: &str
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
              (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
          SELECT h.handle, h.t, 'fact', $1, $2, ARRAY[$3], uuid_extract_timestamp(h.t),
                 '00000000-0000-0000-0000-000000000509'::uuid, NULL
-           FROM proxima_core.memory_head h
+           FROM proxiima_core.memory_head h
           WHERE h.owner_id = $1 AND h.schema_id = $2
-            AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)",
+            AND NOT EXISTS (SELECT 1 FROM proxiima_core.memory m WHERE m.t = h.t)",
     )
     .bind(owner)
     .bind(schema)
@@ -77,11 +77,11 @@ async fn seed(admin: &PgPool, owner: Uuid, count: i32, schema: &str, table: &str
     .unwrap();
     if schema == "core/utterance-v1" {
         sqlx::query(
-            "INSERT INTO proxima_core.utterance_v1 (t, speaker, conversation_id, text)
+            "INSERT INTO proxiima_core.utterance_v1 (t, speaker, conversation_id, text)
              SELECT m.t, 'user', 'c', 'utterance ' || row_number() OVER (ORDER BY m.t)
-               FROM proxima_core.memory m
+               FROM proxiima_core.memory m
               WHERE m.owner_id = $1 AND m.schema_id = 'core/utterance-v1'
-                AND NOT EXISTS (SELECT 1 FROM proxima_core.utterance_v1 s WHERE s.t = m.t)",
+                AND NOT EXISTS (SELECT 1 FROM proxiima_core.utterance_v1 s WHERE s.t = m.t)",
         )
         .bind(owner)
         .execute(&mut *stamped)
@@ -89,12 +89,12 @@ async fn seed(admin: &PgPool, owner: Uuid, count: i32, schema: &str, table: &str
         .unwrap();
     } else {
         sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+            "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
              SELECT m.t, uuidv7(), 'note ' || row_number() OVER (ORDER BY m.t),
                     'body ' || row_number() OVER (ORDER BY m.t), '{}'
-               FROM proxima_core.memory m
+               FROM proxiima_core.memory m
               WHERE m.owner_id = $1 AND m.schema_id = 'core/agent-note-v1'
-                AND NOT EXISTS (SELECT 1 FROM proxima_core.agent_note_v1 s WHERE s.t = m.t)",
+                AND NOT EXISTS (SELECT 1 FROM proxiima_core.agent_note_v1 s WHERE s.t = m.t)",
         )
         .bind(owner)
         .execute(&mut *stamped)
@@ -170,7 +170,7 @@ async fn owner_tx(runtime: &PgPool, reader: Uuid) -> sqlx::Transaction<'_, sqlx:
         roles: OwnerRoles::for_subject(UserId::new(Uuid::now_v7()), vec![(owner, Role::viewer())])
             .unwrap(),
     };
-    let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("substring".into()))
+    let authz = proxiima_core::authenticate(&verifier, &Credentials::Bearer("substring".into()))
         .await
         .unwrap();
     begin_owner_transaction(runtime, authz.owner_scope().unwrap())
@@ -187,7 +187,7 @@ async fn run_candidates_on(
     query: &str,
     explain: bool,
 ) -> Vec<sqlx::postgres::PgRow> {
-    let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+    let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
     let schema_ids: Vec<&str> = registry
         .search_projections()
         .iter()
@@ -255,7 +255,7 @@ async fn substring_legs_read_only_memories_of_their_own_schemas() {
     for _ in 0..20 {
         seed_utterances(&admin, Uuid::now_v7(), 500).await;
     }
-    sqlx::query("VACUUM (ANALYZE) proxima_core.memory")
+    sqlx::query("VACUUM (ANALYZE) proxiima_core.memory")
         .execute(&admin)
         .await
         .unwrap();
@@ -313,8 +313,8 @@ async fn substring_legs_read_only_memories_of_their_own_schemas() {
 /// The substring statement as the candidate role reads the sidecar through its
 /// trigram index, with sequential scans left enabled (#554).
 ///
-/// The candidate function runs as `proxima_search`. Owner row security does
-/// not apply to that role on the core sidecars (the `proxima_search_candidates`
+/// The candidate function runs as `proxiima_search`. Owner row security does
+/// not apply to that role on the core sidecars (the `proxiima_search_candidates`
 /// policy), so the planner may use an index for `LIKE`, which is not leakproof
 /// and so could never be an index qual under a security qual. Membership and
 /// ownership stay with `memory`, whose policy the same statement still joins.
@@ -324,17 +324,17 @@ async fn substring_arm_reads_the_sidecar_through_its_trigram_index() {
         super::setup_full_schema().await;
     let owner = Uuid::now_v7();
     seed_notes(&admin, owner, BIG_OWNER_NOTES).await;
-    sqlx::query("VACUUM (ANALYZE) proxima_core.agent_note_v1, proxima_core.memory")
+    sqlx::query("VACUUM (ANALYZE) proxiima_core.agent_note_v1, proxiima_core.memory")
         .execute(&admin)
         .await
         .unwrap();
     let mut tx = admin.begin().await.unwrap();
-    sqlx::query("SET LOCAL ROLE proxima_search")
+    sqlx::query("SET LOCAL ROLE proxiima_search")
         .execute(&mut *tx)
         .await
         .unwrap();
     sqlx::query(
-        "SELECT set_config('app.proxima_scope', 'owner', true),
+        "SELECT set_config('app.proxiima_scope', 'owner', true),
                 set_config('app.owner', $1, true),
                 set_config('app.read_abstraction', $1, true),
                 set_config('app.read_perspective', $1, true),

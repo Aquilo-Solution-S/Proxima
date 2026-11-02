@@ -1,0 +1,751 @@
+use std::error::Error;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use proxiima::UploadCompleted;
+use proxiima::spiice::{NamedMigrator, SpiiceBundle, SpiiceRegistry, SpiiceRegistryError};
+use proxiima::{
+    AppInfo, AuthPath, AuthzContext, BuiltProxiima, FactWrite, GroupId, OwnerEraseOutcome, OwnerId,
+    Proxiima, Role, ServedSurface, SpiiceApp, UserId,
+};
+use proxiima_blob_s3::{CitedBlobUploadPrepareTs, S3RuntimeConfig};
+use proxiima_core::StorageError;
+use proxiima_core::error::{ErrorCode, ProtocolError};
+use proxiima_core::storage_ports::{
+    CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
+    CitedBlobUploadAborted, CitedBlobUploadPrepared,
+};
+use proxiima_core::{AgentNoteV1, ColdObjectStore};
+use proxiima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
+use proxiima_storage_pg::{ColdPurgeRetryOptions, PgStorage};
+use uuid::Uuid;
+
+type TestResult<T> = Result<T, Box<dyn Error>>;
+const BODY: &[u8] = b"cited S3 bytes must remain owed across a configuration change";
+
+#[derive(Debug)]
+struct EraseObservation {
+    receipt: OwnerEraseOutcome,
+    canonical_debt: Option<String>,
+    store: String,
+    versions_after_erase: usize,
+}
+
+#[tokio::test]
+async fn reboot_without_s3_preserves_cited_object_purge_debt() -> TestResult<()> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIIMA_S3_* unset");
+        return Ok(());
+    }
+    let observed = Box::pin(reboot_fixture(false)).await?;
+    eprintln!("no-S3 reboot erase observation: {observed:?}");
+    let OwnerEraseOutcome::Completed {
+        cold_object_purge_pending,
+        ..
+    } = observed.receipt
+    else {
+        panic!("the authorized abandoned-owner erase must complete: {observed:?}");
+    };
+    assert!(
+        observed.versions_after_erase == 0
+            || (cold_object_purge_pending
+                && observed.canonical_debt.as_deref() == Some(observed.store.as_str())),
+        "retained S3 versions require a pending receipt and durable bucket-specific debt: {observed:?}",
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn reboot_with_s3_physically_erases_cited_object_versions() -> TestResult<()> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIIMA_S3_* unset");
+        return Ok(());
+    }
+    let observed = Box::pin(reboot_fixture(true)).await?;
+    assert!(
+        matches!(
+            observed.receipt,
+            OwnerEraseOutcome::Completed {
+                cold_object_purge_pending: false,
+                ..
+            }
+        ),
+        "configured reboot must finish physical erasure: {observed:?}"
+    );
+    assert_eq!(observed.versions_after_erase, 0);
+    assert!(observed.canonical_debt.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn fresh_database_without_s3_still_erases_database_only_facts() -> TestResult<()> {
+    let database = unique_db_name("proxiima_no_s3_fresh");
+    create_db(&database).await?;
+    let result = async {
+        let group = GroupId::new(Uuid::now_v7());
+        let owner = OwnerId::from(group);
+        let boot = boot(&database, owner, None).await?;
+        register_group(&admin_pool(&database).await?, group).await?;
+        assert!(boot.host().blobs().is_none());
+        let authz = host_context(owner, AuthPath::HostBearer);
+        boot.host()
+            .engine()
+            .ingest_fact(
+                &authz,
+                FactWrite::new(
+                    owner,
+                    "test/no-s3-fresh",
+                    &AgentNoteV1 {
+                        note_id: Uuid::now_v7(),
+                        title: "database-only control".into(),
+                        body: "no external object exists".into(),
+                        tags: Vec::new(),
+                        idempotency_key: None,
+                    },
+                ),
+            )
+            .await?;
+        assert_eq!(corpus_counts(&admin_pool(&database).await?).await?, (0, 1));
+        let system = host_context(owner, AuthPath::System);
+        let receipt = boot
+            .host()
+            .engine()
+            .erase_group_owner(&system, group)
+            .await?;
+        assert!(matches!(
+            receipt,
+            OwnerEraseOutcome::Completed {
+                cold_object_purge_pending: false,
+                ..
+            }
+        ));
+        assert_eq!(corpus_counts(&admin_pool(&database).await?).await?, (0, 0));
+        let debt: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.cold_purge_pending")
+            .fetch_one(&admin_pool(&database).await?)
+            .await?;
+        assert_eq!(debt, 0);
+        stop(boot).await;
+        Ok(())
+    }
+    .await;
+    drop_db(&database).await?;
+    result
+}
+
+/// Refuse the old post-commit bookkeeping call without touching upload state.
+/// The real store still stages the bytes; only the crash point is injected.
+struct FaultAfterCorpusCommit {
+    inner: proxiima_blob_s3::CitedBlobStore,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl CitedBlobPort for FaultAfterCorpusCommit {
+    async fn prepare_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerId,
+        filename: &str,
+        mime: &str,
+        byte_len: u64,
+    ) -> Result<CitedBlobUploadPrepared, StorageError> {
+        CitedBlobPort::prepare_upload(&self.inner, authz, owner, filename, mime, byte_len).await
+    }
+
+    async fn stage_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerId,
+        upload_id: &str,
+    ) -> Result<CitedBlobStaged, StorageError> {
+        CitedBlobPort::stage_upload(&self.inner, authz, owner, upload_id).await
+    }
+
+    async fn finish_upload(
+        &self,
+        _authz: &AuthzContext,
+        _owner: OwnerId,
+        _upload_id: &str,
+        _cited_object_id: Uuid,
+    ) -> Result<(), StorageError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(StorageError::Unavailable(
+            "injected failure after corpus commit".into(),
+        ))
+    }
+
+    async fn abort_upload(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerId,
+        upload_id: &str,
+    ) -> Result<CitedBlobUploadAborted, StorageError> {
+        CitedBlobPort::abort_upload(&self.inner, authz, owner, upload_id).await
+    }
+
+    async fn read_url(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerId,
+        cited_object_id: Uuid,
+    ) -> Result<CitedBlobReadUrl, StorageError> {
+        CitedBlobPort::read_url(&self.inner, authz, owner, cited_object_id).await
+    }
+
+    async fn find_held_blobs(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerId,
+        hashes: &[[u8; 32]],
+    ) -> Result<Vec<CitedBlobHeld>, StorageError> {
+        CitedBlobPort::find_held_blobs(&self.inner, authz, owner, hashes).await
+    }
+}
+
+#[derive(Debug)]
+struct UploadCommitObservation {
+    completion: Result<UploadCompleted, ProtocolError>,
+    row: (String, Option<Uuid>),
+    fact_id: Uuid,
+    blob_id: Uuid,
+    finish_calls: usize,
+    replay: Option<Result<UploadCompleted, ProtocolError>>,
+}
+
+async fn failed_upload_finish_fixture(
+    restart_after_expiry: bool,
+) -> TestResult<UploadCommitObservation> {
+    let database = unique_db_name("proxiima_upload_atomic");
+    create_db(&database).await?;
+    let result = observe_failed_upload_finish(&database, restart_after_expiry).await;
+    drop_db(&database).await?;
+    result
+}
+
+async fn observe_failed_upload_finish(
+    database: &str,
+    restart_after_expiry: bool,
+) -> TestResult<UploadCommitObservation> {
+    let config = S3RuntimeConfig {
+        force_path_style: true,
+        ..S3RuntimeConfig::from_env()?
+    };
+    let group = GroupId::new(Uuid::now_v7());
+    let owner = OwnerId::from(group);
+    let built = boot(database, owner, Some(config.clone())).await?;
+    let pool = admin_pool(database).await?;
+    register_group(&pool, group).await?;
+    let authz = host_context(owner, AuthPath::HostBearer);
+    let store = built.host().blobs().ok_or("S3 store")?.clone();
+    let prepared = store
+        .prepare_upload(
+            &authz,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: "atomic.txt".into(),
+                mime: "text/plain".into(),
+                byte_len: BODY.len() as u64,
+            },
+        )
+        .await?;
+    s3_put(&config, &format!("pending/{}", prepared.upload_id), BODY).await?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let service = CitedBlobService::new(Arc::new(FaultAfterCorpusCommit {
+        inner: store.clone(),
+        calls: Arc::clone(&calls),
+    }));
+    let completion = built
+        .host()
+        .engine()
+        .complete_upload_as_fact(&service, &authz, owner, &prepared.upload_id, &[])
+        .await;
+    // Capture the committed rows even when the old Engine reported a failure.
+    let row = sqlx::query_as(
+        "SELECT status::text, blob_id FROM proxiima_core.blob_uploads WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(&prepared.upload_id)?)
+    .fetch_one(&pool)
+    .await?;
+    let (fact_id, blob_id): (Uuid, Uuid) = sqlx::query_as(
+        "SELECT t, blob_id FROM proxiima_core.memory WHERE owner_id = $1 AND schema_id = 'core/upload-v1'",
+    ).bind(owner.into_inner()).fetch_one(&pool).await?;
+    assert_eq!(corpus_counts(&pool).await?, (1, 1));
+    let finish_calls = calls.load(Ordering::SeqCst);
+    drop(service);
+    stop(built).await;
+    let replay = if restart_after_expiry {
+        // Advance only expiry, never forge a status or completion link.
+        sqlx::query("UPDATE proxiima_core.blob_uploads SET expires_at = now() - interval '1 hour' WHERE upload_id = $1")
+            .bind(Uuid::parse_str(&prepared.upload_id)?).execute(&pool).await?;
+        let restarted = boot(database, owner, Some(config.clone())).await?;
+        let service = CitedBlobService::new(Arc::new(
+            restarted.host().blobs().ok_or("S3 store")?.clone(),
+        ));
+        let result = restarted
+            .host()
+            .engine()
+            .complete_upload_as_fact(&service, &authz, owner, &prepared.upload_id, &[])
+            .await;
+        drop(service);
+        stop(restarted).await;
+        Some(result)
+    } else {
+        None
+    };
+    // Cleanup exactly this fixture's canonical key before asserting observations.
+    store
+        .cold_store()
+        .delete(&format!("objects/{}", prepared.upload_id))
+        .await?;
+    pool.close().await;
+    Ok(UploadCommitObservation {
+        completion,
+        row,
+        fact_id,
+        blob_id,
+        finish_calls,
+        replay,
+    })
+}
+
+#[tokio::test]
+async fn upload_completion_commits_upload_row_with_corpus() -> TestResult<()> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIIMA_S3_* unset");
+        return Ok(());
+    }
+    let observed = Box::pin(failed_upload_finish_fixture(false)).await?;
+    eprintln!("post-commit failure observation: {observed:?}");
+    assert_eq!(
+        observed.finish_calls, 1,
+        "failure injected at the old post-commit step"
+    );
+    assert_eq!(observed.row, ("completed".into(), Some(observed.blob_id)));
+    let completed = observed.completion?;
+    assert_eq!(completed.fact.memory_id.into_inner(), observed.fact_id);
+    assert_eq!(
+        Uuid::parse_str(&completed.blob.cited_object_id)?,
+        observed.blob_id
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn expired_completed_upload_replays_same_fact_and_object() -> TestResult<()> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIIMA_S3_* unset");
+        return Ok(());
+    }
+    let observed = Box::pin(failed_upload_finish_fixture(true)).await?;
+    eprintln!("restart after expired upload observation: {observed:?}");
+    assert_eq!(observed.finish_calls, 1, "failure injected before restart");
+    let replay = observed.replay.ok_or("replay observation")??;
+    assert!(replay.blob.idempotent_replay);
+    assert!(replay.fact.idempotent_replay);
+    assert_eq!(
+        Uuid::parse_str(&replay.blob.cited_object_id)?,
+        observed.blob_id
+    );
+    assert_eq!(replay.fact.memory_id.into_inner(), observed.fact_id);
+    assert_eq!(observed.row, ("completed".into(), Some(observed.blob_id)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn upload_without_arrived_bytes_expires() -> TestResult<()> {
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIIMA_S3_* unset");
+        return Ok(());
+    }
+    let database = unique_db_name("proxiima_upload_missing_bytes");
+    create_db(&database).await?;
+    let result = async {
+        let group = GroupId::new(Uuid::now_v7());
+        let owner = OwnerId::from(group);
+        let built = boot(&database, owner, Some(S3RuntimeConfig::from_env()?)).await?;
+        register_group(&admin_pool(&database).await?, group).await?;
+        let authz = host_context(owner, AuthPath::HostBearer);
+        let store = built.host().blobs().expect("S3 store");
+        let prepared = store.prepare_upload(&authz, CitedBlobUploadPrepareTs {
+            owner, filename: "missing.txt".into(), mime: "text/plain".into(), byte_len: BODY.len() as u64,
+        }).await?;
+        sqlx::query("UPDATE proxiima_core.blob_uploads SET expires_at = now() - interval '1 hour' WHERE upload_id = $1")
+            .bind(Uuid::parse_str(&prepared.upload_id)?).execute(&admin_pool(&database).await?).await?;
+        let service = CitedBlobService::new(Arc::new(store.clone()));
+        let error = built.host().engine().complete_upload_as_fact(&service, &authz, owner, &prepared.upload_id, &[]).await
+            .expect_err("missing bytes must expire");
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        let status: String = sqlx::query_scalar("SELECT status::text FROM proxiima_core.blob_uploads WHERE upload_id = $1")
+            .bind(Uuid::parse_str(&prepared.upload_id)?).fetch_one(&admin_pool(&database).await?).await?;
+        assert_eq!(status, "expired");
+        stop(built).await;
+        Ok(())
+    }.await;
+    drop_db(&database).await?;
+    result
+}
+
+async fn reboot_fixture(keep_s3: bool) -> TestResult<EraseObservation> {
+    let database = unique_db_name("proxiima_s3_reboot");
+    create_db(&database).await?;
+    let result = Box::pin(run_reboot(&database, keep_s3)).await;
+    drop_db(&database).await?;
+    result
+}
+
+async fn run_reboot(database: &str, keep_s3: bool) -> TestResult<EraseObservation> {
+    let config = S3RuntimeConfig {
+        force_path_style: true,
+        ..S3RuntimeConfig::from_env()?
+    };
+    let group = GroupId::new(Uuid::now_v7());
+    let owner = OwnerId::from(group);
+    let initial = boot(database, owner, Some(config.clone())).await?;
+    register_group(&admin_pool(database).await?, group).await?;
+    let store = initial
+        .host()
+        .blobs()
+        .expect("configured facade exposes blob store");
+    let authz = host_context(owner, AuthPath::HostBearer);
+    let prepared = store
+        .prepare_upload(
+            &authz,
+            CitedBlobUploadPrepareTs {
+                owner,
+                filename: "restart-proof.pdf".into(),
+                mime: "application/pdf".into(),
+                byte_len: BODY.len() as u64,
+            },
+        )
+        .await?;
+    // The same public S3 adapter writes the transfer bytes. Completion still
+    // runs through the facade's composed engine and authentic admission path.
+    s3_put(&config, &format!("pending/{}", prepared.upload_id), BODY).await?;
+    let service = CitedBlobService::new(Arc::new(store.clone()));
+    let completed = initial
+        .host()
+        .engine()
+        .complete_upload_as_fact(&service, &authz, owner, &prepared.upload_id, &[])
+        .await?;
+    let canonical = format!("objects/{}", prepared.upload_id);
+    let status: (String, Uuid) = sqlx::query_as(
+        "SELECT status::text, blob_id FROM proxiima_core.blob_uploads WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(&prepared.upload_id)?)
+    .fetch_one(&admin_pool(database).await?)
+    .await?;
+    assert_eq!(
+        status,
+        (
+            "completed".into(),
+            Uuid::parse_str(&completed.blob.cited_object_id)?
+        )
+    );
+    assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (1, 1));
+    assert_eq!(s3_get(&config, &canonical).await?, BODY);
+    assert_eq!(object_versions(&config, &canonical).await?, 1);
+    drop(service);
+    stop(initial).await;
+
+    // Reconnect and compose from scratch, without injecting or replacing any
+    // storage port. The second boot therefore uses the actual facade wiring.
+    let restarted = boot(database, owner, keep_s3.then(|| config.clone())).await?;
+    assert_eq!(restarted.host().blobs().is_some(), keep_s3);
+    let system = host_context(owner, AuthPath::System);
+    let receipt = restarted
+        .host()
+        .engine()
+        .erase_group_owner(&system, group)
+        .await?;
+    assert_eq!(corpus_counts(&admin_pool(database).await?).await?, (0, 0));
+    let uploads: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.blob_uploads")
+        .fetch_one(&admin_pool(database).await?)
+        .await?;
+    assert_eq!(uploads, 0);
+    let canonical_debt: Option<String> = sqlx::query_scalar(
+        "SELECT object_store FROM proxiima_core.cold_purge_pending WHERE object_key = $1",
+    )
+    .bind(&canonical)
+    .fetch_optional(&admin_pool(database).await?)
+    .await?;
+    let versions_after_erase = object_versions(&config, &canonical).await?;
+    stop(restarted).await;
+
+    recover_and_cleanup(
+        database,
+        owner,
+        &config,
+        &canonical,
+        canonical_debt.as_deref(),
+        versions_after_erase,
+        BODY,
+    )
+    .await?;
+    Ok(EraseObservation {
+        receipt,
+        canonical_debt,
+        store: config.object_store_id()?.to_string(),
+        versions_after_erase,
+    })
+}
+
+async fn recover_and_cleanup(
+    database: &str,
+    owner: OwnerId,
+    config: &S3RuntimeConfig,
+    canonical: &str,
+    canonical_debt: Option<&str>,
+    versions_after_erase: usize,
+    expected_bytes: &[u8],
+) -> TestResult<()> {
+    // Observations are already saved. Restore configuration, then exercise
+    // the public maintenance retry with this fresh facade's real S3 adapter.
+    // This never supplies the no-S3 boot's original erase service.
+    let cleanup = boot(database, owner, Some(config.clone())).await?;
+    let cold = cleanup.host().blobs().expect("cleanup store").cold_store();
+    if versions_after_erase > 0 {
+        assert_eq!(
+            s3_get(config, canonical).await?,
+            expected_bytes,
+            "retained versions contain the original bytes"
+        );
+    }
+    if canonical_debt.is_some() {
+        let (runtime_url, platform_url) = split_role_urls(database).await?;
+        let platform = described(
+            "platform connection",
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(4)
+                .connect(&platform_url)
+                .await,
+        )
+        .await?;
+        let platform = described(
+            "platform validation",
+            proxiima_storage_pg::PgPlatformScope::new(platform, &["proxiima_core"]).await,
+        )
+        .await?;
+        let maintenance = described(
+            "maintenance runtime connection",
+            PgStorage::connect_with_config(
+                &runtime_url,
+                fixture_pool_config(),
+                proxiima_storage_pg::PgTuning::from_env()?,
+                platform,
+                0,
+            )
+            .await,
+        )
+        .await?
+        .with_cold(Arc::new(cold.clone()));
+        let retried = maintenance
+            .retry_cold_object_purges(ColdPurgeRetryOptions::default().batch_size(10))
+            .await?;
+        // The canonical object existed; the upload's transfer key was
+        // already retired, so its debt clears as absent.
+        assert_eq!(
+            (
+                retried.selected,
+                retried.purged,
+                retried.absent,
+                retried.failed,
+                retried.remaining()
+            ),
+            (2, 1, 1, 0, 0)
+        );
+        let debt: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxiima_core.cold_purge_pending WHERE object_key = $1",
+        )
+        .bind(canonical)
+        .fetch_one(&admin_pool(database).await?)
+        .await?;
+        assert_eq!(debt, 0);
+        maintenance.pool_for_tests().close().await;
+    } else if versions_after_erase > 0 {
+        // Only the red baseline can retain bytes with no debt to retry.
+        // Clean that exact key after saving the negative observation.
+        cold.delete(canonical).await?;
+    }
+    assert_eq!(object_versions(config, canonical).await?, 0);
+    stop(cleanup).await;
+    Ok(())
+}
+
+/// Core only; S3 is the variable under test.
+struct CoreApp;
+
+impl SpiiceBundle for CoreApp {
+    fn register(_registry: &mut SpiiceRegistry) -> Result<(), SpiiceRegistryError> {
+        Ok(())
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        Vec::new()
+    }
+}
+
+impl SpiiceApp for CoreApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "s3-restart-test",
+            title: "S3 Restart Test",
+            version: "1",
+        }
+    }
+}
+
+async fn boot(
+    database: &str,
+    owner: OwnerId,
+    s3: Option<S3RuntimeConfig>,
+) -> TestResult<BuiltProxiima> {
+    let (runtime_url, platform_url) = split_role_urls(database).await?;
+    let mut app = Proxiima::<CoreApp>::app()
+        .database_url(runtime_url)
+        .store_number(0)
+        .platform_database_url(platform_url)
+        .owner(owner)
+        .served_surface(ServedSurface::All)
+        // These tests observe debt and expiry, then drive the pass by hand;
+        // the runtime's own drain would race them.
+        .object_purge_interval(std::time::Duration::ZERO)
+        .pg_pool_config(fixture_pool_config());
+    if let Some(s3) = s3 {
+        app = app.s3(s3);
+    }
+    described("boot", app.build().await).await
+}
+
+async fn stop(boot: BuiltProxiima) {
+    let pool = boot.host().pool_for_tests().clone();
+    boot.shutdown().await;
+    pool.close().await;
+}
+
+fn host_context(owner: OwnerId, path: AuthPath) -> AuthzContext {
+    // Group authority is an explicit trusted-host subject role. A bare
+    // single_owner(group) intentionally grants no access.
+    proxiima_core::test_fixtures::authenticated_context(
+        AuthzContext::for_subject_with_role(
+            UserId::new(Uuid::now_v7()),
+            [(owner, Role::admin())],
+            path,
+        )
+        .narrowed_to_owner(owner)
+        .expect("trusted host resolved this exact owner"),
+    )
+}
+
+async fn corpus_counts(pool: &sqlx::PgPool) -> TestResult<(i64, i64)> {
+    Ok(sqlx::query_as("SELECT (SELECT count(*) FROM proxiima_core.blob), (SELECT count(*) FROM proxiima_core.memory)")
+        .fetch_one(pool).await?)
+}
+
+async fn admin_pool(database: &str) -> TestResult<sqlx::PgPool> {
+    described(
+        "admin connection",
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&db_url(database))
+            .await,
+    )
+    .await
+}
+
+/// `result`'s value, or its error as `context: error`, with the test
+/// server's connection use when the error reads as connection exhaustion,
+/// so a setup failure names its resource instead of only a pool timeout.
+async fn described<T, E: std::fmt::Display>(context: &str, result: Result<T, E>) -> TestResult<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(
+            proxiima_pg_testkit::describe_connection_error(context, &error)
+                .await
+                .into(),
+        ),
+    }
+}
+
+/// The shipped pool policy sized for one test: a reboot fixture drives one
+/// host at a time, and the server's connections are shared with every
+/// other test process nextest runs at once.
+fn fixture_pool_config() -> proxiima_storage_pg::PgPoolConfig {
+    proxiima_storage_pg::PgPoolConfig {
+        max_connections: 4,
+        ..proxiima_storage_pg::PgPoolConfig::default()
+    }
+}
+
+/// Write bytes straight to the bucket, as the holder's presigned PUT would.
+/// The purge store only deletes (#488), so fixtures use the S3 client.
+async fn s3_put(config: &S3RuntimeConfig, key: &str, bytes: &[u8]) -> TestResult<()> {
+    config
+        .client()
+        .put_object()
+        .bucket(&config.bucket)
+        .key(key)
+        .body(bytes.to_vec().into())
+        .send()
+        .await?;
+    Ok(())
+}
+
+/// Read bytes straight from the bucket.
+async fn s3_get(config: &S3RuntimeConfig, key: &str) -> TestResult<Vec<u8>> {
+    let object = config
+        .client()
+        .get_object()
+        .bucket(&config.bucket)
+        .key(key)
+        .send()
+        .await?;
+    Ok(object.body.collect().await?.into_bytes().to_vec())
+}
+
+/// Observe all versions and delete markers of this exact key using the same
+/// configured client as the store. This fixture writes one object version.
+async fn object_versions(config: &S3RuntimeConfig, key: &str) -> TestResult<usize> {
+    let client = config.client();
+    let page = client
+        .list_object_versions()
+        .bucket(&config.bucket)
+        .prefix(key)
+        .send()
+        .await?;
+    assert_ne!(
+        page.is_truncated(),
+        Some(true),
+        "one-object fixture must fit one page"
+    );
+    let exact: Vec<_> = page
+        .versions()
+        .iter()
+        .map(|v| (v.key(), v.version_id()))
+        .chain(
+            page.delete_markers()
+                .iter()
+                .map(|v| (v.key(), v.version_id())),
+        )
+        .filter(|(found, _)| *found == Some(key))
+        .collect();
+    assert!(
+        exact
+            .iter()
+            .all(|(_, version)| version.is_some_and(|v| !v.is_empty())),
+        "each object or marker must have an exact version identity"
+    );
+    Ok(exact.len())
+}
+
+/// Register `group` as a Group, the way a host creates one before writing
+/// under it: the group erase path admits only a registered Group.
+async fn register_group(pool: &sqlx::PgPool, group: GroupId) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'group')
+         ON CONFLICT (owner_id) DO NOTHING",
+    )
+    .bind(group.into_inner())
+    .execute(pool)
+    .await
+    .map(drop)
+}

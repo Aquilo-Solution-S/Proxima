@@ -96,7 +96,7 @@ pub trait RequestBehavior: Send + Sync + std::fmt::Debug {
 /// Which catalog serves a tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSource {
-    /// The frozen flavor registry (substrate and flavor tools).
+    /// The frozen spiice registry (substrate and spiice tools).
     Registry,
     /// A host's `McpHostTools`.
     Host,
@@ -107,11 +107,11 @@ pub enum ToolSource {
 /// Only the transport builds one, from a descriptor it is listing.
 ///
 /// ```compile_fail,E0451
-/// let _view = proxima_core::ToolDescriptorView {
+/// let _view = proxiima_core::ToolDescriptorView {
 ///     name: "forged",
 ///     description: "",
-///     effect: proxima_core::ToolEffect::ReadOnly,
-///     source: proxima_core::ToolSource::Host,
+///     effect: proxiima_core::ToolEffect::ReadOnly,
+///     source: proxiima_core::ToolSource::Host,
 ///     action: None,
 /// };
 /// ```
@@ -197,7 +197,7 @@ impl McpToolCtx {
     }
 }
 
-/// Marks one call as a host-served tool (not in the flavor registry) and
+/// Marks one call as a host-served tool (not in the spiice registry) and
 /// carries what the host declared about it.
 ///
 /// The MCP tool host places it in the call's request services
@@ -248,10 +248,10 @@ impl ScopeGateBehavior {
         // below is between keys.
         let key = ScopeKey::parse(tool);
         // Whether a tool dispatches actions is read off its descriptor, not
-        // off the substrate `CoreActionMeta` tables: a flavor dispatcher is
+        // off the substrate `CoreActionMeta` tables: a spiice dispatcher is
         // absent from those tables, so keying on them would drop it to the
         // whole-tool branch below — a palette holding only
-        // `flavor_tool:action` would deny the tool outright, and an unknown
+        // `spiice_tool:action` would deny the tool outright, and an unknown
         // action would sail past this gate into the tool.
         let descriptor = ctx.registry.mcp_tool(tool);
         if descriptor.is_some_and(|descriptor| !descriptor.advertised_by(capabilities)) {
@@ -419,7 +419,7 @@ impl ScopeGateBehavior {
             {
                 super::how_to_resource_declaration()
             }
-            (Some(ScopeKey::Resource(resource)), _) => crate::flavor::FLAVOR_0
+            (Some(ScopeKey::Resource(resource)), _) => crate::spiice::SPIICE_0
                 .resource_by_scope_key(resource)
                 .map_or(KeyDeclaration::UNDECLARED, |resource| {
                     resource.declaration()
@@ -472,7 +472,7 @@ mod tests {
     use super::*;
     use crate::protocol::tool as protocol_tool;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, McpAuthorContext, OwnerId,
+        AuthPath, AuthzContext, McpAuthorContext, OwnerId, SpiiceRegistry, SpiiceServices,
         ToolScope, UserId,
     };
 
@@ -499,12 +499,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chain_runs_scope_gate_then_flavor_behavior_then_terminal() {
+    async fn chain_runs_scope_gate_then_spiice_behavior_then_terminal() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![
             Arc::new(ScopeGateBehavior),
             Arc::new(RecordingBehavior {
-                label: "flavor",
+                label: "spiice",
                 calls: calls.clone(),
             }),
         ];
@@ -537,7 +537,7 @@ mod tests {
         assert_eq!(output["tool"], protocol_tool::CORE_SEARCH_MEMORIES);
         assert_eq!(
             calls.lock().expect("recording lock").as_slice(),
-            ["flavor", "terminal"]
+            ["spiice", "terminal"]
         );
     }
 
@@ -1029,7 +1029,7 @@ mod tests {
             let out = Next::new(&behaviors, terminal)
                 .run(ToolCall {
                     name: scope_key.to_string(),
-                    args: serde_json::json!({ "uri": "proxima://schemas" }),
+                    args: serde_json::json!({ "uri": "proxiima://schemas" }),
                     ctx: read_only_ctx(),
                 })
                 .await;
@@ -1058,7 +1058,7 @@ mod tests {
         McpToolCtx {
             owner,
             authz,
-            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            registry: Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),
                 trusted_model_id: None,
@@ -1067,9 +1067,9 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         }
     }
 }
@@ -1086,7 +1086,7 @@ mod argv_scope_tests {
         McpToolErrorKind, Replay, ToolEffect,
     };
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerId, ScopeKey, ToolScope,
+        AuthPath, AuthzContext, OwnerId, ScopeKey, SpiiceRegistry, SpiiceServices, ToolScope,
         UserId,
     };
 
@@ -1114,7 +1114,7 @@ mod argv_scope_tests {
 
     impl McpTool for ArgvTool {
         const TITLE: &'static str = "Test tool";
-        const NAME: &'static str = "proxima-stub_cli";
+        const NAME: &'static str = "proxiima-stub_cli";
         const DESCRIPTION: &'static str = "An argv-keyed fixture dispatcher.";
         const ARGV_ACTION_SPECS: &'static [McpArgvActionSpec] = &[
             McpArgvActionSpec {
@@ -1164,8 +1164,8 @@ mod argv_scope_tests {
     }
 
     fn argv_ctx_with_authz(owner: OwnerId, authz: AuthzContext) -> McpToolCtx {
-        let mut registry = FlavorRegistry::new();
-        registry.add_mcp_tool_or_panic_for_tests::<ArgvTool>("proxima-stub");
+        let mut registry = SpiiceRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<ArgvTool>("proxiima-stub");
         McpToolCtx {
             owner,
             authz,
@@ -1178,9 +1178,9 @@ mod argv_scope_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         }
     }
 
@@ -1251,7 +1251,7 @@ mod argv_scope_tests {
             for keys in [
                 vec![],
                 vec![ArgvTool::NAME],
-                vec!["proxima-stub_cli:undeclared"],
+                vec!["proxiima-stub_cli:undeclared"],
             ] {
                 let result = ScopeGateBehavior::enforce_scope(
                     ArgvTool::NAME,
@@ -1266,7 +1266,7 @@ mod argv_scope_tests {
             let result = ScopeGateBehavior::enforce_scope(
                 ArgvTool::NAME,
                 &args,
-                &argv_ctx(palette(&["proxima-stub_cli:approval"])),
+                &argv_ctx(palette(&["proxiima-stub_cli:approval"])),
             );
             assert!(
                 matches!(result, Err(McpToolError::InvalidInput(_))),
@@ -1383,7 +1383,7 @@ mod owner_role_tests {
     use super::ScopeGateBehavior;
     use crate::access::Role;
     use crate::mcp::{McpAuthorContext, McpTool, McpToolCtx, McpToolError, ToolEffect};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, GroupId, OwnerId, UserId};
+    use crate::{AuthPath, AuthzContext, GroupId, OwnerId, SpiiceRegistry, SpiiceServices, UserId};
     use futures::future::BoxFuture;
     use std::sync::Arc;
 
@@ -1393,14 +1393,14 @@ mod owner_role_tests {
         _query: String,
     }
 
-    /// A flavor tool that says it only reads.
+    /// A spiice tool that says it only reads.
     #[derive(Debug)]
     struct DeclaredReadTool;
 
     impl McpTool for DeclaredReadTool {
         const TITLE: &'static str = "Test tool";
-        const NAME: &'static str = "proxima-stub_search";
-        const DESCRIPTION: &'static str = "A flavor read tool that declares itself read-only.";
+        const NAME: &'static str = "proxiima-stub_search";
+        const DESCRIPTION: &'static str = "A spiice read tool that declares itself read-only.";
         const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
         type Args = StubArgs;
         type Output = super::StubOutput;
@@ -1412,16 +1412,16 @@ mod owner_role_tests {
         }
     }
 
-    /// A flavor tool that says nothing. `try_freeze` refuses to seal a
+    /// A spiice tool that says nothing. `try_freeze` refuses to seal a
     /// registry containing one, so this never reaches a served registry —
-    /// see `crate::flavor::freeze`. It stays here to pin that refusal.
+    /// see `crate::spiice::freeze`. It stays here to pin that refusal.
     #[derive(Debug)]
     struct SilentTool;
 
     impl McpTool for SilentTool {
         const TITLE: &'static str = "Test tool";
-        const NAME: &'static str = "proxima-stub_silent";
-        const DESCRIPTION: &'static str = "A flavor tool that declares no annotations.";
+        const NAME: &'static str = "proxiima-stub_silent";
+        const DESCRIPTION: &'static str = "A spiice tool that declares no annotations.";
         type Args = StubArgs;
         type Output = super::StubOutput;
         fn call(
@@ -1435,8 +1435,8 @@ mod owner_role_tests {
     /// A group viewer: read on everything, write on nothing.
     fn viewer_ctx(tool_owner: OwnerId) -> McpToolCtx {
         let subject = UserId::new(uuid::Uuid::now_v7());
-        let mut registry = FlavorRegistry::new();
-        registry.add_mcp_tool_or_panic_for_tests::<DeclaredReadTool>("proxima-stub");
+        let mut registry = SpiiceRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<DeclaredReadTool>("proxiima-stub");
         McpToolCtx {
             owner: tool_owner,
             authz: AuthzContext::for_subject_with_role(
@@ -1453,17 +1453,17 @@ mod owner_role_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         }
     }
 
-    /// A read-only role can call a flavor tool that declares itself read-only.
+    /// A read-only role can call a spiice tool that declares itself read-only.
     /// The owner-role gate reads the key's declared effect; a missing
     /// declaration is treated as WRITE.
     #[test]
-    fn a_viewer_may_call_a_flavor_tool_that_declares_itself_read_only() {
+    fn a_viewer_may_call_a_spiice_tool_that_declares_itself_read_only() {
         let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let ctx = viewer_ctx(owner);
         let args = serde_json::json!({"query": "anything"});
@@ -1474,7 +1474,7 @@ mod owner_role_tests {
         );
         assert!(
             ScopeGateBehavior::enforce_scope(DeclaredReadTool::NAME, &args, &ctx,).is_ok(),
-            "a flavor read tool that declares read_only must not be billed as a write"
+            "a spiice read tool that declares read_only must not be billed as a write"
         );
     }
 
@@ -1484,16 +1484,16 @@ mod owner_role_tests {
     /// first refused call. The gate's `unwrap_or(false)` below is the second
     /// one, for a name that never reached the registry at all.
     #[test]
-    fn a_flavor_tool_that_declares_nothing_cannot_be_frozen() {
-        let mut registry = FlavorRegistry::new();
-        registry.add_mcp_tool_or_panic_for_tests::<DeclaredReadTool>("proxima-stub");
-        registry.add_mcp_tool_or_panic_for_tests::<SilentTool>("proxima-stub");
+    fn a_spiice_tool_that_declares_nothing_cannot_be_frozen() {
+        let mut registry = SpiiceRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<DeclaredReadTool>("proxiima-stub");
+        registry.add_mcp_tool_or_panic_for_tests::<SilentTool>("proxiima-stub");
         let err = registry.try_freeze().expect_err("silence must not seal");
         assert!(
             matches!(
                 err,
-                crate::FlavorRegistryError::UndeclaredToolBehavior {
-                    name: "proxima-stub_silent"
+                crate::SpiiceRegistryError::UndeclaredToolBehavior {
+                    name: "proxiima-stub_silent"
                 }
             ),
             "got {err:?}",
@@ -1541,7 +1541,7 @@ mod owner_role_tests {
         let ctx = McpToolCtx {
             owner: bound_owner,
             authz,
-            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            registry: Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "t".into(),
                 trusted_model_id: None,
@@ -1550,9 +1550,9 @@ mod owner_role_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         };
 
         let err = ScopeGateBehavior::enforce_scope(
@@ -1585,7 +1585,7 @@ mod owner_role_tests {
         let ctx = McpToolCtx {
             owner: bound_owner,
             authz,
-            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            registry: Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "t".into(),
                 trusted_model_id: None,
@@ -1594,9 +1594,9 @@ mod owner_role_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         };
 
         ScopeGateBehavior::enforce_scope(
@@ -1619,7 +1619,7 @@ mod visibility_tests {
     use super::*;
     use crate::protocol::tool as protocol_tool;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, McpAuthorContext, OwnerId,
+        AuthPath, AuthzContext, McpAuthorContext, OwnerId, SpiiceRegistry, SpiiceServices,
         ToolScope, UserId,
     };
 
@@ -1660,7 +1660,7 @@ mod visibility_tests {
         }
     }
 
-    fn ctx_over(registry: FlavorRegistry) -> McpToolCtx {
+    fn ctx_over(registry: SpiiceRegistry) -> McpToolCtx {
         let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         McpToolCtx {
             owner,
@@ -1675,15 +1675,15 @@ mod visibility_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         }
     }
 
     #[test]
     fn a_registry_without_a_visibility_opinion_hides_nothing() {
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_request_behavior(PassThrough);
         let ctx = ctx_over(registry);
         for descriptor in ctx.registry.list_mcp_tools() {
@@ -1700,7 +1700,7 @@ mod visibility_tests {
     /// One behavior saying no is enough: `visible` is `ANDed`.
     #[test]
     fn any_one_behavior_hiding_a_tool_hides_it() {
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_request_behavior(PassThrough);
         registry.add_request_behavior(Hides {
             hidden: "host_secret",
@@ -1718,7 +1718,7 @@ mod visibility_tests {
     #[test]
     fn the_view_names_the_action_under_test_and_its_own_effect() {
         let asked = Asked::default();
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_request_behavior(Hides {
             hidden: "nothing_is_called_this",
             asked: Arc::clone(&asked),

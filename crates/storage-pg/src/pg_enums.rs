@@ -1,4 +1,4 @@
-//! Typed decodes for the closed `proxima_core` Postgres enums.
+//! Typed decodes for the closed `proxiima_core` Postgres enums.
 //!
 //! Database labels are decoded at the row boundary. Unknown labels return a
 //! decode error; exhaustive `From` matches cover every admitted Rust variant.
@@ -6,13 +6,13 @@
 use std::fmt;
 use std::str::FromStr;
 
-use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{EntityKind, MemoryKind, StorageError};
+use proxiima_core::verbs::schema::PayloadKind;
+use proxiima_core::{EntityKind, MemoryKind, StorageError};
 
-/// `proxima_core.memory_kind`. Three labels — `Goal` is not one of them; a
+/// `proxiima_core.memory_kind`. Three labels — `Goal` is not one of them; a
 /// goal is a separate entity, not a memory kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.memory_kind", rename_all = "lowercase")]
+#[sqlx(type_name = "proxiima_core.memory_kind", rename_all = "lowercase")]
 pub(crate) enum PgMemoryKind {
     Fact,
     Abstraction,
@@ -93,10 +93,10 @@ pub(crate) fn memory_payload_kind(kind: EntityKind) -> Result<PayloadKind, Stora
         .ok_or_else(|| StorageError::Internal("a Goal has no memory payload kind".into()))
 }
 
-/// `proxima_core.sketch_kind`: the memory kinds plus `goal`, the kinds a
+/// `proxiima_core.sketch_kind`: the memory kinds plus `goal`, the kinds a
 /// sketch row can describe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.sketch_kind", rename_all = "lowercase")]
+#[sqlx(type_name = "proxiima_core.sketch_kind", rename_all = "lowercase")]
 pub(crate) enum PgSketchKind {
     Fact,
     Abstraction,
@@ -148,9 +148,12 @@ impl From<PgSketchKind> for EntityKind {
     }
 }
 
-/// `proxima_core.publication_state`: one consumer's delivery lane.
+/// `proxiima_core.publication_state`: one consumer's delivery lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.publication_state", rename_all = "lowercase")]
+#[sqlx(
+    type_name = "proxiima_core.publication_state",
+    rename_all = "lowercase"
+)]
 pub enum PublicationDeliveryState {
     Pending,
     Claimed,
@@ -188,13 +191,13 @@ impl FromStr for PublicationDeliveryState {
     }
 }
 
-/// `proxima_core.publication_record_state`: a captured event's aggregate.
+/// `proxiima_core.publication_record_state`: a captured event's aggregate.
 ///
 /// `published` exactly when no lane is undelivered. There is no `claimed`
 /// label here — claiming is per lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
 #[sqlx(
-    type_name = "proxima_core.publication_record_state",
+    type_name = "proxiima_core.publication_record_state",
     rename_all = "lowercase"
 )]
 pub enum PublicationRecordState {
@@ -235,17 +238,17 @@ impl FromStr for PublicationRecordState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublicationStateParseError;
 
-/// `proxima_core.pin_target_kind`. Four labels: the same three as
+/// `proxiima_core.pin_target_kind`. Four labels: the same three as
 /// [`PgMemoryKind`] plus `goal`, because a pin target may be a Goal.
 ///
 /// This is the WIDER of the two lifecycle vocabularies, so a query that
 /// coalesces a memory kind together with a pin-target kind unifies on this
 /// one. Postgres has no direct enum-to-enum cast, so that widening spells
-/// `::text::proxima_core.pin_target_kind` in SQL — a cast between two closed
+/// `::text::proxiima_core.pin_target_kind` in SQL — a cast between two closed
 /// types, not the `kind::text` readback into a Rust `String` this module
 /// exists to remove.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.pin_target_kind", rename_all = "lowercase")]
+#[sqlx(type_name = "proxiima_core.pin_target_kind", rename_all = "lowercase")]
 pub(crate) enum PgPinTargetKind {
     Fact,
     Abstraction,

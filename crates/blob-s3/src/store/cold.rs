@@ -1,6 +1,6 @@
 //! S3 adapter for cold Memory objects.
 
-use proxima_core::{ColdObjectStore, ObjectStoreId, PurgeDeleted, StorageError};
+use proxiima_core::{ColdObjectStore, ObjectStoreId, PurgeDeleted, StorageError};
 
 use super::CitedBlobStore;
 

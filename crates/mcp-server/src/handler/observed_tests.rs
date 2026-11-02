@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use futures_util::future::BoxFuture;
-use proxima_core::mcp::{
+use proxiima_core::mcp::{
     JudgedKey, McpActionArgSpec, McpTool, McpToolAudience, McpToolCtx, McpToolError,
 };
-use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, ScopeKey, ToolScope};
+use proxiima_core::{AuthPath, AuthzContext, ScopeKey, SpiiceRegistry, SpiiceServices, ToolScope};
 use rmcp::service::{RunningService, serve_directly};
 use serde_json::{Value, json};
 
@@ -98,11 +98,11 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_mcp_tool_or_panic_for_tests::<Flat>("observed");
         registry.add_mcp_tool_or_panic_for_tests::<Dispatch>("observed");
         let seen = Seen::default();
-        let mut services = FlavorServices::default();
+        let mut services = SpiiceServices::default();
         services.try_insert(seen.clone()).expect("unique service");
         let handler = DynamicHandler::new(McpToolHost::from_parts(
             Arc::new(registry.freeze_or_panic_for_tests()),
@@ -124,7 +124,7 @@ impl Fixture {
             self.running.peer().clone(),
         );
         if let Some(scope) = scope {
-            let owner = proxima_core::test_fixtures::owner_fixture();
+            let owner = proxiima_core::test_fixtures::owner_fixture();
             let (mut parts, ()) = http::Request::new(()).into_parts();
             parts.extensions.insert(McpAuthContext {
                 owner,
@@ -254,7 +254,7 @@ impl Fixture {
         JudgedKey,
         impl Future<Output = Result<ToolReply, crate::ToolInvocationError>> + use<'a>,
     ) {
-        let owner = proxima_core::test_fixtures::owner_fixture();
+        let owner = proxiima_core::test_fixtures::owner_fixture();
         let auth = scope.map(|scope| McpAuthContext {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(scope),
@@ -262,7 +262,7 @@ impl Fixture {
         self.handler.server.call_tool_reply_observed_in_request(
             name,
             args,
-            proxima_core::mcp::McpAuthorContext {
+            proxiima_core::mcp::McpAuthorContext {
                 model_id: "fixture-model".into(),
                 trusted_model_id: None,
                 client_name: "fixture".into(),
@@ -270,7 +270,7 @@ impl Fixture {
                 caller_self_perspective: None,
             },
             auth,
-            FlavorServices::default(),
+            SpiiceServices::default(),
         )
     }
 }

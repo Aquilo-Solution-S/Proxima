@@ -17,7 +17,7 @@ pub const QUERY_PLACEHOLDER: &str = "{query}";
 
 /// What a search is looking for, so a route can word the query for it.
 ///
-/// Substrate searches embed under [`QueryTask::DEFAULT`]; a flavor names its
+/// Substrate searches embed under [`QueryTask::DEFAULT`]; a spiice names its
 /// own task, which falls back to the default instruction when the route has
 /// none for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -27,7 +27,7 @@ impl QueryTask {
     /// A search with no task of its own.
     pub const DEFAULT: Self = Self(None);
 
-    /// A search a flavor names, e.g. code search.
+    /// A search a spiice names, e.g. code search.
     #[must_use]
     pub const fn named(name: &'static str) -> Self {
         Self(Some(name))

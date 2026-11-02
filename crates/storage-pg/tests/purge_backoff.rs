@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use proxima_core::{ColdObjectStore, ObjectStoreId, PurgeDeleted, StorageError};
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{ColdPurgeRetryOptions, ColdPurgeRetryOutcome, PgStorage};
+use proxiima_core::{ColdObjectStore, ObjectStoreId, PurgeDeleted, StorageError};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{ColdPurgeRetryOptions, ColdPurgeRetryOutcome, PgStorage};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -61,7 +61,7 @@ impl ColdObjectStore for FlakyStore {
 }
 
 async fn fresh() -> TestResult<(String, PgStorage)> {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_core_db(&db_name).await?;
     let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
     Ok((db_name, pg))
@@ -70,7 +70,7 @@ async fn fresh() -> TestResult<(String, PgStorage)> {
 /// Owe `keys` in order, oldest first.
 async fn owe(pool: &PgPool, keys: &[String]) -> TestResult {
     sqlx::query(
-        "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store, enqueued_at)
+        "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store, enqueued_at)
          SELECT key, NULL, $2, now() - interval '1 hour' + ord * interval '1 millisecond'
            FROM unnest($1::text[]) WITH ORDINALITY AS t(key, ord)",
     )
@@ -83,7 +83,7 @@ async fn owe(pool: &PgPool, keys: &[String]) -> TestResult {
 
 async fn debt_count(pool: &PgPool) -> TestResult<i64> {
     Ok(
-        sqlx::query_scalar("SELECT count(*) FROM proxima_core.cold_purge_pending")
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.cold_purge_pending")
             .fetch_one(pool)
             .await?,
     )
@@ -134,7 +134,7 @@ async fn failing_keys_give_way_to_the_rest_of_the_queue() -> TestResult {
         assert_eq!(again.selected, 0, "a backed-off debt is not retried early");
 
         sqlx::query(
-            "UPDATE proxima_core.cold_purge_pending
+            "UPDATE proxiima_core.cold_purge_pending
                 SET next_attempt_at = now() - interval '1 second'",
         )
         .execute(pool)
@@ -205,12 +205,12 @@ async fn a_debt_that_keeps_failing_is_named_stuck() -> TestResult {
         let pg = pg.with_cold(store.clone());
         let pool = pg.pool_for_tests();
         let owner = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner)
             .execute(pool)
             .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+            "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
              VALUES ($1, $2, $3)",
         )
         .bind(&key)
@@ -223,7 +223,7 @@ async fn a_debt_that_keeps_failing_is_named_stuck() -> TestResult {
             Ok(sqlx::query_as(
                 "SELECT attempts,
                         round(extract(epoch FROM next_attempt_at - last_attempt_at))::bigint
-                   FROM proxima_core.cold_purge_pending",
+                   FROM proxiima_core.cold_purge_pending",
             )
             .fetch_one(pool)
             .await?)
@@ -234,7 +234,7 @@ async fn a_debt_that_keeps_failing_is_named_stuck() -> TestResult {
             .stuck_after(3);
         let make_due = async |pool: &PgPool| -> TestResult {
             sqlx::query(
-                "UPDATE proxima_core.cold_purge_pending
+                "UPDATE proxiima_core.cold_purge_pending
                     SET next_attempt_at = now() - interval '1 second'",
             )
             .execute(pool)
@@ -257,7 +257,7 @@ async fn a_debt_that_keeps_failing_is_named_stuck() -> TestResult {
         assert_eq!(outcome.stuck_count, 1);
         let stuck = &outcome.stuck[0];
         assert_eq!(stuck.object_key, key);
-        assert_eq!(stuck.owner_id.map(proxima_core::OwnerId::into_inner), Some(owner));
+        assert_eq!(stuck.owner_id.map(proxiima_core::OwnerId::into_inner), Some(owner));
         assert_eq!(stuck.attempts, 3);
         let error = stuck.last_error.as_deref().expect("last error kept");
         assert!(error.contains("access denied"), "{error}");
@@ -265,12 +265,12 @@ async fn a_debt_that_keeps_failing_is_named_stuck() -> TestResult {
 
         // A new erase owing the same key makes it due now; the attempts stay.
         sqlx::query(
-            "UPDATE proxima_core.cold_purge_pending SET next_attempt_at = now() + interval '1 hour'",
+            "UPDATE proxiima_core.cold_purge_pending SET next_attempt_at = now() + interval '1 hour'",
         )
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+            "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
              VALUES ($1, $2, $3)
              ON CONFLICT (object_store, object_key) DO UPDATE
                 SET enqueued_at = now(), next_attempt_at = now()",
@@ -302,7 +302,7 @@ async fn absent_keys_clear_and_a_dry_run_writes_nothing() -> TestResult {
         let owed = keys(0..5);
         owe(pool, &owed).await?;
         sqlx::query(
-            "UPDATE proxima_core.cold_purge_pending
+            "UPDATE proxiima_core.cold_purge_pending
                 SET next_attempt_at = now() + interval '1 hour', attempts = 1
               WHERE object_key = $1",
         )
@@ -312,7 +312,7 @@ async fn absent_keys_clear_and_a_dry_run_writes_nothing() -> TestResult {
         let snapshot = async |pool: &PgPool| -> TestResult<Vec<(String, i32, String)>> {
             Ok(sqlx::query_as(
                 "SELECT object_key, attempts, next_attempt_at::text
-                   FROM proxima_core.cold_purge_pending ORDER BY object_key",
+                   FROM proxiima_core.cold_purge_pending ORDER BY object_key",
             )
             .fetch_all(pool)
             .await?)
@@ -387,7 +387,7 @@ async fn an_object_purge_pass_drains_or_skips_under_the_maintenance_lock() -> Te
         let pg = pg.with_cold(store.clone());
         owe(pg.pool_for_tests(), &all).await?;
         sqlx::query(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+            "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
              VALUES ('objects/elsewhere', NULL, 's3:test/other')",
         )
         .execute(pg.pool_for_tests())

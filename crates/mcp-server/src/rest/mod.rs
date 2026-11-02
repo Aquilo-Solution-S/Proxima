@@ -1,10 +1,10 @@
 //! The `/v1` REST surface: a rendering of the frozen tool manifest.
 //!
 //! Not a second API. Every route is derived at startup from
-//! `FlavorRegistryFrozen`; no route is hand-written per tool; every route
+//! `SpiiceRegistryFrozen`; no route is hand-written per tool; every route
 //! terminates in [`McpToolHost::call_tool`] or
 //! [`McpToolHost::read_resource`], which is what keeps `ScopeGateBehavior`
-//! and the shared edge auth layer the only gates. A tool added to a flavor
+//! and the shared edge auth layer the only gates. A tool added to a spiice
 //! crate appears here with no edit in this module, and cannot appear here
 //! without appearing on MCP.
 //!
@@ -26,12 +26,12 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
-use proxima_core::FlavorServices;
-use proxima_core::flavor::ResourceContract;
-use proxima_core::mcp::{
+use proxiima_core::SpiiceServices;
+use proxiima_core::mcp::{
     McpAuthorContext, McpToolCtx, McpToolDescriptor, McpToolOrigin, all_core_resources,
     tool_name_matches,
 };
+use proxiima_core::spiice::ResourceContract;
 
 use crate::handler::{
     Caller, action_allowed_for_auth, advertised_resource_scope_keys, advertised_tool_ids,
@@ -56,10 +56,10 @@ pub const NO_STORE: &str = "private, no-store";
 pub const PREFIX: &str = "/v1";
 
 /// Scheme of the engine's resource URIs. `/v1/resources/{*path}?{query}`
-/// reconstructs `proxima://{path}?{query}` verbatim; all parsing,
+/// reconstructs `proxiima://{path}?{query}` verbatim; all parsing,
 /// validation, clamping and cursor handling stay in `server.rs`, which
 /// already does every bit of it.
-const RESOURCE_SCHEME: &str = "proxima://";
+const RESOURCE_SCHEME: &str = "proxiima://";
 
 #[derive(Clone, Debug)]
 struct RestState {
@@ -152,7 +152,7 @@ fn request_parts(
     auth: &crate::McpAuthContext,
     (headers, extensions): (&axum::http::HeaderMap, &axum::http::Extensions),
     instance: &str,
-) -> Result<(McpAuthorContext, FlavorServices), Problem> {
+) -> Result<(McpAuthorContext, SpiiceServices), Problem> {
     let author = author_from_headers(headers, auth, instance)?;
     let request = state
         .host
@@ -170,7 +170,7 @@ async fn list_resources(RestAuth(auth): RestAuth) -> Response {
     json_ok(&serde_json::json!({ "resources": resources }))
 }
 
-/// `proxima://how-to` is the one resource not reachable through the
+/// `proxiima://how-to` is the one resource not reachable through the
 /// dispatch seam: it is synthesized per request from the caller's advertised
 /// surface, so it gets its own route and `/v1/resources/how-to` stays a
 /// `404`.
@@ -183,8 +183,8 @@ async fn how_to(
 ) -> Response {
     if !how_to_allowed_for_auth(Some(&auth)) {
         return problem_for(
-            &proxima_core::McpToolError::NotAuthorized(
-                proxima_core::protocol::resource::HOW_TO.into(),
+            &proxiima_core::McpToolError::NotAuthorized(
+                proxiima_core::protocol::resource::HOW_TO.into(),
             )
             .into(),
             &format!("{PREFIX}/how-to"),
@@ -403,7 +403,7 @@ async fn dispatch(
 // -------------------------------------------------------------- resources
 
 /// Total and mechanical: the wildcard path and the raw query string are
-/// pasted back onto `proxima://` and handed to the seam. REST adds no
+/// pasted back onto `proxiima://` and handed to the seam. REST adds no
 /// parser, so a malformed parameter fails in exactly the place — and with
 /// exactly the class — an MCP resource read fails.
 async fn read_resource(
@@ -570,7 +570,7 @@ fn tool_json(descriptor: &McpToolDescriptor, caller: Caller<'_>) -> serde_json::
         "description": descriptor.description,
         "origin": match &descriptor.origin {
             McpToolOrigin::Substrate => serde_json::json!("substrate"),
-            McpToolOrigin::Flavor(flavor) => serde_json::json!({ "flavor": flavor }),
+            McpToolOrigin::Spiice(spiice) => serde_json::json!({ "spiice": spiice }),
         },
         "annotations": annotations_for_auth(caller, descriptor),
         // Narrowed per action by the same projection `tools/list` applies, so
@@ -614,7 +614,7 @@ fn set_headers(response: &mut Response, content_type: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_core::protocol::tool as protocol_tool;
+    use proxiima_core::protocol::tool as protocol_tool;
 
     #[test]
     fn method_gate_admits_query_only_for_reads() {
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(json["status"], 405);
         assert_eq!(
             json["type"],
-            "https://proxima.dev/errors/method-not-allowed"
+            "https://proxiima.dev/errors/method-not-allowed"
         );
 
         assert!(gate_method(&Method::DELETE, Allow::tool(true), "/v1/tools/x").is_err());
@@ -670,7 +670,7 @@ mod tests {
             assert_eq!(err.to_json()["status"], 400);
             assert_eq!(
                 err.to_json()["type"],
-                "https://proxima.dev/errors/action-conflict"
+                "https://proxiima.dev/errors/action-conflict"
             );
         }
     }
@@ -691,7 +691,7 @@ mod tests {
     /// read-only parent whose leaves must be re-checked rather than assumed.
     #[test]
     fn action_read_only_is_resolved_per_action_not_per_tool() {
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let descriptor = |name: &str| {
             registry
                 .list_mcp_tools()

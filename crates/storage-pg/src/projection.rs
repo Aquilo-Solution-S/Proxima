@@ -1,8 +1,8 @@
 //! The projection generator: one contract in, one canonical shape out.
 //!
-//! This is the whole of it. `projection_artifacts(&FlavorContract)` is a
-//! pure function with no parameters beyond the contract, no per-flavor
-//! branch, and no configuration surface. Two flavors' emitted DDL differ in
+//! This is the whole of it. `projection_artifacts(&SpiiceContract)` is a
+//! pure function with no parameters beyond the contract, no per-spiice
+//! branch, and no configuration surface. Two spiices' emitted DDL differ in
 //! the schema name and the index name and in nothing else — which is what
 //! makes "the generator has not grown a hook" a checkable property rather
 //! than an intention. A need the canonical shape cannot express becomes a
@@ -12,17 +12,17 @@
 //! **Every artifact carries its derivable inverse.** [`Artifact`] is a
 //! forward statement and its `DROP`, produced by the same call from the
 //! same declaration, so they cannot drift. That is what makes provisioning
-//! and de-provisioning a flavor in a deployment two readings of one
+//! and de-provisioning a spiice in a deployment two readings of one
 //! derivation instead of two hand-maintained scripts. A hand-written
 //! inverse is the alternative, and it reaches whatever subset of the
-//! sidecars its author remembered; a flavor that keeps its own inverse
+//! sidecars its author remembered; a spiice that keeps its own inverse
 //! has a test compare it against the contract.
 //!
 //! Two consumers, deliberately:
 //!
 //! 1. **The migration author.** The core baseline (`migrations/0033_baseline.sql`)
 //!    carries the table and index output; `definitions/triggers.sql` carries
-//!    the language trigger, while each flavor baseline carries its own table
+//!    the language trigger, while each spiice baseline carries its own table
 //!    and index. The generator-output tests pin those contracts so a change
 //!    fails the build rather than the next boot.
 //! 2. **The boot guardrail** (`ensure_projection_schema`), which re-runs it
@@ -35,12 +35,12 @@
 
 use std::fmt::Write as _;
 
-use proxima_core::StorageError;
-use proxima_core::flavor::{
-    FlavorContract, KeyShape, LanguagePolicy, SchemaContract, SearchProjectionDecl,
+use proxiima_core::StorageError;
+use proxiima_core::spiice::{
+    KeyShape, LanguagePolicy, SchemaContract, SearchProjectionDecl, SpiiceContract,
     TSVECTOR_WEIGHT_CLASSES,
 };
-use proxima_core::{SearchProjectionColumnKind, verbs::schema::MemorySearchProjection};
+use proxiima_core::{SearchProjectionColumnKind, verbs::schema::MemorySearchProjection};
 
 use crate::pg_ident::PgIdent;
 
@@ -54,7 +54,7 @@ pub struct Artifact {
     pub inverse: String,
 }
 
-/// Everything one flavor's projection is, as SQL.
+/// Everything one spiice's projection is, as SQL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionArtifacts {
     pub table: Artifact,
@@ -106,14 +106,14 @@ pub const BTREE_GIN_EXTENSION: &str = "CREATE EXTENSION IF NOT EXISTS btree_gin;
 
 /// Contract declaration in → canonical projection shape out.
 ///
-/// Returns `None` for a flavor that declares no projection.
+/// Returns `None` for a spiice that declares no projection.
 ///
 /// # Errors
 ///
 /// `StorageError::Internal` when a declared table, index or column name is
 /// not a valid `PostgreSQL` identifier.
 pub fn projection_artifacts(
-    contract: &FlavorContract,
+    contract: &SpiiceContract,
 ) -> Result<Option<ProjectionArtifacts>, StorageError> {
     let Some(spec) = contract.projection.spec() else {
         return Ok(None);
@@ -130,19 +130,19 @@ pub fn projection_artifacts(
     // Every spliced name above went through `PgIdent`, which rejects
     // anything that is not a bare (optionally schema-qualified) identifier.
     // The rest of the text is fixed: the column list, the types and the
-    // constraints are the same characters for every flavor, which is the
+    // constraints are the same characters for every spiice, which is the
     // slimness property stated as code.
     let create = format!(
         "CREATE TABLE {table} (
     memory_id        uuid      NOT NULL
-                     REFERENCES proxima_core.memory (t) ON DELETE CASCADE,
+                     REFERENCES proxiima_core.memory (t) ON DELETE CASCADE,
     schema_id        text      NOT NULL,
     owner_id         uuid      NOT NULL
-                     REFERENCES proxima_core.owners (owner_id),
+                     REFERENCES proxiima_core.owners (owner_id),
     search_tsv       tsvector  NOT NULL,
     tag              text[]    NOT NULL DEFAULT '{{}}',
-    lexical_language regconfig NOT NULL DEFAULT proxima_core.lexical_config()
-                     REFERENCES proxima_core.lexical_languages (config),
+    lexical_language regconfig NOT NULL DEFAULT proxiima_core.lexical_config()
+                     REFERENCES proxiima_core.lexical_languages (config),
     PRIMARY KEY (memory_id, schema_id)
 );",
         table = table.as_str()
@@ -158,7 +158,7 @@ pub fn projection_artifacts(
         "CREATE OR REPLACE TRIGGER {trigger}
     BEFORE INSERT ON {table}
     FOR EACH ROW
-    EXECUTE FUNCTION proxima_core.remember_lexical_language();",
+    EXECUTE FUNCTION proxiima_core.remember_lexical_language();",
         trigger = trigger_ident.as_str(),
         table = table.as_str()
     );
@@ -222,12 +222,12 @@ fn search_text_expr(fields: &[(&str, SearchProjectionColumnKind)]) -> Result<Str
                 format!("NULLIF(c.{}, '')", column.as_str())
             }
             SearchProjectionColumnKind::TextArray => {
-                format!("proxima_core.lexical_text_array(c.{})", column.as_str())
+                format!("proxiima_core.lexical_text_array(c.{})", column.as_str())
             }
         });
     }
     Ok(format!(
-        "proxima_core.lexical_join(VARIADIC ARRAY[{}])",
+        "proxiima_core.lexical_join(VARIADIC ARRAY[{}])",
         parts.join(", ")
     ))
 }
@@ -237,13 +237,13 @@ fn search_text_expr(fields: &[(&str, SearchProjectionColumnKind)]) -> Result<Str
 /// the right operand's positions and `ts_rank_cd` is position-sensitive.
 fn vector_expr(language: LanguagePolicy, text: &str) -> Result<String, StorageError> {
     match language {
-        LanguagePolicy::PerRow { .. } => {
-            Ok(format!("proxima_core.lexical_tsv({LANGUAGE_BIND}, {text})"))
-        }
+        LanguagePolicy::PerRow { .. } => Ok(format!(
+            "proxiima_core.lexical_tsv({LANGUAGE_BIND}, {text})"
+        )),
         LanguagePolicy::Pinned(config) => {
             let config = PgIdent::column(config)?;
             Ok(format!(
-                "proxima_core.lexical_tsv('{}'::regconfig, {text})",
+                "proxiima_core.lexical_tsv('{}'::regconfig, {text})",
                 config.as_str()
             ))
         }
@@ -261,7 +261,7 @@ fn vector_expr(language: LanguagePolicy, text: &str) -> Result<String, StorageEr
                 }
                 let _ = write!(
                     sql,
-                    "proxima_core.lexical_tsv('{}'::regconfig, {text})",
+                    "proxiima_core.lexical_tsv('{}'::regconfig, {text})",
                     config.as_str()
                 );
             }
@@ -280,7 +280,7 @@ fn vector_expr(language: LanguagePolicy, text: &str) -> Result<String, StorageEr
 /// was handed no language. A write that named no language at all
 /// never reaches this statement — see
 /// `PgSidecarWriter::insert_memory_sidecar`.
-const LANGUAGE_BIND: &str = "COALESCE($2::regconfig, proxima_core.lexical_config())";
+const LANGUAGE_BIND: &str = "COALESCE($2::regconfig, proxiima_core.lexical_config())";
 
 /// The row's `lexical_language` value.
 fn language_value_expr(language: LanguagePolicy) -> Result<String, StorageError> {
@@ -351,7 +351,7 @@ pub fn projection_vector_sql(search: &SearchProjectionDecl) -> Result<String, St
     Ok(parts.join("\n            || "))
 }
 
-/// The maintenance statement: one row of `<flavor>.projection` from one row
+/// The maintenance statement: one row of `<spiice>.projection` from one row
 /// of the schema's sidecar, in the writing transaction.
 ///
 /// `$1` is the memory id; `$2` is the caller's lexical language, or NULL
@@ -366,21 +366,21 @@ pub fn projection_vector_sql(search: &SearchProjectionDecl) -> Result<String, St
 ///
 /// The whole contract is the input rather than the projection spec alone,
 /// because a sidecar's `Surface` may be declared on a SIBLING registration
-/// of the same table — see [`FlavorContract::surface_for`].
+/// of the same table — see [`SpiiceContract::surface_for`].
 ///
 /// # Errors
 ///
-/// `StorageError::Internal` for an invalid identifier, a flavor that
+/// `StorageError::Internal` for an invalid identifier, a spiice that
 /// declares no projection, a schema that is not a search surface, or a
 /// sidecar that declares no memory key.
 pub fn projection_insert_sql(
-    contract: &FlavorContract,
+    contract: &SpiiceContract,
     schema: &SchemaContract,
 ) -> Result<String, StorageError> {
     let spec = contract.projection.spec().ok_or_else(|| {
         StorageError::Internal(format!(
-            "flavor {} declares no projection table, so its schemas write no projection row",
-            contract.flavor_id
+            "spiice {} declares no projection table, so its schemas write no projection row",
+            contract.spiice_id
         ))
     })?;
     let table = PgIdent::table(spec.table)?;
@@ -436,7 +436,7 @@ SELECT c.{key},
        {tag},
        {language_value}
   FROM {sidecar} c
-  JOIN proxima_core.memory m ON m.t = c.{key}
+  JOIN proxiima_core.memory m ON m.t = c.{key}
  WHERE c.{key} = $1
    AND m.schema_id = $3",
         table = table.as_str(),
@@ -450,22 +450,22 @@ SELECT c.{key},
 ///
 /// There is no `t` fallback on either arm, deliberately. A default here
 /// reads as "the contract, unless it says something this generator does not
-/// expect", which is the shape of defect that produces a flavor whose
+/// expect", which is the shape of defect that produces a spiice whose
 /// projection is silently empty. The error names the declaration to fix.
 ///
-/// [`Surface`]: proxima_core::flavor::Surface
+/// [`Surface`]: proxiima_core::spiice::Surface
 fn sidecar_memory_key(
-    contract: &FlavorContract,
+    contract: &SpiiceContract,
     schema: &SchemaContract,
     sidecar_table: &str,
 ) -> Result<&'static str, StorageError> {
     let Some(surface) = contract.surface_for(sidecar_table) else {
         return Err(StorageError::Internal(format!(
             "projected schema {} declares sidecar table {sidecar_table}, which no Surface of \
-             flavor {} declares; add that Surface so the projection can read the declared \
+             spiice {} declares; add that Surface so the projection can read the declared \
              memory-key column",
             schema.schema_id().as_str(),
-            contract.flavor_id
+            contract.spiice_id
         )));
     };
     match surface.key {
@@ -481,7 +481,7 @@ fn sidecar_memory_key(
 
 /// Every projection table a composed binary declares, in name order.
 #[must_use]
-pub fn projection_tables(contracts: &[&'static FlavorContract]) -> Vec<String> {
+pub fn projection_tables(contracts: &[&'static SpiiceContract]) -> Vec<String> {
     let mut tables = contracts
         .iter()
         .filter_map(|contract| contract.projection.table())
@@ -555,8 +555,8 @@ pub(crate) fn projection_key_ident(
 /// The boot half of the pin: what the generator says, and what the catalog
 /// has, must be the same set of projection tables — in both directions.
 ///
-/// A flavor linked without its baseline is a search that silently returns
-/// nothing; a projection table left behind by a flavor that was unlinked is
+/// A spiice linked without its baseline is a search that silently returns
+/// nothing; a projection table left behind by a spiice that was unlinked is
 /// rows nobody maintains. Both are the same kind of drift as a missing
 /// migration, so they fail the same way: at boot, before a write.
 ///
@@ -564,10 +564,10 @@ pub(crate) fn projection_key_ident(
 ///
 /// [`StorageError::Internal`] when a declared projection table, its index or
 /// one of its columns is missing, or when a `<schema>.projection` table
-/// exists that no linked flavor declares.
+/// exists that no linked spiice declares.
 pub async fn ensure_projection_schema(
     pool: &sqlx::PgPool,
-    contracts: &[&'static proxima_core::flavor::FlavorContract],
+    contracts: &[&'static proxiima_core::spiice::SpiiceContract],
 ) -> Result<(), StorageError> {
     let declared = projection_tables(contracts);
     let found: Vec<String> = sqlx::query_scalar(
@@ -576,13 +576,13 @@ pub async fn ensure_projection_schema(
           WHERE table_name = $1
           ORDER BY 1",
     )
-    .bind(proxima_core::flavor::PROJECTION_TABLE_NAME)
+    .bind(proxiima_core::spiice::PROJECTION_TABLE_NAME)
     .fetch_all(pool)
     .await
     .map_err(crate::error::map_err)?;
     if found != declared {
         return Err(StorageError::Internal(format!(
-            "projection tables in the database do not match the linked flavors: \
+            "projection tables in the database do not match the linked spiices: \
              declared {declared:?}, found {found:?}; apply migrations before boot"
         )));
     }
@@ -600,7 +600,7 @@ pub async fn ensure_projection_schema(
               ORDER BY 1",
         )
         .bind(schema)
-        .bind(proxima_core::flavor::PROJECTION_TABLE_NAME)
+        .bind(proxiima_core::spiice::PROJECTION_TABLE_NAME)
         .fetch_all(pool)
         .await
         .map_err(crate::error::map_err)?;
@@ -647,8 +647,8 @@ mod tests {
     use super::{
         PROJECTION_COLUMNS, projection_artifacts, projection_insert_sql, projection_vector_sql,
     };
-    use proxima_core::FLAVOR_0;
-    use proxima_core::flavor::{SchemaContract, SearchProjectionDecl};
+    use proxiima_core::SPIICE_0;
+    use proxiima_core::spiice::{SchemaContract, SearchProjectionDecl};
 
     /// `PROJECTION_MEMORY_COLUMN` names one thing, and everything that
     /// spells that thing agrees with it.
@@ -665,7 +665,7 @@ mod tests {
     /// than restated here, so this cannot pass against text nobody emits.
     #[test]
     fn the_projection_column_name_has_one_spelling() {
-        use proxima_core::flavor::{
+        use proxiima_core::spiice::{
             PROJECTION_MEMORY_COLUMN, PROJECTION_MEMORY_FK, PROJECTION_TABLE_NAME,
         };
 
@@ -683,7 +683,7 @@ mod tests {
              surface"
         );
 
-        let artifacts = projection_artifacts(&FLAVOR_0)
+        let artifacts = projection_artifacts(&SPIICE_0)
             .expect("core artifacts")
             .expect("core declares a projection");
         let ddl = &artifacts.table.forward;
@@ -698,13 +698,13 @@ mod tests {
             "and keys on it: {ddl}"
         );
 
-        let schema = FLAVOR_0
+        let schema = SPIICE_0
             .schemas
             .iter()
             .find(|schema| schema.search.is_projected())
             .expect("core projects at least one schema");
-        let spec = FLAVOR_0.projection.spec().expect("core declares a spec");
-        let insert = projection_insert_sql(&FLAVOR_0, schema).expect("the insert generates");
+        let spec = SPIICE_0.projection.spec().expect("core declares a spec");
+        let insert = projection_insert_sql(&SPIICE_0, schema).expect("the insert generates");
         assert!(
             insert.contains(&format!("({PROJECTION_MEMORY_COLUMN}, schema_id,")),
             "and the projection INSERT writes it: {insert}"
@@ -712,14 +712,14 @@ mod tests {
 
         assert_eq!(
             spec.surface().key,
-            proxima_core::flavor::KeyShape::MemoryT {
+            proxiima_core::spiice::KeyShape::MemoryT {
                 column: PROJECTION_MEMORY_COLUMN,
             },
             "the one reader agrees with all of the above"
         );
 
         // Two surfaces, two key columns. The projection's own is this
-        // constant and is fixed for every flavor; the SIDECAR's is whatever
+        // constant and is fixed for every spiice; the SIDECAR's is whatever
         // that schema's `Surface` declares, and the `INSERT` reads it from
         // there. Asserting them together is what keeps a reader from
         // treating one as the other — the confusion that put a literal `t`
@@ -727,7 +727,7 @@ mod tests {
         let sidecar_table = schema
             .sidecar_table
             .expect("a projected schema has a sidecar");
-        let sidecar_key = FLAVOR_0
+        let sidecar_key = SPIICE_0
             .sidecar_memory_key_column(sidecar_table)
             .expect("a projected sidecar declares a memory key");
         assert!(
@@ -736,39 +736,39 @@ mod tests {
         );
         assert!(
             insert.contains(&format!(
-                "JOIN proxima_core.memory m ON m.t = c.{sidecar_key}"
+                "JOIN proxiima_core.memory m ON m.t = c.{sidecar_key}"
             )),
             "and the join reads the DECLARED sidecar column against the kernel's fixed \
              `t`: {insert}"
         );
     }
 
-    const NOTE_SIDECAR: &str = "proxima_core.agent_note_v1";
+    const NOTE_SIDECAR: &str = "proxiima_core.agent_note_v1";
 
-    /// Flavor #0's note declaration with its sidecar re-keyed, and nothing
+    /// Spiice #0's note declaration with its sidecar re-keyed, and nothing
     /// else changed — so an assertion that fails below is about the key
     /// column and nothing else.
     ///
     /// The contract is narrowed to the one schema so `surface_for` cannot
     /// answer from a sibling's declaration of the same table.
     fn a_contract_keying_the_note_on(
-        key: proxima_core::flavor::KeyShape,
+        key: proxiima_core::spiice::KeyShape,
     ) -> (
-        proxima_core::flavor::FlavorContract,
+        proxiima_core::spiice::SpiiceContract,
         &'static SchemaContract,
     ) {
-        let mut surface = FLAVOR_0
+        let mut surface = SPIICE_0
             .surface_for(NOTE_SIDECAR)
             .expect("the note sidecar is declared");
         surface.key = key;
-        let mut schema = *FLAVOR_0
+        let mut schema = *SPIICE_0
             .schemas
             .iter()
             .find(|schema| schema.sidecar_table == Some(NOTE_SIDECAR))
             .expect("agent_note_v1");
         schema.surfaces = Box::leak(Box::new([surface]));
         let schema: &'static SchemaContract = Box::leak(Box::new(schema));
-        let mut contract = FLAVOR_0;
+        let mut contract = SPIICE_0;
         contract.schemas = std::slice::from_ref(schema);
         (contract, schema)
     }
@@ -778,12 +778,12 @@ mod tests {
     ///
     /// The fallback is the defect: it writes a statement the contract did
     /// not ask for, which either files nothing or errors in the writing
-    /// transaction, and in both cases the flavor's search is empty with
+    /// transaction, and in both cases the spiice's search is empty with
     /// nothing saying why.
     #[test]
     fn a_sidecar_that_is_not_memory_keyed_is_refused_by_name() {
         let (contract, schema) =
-            a_contract_keying_the_note_on(proxima_core::flavor::KeyShape::Custom(&["note_id"]));
+            a_contract_keying_the_note_on(proxiima_core::spiice::KeyShape::Custom(&["note_id"]));
         let err = projection_insert_sql(&contract, schema).expect_err("the generator refuses");
         let message = err.to_string();
         assert!(
@@ -791,7 +791,7 @@ mod tests {
             "the refusal names the declaration to fix: {message}"
         );
         assert!(
-            message.contains("proxima_core.agent_note_v1"),
+            message.contains("proxiima_core.agent_note_v1"),
             "and the surface it is about: {message}"
         );
     }
@@ -801,31 +801,31 @@ mod tests {
     /// second hand-maintained file.
     #[test]
     fn every_artifact_carries_its_inverse() {
-        let artifacts = projection_artifacts(&FLAVOR_0)
+        let artifacts = projection_artifacts(&SPIICE_0)
             .expect("artifacts")
             .expect("core declares a projection");
         assert_eq!(
             artifacts.inverse(),
             vec![
-                "DROP TRIGGER IF EXISTS projection_remember_lang ON proxima_core.projection;",
-                "DROP INDEX IF EXISTS proxima_core.core_projection_owner_tsv_gin_tag;",
-                "DROP INDEX IF EXISTS proxima_core.core_projection_owner_tsv_gin;",
-                "DROP TABLE IF EXISTS proxima_core.projection;",
+                "DROP TRIGGER IF EXISTS projection_remember_lang ON proxiima_core.projection;",
+                "DROP INDEX IF EXISTS proxiima_core.core_projection_owner_tsv_gin_tag;",
+                "DROP INDEX IF EXISTS proxiima_core.core_projection_owner_tsv_gin;",
+                "DROP TABLE IF EXISTS proxiima_core.projection;",
             ]
         );
     }
 
     #[test]
     fn the_maintenance_statement_takes_its_owner_from_the_memory_row() {
-        let note = FLAVOR_0
+        let note = SPIICE_0
             .schemas
             .iter()
             .find(|schema| schema.sidecar_table == Some(NOTE_SIDECAR))
             .expect("agent_note_v1");
-        let sql = projection_insert_sql(&FLAVOR_0, note).expect("insert");
+        let sql = projection_insert_sql(&SPIICE_0, note).expect("insert");
         assert!(sql.contains("m.owner_id"), "owner comes from memory");
         assert!(
-            sql.contains("JOIN proxima_core.memory m ON m.t = c.t"),
+            sql.contains("JOIN proxiima_core.memory m ON m.t = c.t"),
             "the owner is joined, never bound"
         );
         assert!(sql.contains("c.tags"), "the tag column is copied");

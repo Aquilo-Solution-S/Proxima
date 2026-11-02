@@ -24,6 +24,6 @@ jobs:
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_ASSISTANT_TOKEN }}
         with:
           path-to-signatures: '.github/cla/signatures.json'
-          path-to-document: 'https://github.com/Aquilo-Solution-S/Proxima/blob/main/.github/cla/CLA.md'
+          path-to-document: 'https://github.com/Aquilo-Solution-S/proxiima/blob/main/.github/cla/CLA.md'
           branch: 'main'
           allowlist: 'HeinrichvH,heinrichvonhelmolt,boreas-aquilo,cla-assistant,dependabot,dependabot[bot]'

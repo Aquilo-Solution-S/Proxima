@@ -5,7 +5,7 @@ rust:
   - '!docs/**'
   - '!*.md'
   - '!llms*.txt'
-  - '!{apps,crates,flavors,tools}/*/README.md'
+  - '!{apps,crates,spiices,tools}/*/README.md'
   - '!mkdocs.yml'
   - '!requirements-docs.txt'
   - '!cliff.toml'

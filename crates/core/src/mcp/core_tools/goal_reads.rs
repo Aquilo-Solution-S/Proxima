@@ -1,5 +1,5 @@
-//! Goal introspection reads backing `proxima://goals` and
-//! `proxima://goal/{id}`: list-by-state with keyset pagination and a
+//! Goal introspection reads backing `proxiima://goals` and
+//! `proxiima://goal/{id}`: list-by-state with keyset pagination and a
 //! single-goal read. Goals stay write-only through `core_goal`.
 
 use std::collections::BTreeSet;
@@ -17,7 +17,7 @@ use crate::verbs::query::{EntityKind, QueryCursor, QueryPage, QueryRequest, Supe
 /// stays out so it may vary between pages.
 const GOAL_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::FingerprintedCursor {
     version: 2,
-    source: "proxima://goals page",
+    source: "proxiima://goals page",
     rebind_hint: "repeat the state filter that produced it",
 };
 
@@ -67,7 +67,7 @@ pub struct GoalItem {
     pub dependencies: Vec<String>,
     /// Memories this goal names as evidence (`<uuid>`), as declared on its own
     /// row; one may be held by another store. Read each with
-    /// `proxima://memory/{id}` (`?version=head` for the newest version the
+    /// `proxiima://memory/{id}` (`?version=head` for the newest version the
     /// caller may read).
     pub evidence: Vec<String>,
 }
@@ -326,7 +326,7 @@ mod tests {
         ));
         let old = wire_cursor::FingerprintedCursor {
             version: 1,
-            source: "proxima://goals page",
+            source: "proxiima://goals page",
             rebind_hint: "repeat the state filter that produced it",
         }
         .encode(

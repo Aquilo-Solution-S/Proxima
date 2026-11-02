@@ -1,6 +1,6 @@
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
-use proxima_core::{
+use proxiima_core::{
     EndpointUrlError, EndpointUrlPolicy, PlaintextHosts, env_value, process_env,
     validate_endpoint_url_for_hosts,
 };
@@ -35,11 +35,11 @@ pub(crate) fn validate_presign_ttl(key: &str, seconds: u64) -> Result<(), BlobEr
 /// Static S3 key pair; the secret is private and redacted by `Debug`.
 ///
 /// ```
-/// proxima_blob_s3::S3KeyPair::new(String::new(), String::new());
+/// proxiima_blob_s3::S3KeyPair::new(String::new(), String::new());
 /// ```
 ///
 /// ```compile_fail
-/// proxima_blob_s3::S3KeyPair::new(String::new(), String::new()).secret_access_key;
+/// proxiima_blob_s3::S3KeyPair::new(String::new(), String::new()).secret_access_key;
 /// ```
 #[derive(Clone)]
 pub struct S3KeyPair {
@@ -93,7 +93,7 @@ pub struct S3RuntimeConfig {
     pub public_endpoint_url: Option<String>,
     /// Hosts, besides loopback, that may be named in either endpoint over
     /// plaintext `http://`. Empty by default ([`PlaintextHosts::none`]).
-    /// `from_lookup` reads it from `PROXIMA_PLAINTEXT_HOSTS`.
+    /// `from_lookup` reads it from `PROXIIMA_PLAINTEXT_HOSTS`.
     pub plaintext_hosts: PlaintextHosts,
     pub force_path_style: bool,
     pub upload_ttl_seconds: u64,
@@ -103,9 +103,9 @@ pub struct S3RuntimeConfig {
     /// `byte_len`) and again while streaming the uploaded object at completion,
     /// so an under-declared object cannot bypass the cap.
     pub max_blob_bytes: Option<u64>,
-    /// Operator-chosen identity of this object store (`PROXIMA_S3_STORE_ID`,
+    /// Operator-chosen identity of this object store (`PROXIIMA_S3_STORE_ID`,
     /// 1 to 64 of `[A-Za-z0-9._-]`). `None` derives it from `endpoint_url`
-    /// and `bucket` ([`proxima_core::ObjectStoreId::derive_s3`]). Upload rows
+    /// and `bucket` ([`proxiima_core::ObjectStoreId::derive_s3`]). Upload rows
     /// and purge debt record it, and a store drains only its own debt, so
     /// set it when processes sharing one store reach it through different
     /// endpoint URLs, or when several stores share one endpoint and bucket.
@@ -116,7 +116,7 @@ impl S3RuntimeConfig {
     /// Read S3 runtime configuration from the process environment.
     ///
     /// Thin adapter over [`Self::from_lookup`]: this crate holds the single
-    /// `PROXIMA_S3_*` parser, so an embedding host that injects its own
+    /// `PROXIIMA_S3_*` parser, so an embedding host that injects its own
     /// environment cannot end up with different answers than a host that uses
     /// the process environment.
     ///
@@ -125,17 +125,17 @@ impl S3RuntimeConfig {
     /// or a typed setting cannot be parsed.
     pub fn from_env() -> Result<Self, BlobError> {
         Self::from_lookup(&process_env)?
-            .ok_or_else(|| BlobError::Config("missing PROXIMA_S3_BUCKET".to_string()))
+            .ok_or_else(|| BlobError::Config("missing PROXIIMA_S3_BUCKET".to_string()))
     }
 
     /// Read S3 runtime configuration from an injected environment.
     ///
-    /// Returns `Ok(None)` when `PROXIMA_S3_BUCKET` is unset — the S3 lane is
+    /// Returns `Ok(None)` when `PROXIIMA_S3_BUCKET` is unset — the S3 lane is
     /// optional, and a host that configures no bucket is not misconfigured.
     /// [`Self::from_env`] turns that into an error because its caller has
     /// already decided S3 is required.
     ///
-    /// Every value is read through [`proxima_core::env_value`], so a variable
+    /// Every value is read through [`proxiima_core::env_value`], so a variable
     /// set to the empty string (or to whitespace) reads as unset rather than
     /// as a value that fails to parse.
     ///
@@ -149,31 +149,31 @@ impl S3RuntimeConfig {
         // whether or not this lane is configured.
         let plaintext_hosts = PlaintextHosts::from_lookup(lookup)
             .map_err(|error| BlobError::Config(error.to_string()))?;
-        let Some(bucket) = env_value(lookup, "PROXIMA_S3_BUCKET") else {
+        let Some(bucket) = env_value(lookup, "PROXIIMA_S3_BUCKET") else {
             return Ok(None);
         };
-        let region = env_value(lookup, "PROXIMA_S3_REGION").ok_or_else(|| {
+        let region = env_value(lookup, "PROXIIMA_S3_REGION").ok_or_else(|| {
             BlobError::Config(
-                "missing PROXIMA_S3_REGION (required with PROXIMA_S3_BUCKET)".to_string(),
+                "missing PROXIIMA_S3_REGION (required with PROXIIMA_S3_BUCKET)".to_string(),
             )
         })?;
         let key_pair = S3KeyPair::new(
-            required_key(lookup, "PROXIMA_S3_ACCESS_KEY_ID")?,
-            required_key(lookup, "PROXIMA_S3_SECRET_ACCESS_KEY")?,
+            required_key(lookup, "PROXIIMA_S3_ACCESS_KEY_ID")?,
+            required_key(lookup, "PROXIIMA_S3_SECRET_ACCESS_KEY")?,
         );
-        let endpoint_url = env_value(lookup, "PROXIMA_S3_ENDPOINT_URL");
+        let endpoint_url = env_value(lookup, "PROXIIMA_S3_ENDPOINT_URL");
         if let Some(endpoint_url) = &endpoint_url {
-            validate_endpoint_url("PROXIMA_S3_ENDPOINT_URL", endpoint_url, &plaintext_hosts)?;
+            validate_endpoint_url("PROXIIMA_S3_ENDPOINT_URL", endpoint_url, &plaintext_hosts)?;
         }
-        let store_id = env_value(lookup, "PROXIMA_S3_STORE_ID");
+        let store_id = env_value(lookup, "PROXIIMA_S3_STORE_ID");
         if let Some(store_id) = &store_id {
-            proxima_core::ObjectStoreId::operator(store_id)
-                .map_err(|error| BlobError::Config(format!("PROXIMA_S3_STORE_ID: {error}")))?;
+            proxiima_core::ObjectStoreId::operator(store_id)
+                .map_err(|error| BlobError::Config(format!("PROXIIMA_S3_STORE_ID: {error}")))?;
         }
-        let public_endpoint_url = env_value(lookup, "PROXIMA_S3_PUBLIC_ENDPOINT_URL");
+        let public_endpoint_url = env_value(lookup, "PROXIIMA_S3_PUBLIC_ENDPOINT_URL");
         if let Some(endpoint_url) = &public_endpoint_url {
             validate_endpoint_url(
-                "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+                "PROXIIMA_S3_PUBLIC_ENDPOINT_URL",
                 endpoint_url,
                 &plaintext_hosts,
             )?;
@@ -185,15 +185,15 @@ impl S3RuntimeConfig {
             endpoint_url,
             public_endpoint_url,
             plaintext_hosts,
-            force_path_style: parse_bool_env(lookup, "PROXIMA_S3_FORCE_PATH_STYLE")?,
+            force_path_style: parse_bool_env(lookup, "PROXIIMA_S3_FORCE_PATH_STYLE")?,
             upload_ttl_seconds: parse_presign_ttl_env(
                 lookup,
-                "PROXIMA_S3_UPLOAD_TTL_SECONDS",
+                "PROXIIMA_S3_UPLOAD_TTL_SECONDS",
                 DEFAULT_UPLOAD_TTL_SECONDS,
             )?,
             read_ttl_seconds: parse_presign_ttl_env(
                 lookup,
-                "PROXIMA_S3_READ_TTL_SECONDS",
+                "PROXIIMA_S3_READ_TTL_SECONDS",
                 DEFAULT_READ_TTL_SECONDS,
             )?,
             // Left `None` when unset rather than defaulted here: the field's
@@ -201,18 +201,18 @@ impl S3RuntimeConfig {
             // construction, and `CitedBlobStore::new` applies it for direct
             // constructors too. Defaulting in the parser as well was the
             // second of two application points for one value.
-            max_blob_bytes: parse_optional_u64_env(lookup, "PROXIMA_S3_MAX_BLOB_BYTES")?,
+            max_blob_bytes: parse_optional_u64_env(lookup, "PROXIIMA_S3_MAX_BLOB_BYTES")?,
             store_id,
         }))
     }
 
-    /// True when `PROXIMA_S3_BUCKET` is configured.
+    /// True when `PROXIIMA_S3_BUCKET` is configured.
     ///
     /// Uses the same empty-is-unset rule as the parser, so this cannot report
     /// "configured" for a bucket [`Self::from_env`] then rejects as missing.
     #[must_use]
     pub fn present_in_env() -> bool {
-        env_value(&process_env, "PROXIMA_S3_BUCKET").is_some()
+        env_value(&process_env, "PROXIIMA_S3_BUCKET").is_some()
     }
 
     /// The identity upload rows and purge debt record for this store.
@@ -220,12 +220,12 @@ impl S3RuntimeConfig {
     /// # Errors
     /// Returns `BlobError::Config` when `store_id` is not a valid operator
     /// identity, or the endpoint URL or bucket cannot name a store.
-    pub fn object_store_id(&self) -> Result<proxima_core::ObjectStoreId, BlobError> {
+    pub fn object_store_id(&self) -> Result<proxiima_core::ObjectStoreId, BlobError> {
         match &self.store_id {
-            Some(id) => proxima_core::ObjectStoreId::operator(id)
-                .map_err(|error| BlobError::Config(format!("PROXIMA_S3_STORE_ID: {error}"))),
+            Some(id) => proxiima_core::ObjectStoreId::operator(id)
+                .map_err(|error| BlobError::Config(format!("PROXIIMA_S3_STORE_ID: {error}"))),
             None => {
-                proxima_core::ObjectStoreId::derive_s3(self.endpoint_url.as_deref(), &self.bucket)
+                proxiima_core::ObjectStoreId::derive_s3(self.endpoint_url.as_deref(), &self.bucket)
                     .map_err(|error| {
                         BlobError::Config(format!("S3 object store identity: {error}"))
                     })
@@ -274,7 +274,7 @@ impl S3RuntimeConfig {
                 self.key_pair.secret_access_key.clone(),
                 None,
                 None,
-                "proxima-s3-config",
+                "proxiima-s3-config",
             ));
         if let Some(endpoint_url) = endpoint_url {
             builder = builder.endpoint_url(endpoint_url);
@@ -285,7 +285,7 @@ impl S3RuntimeConfig {
 
 fn required_key(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Result<String, BlobError> {
     env_value(lookup, key).ok_or_else(|| {
-        BlobError::Config(format!("missing {key} (required with PROXIMA_S3_BUCKET)"))
+        BlobError::Config(format!("missing {key} (required with PROXIIMA_S3_BUCKET)"))
     })
 }
 
@@ -293,7 +293,7 @@ fn parse_bool_env(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Result
     let Some(value) = env_value(lookup, key) else {
         return Ok(false);
     };
-    proxima_core::parse_bool_word(&value)
+    proxiima_core::parse_bool_word(&value)
         .ok_or_else(|| BlobError::Config(format!("invalid boolean {key}={value}")))
 }
 
@@ -355,7 +355,7 @@ pub(crate) fn validate_endpoint_url(
                 ))
             }
             EndpointUrlError::InsecureTransport => BlobError::Config(format!(
-                "{key} must use https (plaintext http allowed only for loopback or a host named in PROXIMA_PLAINTEXT_HOSTS): {raw}"
+                "{key} must use https (plaintext http allowed only for loopback or a host named in PROXIIMA_PLAINTEXT_HOSTS): {raw}"
             )),
         })
 }
@@ -363,14 +363,14 @@ pub(crate) fn validate_endpoint_url(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_core::env_from_pairs as env;
+    use proxiima_core::env_from_pairs as env;
 
     fn bucketed<'a>(extra: &'a [(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
         let mut pairs = vec![
-            ("PROXIMA_S3_BUCKET", "b"),
-            ("PROXIMA_S3_REGION", "eu-central-1"),
-            ("PROXIMA_S3_ACCESS_KEY_ID", "test-access-key"),
-            ("PROXIMA_S3_SECRET_ACCESS_KEY", "test-secret-key"),
+            ("PROXIIMA_S3_BUCKET", "b"),
+            ("PROXIIMA_S3_REGION", "eu-central-1"),
+            ("PROXIIMA_S3_ACCESS_KEY_ID", "test-access-key"),
+            ("PROXIIMA_S3_SECRET_ACCESS_KEY", "test-secret-key"),
         ];
         pairs.extend_from_slice(extra);
         pairs
@@ -380,11 +380,11 @@ mod tests {
     /// bucket without a region is a half-configured lane, not an absent one.
     #[test]
     fn from_lookup_requires_a_region_alongside_the_bucket() {
-        let err = S3RuntimeConfig::from_lookup(&env(&[("PROXIMA_S3_BUCKET", "b")])).unwrap_err();
+        let err = S3RuntimeConfig::from_lookup(&env(&[("PROXIIMA_S3_BUCKET", "b")])).unwrap_err();
         let BlobError::Config(msg) = err else {
             panic!("wrong variant");
         };
-        assert!(msg.contains("PROXIMA_S3_REGION"), "{msg}");
+        assert!(msg.contains("PROXIIMA_S3_REGION"), "{msg}");
     }
 
     /// The store id is derived from endpoint and bucket unless the operator
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn from_lookup_derives_or_takes_the_store_id() {
         let derived = S3RuntimeConfig::from_lookup(&env(&bucketed(&[(
-            "PROXIMA_S3_ENDPOINT_URL",
+            "PROXIIMA_S3_ENDPOINT_URL",
             "HTTPS://Minio.Local:443/",
         )])))
         .expect("valid config")
@@ -403,7 +403,7 @@ mod tests {
             "s3:https://minio.local/b"
         );
         let named = S3RuntimeConfig::from_lookup(&env(&bucketed(&[(
-            "PROXIMA_S3_STORE_ID",
+            "PROXIIMA_S3_STORE_ID",
             "tenant-a.store_1",
         )])))
         .expect("valid config")
@@ -414,12 +414,12 @@ mod tests {
         );
         for bad in ["has space", "slash/inside"] {
             let err =
-                S3RuntimeConfig::from_lookup(&env(&bucketed(&[("PROXIMA_S3_STORE_ID", bad)])))
+                S3RuntimeConfig::from_lookup(&env(&bucketed(&[("PROXIIMA_S3_STORE_ID", bad)])))
                     .expect_err("an invalid store id is refused");
             let BlobError::Config(msg) = err else {
                 panic!("wrong variant");
             };
-            assert!(msg.contains("PROXIMA_S3_STORE_ID"), "{msg}");
+            assert!(msg.contains("PROXIIMA_S3_STORE_ID"), "{msg}");
         }
     }
 
@@ -431,7 +431,7 @@ mod tests {
             "ftp://s3.example.com",
             "https://",
         ] {
-            let extra = [("PROXIMA_S3_PUBLIC_ENDPOINT_URL", endpoint)];
+            let extra = [("PROXIIMA_S3_PUBLIC_ENDPOINT_URL", endpoint)];
             let pairs = bucketed(&extra);
             let error = S3RuntimeConfig::from_lookup(&env(&pairs))
                 .expect_err("invalid public endpoint must fail configuration");
@@ -439,7 +439,7 @@ mod tests {
                 panic!("wrong error variant");
             };
             assert!(
-                message.contains("PROXIMA_S3_PUBLIC_ENDPOINT_URL"),
+                message.contains("PROXIIMA_S3_PUBLIC_ENDPOINT_URL"),
                 "public endpoint error must name its setting"
             );
         }
@@ -450,7 +450,7 @@ mod tests {
         for value in [None, Some(""), Some("   ")] {
             let extra: Vec<_> = value
                 .into_iter()
-                .map(|value| ("PROXIMA_S3_PUBLIC_ENDPOINT_URL", value))
+                .map(|value| ("PROXIIMA_S3_PUBLIC_ENDPOINT_URL", value))
                 .collect();
             let pairs = bucketed(&extra);
             let config = S3RuntimeConfig::from_lookup(&env(&pairs))
@@ -458,7 +458,7 @@ mod tests {
                 .expect("bucket is set");
             assert!(config.public_endpoint_url.is_none());
         }
-        let no_bucket = [("PROXIMA_S3_PUBLIC_ENDPOINT_URL", "not an endpoint")];
+        let no_bucket = [("PROXIIMA_S3_PUBLIC_ENDPOINT_URL", "not an endpoint")];
         assert!(
             S3RuntimeConfig::from_lookup(&env(&no_bucket))
                 .unwrap()
@@ -478,9 +478,9 @@ mod tests {
                 Some("public-gateway"),
             ),
         ] {
-            let mut extra = vec![("PROXIMA_S3_PUBLIC_ENDPOINT_URL", endpoint)];
+            let mut extra = vec![("PROXIIMA_S3_PUBLIC_ENDPOINT_URL", endpoint)];
             if let Some(hosts) = hosts {
-                extra.push(("PROXIMA_PLAINTEXT_HOSTS", hosts));
+                extra.push(("PROXIIMA_PLAINTEXT_HOSTS", hosts));
             }
             let pairs = bucketed(&extra);
             let config = S3RuntimeConfig::from_lookup(&env(&pairs))
@@ -490,7 +490,7 @@ mod tests {
             assert!(config.endpoint_url.is_none());
         }
         let pairs = bucketed(&[(
-            "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+            "PROXIIMA_S3_PUBLIC_ENDPOINT_URL",
             "  https://files.example/objects/  ",
         )]);
         assert_eq!(
@@ -503,14 +503,14 @@ mod tests {
         );
         let pairs = bucketed(&[
             (
-                "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+                "PROXIIMA_S3_PUBLIC_ENDPOINT_URL",
                 "http://other-gateway:9090",
             ),
-            ("PROXIMA_PLAINTEXT_HOSTS", "public-gateway"),
+            ("PROXIIMA_PLAINTEXT_HOSTS", "public-gateway"),
         ]);
         let error = S3RuntimeConfig::from_lookup(&env(&pairs)).unwrap_err();
         assert!(
-            matches!(error, BlobError::Config(message) if message.contains("PROXIMA_S3_PUBLIC_ENDPOINT_URL") && message.contains("PROXIMA_PLAINTEXT_HOSTS"))
+            matches!(error, BlobError::Config(message) if message.contains("PROXIIMA_S3_PUBLIC_ENDPOINT_URL") && message.contains("PROXIIMA_PLAINTEXT_HOSTS"))
         );
     }
 
@@ -532,12 +532,12 @@ mod tests {
 
     #[test]
     fn from_lookup_requires_access_key_id_alongside_the_bucket() {
-        assert_missing_key_is_refused("PROXIMA_S3_ACCESS_KEY_ID");
+        assert_missing_key_is_refused("PROXIIMA_S3_ACCESS_KEY_ID");
     }
 
     #[test]
     fn from_lookup_requires_secret_access_key_alongside_the_bucket() {
-        assert_missing_key_is_refused("PROXIMA_S3_SECRET_ACCESS_KEY");
+        assert_missing_key_is_refused("PROXIIMA_S3_SECRET_ACCESS_KEY");
     }
 
     // The SDK's deprecated Config::credentials_provider() always returns None.
@@ -614,14 +614,14 @@ mod tests {
     async fn client_uses_only_configured_credentials_region_and_endpoint() {
         let config = S3RuntimeConfig::from_lookup(&env(&bucketed(&[
             (
-                "PROXIMA_S3_ENDPOINT_URL",
+                "PROXIIMA_S3_ENDPOINT_URL",
                 "https://objects.internal.example/internal/",
             ),
             (
-                "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+                "PROXIIMA_S3_PUBLIC_ENDPOINT_URL",
                 "https://files.example/objects/",
             ),
-            ("PROXIMA_S3_FORCE_PATH_STYLE", "true"),
+            ("PROXIIMA_S3_FORCE_PATH_STYLE", "true"),
         ])))
         .unwrap()
         .expect("bucket is set");
@@ -663,8 +663,8 @@ mod tests {
     #[tokio::test]
     async fn an_unset_public_endpoint_presigns_the_internal_endpoint() {
         let config = S3RuntimeConfig::from_lookup(&env(&bucketed(&[
-            ("PROXIMA_S3_ENDPOINT_URL", "http://127.0.0.1:9000"),
-            ("PROXIMA_S3_FORCE_PATH_STYLE", "true"),
+            ("PROXIIMA_S3_ENDPOINT_URL", "http://127.0.0.1:9000"),
+            ("PROXIIMA_S3_FORCE_PATH_STYLE", "true"),
         ])))
         .unwrap()
         .expect("bucket is set");
@@ -689,10 +689,10 @@ mod tests {
     async fn the_public_endpoint_prefix_is_part_of_the_signed_path() {
         let config = S3RuntimeConfig::from_lookup(&env(&bucketed(&[
             (
-                "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+                "PROXIIMA_S3_PUBLIC_ENDPOINT_URL",
                 "https://files.example/objects/",
             ),
-            ("PROXIMA_S3_FORCE_PATH_STYLE", "true"),
+            ("PROXIIMA_S3_FORCE_PATH_STYLE", "true"),
         ])))
         .unwrap()
         .expect("bucket is set");
@@ -740,7 +740,7 @@ mod tests {
 
     #[test]
     fn from_lookup_rejects_blank_key_variables() {
-        for key in ["PROXIMA_S3_ACCESS_KEY_ID", "PROXIMA_S3_SECRET_ACCESS_KEY"] {
+        for key in ["PROXIIMA_S3_ACCESS_KEY_ID", "PROXIIMA_S3_SECRET_ACCESS_KEY"] {
             let extra = [(key, " \n")];
             let pairs = bucketed(&extra);
             let error = S3RuntimeConfig::from_lookup(&env(&pairs)).unwrap_err();
@@ -763,12 +763,12 @@ mod tests {
     #[test]
     fn surrounding_whitespace_is_trimmed_from_every_field() {
         let cfg = S3RuntimeConfig::from_lookup(&env(&[
-            ("PROXIMA_S3_BUCKET", " b\n"),
-            ("PROXIMA_S3_REGION", " eu-central-1\n"),
-            ("PROXIMA_S3_UPLOAD_TTL_SECONDS", "900\n"),
-            ("PROXIMA_S3_FORCE_PATH_STYLE", " true "),
-            ("PROXIMA_S3_ACCESS_KEY_ID", "test-access-key"),
-            ("PROXIMA_S3_SECRET_ACCESS_KEY", "test-secret-key"),
+            ("PROXIIMA_S3_BUCKET", " b\n"),
+            ("PROXIIMA_S3_REGION", " eu-central-1\n"),
+            ("PROXIIMA_S3_UPLOAD_TTL_SECONDS", "900\n"),
+            ("PROXIIMA_S3_FORCE_PATH_STYLE", " true "),
+            ("PROXIIMA_S3_ACCESS_KEY_ID", "test-access-key"),
+            ("PROXIIMA_S3_SECRET_ACCESS_KEY", "test-secret-key"),
         ]))
         .unwrap()
         .expect("bucket is set");
@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn from_lookup_rejects_a_ttl_no_presigned_url_could_carry() {
         let err = S3RuntimeConfig::from_lookup(&env(&bucketed(&[(
-            "PROXIMA_S3_UPLOAD_TTL_SECONDS",
+            "PROXIIMA_S3_UPLOAD_TTL_SECONDS",
             "0",
         )])))
         .unwrap_err();
@@ -796,7 +796,7 @@ mod tests {
     #[test]
     fn non_loopback_http_endpoint_is_rejected() {
         let err = validate_endpoint_url(
-            "PROXIMA_S3_ENDPOINT_URL",
+            "PROXIIMA_S3_ENDPOINT_URL",
             "http://s3.example.com",
             &PlaintextHosts::none(),
         )
@@ -810,7 +810,7 @@ mod tests {
     #[test]
     fn schemeless_endpoint_is_rejected() {
         let err = validate_endpoint_url(
-            "PROXIMA_S3_ENDPOINT_URL",
+            "PROXIIMA_S3_ENDPOINT_URL",
             "s3.example.com",
             &PlaintextHosts::none(),
         )
@@ -822,9 +822,9 @@ mod tests {
         endpoint: &'a str,
         hosts: Option<&'a str>,
     ) -> Result<Option<S3RuntimeConfig>, BlobError> {
-        let mut extra = vec![("PROXIMA_S3_ENDPOINT_URL", endpoint)];
+        let mut extra = vec![("PROXIIMA_S3_ENDPOINT_URL", endpoint)];
         if let Some(hosts) = hosts {
-            extra.push(("PROXIMA_PLAINTEXT_HOSTS", hosts));
+            extra.push(("PROXIIMA_PLAINTEXT_HOSTS", hosts));
         }
         let pairs = bucketed(&extra);
         S3RuntimeConfig::from_lookup(&env(&pairs))
@@ -859,10 +859,10 @@ mod tests {
         for hosts in ["*", "*.internal", "10.0.0.0/8", "10.0.0.1"] {
             let error = with_endpoint("https://s3.example.com", Some(hosts)).unwrap_err();
             assert!(
-                matches!(&error, BlobError::Config(message) if message.contains("PROXIMA_PLAINTEXT_HOSTS")),
+                matches!(&error, BlobError::Config(message) if message.contains("PROXIIMA_PLAINTEXT_HOSTS")),
                 "{hosts}: {error}",
             );
-            let no_bucket = [("PROXIMA_PLAINTEXT_HOSTS", hosts)];
+            let no_bucket = [("PROXIIMA_PLAINTEXT_HOSTS", hosts)];
             assert!(
                 S3RuntimeConfig::from_lookup(&env(&no_bucket)).is_err(),
                 "{hosts}"
@@ -884,7 +884,7 @@ mod tests {
         };
         assert_eq!(
             message,
-            "PROXIMA_S3_ENDPOINT_URL must use https (plaintext http allowed only for loopback): http://s3.example.com"
+            "PROXIIMA_S3_ENDPOINT_URL must use https (plaintext http allowed only for loopback): http://s3.example.com"
         );
     }
 }

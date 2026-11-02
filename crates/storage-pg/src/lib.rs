@@ -5,14 +5,14 @@
 //! then delegates each narrow storage port method to its per-verb
 //! implementation.
 #[cfg(any(test, feature = "test-fixtures"))]
-extern crate self as proxima_storage_pg;
+extern crate self as proxiima_storage_pg;
 
 #[doc(hidden)]
-pub use proxima_core as core;
+pub use proxiima_core as core;
 
 /// Expansion paths for the exported sidecar macros (`$crate::__private::sqlx`,
-/// `uuid`, and the column-type crates), so a flavor invoking `pg_sidecar!`
-/// through the `proxima` facade needs none of them as a direct dependency.
+/// `uuid`, and the column-type crates), so a spiice invoking `pg_sidecar!`
+/// through the `proxiima` facade needs none of them as a direct dependency.
 #[doc(hidden)]
 pub mod __private {
     pub use ::rust_decimal;
@@ -22,9 +22,9 @@ pub mod __private {
     pub use ::uuid;
 }
 
-use proxima_core::StorageError;
-use proxima_core::env_value;
-use proxima_core::storage_ports::{StoragePorts, StoragePortsBuilder};
+use proxiima_core::StorageError;
+use proxiima_core::env_value;
+use proxiima_core::storage_ports::{StoragePorts, StoragePortsBuilder};
 use sqlx::{PgConnection, PgPool};
 use std::sync::Arc;
 pub use verbs::fact_embeddings::{
@@ -41,6 +41,10 @@ use crate::pgvector::set_hnsw_search_sql;
 #[doc(hidden)]
 pub mod access;
 mod baseline;
+mod rename_bootstrap;
+pub use rename_bootstrap::{
+    MigrationPhase, historical_catalog_name, migration_phase, migrations_for_phase, run_core_phase,
+};
 #[doc(hidden)]
 pub mod definitions;
 mod delegated_authority;
@@ -114,7 +118,7 @@ pub use verbs::ingest_receipt::ingest_receipt;
 #[doc(hidden)]
 pub use verbs::owner_export::export_statement_sql_for_tests;
 
-/// Ledger namespace boundary between sequential core and dated flavor versions.
+/// Ledger namespace boundary between sequential core and dated spiice versions.
 pub const CORE_MIGRATION_VERSION_CEILING: i64 = 9999;
 
 /// Whether a host permits ledger versions absent from its migration sources.
@@ -138,7 +142,7 @@ pub enum VectorStorage {
     /// migration whose description starts with `pgvector` and the vector
     /// candidate functions apply.
     Local,
-    /// In a host vector index ([`proxima_core::storage_ports::VectorIndex`]): the store
+    /// In a host vector index ([`proxiima_core::storage_ports::VectorIndex`]): the store
     /// writes no vector row, and its database needs no `vector` extension.
     HostIndex,
 }
@@ -251,8 +255,10 @@ impl CoreSchemaState {
             true
         } else {
             sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname LIKE 'proxima\\_%')",
+                "SELECT EXISTS (SELECT 1 FROM pg_namespace
+                 WHERE starts_with(nspname, 'proxiima_') OR starts_with(nspname, $1))",
             )
+            .bind(rename_bootstrap::historical_namespace_prefix())
             .fetch_one(&mut *connection)
             .await
             .map_err(internal)?
@@ -285,7 +291,7 @@ pub async fn pending_core_schema(
     if !definitions::current_matches_with_policy(connection, policy, vectors).await? {
         actions.push(CoreSchemaAction::Definitions {
             checksum: definitions::checksum_bytes(vectors),
-            release: proxima_core::RELEASE_VERSION.to_owned(),
+            release: proxiima_core::RELEASE_VERSION.to_owned(),
         });
     }
     Ok(actions)
@@ -296,10 +302,10 @@ pub async fn pending_core_schema(
 ///
 /// ```compile_fail,E0308
 /// fn migrate(connection: &mut sqlx::PgConnection) {
-///     let _ = proxima_storage_pg::run_core_schema(
+///     let _ = proxiima_storage_pg::run_core_schema(
 ///         connection,
-///         proxima_storage_pg::MissingMigrationPolicy::Reject,
-///         proxima_storage_pg::VectorStorage::Local,
+///         proxiima_storage_pg::MissingMigrationPolicy::Reject,
+///         proxiima_storage_pg::VectorStorage::Local,
 ///     );
 /// }
 /// ```
@@ -321,12 +327,16 @@ pub async fn run_core_schema(
         .execute(&mut *connection)
         .await
         .map_err(internal)?;
-    CoreSchemaState::read(connection, policy).await?;
-    core_migrator_for(vectors)
-        .run_direct(None, &mut *connection, false)
-        .await
-        .map_err(internal)?;
-    definitions::apply(connection, policy, vectors).await
+    let state = CoreSchemaState::read(connection, policy).await?;
+    let source = core_migrator_for(vectors);
+    if source.iter().any(|migration| {
+        migration_phase(&source, migration) != MigrationPhase::Current
+            && !state.recorded.contains(&migration.version)
+    }) {
+        run_core_phase(transaction, policy, vectors, MigrationPhase::Historical).await?;
+        run_core_phase(transaction, policy, vectors, MigrationPhase::Finalize).await?;
+    }
+    run_core_phase(transaction, policy, vectors, MigrationPhase::Current).await
 }
 
 /// Check core ledger compatibility on the caller's connection and policy.
@@ -422,7 +432,7 @@ fn pgvector_version_is_supported(version: &str) -> bool {
 /// The probe runs `set_hnsw_search_sql(tuning)` — the production builder over
 /// this deployment's own tuning — rather than a restated literal. A restated
 /// one validates whichever mode was hard-coded, so a deployment running
-/// `PROXIMA_PG_HNSW_ITERATIVE_SCAN=strict_order` would boot on a preflight
+/// `PROXIIMA_PG_HNSW_ITERATIVE_SCAN=strict_order` would boot on a preflight
 /// that proved `relaxed_order` and never proved the mode it actually sends.
 async fn ensure_pgvector_runtime_compatible(
     pool: &PgPool,
@@ -475,29 +485,29 @@ async fn ensure_pgvector_runtime_compatible_on(
     Ok(())
 }
 
-/// Flavor #0's surfaces resolved THROUGH A REGISTRY, which is the only way
+/// Spiice #0's surfaces resolved THROUGH A REGISTRY, which is the only way
 /// they resolve correctly.
 ///
 /// `OwnerSurfaces::from_surfaces` is a test seam, and says so on itself: it
 /// classifies every surface against an EMPTY bespoke list, because a surface
-/// handed over loose has no contract to have exempted it. Flavor #0's
+/// handed over loose has no contract to have exempted it. Spiice #0's
 /// surfaces are not loose — they belong to a contract with a bespoke list —
 /// so classifying them that way gets the legs wrong, silently. `memory`
 /// comes back `Keyed` instead of `Bespoke`, and `blob` and `content`
 /// come back `Unreachable` instead of `Deduped`; the freeze-time validation
 /// that a bespoke leg has a home never runs against them.
 ///
-/// `for_registry` over a registry holding flavor #0 alone is the same call
-/// a flavor makes over its own registry, and it is what `with_flavors`
+/// `for_registry` over a registry holding spiice #0 alone is the same call
+/// a spiice makes over its own registry, and it is what `with_spiices`
 /// does once a host widens the set.
-fn flavor_0_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
-    // A fresh registry holds flavor #0 and nothing else, and flavor #0 is a
+fn spiice_0_surfaces() -> proxiima_core::owner_inverse::OwnerSurfaces {
+    // A fresh registry holds spiice #0 and nothing else, and spiice #0 is a
     // `const` contract this crate compiles against. There is no input here
     // for a freeze to reject.
-    let registry = proxima_core::FlavorRegistry::new()
+    let registry = proxiima_core::SpiiceRegistry::new()
         .try_freeze()
-        .expect("flavor #0 alone freezes: it is the only contract in a fresh registry");
-    proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry)
+        .expect("spiice #0 alone freezes: it is the only contract in a fresh registry");
+    proxiima_core::owner_inverse::OwnerSurfaces::for_registry(&registry)
 }
 
 #[derive(Clone)]
@@ -511,36 +521,36 @@ pub struct PgStorage {
     sidecars: PgSidecarRegistryFrozen,
     /// The declared surfaces, resolved into legs once.
     ///
-    /// Defaults to flavor #0's, exactly as `sidecars` defaults to
-    /// `core_pg_sidecars()`: a storage built without `with_flavors` still
-    /// forgets the kernel's derived rows. `with_flavors` widens it to every
-    /// registered flavor, and a flavor that declares its own
+    /// Defaults to spiice #0's, exactly as `sidecars` defaults to
+    /// `core_pg_sidecars()`: a storage built without `with_spiices` still
+    /// forgets the kernel's derived rows. `with_spiices` widens it to every
+    /// registered spiice, and a spiice that declares its own
     /// `DeleteWithMemory` surface is reached only after that call — the
     /// same coverage contract `with_sidecars` states.
     ///
-    /// Resolved by [`flavor_0_surfaces`], through a registry. Building it
+    /// Resolved by [`spiice_0_surfaces`], through a registry. Building it
     /// from a loose surface list is a different answer, not a cheaper one.
-    surfaces: proxima_core::owner_inverse::OwnerSurfaces,
-    /// The flavor-declared lifecycle scopes, resolved into a fence key and a
+    surfaces: proxiima_core::owner_inverse::OwnerSurfaces,
+    /// The spiice-declared lifecycle scopes, resolved into a fence key and a
     /// liveness probe once.
     ///
-    /// Empty until `with_flavors`, and empty means REFUSE: an admission of a
+    /// Empty until `with_spiices`, and empty means REFUSE: an admission of a
     /// payload declaring a scope this storage has no declaration for cannot
     /// be fenced, and admitting it unfenced is the defect. A host that links
-    /// a flavor with scopes and forgets `with_flavors` finds out on the
+    /// a spiice with scopes and forgets `with_spiices` finds out on the
     /// first scoped write, not after an erase left rows behind.
     scopes: crate::access::scope_surfaces::ScopeSurfaces,
-    search_projections: Vec<proxima_core::verbs::schema::MemorySearchProjection>,
-    embed_units: Vec<proxima_core::verbs::schema::MemoryEmbedUnit>,
+    search_projections: Vec<proxiima_core::verbs::schema::MemorySearchProjection>,
+    embed_units: Vec<proxiima_core::verbs::schema::MemoryEmbedUnit>,
     non_embeddable_schemas: Vec<String>,
     tuning: PgTuning,
-    embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy,
+    embedding_runtime_policy: proxiima_core::EmbeddingRuntimePolicy,
     /// Where the chunk vectors live: [`Self::with_vector_index`].
     vectors: vector_index::StoreVectors,
-    cold: Arc<dyn proxima_core::ColdObjectStore>,
+    cold: Arc<dyn proxiima_core::ColdObjectStore>,
     /// Optional host-state participant invoked on the write-session
     /// transaction. `None` keeps existing
-    /// [`proxima_core::engine::UnitOfWork`] Fact behavior with no extra
+    /// [`proxiima_core::engine::UnitOfWork`] Fact behavior with no extra
     /// configuration.
     host_state: Option<RegisteredHostStateParticipant>,
 }
@@ -551,7 +561,7 @@ pub struct PgStorage {
 ///
 /// Serving storage cannot run schema migrations:
 /// ```compile_fail
-/// async fn migrate(storage: &proxima_storage_pg::PgStorage) {
+/// async fn migrate(storage: &proxiima_storage_pg::PgStorage) {
 ///     storage.run_migrations().await.unwrap();
 /// }
 /// ```
@@ -651,14 +661,14 @@ impl PgMigrationStorage {
         let mut connection = self.pool.acquire().await.map_err(error::map_err)?;
         let mut tx = begin_migration_transaction(&mut connection).await?;
         sqlx::query(
-            "INSERT INTO proxima_core.store_identity (singleton, store_number) VALUES (true, $1) ON CONFLICT (singleton) DO NOTHING",
+            "INSERT INTO proxiima_core.store_identity (singleton, store_number) VALUES (true, $1) ON CONFLICT (singleton) DO NOTHING",
         )
         .bind(i32::from(store_number))
         .execute(tx.as_mut())
         .await
         .map_err(error::map_err)?;
         let persisted = sqlx::query_scalar(
-            "SELECT store_number FROM proxima_core.store_identity WHERE singleton",
+            "SELECT store_number FROM proxiima_core.store_identity WHERE singleton",
         )
         .fetch_optional(tx.as_mut())
         .await
@@ -701,14 +711,14 @@ impl PgMigrationStorage {
 #[derive(Clone)]
 pub(crate) struct RegisteredHostStateParticipant {
     pub(crate) participant: Arc<dyn crate::PgHostStateParticipant>,
-    pub(crate) descriptor: proxima_core::storage_ports::HostStateParticipantDescriptor,
+    pub(crate) descriptor: proxiima_core::storage_ports::HostStateParticipantDescriptor,
     pub(crate) lifecycle: Option<RegisteredHostStateLifecycle>,
 }
 
 #[derive(Clone)]
 pub(crate) struct RegisteredHostStateLifecycle {
     pub(crate) port: Arc<dyn crate::PgHostStateLifecyclePort>,
-    pub(crate) descriptor: proxima_core::storage_ports::HostStateParticipantDescriptor,
+    pub(crate) descriptor: proxiima_core::storage_ports::HostStateParticipantDescriptor,
 }
 
 /// Opaque authority-free context for one production boot's physical memory
@@ -716,7 +726,7 @@ pub(crate) struct RegisteredHostStateLifecycle {
 /// lifecycle callback actually validated against that set at boot.
 #[derive(Clone)]
 pub struct PgHostStateEraseContext {
-    pub(crate) surfaces: proxima_core::owner_inverse::OwnerSurfaces,
+    pub(crate) surfaces: proxiima_core::owner_inverse::OwnerSurfaces,
     pub(crate) lifecycle: Option<RegisteredHostStateLifecycle>,
 }
 
@@ -733,10 +743,10 @@ impl std::fmt::Debug for PgHostStateEraseContext {
 
 impl PgHostStateEraseContext {
     /// Acquire `owner`'s exclusive fence as the transaction's first erase
-    /// lock. Callers that perform flavor-owned queries or DML before
+    /// lock. Callers that perform spiice-owned queries or DML before
     /// delegating a physical erase must call this immediately after BEGIN and
     /// before any source/handle/target locks. Only `owner`'s writes wait; the
-    /// rows a flavor table keeps for `owner` are the ones its surface names in
+    /// rows a spiice table keeps for `owner` are the ones its surface names in
     /// `owner_column`.
     ///
     /// # Errors
@@ -744,7 +754,7 @@ impl PgHostStateEraseContext {
     pub async fn lock_before_physical_erase(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        owner: &proxima_core::OwnerId,
+        owner: &proxiima_core::OwnerId,
     ) -> Result<(), StorageError> {
         crate::access::owner_columns::lock_owner_fence_exclusive_tx(tx, owner).await
     }
@@ -756,7 +766,7 @@ impl PgHostStateEraseContext {
     #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
     #[doc(hidden)]
     pub fn for_surfaces_for_tests(
-        surfaces: proxima_core::owner_inverse::OwnerSurfaces,
+        surfaces: proxiima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<Self, StorageError> {
         if !surfaces.host_lifecycle_surfaces().is_empty() {
             return Err(StorageError::ConstraintViolation(
@@ -771,7 +781,7 @@ impl PgHostStateEraseContext {
 }
 
 fn validate_host_lifecycle_registration(
-    surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+    surfaces: &proxiima_core::owner_inverse::OwnerSurfaces,
     registered: Option<&RegisteredHostStateParticipant>,
 ) -> Result<(), StorageError> {
     use std::collections::BTreeSet;
@@ -832,7 +842,7 @@ fn validate_host_lifecycle_registration(
 }
 
 fn validate_registered_state_tables(
-    surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+    surfaces: &proxiima_core::owner_inverse::OwnerSurfaces,
     registered: Option<&RegisteredHostStateParticipant>,
 ) -> Result<(), StorageError> {
     let Some(registered) = registered else {
@@ -854,7 +864,7 @@ fn validate_registered_state_tables(
         .find(|table| !surfaces.is_declared_state_surface(table))
     {
         return Err(StorageError::ConstraintViolation(format!(
-            "registered host participant table {table} is not declared in linked flavor state_surfaces"
+            "registered host participant table {table} is not declared in linked spiice state_surfaces"
         )));
     }
     Ok(())
@@ -869,7 +879,7 @@ impl std::fmt::Debug for PgStorage {
 /// A held embedding-maintenance lease: no other embedding maintenance pass
 /// runs on this database while it is held.
 ///
-/// The lease is a row of `proxima_core.maintenance_lease`, renewed in the
+/// The lease is a row of `proxiima_core.maintenance_lease`, renewed in the
 /// background while the guard lives. [`Self::release`] deletes it; dropping
 /// the guard deletes it best effort, and a lease nobody renews expires after
 /// a minute. Nothing about it is tied to one database session, so it holds
@@ -909,7 +919,7 @@ impl std::fmt::Debug for EmbeddingMaintenanceLock {
 
 /// A held storage-maintenance lease: no other storage maintenance pass (the
 /// object-purge drain and upload sweep, in process or from
-/// `proxima-mcp maintain-storage`) runs on this database while it is held.
+/// `proxiima-mcp maintain-storage`) runs on this database while it is held.
 /// Same lease design as [`EmbeddingMaintenanceLock`], under its own name, so
 /// the two families may run concurrently but never overlap themselves.
 pub struct StorageMaintenanceLock {
@@ -951,7 +961,7 @@ impl std::fmt::Debug for StorageMaintenanceLock {
 ///
 /// A malformed value is an error, not a silent fallback. Every other
 /// configuration reader in the workspace already answers this way —
-/// `RuntimeBuilder::apply_lookup` and `proxima-blob-s3`'s `parse_u64_env`
+/// `RuntimeBuilder::apply_lookup` and `proxiima-blob-s3`'s `parse_u64_env`
 /// both return a `Config` error — and a typo that silently reverts pool
 /// tuning to the default is the kind of thing an operator discovers from a
 /// latency graph weeks later rather than from the boot that caused it.
@@ -1067,7 +1077,7 @@ impl PgStorage {
 
     /// [`Self::connect_with_config`] for a store whose vectors live in `index`
     /// (#519): the store keeps each entity's head and calls the index as
-    /// [`proxima_core::storage_ports::VectorIndex`] describes. Its database
+    /// [`proxiima_core::storage_ports::VectorIndex`] describes. Its database
     /// needs no `vector` extension, so the pgvector preflight does not run.
     ///
     /// # Errors
@@ -1079,7 +1089,7 @@ impl PgStorage {
         tuning: PgTuning,
         platform_scope: PgPlatformScope,
         store_number: u16,
-        index: Arc<dyn proxima_core::storage_ports::VectorIndex>,
+        index: Arc<dyn proxiima_core::storage_ports::VectorIndex>,
     ) -> Result<Self, StorageError> {
         Self::connect_for_purpose(
             url,
@@ -1130,7 +1140,7 @@ impl PgStorage {
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
         // Serving storage exists only over a runtime role that obeys RLS on
-        // composed and stored-flavor schemas and a pgvector that accepts this
+        // composed and stored-spiice schemas and a pgvector that accepts this
         // deployment's search settings. The platform authority reads the
         // existing surface catalog; no caller supplies a second inventory.
         let (schemas, persisted) = platform_scope.boot_catalog().await?;
@@ -1149,13 +1159,13 @@ impl PgStorage {
             test_admin_pool: None,
             platform_scope,
             sidecars: core_pg_sidecars(),
-            surfaces: flavor_0_surfaces(),
+            surfaces: spiice_0_surfaces(),
             scopes: crate::access::scope_surfaces::ScopeSurfaces::default(),
             search_projections: Vec::new(),
             embed_units: Vec::new(),
             non_embeddable_schemas: Vec::new(),
             tuning,
-            embedding_runtime_policy: proxima_core::EmbeddingRuntimePolicy::default(),
+            embedding_runtime_policy: proxiima_core::EmbeddingRuntimePolicy::default(),
             vectors,
             cold: Arc::new(verbs::forget::MemoryColdStore),
             host_state: None,
@@ -1178,7 +1188,7 @@ impl PgStorage {
     /// selected owner still comes from a verified, sealed write permit.
     pub(crate) async fn owner_maintenance_transaction(
         &self,
-        permit: &proxima_core::storage_ports::OwnerWritePermit,
+        permit: &proxiima_core::storage_ports::OwnerWritePermit,
     ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {
         crate::platform_scope::begin_owner_lifecycle_transaction(
             &self.pool,
@@ -1190,20 +1200,20 @@ impl PgStorage {
 
     /// Register the host-state participant that runs on each write session's
     /// live transaction. Hosts that register none keep the existing
-    /// [`proxima_core::engine::UnitOfWork`] Fact path with no extra
+    /// [`proxiima_core::engine::UnitOfWork`] Fact path with no extra
     /// configuration.
     #[must_use]
     pub fn with_host_state_participant(
         mut self,
         participant: Arc<dyn crate::PgHostStateParticipant>,
     ) -> Self {
-        let descriptor = proxima_core::storage_ports::HostStateParticipantDescriptor::new(
+        let descriptor = proxiima_core::storage_ports::HostStateParticipantDescriptor::new(
             participant.participant_id(),
             participant.declared_tables(),
         );
         self.host_state = Some(RegisteredHostStateParticipant {
             lifecycle: participant.lifecycle_port().map(|port| {
-                let descriptor = proxima_core::storage_ports::HostStateParticipantDescriptor::new(
+                let descriptor = proxiima_core::storage_ports::HostStateParticipantDescriptor::new(
                     port.participant_id(),
                     port.declared_tables(),
                 );
@@ -1217,7 +1227,7 @@ impl PgStorage {
 
     pub(crate) fn host_lifecycle_for_surfaces(
         &self,
-        surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
+        surfaces: &proxiima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<Option<RegisteredHostStateLifecycle>, StorageError> {
         validate_host_lifecycle_registration(surfaces, self.host_state.as_ref())?;
         Ok(self
@@ -1238,7 +1248,7 @@ impl PgStorage {
     /// Replace the object store erase purges blob objects from (S3 in the
     /// host).
     #[must_use]
-    pub fn with_cold(mut self, cold: Arc<dyn proxima_core::ColdObjectStore>) -> Self {
+    pub fn with_cold(mut self, cold: Arc<dyn proxiima_core::ColdObjectStore>) -> Self {
         self.cold = cold;
         self
     }
@@ -1283,14 +1293,14 @@ impl PgStorage {
 
     /// The declared surfaces this storage resolves its legs from.
     ///
-    /// Flavor #0's until [`Self::with_flavors`] widens it; see the field.
+    /// Spiice #0's until [`Self::with_spiices`] widens it; see the field.
     #[must_use]
-    pub fn surfaces(&self) -> &proxima_core::owner_inverse::OwnerSurfaces {
+    pub fn surfaces(&self) -> &proxiima_core::owner_inverse::OwnerSurfaces {
         &self.surfaces
     }
 
     /// Capture the boot-frozen registry and its validated host lifecycle
-    /// callback for a flavor that invokes the shared physical erase verb.
+    /// callback for a spiice that invokes the shared physical erase verb.
     ///
     /// # Errors
     /// Returns an error if the frozen host lifecycle declarations no longer
@@ -1317,7 +1327,7 @@ impl PgStorage {
         self
     }
 
-    /// Install everything the frozen flavors tell storage about payload
+    /// Install everything the frozen spiices tell storage about payload
     /// text: the search projections the read path ranks on, and the embed
     /// units the drain reads.
     ///
@@ -1328,16 +1338,16 @@ impl PgStorage {
     /// a fixture waits forever for a provider call that never comes. Taking
     /// the registry makes the half-configured state unconstructible.
     #[must_use]
-    pub fn with_flavors(mut self, registry: &proxima_core::FlavorRegistryFrozen) -> Self {
+    pub fn with_spiices(mut self, registry: &proxiima_core::SpiiceRegistryFrozen) -> Self {
         self.search_projections = registry.search_projections().to_vec();
         self.embed_units = registry.embed_units().to_vec();
         self.non_embeddable_schemas = registry.non_embeddable_schema_ids().to_vec();
-        self.surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(registry);
+        self.surfaces = proxiima_core::owner_inverse::OwnerSurfaces::for_registry(registry);
         self.scopes = crate::access::scope_surfaces::ScopeSurfaces::for_registry(registry);
         self
     }
 
-    /// Fallible flavor installation used by production boot. It validates
+    /// Fallible spiice installation used by production boot. It validates
     /// lifecycle policy coverage against the participant and callback port
     /// captured at registration, before these surfaces can reach an engine.
     ///
@@ -1346,11 +1356,11 @@ impl PgStorage {
     /// Returns [`StorageError::ConstraintViolation`] when lifecycle policies
     /// overlap generic inverses, lack a registered callback, or disagree with
     /// the captured participant/callback descriptors.
-    pub fn try_with_flavors(
+    pub fn try_with_spiices(
         mut self,
-        registry: &proxima_core::FlavorRegistryFrozen,
+        registry: &proxiima_core::SpiiceRegistryFrozen,
     ) -> Result<Self, StorageError> {
-        let surfaces = proxima_core::owner_inverse::OwnerSurfaces::try_for_registry(registry)
+        let surfaces = proxiima_core::owner_inverse::OwnerSurfaces::try_for_registry(registry)
             .map_err(|error| StorageError::ConstraintViolation(error.to_string()))?;
         validate_host_lifecycle_registration(&surfaces, self.host_state.as_ref())?;
         validate_registered_state_tables(&surfaces, self.host_state.as_ref())?;
@@ -1373,7 +1383,7 @@ impl PgStorage {
     #[must_use]
     pub fn with_embedding_runtime_policy(
         mut self,
-        policy: proxima_core::EmbeddingRuntimePolicy,
+        policy: proxiima_core::EmbeddingRuntimePolicy,
     ) -> Self {
         self.embedding_runtime_policy = policy;
         self
@@ -1438,7 +1448,7 @@ impl PgStorage {
     /// Returns storage errors from the sweep transaction.
     pub async fn sweep_orphan_embedding_rows(
         &self,
-    ) -> Result<proxima_core::EmbeddingOrphanSweepOutcome, StorageError> {
+    ) -> Result<proxiima_core::EmbeddingOrphanSweepOutcome, StorageError> {
         let mut outcome =
             verbs::fact_embeddings::sweep_orphan_embedding_rows(&self.pool, &self.platform_scope)
                 .await?;
@@ -1464,7 +1474,7 @@ impl PgStorage {
     /// Returns storage errors from the observability reads.
     pub async fn embedding_ann_observability(
         &self,
-    ) -> Result<proxima_core::EmbeddingAnnObservability, StorageError> {
+    ) -> Result<proxiima_core::EmbeddingAnnObservability, StorageError> {
         verbs::fact_embeddings::embedding_ann_observability(
             &self.pool,
             &self.platform_scope,
@@ -1545,8 +1555,8 @@ impl PgStorage {
     /// is due or `max_batches` ran.
     ///
     /// This is the loop every host would otherwise write, and the one the
-    /// Proxima runtime runs on its own cadence. When another process holds
-    /// the lock (another runtime, or `proxima-mcp maintain-storage`), the
+    /// Proxiima runtime runs on its own cadence. When another process holds
+    /// the lock (another runtime, or `proxiima-mcp maintain-storage`), the
     /// pass drains nothing and reports `skipped`, with current queue counts.
     ///
     /// # Errors

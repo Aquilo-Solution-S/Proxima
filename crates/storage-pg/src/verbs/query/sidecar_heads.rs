@@ -1,9 +1,9 @@
 //! Current heads of a contract-declared stateful Fact sidecar.
 
-use proxima_core::verbs::query::{
+use proxiima_core::verbs::query::{
     ResolvedSidecarHeads, SidecarAtom, SidecarHead, SidecarHeadsPage,
 };
-use proxima_core::{MemoryId, OwnerId, StorageError};
+use proxiima_core::{MemoryId, OwnerId, StorageError};
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, Postgres, QueryBuilder, Row, TypeInfo, ValueRef};
 
@@ -33,10 +33,10 @@ pub(crate) async fn sidecar_heads_by_key_on_connection(
     }
     // SQL-POLICY: PgIdent — table and memory key come from the frozen contract.
     sql.push(" FROM ").push(table.as_str());
-    sql.push(" s JOIN proxima_core.memory m /* FORGET-POLICY: live-only (head listing excludes forgotten admissions) */ ON m.t = s.");
+    sql.push(" s JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (head listing excludes forgotten admissions) */ ON m.t = s.");
     // SQL-POLICY: PgIdent
     sql.push(memory_key.as_str());
-    sql.push(" JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t WHERE m.forgotten_at IS NULL AND m.owner_id = ANY(");
+    sql.push(" JOIN proxiima_core.memory_head h ON h.handle = m.handle AND h.t = m.t WHERE m.forgotten_at IS NULL AND m.owner_id = ANY(");
     sql.push_bind(
         read_owners
             .iter()
@@ -143,7 +143,7 @@ mod tests {
 
     #[tokio::test]
     async fn key_rows_preserve_scalar_types_and_refuse_null_or_unsupported_data() {
-        let Some(url) = proxima_pg_testkit::admin_url_or_skip() else {
+        let Some(url) = proxiima_pg_testkit::admin_url_or_skip() else {
             return;
         };
         let pool = sqlx::PgPool::connect(&url)

@@ -5,26 +5,26 @@
 
 use std::sync::Arc;
 
-use proxima_core::MemoryKind;
-use proxima_core::publication::{
+use proxiima_core::MemoryKind;
+use proxiima_core::publication::{
     PublicationExtensions, PublicationLimits, PublicationSource, PublicationStamp,
 };
-use proxima_core::storage_ports::{FactIngestPort, GoalWritePort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::verbs::goal_write::{
+use proxiima_core::storage_ports::{FactIngestPort, GoalWritePort, OwnerWritePermit};
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDependencyRef, GoalDraft,
     GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalTransitionKind,
     GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
-use proxima_core::{
-    AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, FlavorRegistryFrozen, GoalId, MemoryId,
-    OwnerId, PendingWork, SchemaId, SchemaVersion, StorageError, UserId,
+use proxiima_core::{
+    AccessKind, EdgeEndpoint, EntityKind, GoalId, MemoryId, OwnerId, PendingWork, SchemaId,
+    SchemaVersion, SpiiceRegistry, SpiiceRegistryFrozen, StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::forget::MemoryColdStore;
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::verbs::forget::MemoryColdStore;
 use uuid::Uuid;
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -71,7 +71,7 @@ struct Tree {
     pg: PgStorage,
     owner: OwnerId,
     permit: OwnerWritePermit,
-    registry: FlavorRegistryFrozen,
+    registry: SpiiceRegistryFrozen,
     /// Set by `new_listenable`: goal writes carry a publication stamp, so
     /// each one also records a `core/goal-change-v1` change.
     feed: Option<(PublicationSource, PublicationExtensions)>,
@@ -83,18 +83,18 @@ impl Tree {
     /// A tree whose goal writes publish `core/goal-change-v1` records.
     async fn new_listenable() -> TestResult<Self> {
         let mut tree = Self::new().await?;
-        let mut listenable = FlavorRegistry::new();
+        let mut listenable = SpiiceRegistry::new();
         listenable.publish_goal_changes();
         tree.registry = listenable.freeze_or_panic_for_tests();
         tree.feed = Some((
-            PublicationSource::new("urn:proxima:goal-tree-test")?,
+            PublicationSource::new("urn:proxiima:goal-tree-test")?,
             PublicationExtensions::default(),
         ));
         Ok(tree)
     }
 
     async fn new() -> TestResult<Self> {
-        let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+        let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
         if let Err(e) = create_core_db(&db_name).await {
             panic!("PG required for tests but admin connect failed: {e}");
         }
@@ -118,7 +118,7 @@ impl Tree {
             pg,
             owner,
             permit,
-            registry: FlavorRegistry::new().freeze_or_panic_for_tests(),
+            registry: SpiiceRegistry::new().freeze_or_panic_for_tests(),
             feed: None,
             fact: fact.memory_id,
             perspective: perspective.memory_id,
@@ -323,9 +323,9 @@ impl Tree {
     async fn history(&self, goal: GoalId) -> TestResult<Vec<History>> {
         Ok(sqlx::query_as(
             "SELECT c.change_kind::text, c.state::text, c.revision, c.prior_t, c.pending::text
-               FROM proxima_core.goal_change_v1 c
-               JOIN proxima_core.goal g ON g.t = c.goal_t
-              WHERE g.handle = (SELECT handle FROM proxima_core.goal WHERE t = $1)
+               FROM proxiima_core.goal_change_v1 c
+               JOIN proxiima_core.goal g ON g.t = c.goal_t
+              WHERE g.handle = (SELECT handle FROM proxiima_core.goal WHERE t = $1)
               ORDER BY c.revision",
         )
         .bind(goal.into_inner())
@@ -335,7 +335,7 @@ impl Tree {
 
     async fn handle_of(&self, goal: GoalId) -> TestResult<Uuid> {
         Ok(
-            sqlx::query_scalar("SELECT handle FROM proxima_core.goal WHERE t = $1")
+            sqlx::query_scalar("SELECT handle FROM proxiima_core.goal WHERE t = $1")
                 .bind(goal.into_inner())
                 .fetch_one(self.pg.pool_for_tests())
                 .await?,
@@ -344,8 +344,8 @@ impl Tree {
 
     async fn head_of(&self, goal: GoalId) -> TestResult<Uuid> {
         Ok(sqlx::query_scalar(
-            "SELECT h.t FROM proxima_core.goal_head h
-               JOIN proxima_core.goal g ON g.handle = h.handle
+            "SELECT h.t FROM proxiima_core.goal_head h
+               JOIN proxiima_core.goal g ON g.handle = h.handle
               WHERE g.t = $1",
         )
         .bind(goal.into_inner())
@@ -355,11 +355,11 @@ impl Tree {
 
     async fn counts(&self) -> TestResult<Vec<i64>> {
         let row: (i64, i64, i64, i64, i64) = sqlx::query_as(
-            "SELECT (SELECT count(*) FROM proxima_core.goal),
-                    (SELECT count(*) FROM proxima_core.goal_change_v1),
-                    (SELECT count(*) FROM proxima_core.goal_replay_declaration),
-                    (SELECT count(*) FROM proxima_core.memory),
-                    (SELECT count(*) FROM proxima_core.publication_outbox)",
+            "SELECT (SELECT count(*) FROM proxiima_core.goal),
+                    (SELECT count(*) FROM proxiima_core.goal_change_v1),
+                    (SELECT count(*) FROM proxiima_core.goal_replay_declaration),
+                    (SELECT count(*) FROM proxiima_core.memory),
+                    (SELECT count(*) FROM proxiima_core.publication_outbox)",
         )
         .fetch_one(self.pg.pool_for_tests())
         .await?;
@@ -486,14 +486,14 @@ async fn the_parent_edge_is_fixed_and_never_self() {
         let children = tree.decompose(p, &["f7-a"]).await?;
         for (parent, label) in [(None, "NULL"), (Some(Uuid::now_v7()), "another handle")] {
             let err = sqlx::query(
-                "INSERT INTO proxima_core.goal
+                "INSERT INTO proxiima_core.goal
                     (handle, t, owner_id, title, state, request_id, close_fact_t,
                      assignment_t, dependency_t, evidence_t, write_act_t, text, \"by\", via,
                      parent_handle)
                  SELECT handle, $2, owner_id, title, state, $3, close_fact_t,
                         assignment_t, dependency_t, evidence_t, write_act_t, text, \"by\", via,
                         $4
-                   FROM proxima_core.goal WHERE t = $1",
+                   FROM proxiima_core.goal WHERE t = $1",
             )
             .bind(children[0].into_inner())
             .bind(Uuid::now_v7())
@@ -512,13 +512,13 @@ async fn the_parent_edge_is_fixed_and_never_self() {
         // A fresh series naming itself as parent.
         let fresh = Uuid::now_v7();
         let err = sqlx::query(
-            "INSERT INTO proxima_core.goal
+            "INSERT INTO proxiima_core.goal
                 (handle, t, owner_id, title, state, request_id, close_fact_t,
                  assignment_t, dependency_t, evidence_t, write_act_t, text, \"by\", via,
                  parent_handle)
              SELECT $2, $2, owner_id, title, state, 'f7-raw-self', close_fact_t,
                     assignment_t, '{}', evidence_t, write_act_t, text, \"by\", via, $2
-               FROM proxima_core.goal WHERE t = $1",
+               FROM proxiima_core.goal WHERE t = $1",
         )
         .bind(p.into_inner())
         .bind(fresh)
@@ -550,7 +550,7 @@ async fn decompose_sets_the_parent_edge_and_versions_carry_it() {
             .transition(resumed, GoalTransitionKind::Abandon, "f8-a-abandon")
             .await?;
         let p_edge: Option<Uuid> =
-            sqlx::query_scalar("SELECT parent_handle FROM proxima_core.goal WHERE t = $1")
+            sqlx::query_scalar("SELECT parent_handle FROM proxiima_core.goal WHERE t = $1")
                 .bind(p.into_inner())
                 .fetch_one(tree.pg.pool_for_tests())
                 .await?;
@@ -563,7 +563,7 @@ async fn decompose_sets_the_parent_edge_and_versions_carry_it() {
             ("a abandoned", abandoned),
         ] {
             let edge: Option<Uuid> =
-                sqlx::query_scalar("SELECT parent_handle FROM proxima_core.goal WHERE t = $1")
+                sqlx::query_scalar("SELECT parent_handle FROM proxiima_core.goal WHERE t = $1")
                     .bind(goal.into_inner())
                     .fetch_one(tree.pg.pool_for_tests())
                     .await?;
@@ -609,7 +609,7 @@ async fn a_plain_dependency_is_not_a_child() {
         let x = tree.create("g4-x", &[]).await?;
         let y = tree.create("g4-y", &[x]).await?;
         let y_dependencies: Vec<Uuid> =
-            sqlx::query_scalar("SELECT dependency_t FROM proxima_core.goal WHERE t = $1")
+            sqlx::query_scalar("SELECT dependency_t FROM proxiima_core.goal WHERE t = $1")
                 .bind(y.into_inner())
                 .fetch_one(tree.pg.pool_for_tests())
                 .await?;
@@ -674,10 +674,12 @@ async fn hold_lifecycle_lock(
     t: Uuid,
 ) -> TestResult<sqlx::Transaction<'static, sqlx::Postgres>> {
     let mut tx = pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('proxima-forget:' || $1::text, 0))")
-        .bind(t)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('proxiima-forget:' || $1::text, 0))",
+    )
+    .bind(t)
+    .execute(&mut *tx)
+    .await?;
     Ok(tx)
 }
 
@@ -686,10 +688,10 @@ async fn hold_lifecycle_lock(
 async fn assert_tree_invariant(pool: &sqlx::PgPool, what: &str) -> TestResult<()> {
     let broken: i64 = sqlx::query_scalar(
         "SELECT count(*)
-           FROM proxima_core.goal p
-           JOIN proxima_core.goal_head ph ON ph.handle = p.handle AND ph.t = p.t
-           JOIN proxima_core.goal c ON c.parent_handle = p.handle
-           JOIN proxima_core.goal_head ch ON ch.handle = c.handle AND ch.t = c.t
+           FROM proxiima_core.goal p
+           JOIN proxiima_core.goal_head ph ON ph.handle = p.handle AND ph.t = p.t
+           JOIN proxiima_core.goal c ON c.parent_handle = p.handle
+           JOIN proxiima_core.goal_head ch ON ch.handle = c.handle AND ch.t = c.t
           WHERE p.state IN ('Achieved', 'Abandoned') AND c.state IN ('Active', 'Paused')",
     )
     .fetch_one(pool)
@@ -771,7 +773,7 @@ async fn a_racing_achieve_first_refuses_the_decompose() {
             "G6: {err:?}"
         );
         let children: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.goal WHERE parent_handle IS NOT NULL",
+            "SELECT count(*) FROM proxiima_core.goal WHERE parent_handle IS NOT NULL",
         )
         .fetch_one(pool)
         .await?;
@@ -805,8 +807,8 @@ async fn open_below_closed(pool: &sqlx::PgPool) -> TestResult<i64> {
     Ok(sqlx::query_scalar(
         "WITH RECURSIVE heads AS (
              SELECT g.handle, g.state, g.parent_handle
-               FROM proxima_core.goal g
-               JOIN proxima_core.goal_head h ON h.handle = g.handle AND h.t = g.t
+               FROM proxiima_core.goal g
+               JOIN proxiima_core.goal_head h ON h.handle = g.handle AND h.t = g.t
          ), below(ancestor, descendant) AS (
              SELECT parent_handle, handle FROM heads WHERE parent_handle IS NOT NULL
              UNION
@@ -1122,7 +1124,7 @@ async fn a_racing_abandon_first_refuses_the_decompose() {
             "G6: {err:?}"
         );
         let children: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.goal WHERE parent_handle IS NOT NULL",
+            "SELECT count(*) FROM proxiima_core.goal WHERE parent_handle IS NOT NULL",
         )
         .fetch_one(pool)
         .await?;
@@ -1185,7 +1187,7 @@ async fn a_paused_goal_abandons_in_one_write() {
         assert_eq!(paused_delta[2], 1, "one replay declaration");
         assert_eq!(paused_delta[4], 0, "no outbox row");
         let (state, close): (String, Option<Uuid>) =
-            sqlx::query_as("SELECT state::text, close_fact_t FROM proxima_core.goal WHERE t = $1")
+            sqlx::query_as("SELECT state::text, close_fact_t FROM proxiima_core.goal WHERE t = $1")
                 .bind(out.goal_id.into_inner())
                 .fetch_one(tree.pg.pool_for_tests())
                 .await?;
@@ -1347,9 +1349,9 @@ async fn a_paused_chain_closes_only_bottom_up() {
 
 async fn head_state(tree: &Tree, goal: GoalId) -> TestResult<String> {
     Ok(sqlx::query_scalar(
-        "SELECT g.state::text FROM proxima_core.goal_head h
-           JOIN proxima_core.goal g ON g.t = h.t
-          WHERE h.handle = (SELECT handle FROM proxima_core.goal WHERE t = $1)",
+        "SELECT g.state::text FROM proxiima_core.goal_head h
+           JOIN proxiima_core.goal g ON g.t = h.t
+          WHERE h.handle = (SELECT handle FROM proxiima_core.goal WHERE t = $1)",
     )
     .bind(goal.into_inner())
     .fetch_one(tree.pg.pool_for_tests())

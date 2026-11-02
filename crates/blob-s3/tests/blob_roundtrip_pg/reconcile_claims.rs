@@ -8,9 +8,9 @@
 use super::implied_keys::{fixture_in_own_bucket, versions_left};
 use super::*;
 
-fn bound_authority(store: &CitedBlobStore) -> proxima_core::authz::SystemAuthority {
+fn bound_authority(store: &CitedBlobStore) -> proxiima_core::authz::SystemAuthority {
     let (_, authority) =
-        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+        Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
     store
         .bind_system_authority(&authority)
         .expect("test store binds to its maintenance engine");
@@ -30,7 +30,7 @@ async fn reconcile(store: &CitedBlobStore) -> CitedBlobReconcileOutcome {
 #[allow(clippy::too_many_lines)] // one bucket holds every class so the counts are exact
 async fn reconcile_claims_every_key_a_row_implies() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let f = fixture_in_own_bucket().await;
@@ -100,7 +100,7 @@ async fn reconcile_claims_every_key_a_row_implies() {
     )
     .await;
     sqlx::query(
-        "UPDATE proxima_core.blob_uploads SET expires_at = now() - interval '1 second'
+        "UPDATE proxiima_core.blob_uploads SET expires_at = now() - interval '1 second'
           WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&expired_id).expect("upload id"))
@@ -114,7 +114,7 @@ async fn reconcile_claims_every_key_a_row_implies() {
     put_object_via_sdk(&f.config, &owed_key, b"owed").await;
     put_object_via_sdk(&f.config, &orphan_key, b"orphan").await;
     sqlx::query(
-        "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+        "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
          VALUES ($1, NULL, $2)",
     )
     .bind(&owed_key)
@@ -152,7 +152,7 @@ async fn reconcile_claims_every_key_a_row_implies() {
 #[allow(clippy::too_many_lines)] // both ended states share one bucket so the counts are exact
 async fn an_ended_uploads_late_canonical_object_is_owed_and_drained() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let f = fixture_in_own_bucket().await;
@@ -196,7 +196,7 @@ async fn an_ended_uploads_late_canonical_object_is_owed_and_drained() {
     )
     .await;
     sqlx::query(
-        "UPDATE proxima_core.blob_uploads SET expires_at = now() - interval '1 second'
+        "UPDATE proxiima_core.blob_uploads SET expires_at = now() - interval '1 second'
           WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&expired_id).expect("upload id"))

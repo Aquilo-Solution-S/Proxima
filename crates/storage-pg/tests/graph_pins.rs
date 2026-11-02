@@ -1,37 +1,37 @@
 //! Pins on the node, PK outbound, GIN inbound, lineage by t.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::MemoryKind;
-use proxima_core::read_models::MemorySchemaSpec;
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::{
+use proxiima_core::MemoryKind;
+use proxiima_core::read_models::MemorySchemaSpec;
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::storage_ports::{
     InboundPinQuery, MemoryReadPort, OwnerWritePermit, PinTargetKind,
 };
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
-use proxima_core::verbs::query::SupersessionStatus;
-use proxima_core::verbs::query::{
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
+use proxiima_core::verbs::query::SupersessionStatus;
+use proxiima_core::verbs::query::{
     EntityKind, MemoryLineageCursor, MemoryLineageDirection, MemoryLineageRequest, QueryRequest,
 };
-use proxima_core::{
+use proxiima_core::{
     AbstractionPayload, AccessKind, AgentDerivationV1, EdgeKind, EdgeTargetProjection, EntityRef,
     OwnerId, SchemaId, SchemaVersion, SidecarPayload, UserId, project_listed_edge,
     project_window_edges,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
-fn memory_schema_specs(registry: &proxima_core::FlavorRegistryFrozen) -> Vec<MemorySchemaSpec> {
+fn memory_schema_specs(registry: &proxiima_core::SpiiceRegistryFrozen) -> Vec<MemorySchemaSpec> {
     registry
         .schemas()
         .iter()
         .filter_map(|schema| {
             let kind = match schema.kind {
-                proxima_core::verbs::schema::PayloadKind::Fact => EntityKind::Fact,
-                proxima_core::verbs::schema::PayloadKind::Abstraction => EntityKind::Abstraction,
-                proxima_core::verbs::schema::PayloadKind::Perspective => EntityKind::Perspective,
+                proxiima_core::verbs::schema::PayloadKind::Fact => EntityKind::Fact,
+                proxiima_core::verbs::schema::PayloadKind::Abstraction => EntityKind::Abstraction,
+                proxiima_core::verbs::schema::PayloadKind::Perspective => EntityKind::Perspective,
                 _ => return None,
             };
             Some(MemorySchemaSpec::new(
@@ -60,7 +60,10 @@ fn draft(kind: MemoryKind, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteComm
         additional_references: origins
             .into_iter()
             .map(|t| {
-                proxima_core::EdgeEndpoint::memory(EntityKind::Fact, proxima_core::MemoryId::new(t))
+                proxiima_core::EdgeEndpoint::memory(
+                    EntityKind::Fact,
+                    proxiima_core::MemoryId::new(t),
+                )
             })
             .collect(),
         refs,
@@ -72,17 +75,17 @@ fn draft(kind: MemoryKind, refs: Vec<Uuid>, origins: Vec<Uuid>) -> FactWriteComm
 
 #[tokio::test]
 async fn query_neighbors_edges_and_lineage_use_pins() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let specs = memory_schema_specs(&registry);
         let pg = PgStorage::connect_for_tests(url.clone())
             .await?
-            .with_flavors(&registry);
+            .with_spiices(&registry);
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
 
@@ -98,7 +101,7 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
         // `agent-derivation-v1` is `LanguagePolicy::PerRow`: the write names a
         // language.
         derived_cmd.lexical_language =
-            Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
+            Some(proxiima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
         // The typed write, not `ingest_fact_atomic` plus a hand-written row:
         // it stamps `sidecar_tables`, without which the derivation row is one no
         // forget, erase or export can reach.
@@ -212,7 +215,7 @@ async fn query_neighbors_edges_and_lineage_use_pins() {
 
 #[tokio::test]
 async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -318,7 +321,7 @@ async fn pin_node_loads_are_owner_scoped_and_redact_in_memory() {
 /// The pin is on the source; a foreign origin must redact.
 #[tokio::test]
 async fn lineage_redacts_foreign_origin_instead_of_dropping() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -414,7 +417,7 @@ async fn lineage_redacts_foreign_origin_instead_of_dropping() {
 
 #[tokio::test]
 async fn inbound_pin_page_is_newest_heads_and_keyset() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -495,7 +498,7 @@ async fn inbound_pin_page_is_newest_heads_and_keyset() {
 
 #[tokio::test]
 async fn inbound_heads_only_drops_superseded_pin() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -579,7 +582,7 @@ async fn inbound_heads_only_drops_superseded_pin() {
 /// A←{B,C}←D←{E1,E2}←F. D must be expanded once (two origin edges, not four).
 #[tokio::test]
 async fn lineage_diamond_visits_shared_node_once() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -724,7 +727,7 @@ async fn lineage_diamond_visits_shared_node_once() {
 
 #[tokio::test]
 async fn lineage_pages_finish_a_distance_before_the_next() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -787,7 +790,7 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
                 .edge
                 .target
                 .endpoint()
-                .and_then(proxima_core::EdgeEndpoint::memory_id),
+                .and_then(proxiima_core::EdgeEndpoint::memory_id),
             Some(mids[4])
         );
         assert_eq!(
@@ -795,7 +798,7 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
                 .edge
                 .target
                 .endpoint()
-                .and_then(proxima_core::EdgeEndpoint::memory_id),
+                .and_then(proxiima_core::EdgeEndpoint::memory_id),
             Some(mids[3])
         );
 
@@ -850,15 +853,15 @@ async fn lineage_pages_finish_a_distance_before_the_next() {
 /// at all (its pin stays redacted), though it does see a forgotten Fact.
 #[tokio::test]
 async fn the_forgotten_probe_keeps_to_the_readers_kind_permits() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        use proxima_core::storage_ports::MemoryAuthoringPort;
+        use proxiima_core::storage_ports::MemoryAuthoringPort;
         let pg = PgStorage::connect_for_tests(url.clone()).await?;
-        let owner = OwnerId::from(proxima_core::GroupId::new(Uuid::now_v7()));
+        let owner = OwnerId::from(proxiima_core::GroupId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let grounding = pg
             .ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
@@ -886,7 +889,7 @@ async fn the_forgotten_probe_keeps_to_the_readers_kind_permits() {
         MemoryAuthoringPort::forget_memory(&pg, &permit, loose.memory_id).await?;
         let ids = [abstraction.memory_id, loose.memory_id];
 
-        let found = |nodes: Vec<proxima_core::verbs::query::MemoryLineageNode>| {
+        let found = |nodes: Vec<proxiima_core::verbs::query::MemoryLineageNode>| {
             let mut ids: Vec<_> = nodes.into_iter().map(|node| node.memory_id).collect();
             ids.sort_unstable();
             ids
@@ -900,11 +903,11 @@ async fn the_forgotten_probe_keeps_to_the_readers_kind_permits() {
             "the owner's admin sees both as forgotten"
         );
 
-        let fact_reader = proxima_core::test_fixtures::authenticated_context(
-            proxima_core::AuthzContext::for_subject_with_role(
+        let fact_reader = proxiima_core::test_fixtures::authenticated_context(
+            proxiima_core::AuthzContext::for_subject_with_role(
                 UserId::new(Uuid::now_v7()),
-                [(owner, proxima_core::Role::ingest())],
-                proxima_core::AuthPath::HostBearer,
+                [(owner, proxiima_core::Role::ingest())],
+                proxiima_core::AuthPath::HostBearer,
             ),
         );
         let fact_scope = fact_reader.owner_scope().expect("verified scope").clone();

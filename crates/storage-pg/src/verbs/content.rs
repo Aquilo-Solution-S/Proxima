@@ -1,7 +1,7 @@
 //! Owner-scoped Content upsert.
 
-use proxima_core::count_u64;
-use proxima_core::{SidecarPayload, StorageError, canonical_json_bytes};
+use proxiima_core::count_u64;
+use proxiima_core::{SidecarPayload, StorageError, canonical_json_bytes};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -26,7 +26,7 @@ pub fn hash_sidecar_payloads(payloads: &[SidecarPayload]) -> Result<[u8; 32], St
     }
     parts.sort_by(|a, b| a.0.cmp(&b.0));
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"proxima-content-v1\0");
+    hasher.update(b"proxiima-content-v1\0");
     for (schema, bytes) in &parts {
         hasher.update(schema.as_bytes());
         hasher.update(b"\0");
@@ -47,7 +47,7 @@ pub fn hash_sidecar_payloads(payloads: &[SidecarPayload]) -> Result<[u8; 32], St
 #[must_use]
 pub fn kind_scoped_hash(kind: &str, hash: &[u8; 32]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"proxima-content-kind-v1\0");
+    hasher.update(b"proxiima-content-kind-v1\0");
     hasher.update(kind.as_bytes());
     hasher.update(b"\0");
     hasher.update(hash);
@@ -68,7 +68,7 @@ pub async fn ensure_content(
 ) -> Result<Uuid, StorageError> {
     let content_id = Uuid::now_v7();
     let inserted = sqlx::query(
-        "INSERT INTO proxima_core.content (content_id, owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.content (content_id, owner_id, schema_id, content_hash)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT DO NOTHING",
     )
@@ -83,7 +83,7 @@ pub async fn ensure_content(
         return Ok(content_id);
     }
     sqlx::query_scalar(
-        "SELECT content_id FROM proxima_core.content
+        "SELECT content_id FROM proxiima_core.content
           WHERE owner_id = $1 AND schema_id = $2 AND content_hash = $3",
     )
     .bind(owner_id)
@@ -114,7 +114,7 @@ pub async fn ensure_text_content(
 /// The Content hash of a derived admission without a hashed sidecar.
 pub fn text_hash(schema_id: &str, text: &[u8]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"proxima-content-text-v1\0");
+    hasher.update(b"proxiima-content-text-v1\0");
     hasher.update(schema_id.as_bytes());
     hasher.update(b"\0");
     hasher.update(text);
@@ -146,10 +146,10 @@ pub async fn gc_unreferenced_content(
     content_id: Uuid,
 ) -> Result<(), StorageError> {
     sqlx::query(
-        "DELETE FROM proxima_core.content c
+        "DELETE FROM proxiima_core.content c
           WHERE c.content_id = $1
             AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still names its content) */
+                    SELECT 1 FROM proxiima_core.memory m WHERE m.content_id = c.content_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still names its content) */
                 )",
     )
     .bind(content_id)
@@ -174,10 +174,10 @@ pub async fn gc_unreferenced_content_batch(
         return Ok(0);
     }
     Ok(sqlx::query(
-        "DELETE FROM proxima_core.content c
+        "DELETE FROM proxiima_core.content c
           WHERE c.content_id = ANY($1::uuid[])
             AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.memory m WHERE m.content_id = c.content_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still names its content) */
+                    SELECT 1 FROM proxiima_core.memory m WHERE m.content_id = c.content_id /* FORGET-POLICY: includes-forgotten (a forgotten memory still names its content) */
                 )",
     )
     .bind(content_ids)

@@ -17,7 +17,7 @@ pub struct MemorySketch {
 /// How many current memories a read set holds, by kind: one per series head
 /// for the three memory kinds, one per Goal in any state. A stateful series
 /// counts once however many versions it has. Serialized as the body of
-/// `proxima://memories/counts`; every kind is always present, zero when the
+/// `proxiima://memories/counts`; every kind is always present, zero when the
 /// read set holds none.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct MemoryCounts {

@@ -116,8 +116,8 @@ impl ProtocolError {
         }
     }
 
-    /// A write named a flavor-owned lifecycle scope whose registry row is
-    /// absent for this owner (docs/build-a-flavor.md). `NotFound`
+    /// A write named a spiice-owned lifecycle scope whose registry row is
+    /// absent for this owner (docs/build-a-spiice.md). `NotFound`
     /// rather than a code of its own: the caller named a row that is not
     /// there, which is what `NotFound` means, and `ErrorCode` is
     /// deliberately exhaustive at every transport, so a new variant would

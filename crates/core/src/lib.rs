@@ -1,12 +1,12 @@
-//! Proxima engine core.
-extern crate self as proxima_core;
+//! Proxiima engine core.
+extern crate self as proxiima_core;
 
-/// The Proxima release this build belongs to, as reported to MCP clients on
+/// The Proxiima release this build belongs to, as reported to MCP clients on
 /// `initialize` and to operators.
 ///
 /// Deliberately not `CARGO_PKG_VERSION`: workspace crates are `0.1.0` with
 /// `publish = false`. Releases are git tags; bump this when cutting one.
-pub const RELEASE_VERSION: &str = "0.0.66";
+pub const RELEASE_VERSION: &str = "0.0.67";
 
 pub mod access;
 pub mod auth;
@@ -22,7 +22,6 @@ pub mod engine;
 pub mod entity;
 pub mod env;
 pub mod error;
-pub mod flavor;
 pub mod goal;
 pub mod ids;
 pub mod lexical_language;
@@ -42,11 +41,12 @@ pub mod publication;
 pub mod quiesce;
 pub mod read_models;
 pub mod scope;
+pub mod spiice;
 mod stage_timing;
 pub mod storage;
 pub mod storage_ports;
 // Also under plain `cfg(test)`: the in-crate suites use the same probe
-// payloads and probe flavor the storage backend's tests do, and a fixture
+// payloads and probe spiice the storage backend's tests do, and a fixture
 // that existed only under a feature flag would be a second copy.
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
@@ -72,7 +72,6 @@ pub use engine::*;
 pub use entity::*;
 pub use env::{env_from_pairs, env_value, parse_bool_word, process_env};
 pub use error::*;
-pub use flavor::*;
 pub use goal::{SimpleTextGoalV1, TaskGoalV1, TaskPriority};
 pub use ids::*;
 pub use llm::*;
@@ -109,6 +108,7 @@ pub use publication::{
 pub use quiesce::{FeatureControlError, FeatureStatus, GateWorker, QuiesceGate};
 pub use read_models::*;
 pub use scope::{ScopeDecl, ScopeKind, ScopeRef, scope_set};
+pub use spiice::*;
 pub use storage::*;
 pub use text_bounds::*;
 pub use tool::*;
@@ -129,15 +129,15 @@ pub use verbs::own_erase::{
 };
 pub use verbs::*;
 
-pub use verbs::schema::{FlavorRegistryFrozen, composed_schema_names, sidecar_tables};
+pub use verbs::schema::{SpiiceRegistryFrozen, composed_schema_names, sidecar_tables};
 
 /// Expands to `&'static str` with the calling crate's name
 /// prefixed. Per docs/host-integration.md
 ///
-/// `proxima_schema_id!("note")` in a crate named
-/// `proxima-notes` evaluates to `"proxima-notes/note"`.
+/// `proxiima_schema_id!("note")` in a crate named
+/// `proxiima-notes` evaluates to `"proxiima-notes/note"`.
 #[macro_export]
-macro_rules! proxima_schema_id {
+macro_rules! proxiima_schema_id {
     ($short:literal) => {
         ::std::concat!(::std::env!("CARGO_PKG_NAME"), "/", $short)
     };
@@ -148,12 +148,12 @@ macro_rules! proxima_schema_id {
 /// `goal_schemas`, `cited_object_schemas`, `opaque_cited_object_schemas`,
 /// `schema_capability_tags`, `mcp_tools`.
 /// Expands to a
-/// `pub fn register(registry: &mut FlavorRegistry) -> Result<(), FlavorRegistryError>`
+/// `pub fn register(registry: &mut SpiiceRegistry) -> Result<(), SpiiceRegistryError>`
 /// that adds each schema.
 ///
 /// There is no `relations` or `edge_schemas` arm: edge kinds are a
 /// closed core vocabulary (docs/concepts.md) and edges carry no
-/// payload. A flavor connects nodes by declaring reference fields on its
+/// payload. A spiice connects nodes by declaring reference fields on its
 /// payloads, or by authoring an interpretation node.
 ///
 /// Schema and `mcp_tools` prefixes resolve to associated `const`s or
@@ -167,19 +167,19 @@ macro_rules! proxima_schema_id {
 /// Unknown keys are rejected at expansion time.
 ///
 /// ```ignore
-/// proxima_flavor! {
-///     name = "proxima-notes",
+/// proxiima_spiice! {
+///     name = "proxiima-notes",
 ///     fact_schemas = [ NoteV1, NoteEditV1 ],
 ///     cited_object_schemas = [ AttachmentV1 ],
-///     opaque_cited_object_schemas = [ "proxima-notes/attachment-blob-v1" ],
+///     opaque_cited_object_schemas = [ "proxiima-notes/attachment-blob-v1" ],
 ///     mcp_tools = [ MyTool ],
 /// }
 /// ```
 ///
 #[macro_export]
-macro_rules! proxima_flavor {
+macro_rules! proxiima_spiice {
     // Internal: register one schema-kind list, compile-checking each
-    // `SCHEMA_ID` carries the flavor prefix. The check is a `const`
+    // `SCHEMA_ID` carries the spiice prefix. The check is a `const`
     // assertion — a misprefixed `SCHEMA_ID` fails the build, not the
     // first boot.
     (@schemas $registry:ident $name:literal $trait:ident $add:ident [ $($ty:ty),* $(,)? ]) => {
@@ -206,7 +206,7 @@ macro_rules! proxima_flavor {
                 let schema_id: &str = $schema_id;
                 let schema_id = $crate::SchemaId::new(schema_id.to_string());
                 if !schema_id.as_str().starts_with(::std::concat!($name, "/")) {
-                    return ::std::result::Result::Err($crate::FlavorRegistryError::SchemaIngressMismatch {
+                    return ::std::result::Result::Err($crate::SpiiceRegistryError::SchemaIngressMismatch {
                         schema_id,
                         schema_version: $crate::SchemaVersion::new(1),
                         kind: $crate::verbs::schema::PayloadKind::CitedObject,
@@ -221,7 +221,7 @@ macro_rules! proxima_flavor {
     };
     (@schema_capability_tags $registry:ident $name:literal [ $(($kind:ident, $ty:ty) => [ $($tag:expr),* $(,)? ]),* $(,)? ]) => {
         $(
-            $crate::proxima_flavor!(@schema_capability_tag $registry $name $kind $ty [ $($tag),* ]);
+            $crate::proxiima_spiice!(@schema_capability_tag $registry $name $kind $ty [ $($tag),* ]);
         )*
     };
     (@schema_capability_tag $registry:ident $name:literal Fact $ty:ty [ $($tag:expr),* $(,)? ]) => {
@@ -314,9 +314,9 @@ macro_rules! proxima_flavor {
         $(, contract = $contract:expr)?
         $(,)?
     ) => {
-        /// Generated by `proxima_flavor!`. Composite binaries
-        /// call this once per linked flavor at startup.
-        pub fn register(registry: &mut $crate::FlavorRegistry) -> ::std::result::Result<(), $crate::FlavorRegistryError> {
+        /// Generated by `proxiima_spiice!`. Composite binaries
+        /// call this once per linked spiice at startup.
+        pub fn register(registry: &mut $crate::SpiiceRegistry) -> ::std::result::Result<(), $crate::SpiiceRegistryError> {
             {
                 #[allow(unused_assignments, unused_mut)]
                 let mut display_name: &str = $name;
@@ -327,35 +327,35 @@ macro_rules! proxima_flavor {
                         .map(|s: &str| {
                             s.split(':').next().unwrap_or(s).trim().to_string()
                         });
-                registry.try_add_flavor($crate::FlavorDescriptor {
-                    flavor_id: $name.to_string(),
+                registry.try_add_spiice($crate::SpiiceDescriptor {
+                    spiice_id: $name.to_string(),
                     display_name: display_name.to_string(),
                     package_version: ::std::env!("CARGO_PKG_VERSION").to_string(),
                     author,
-                    provenance: $crate::FlavorProvenance::Builtin,
+                    provenance: $crate::SpiiceProvenance::Builtin,
                 })?;
             }
-            $($crate::proxima_flavor!(@schemas registry $name
+            $($crate::proxiima_spiice!(@schemas registry $name
                 FactPayload try_add_fact_schema [ $($fact),* ]);)?
-            $($crate::proxima_flavor!(@schemas registry $name
+            $($crate::proxiima_spiice!(@schemas registry $name
                 AbstractionPayload try_add_abstraction_schema [ $($abs),* ]);)?
-            $($crate::proxima_flavor!(@schemas registry $name
+            $($crate::proxiima_spiice!(@schemas registry $name
                 PerspectivePayload try_add_perspective_schema [ $($persp),* ]);)?
-            $($crate::proxima_flavor!(@schemas registry $name
+            $($crate::proxiima_spiice!(@schemas registry $name
                 GoalPayload try_add_goal_schema [ $($goal),* ]);)?
-            $($crate::proxima_flavor!(@schemas registry $name
+            $($crate::proxiima_spiice!(@schemas registry $name
                 CitedObjectPayload try_add_cited_object_schema [ $($cited),* ]);)?
-            $($crate::proxima_flavor!(@opaque_schemas registry $name
+            $($crate::proxiima_spiice!(@opaque_schemas registry $name
                 [ $($opaque_cited),* ]);)?
-            $($crate::proxima_flavor!(@schema_capability_tags registry $name [
+            $($crate::proxiima_spiice!(@schema_capability_tags registry $name [
                 $(($cap_kind, $cap_ty) => [ $($cap_tag),* ]),*
             ]);)?
             $($(
                 {
-                    // Tool wire names may use the "<flavor>/" namespace separator
-                    // OR "<flavor>_": the latter keeps the MCP tool name valid
+                    // Tool wire names may use the "<spiice>/" namespace separator
+                    // OR "<spiice>_": the latter keeps the MCP tool name valid
                     // under Anthropic's ^[a-zA-Z0-9_-]{1,64}$ rule. Schema ids
-                    // (asserted elsewhere) still require "<flavor>/".
+                    // (asserted elsewhere) still require "<spiice>/".
                     const _: () = ::std::assert!(
                         $crate::schema_id_has_prefix(
                             <$tool as $crate::McpTool>::NAME,
@@ -373,9 +373,9 @@ macro_rules! proxima_flavor {
                 }
             )*)?
             // The contract lands beside the registrations it describes, so
-            // a flavor cannot ship declarations and registrations that were
-            // linked separately — the same reason flavor #0 registers its
-            // own inside `FlavorRegistry::default()`.
+            // a spiice cannot ship declarations and registrations that were
+            // linked separately — the same reason spiice #0 registers its
+            // own inside `SpiiceRegistry::default()`.
             $(registry.try_add_contract($contract)?;)?
             ::std::result::Result::Ok(())
         }

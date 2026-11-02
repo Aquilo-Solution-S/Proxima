@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use proxima_core::{
+use proxiima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, Credentials, OwnerAccessPort, OwnerId,
     ToolScope, UserId, WriterAttribution,
 };
@@ -104,7 +104,7 @@ fn narrowed_by_host(
     shaped: AuthzContext,
     token_expires_at: std::time::SystemTime,
 ) -> Result<AuthzContext, AuthError> {
-    let rights_widened = proxima_core::AccessKind::ALL.into_iter().any(|kind| {
+    let rights_widened = proxiima_core::AccessKind::ALL.into_iter().any(|kind| {
         shaped.readable_owners(kind).iter().any(|owner| {
             !resolved.may_read(owner, kind)
                 || (shaped.may_manage(owner) && !resolved.may_manage(owner))
@@ -456,8 +456,8 @@ impl Authenticator for OidcBindingSet {
 mod tests {
     #[test]
     fn host_shaping_cannot_widen_either_tool_policy() {
-        use proxima_core::{ScopeKey, ServedSurface};
-        let subject = proxima_core::UserId::new(uuid::Uuid::now_v7());
+        use proxiima_core::{ScopeKey, ServedSurface};
+        let subject = proxiima_core::UserId::new(uuid::Uuid::now_v7());
         let search = ScopeKey::parse("core_search_memories").unwrap();
         let caller = ToolScope::Palette(vec![search.clone()]);
         let served = ServedSurface::Palette(vec![search]);
@@ -479,7 +479,7 @@ mod tests {
     use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use jsonwebtoken::DecodingKey;
-    use proxima_core::{
+    use proxiima_core::{
         AccessError, ActionName, AuthPath, OwnerId, OwnerRoles, Role, ScopeKey, ToolName, UserId,
         access::AccessKind,
     };
@@ -524,8 +524,8 @@ mod tests {
     struct StaticOwnerAccess {
         agent: UserId,
         owner: UserId,
-        agent_group: proxima_core::GroupId,
-        owner_group: proxima_core::GroupId,
+        agent_group: proxiima_core::GroupId,
+        owner_group: proxiima_core::GroupId,
     }
 
     #[async_trait]
@@ -610,11 +610,11 @@ mod tests {
         map
     }
 
-    fn binding_set(keys: &TestKeys) -> (OidcBindingSet, proxima_core::GroupId) {
+    fn binding_set(keys: &TestKeys) -> (OidcBindingSet, proxiima_core::GroupId) {
         let agent = UserId::new(Uuid::from_u128(0xA9E1));
         let owner = UserId::new(Uuid::from_u128(0x0E1E));
-        let agent_group = proxima_core::GroupId::new(Uuid::now_v7());
-        let owner_group = proxima_core::GroupId::new(Uuid::now_v7());
+        let agent_group = proxiima_core::GroupId::new(Uuid::now_v7());
+        let owner_group = proxiima_core::GroupId::new(Uuid::now_v7());
         let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
             agent,
             owner,
@@ -652,8 +652,8 @@ mod tests {
         let keys = test_keys();
         let agent = UserId::new(Uuid::from_u128(0xA9E1));
         let owner = UserId::new(Uuid::from_u128(0x0E1E));
-        let agent_group = proxima_core::GroupId::new(Uuid::now_v7());
-        let owner_group = proxima_core::GroupId::new(Uuid::now_v7());
+        let agent_group = proxiima_core::GroupId::new(Uuid::now_v7());
+        let owner_group = proxiima_core::GroupId::new(Uuid::now_v7());
         let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
             agent,
             owner,
@@ -745,8 +745,8 @@ mod tests {
         let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
             agent: UserId::new(Uuid::from_u128(0xA9E1)),
             owner: UserId::new(Uuid::from_u128(0x0E1E)),
-            agent_group: proxima_core::GroupId::new(Uuid::now_v7()),
-            owner_group: proxima_core::GroupId::new(Uuid::now_v7()),
+            agent_group: proxiima_core::GroupId::new(Uuid::now_v7()),
+            owner_group: proxiima_core::GroupId::new(Uuid::now_v7()),
         });
         let user = UserId::new(Uuid::now_v7());
         let first = OidcBinding::new(
@@ -893,8 +893,8 @@ mod tests {
         let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
             agent: UserId::new(Uuid::from_u128(0xA9E1)),
             owner,
-            agent_group: proxima_core::GroupId::new(Uuid::now_v7()),
-            owner_group: proxima_core::GroupId::new(Uuid::now_v7()),
+            agent_group: proxiima_core::GroupId::new(Uuid::now_v7()),
+            owner_group: proxiima_core::GroupId::new(Uuid::now_v7()),
         });
         let shaper: Arc<dyn OidcRoleShaper> = Arc::new(TenantShaper);
         let bindings = OidcBindingSet::new([OidcBinding::with_role_shape(
@@ -974,7 +974,7 @@ mod tests {
                 Self::Widen => AuthzContext::for_subject_with_role(
                     subject,
                     [(
-                        OwnerId::from(proxima_core::GroupId::new(Uuid::now_v7())),
+                        OwnerId::from(proxiima_core::GroupId::new(Uuid::now_v7())),
                         Role::admin(),
                     )],
                     AuthPath::HostBearer,
@@ -1007,8 +1007,8 @@ mod tests {
             let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
                 agent: UserId::new(Uuid::from_u128(0xA9E1)),
                 owner,
-                agent_group: proxima_core::GroupId::new(Uuid::now_v7()),
-                owner_group: proxima_core::GroupId::new(Uuid::now_v7()),
+                agent_group: proxiima_core::GroupId::new(Uuid::now_v7()),
+                owner_group: proxiima_core::GroupId::new(Uuid::now_v7()),
             });
             let bindings = OidcBindingSet::new([OidcBinding::with_role_shape(
                 config(OWNER_AUD),
@@ -1076,8 +1076,8 @@ mod tests {
         let owner_access: Arc<dyn OwnerAccessPort> = Arc::new(StaticOwnerAccess {
             agent: UserId::new(Uuid::from_u128(0xA9E1)),
             owner: subject,
-            agent_group: proxima_core::GroupId::new(Uuid::now_v7()),
-            owner_group: proxima_core::GroupId::new(Uuid::now_v7()),
+            agent_group: proxiima_core::GroupId::new(Uuid::now_v7()),
+            owner_group: proxiima_core::GroupId::new(Uuid::now_v7()),
         });
         let mut counters = Vec::new();
         let mut bindings = Vec::new();

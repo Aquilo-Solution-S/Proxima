@@ -1,7 +1,7 @@
 //! A serving pool through a transaction-mode `PgBouncer` (#493).
 //!
-//! Runs only when `PROXIMA_TEST_PGBOUNCER_URL` names a `PgBouncer` in
-//! transaction mode in front of the `PROXIMA_TEST_PG_URL` server, configured
+//! Runs only when `PROXIIMA_TEST_PGBOUNCER_URL` names a `PgBouncer` in
+//! transaction mode in front of the `PROXIIMA_TEST_PG_URL` server, configured
 //! as the CI `PgBouncer` lane is (`.github/workflows/ci.yml`):
 //! `max_prepared_statements` above zero, `track_extra_parameters` including
 //! `statement_timeout`, and `extra_float_digits` NOT in
@@ -11,9 +11,9 @@
 
 use std::time::Duration;
 
-use proxima_pg_testkit::{db_url, drop_db, split_role_urls, test_pooler_url, through_test_pooler};
-use proxima_storage_pg::PgPoolConfig;
-use proxima_storage_pg::test_fixtures::create_core_db;
+use proxiima_pg_testkit::{db_url, drop_db, split_role_urls, test_pooler_url, through_test_pooler};
+use proxiima_storage_pg::PgPoolConfig;
+use proxiima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -22,10 +22,10 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 /// (a visible skip) when no pooler is configured.
 async fn pooled_runtime() -> TestResult<Option<(String, String)>> {
     if test_pooler_url().is_none() {
-        eprintln!("skipped: PROXIMA_TEST_PGBOUNCER_URL is not set");
+        eprintln!("skipped: PROXIIMA_TEST_PGBOUNCER_URL is not set");
         return Ok(None);
     }
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_core_db(&db_name).await?;
     let (runtime_url, _platform_url) = split_role_urls(&db_name).await?;
     Ok(Some((db_name, through_test_pooler(&runtime_url))))
@@ -76,7 +76,7 @@ async fn a_serving_pool_connects_through_a_transaction_pooler() -> TestResult {
 }
 
 /// The lane's pooler is strict: a bare sqlx connect, which sends
-/// `extra_float_digits` at startup, is refused. This is what every Proxima
+/// `extra_float_digits` at startup, is refused. This is what every Proxiima
 /// pool met before the serving policy stopped sending it, and what keeps
 /// the test above honest.
 #[tokio::test]

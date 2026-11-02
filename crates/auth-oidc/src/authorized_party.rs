@@ -39,7 +39,7 @@ pub enum AuthorizedPartyPolicyError {
 /// The constructor is the only way in; a literal cannot skip its checks:
 ///
 /// ```compile_fail,E0451
-/// let _ = proxima_auth_oidc::AuthorizedPartyPolicy {
+/// let _ = proxiima_auth_oidc::AuthorizedPartyPolicy {
 ///     allowed: std::collections::HashSet::new(),
 /// };
 /// ```

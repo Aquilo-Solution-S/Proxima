@@ -1,4 +1,4 @@
-//! `core/list_substrate_tools` — dispatchable substrate and flavor MCP tools.
+//! `core/list_substrate_tools` — dispatchable substrate and spiice MCP tools.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -42,7 +42,7 @@ pub struct ListSubstrateToolsOutput {
 pub(super) fn substrate_tool_source(desc: &McpToolDescriptor) -> String {
     match &desc.origin {
         McpToolOrigin::Substrate => "substrate".into(),
-        McpToolOrigin::Flavor(id) => format!("flavor:{id}"),
+        McpToolOrigin::Spiice(id) => format!("spiice:{id}"),
     }
 }
 
@@ -168,7 +168,7 @@ mod tests {
     use super::*;
     use crate::mcp::McpAuthorContext;
     use crate::protocol::{action as protocol_action, tool as protocol_tool};
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, FlavorServices, OwnerId, UserId};
+    use crate::{AuthPath, AuthzContext, OwnerId, SpiiceRegistry, SpiiceServices, UserId};
     use std::sync::Arc;
 
     #[tokio::test]
@@ -177,7 +177,7 @@ mod tests {
         let ctx = McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            registry: Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test".into(),
                 trusted_model_id: None,
@@ -186,9 +186,9 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         };
 
         let registry = ctx.registry.clone();

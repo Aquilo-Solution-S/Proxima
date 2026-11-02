@@ -34,14 +34,14 @@ async fn evidence_target(
         origin.kind()
     } else {
         let stored: Option<PgMemoryKind> =
-            sqlx::query_scalar("SELECT kind FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT kind FROM proxiima_core.memory WHERE t = $1")
                 .bind(item.memory_id().into_inner())
                 .fetch_optional(&mut **tx)
                 .await
                 .map_err(map_err)?;
         let Some(stored) = stored else {
             return Err(StorageError::ConstraintViolation(
-                proxima_core::verbs::goal_write::EVIDENCE_DOES_NOT_EXIST.into(),
+                proxiima_core::verbs::goal_write::EVIDENCE_DOES_NOT_EXIST.into(),
             ));
         };
         EntityKind::from(stored)
@@ -71,7 +71,7 @@ pub(super) async fn carried_evidence(
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
     let ids: Option<Vec<uuid::Uuid>> = sqlx::query_scalar(
         "SELECT evidence_t
-           FROM proxima_core.goal
+           FROM proxiima_core.goal
           WHERE t = $1 AND owner_id = $2",
     )
     .bind(goal_id.into_inner())
@@ -82,7 +82,7 @@ pub(super) async fn carried_evidence(
     let mut out = Vec::new();
     for id in ids.unwrap_or_default() {
         let memory_id = MemoryId::new(id);
-        out.push(if proxima_core::memory_store_number(id) == store_number {
+        out.push(if proxiima_core::memory_store_number(id) == store_number {
             evidence_target(tx, GoalEvidenceRef::new(memory_id)).await?
         } else {
             EvidenceTarget { memory_id }

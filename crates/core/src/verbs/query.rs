@@ -29,7 +29,7 @@ pub enum SearchMode {
     Hybrid,
 }
 
-/// Score-based warning for flavor callers: a `Hybrid` search returned rows
+/// Score-based warning for spiice callers: a `Hybrid` search returned rows
 /// without positive semantic similarity. This heuristic cannot distinguish
 /// an absent semantic leg from zero cosine or a lexical-only page. Core
 /// memory search reports degradation from its resolved embedding route.
@@ -381,7 +381,7 @@ pub struct QueryPage {
     pub after: Option<QueryCursor>,
 }
 
-/// One core-generic Query request. Flavor-typed filters
+/// One core-generic Query request. Spiice-typed filters
 /// per docs/protocol.md
 /// registers a sidecar (M3+).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -530,7 +530,7 @@ pub struct GoalRow {
 
 /// Scalar bind for a sidecar-column series-handle lookup.
 ///
-/// Flavor code names sidecar columns and values. Storage joins the
+/// Spiice code names sidecar columns and values. Storage joins the
 /// registered sidecar to `memory_head`. No core table name crosses
 /// this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -566,7 +566,7 @@ pub struct SidecarHeadsRequest {
     pub limit: u32,
 }
 
-/// One readable current head, including a flavor-declared tombstone head.
+/// One readable current head, including a spiice-declared tombstone head.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidecarHead {
     pub memory_id: MemoryId,
@@ -582,7 +582,7 @@ pub struct SidecarHeadsPage {
     pub next_cursor: Option<MemoryId>,
 }
 
-/// A sidecar head query resolved against the frozen flavor contracts.
+/// A sidecar head query resolved against the frozen spiice contracts.
 ///
 /// Storage can inspect this descriptor but only core can construct it;
 /// callers supply schema IDs and values, never table or column identifiers.
@@ -599,7 +599,7 @@ pub struct ResolvedSidecarHeads<'a> {
 
 impl<'a> ResolvedSidecarHeads<'a> {
     pub(crate) fn resolve(
-        contracts: &[&'static crate::FlavorContract],
+        contracts: &[&'static crate::SpiiceContract],
         request: &'a SidecarHeadsRequest,
     ) -> Result<Self, crate::error::ProtocolError> {
         use crate::error::ProtocolError;

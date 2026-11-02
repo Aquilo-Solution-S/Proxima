@@ -1,5 +1,5 @@
 /// Tool names exposed to LLM-hosted MCP clients must also be valid
-/// provider function names. Internal ids use flavor-style `/`
+/// provider function names. Internal ids use spiice-style `/`
 /// separators, which some runners pass through unchanged.
 #[must_use]
 pub fn provider_safe_tool_name(canonical: &str) -> String {

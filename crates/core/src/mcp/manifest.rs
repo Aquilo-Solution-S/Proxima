@@ -1,5 +1,5 @@
-use crate::flavor::FLAVOR_0;
-use crate::flavor::contract::ResourceContract;
+use crate::spiice::SPIICE_0;
+use crate::spiice::contract::ResourceContract;
 use crate::{ResourceKey, ScopeKey, ToolName};
 
 use super::core_tools;
@@ -111,7 +111,7 @@ pub struct McpToolAnnotations {
 }
 
 impl McpToolAnnotations {
-    /// A registered substrate or flavor tool: `openWorldHint: false`, since
+    /// A registered substrate or spiice tool: `openWorldHint: false`, since
     /// it reaches this deployment's own state and nothing else.
     #[must_use]
     pub const fn registered(effect: ToolEffect) -> Self {
@@ -150,13 +150,13 @@ pub struct CoreActionMeta {
     pub produces_schema_ids: &'static [&'static str],
 }
 
-/// Flavor #0's `proxima://` resources, in declaration order.
+/// Spiice #0's `proxiima://` resources, in declaration order.
 ///
 /// The list is the contract's, not a second copy of it: advertising a
 /// resource and dispatching it read the same `ResourceContract` entry.
 #[must_use = "iterators are lazy and must be consumed"]
 pub fn all_core_resources() -> impl Iterator<Item = &'static ResourceContract> {
-    FLAVOR_0.resources.iter()
+    SPIICE_0.resources.iter()
 }
 
 /// The synthesized guide's canonical key. Its existing transport route
@@ -201,7 +201,7 @@ pub fn core_action_meta(tool: &str, action: &str) -> Option<&'static CoreActionM
 /// The scope gate is key membership ([`crate::ToolScope::allows`]), and
 /// `read_resource` funnels through that same gate with the resource's scope key
 /// standing in for a tool name — so a palette assembled from tools alone denies
-/// every `proxima://` read rather than merely not advertising it. Resource keys
+/// every `proxiima://` read rather than merely not advertising it. Resource keys
 /// are therefore part of the canonical enumeration, not an optional extra a
 /// caller remembers to append.
 ///
@@ -211,7 +211,7 @@ pub fn core_action_meta(tool: &str, action: &str) -> Option<&'static CoreActionM
 /// argv-keyed dispatchers included). Sorted by canonical spelling, without
 /// duplicates.
 #[must_use]
-pub fn canonical_scope_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<ScopeKey> {
+pub fn canonical_scope_keys(registry: &crate::SpiiceRegistryFrozen) -> Vec<ScopeKey> {
     canonical_scope_keys_excluding(registry, &[])
 }
 
@@ -230,7 +230,7 @@ pub fn canonical_scope_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<Scope
 /// and action is a scope key part.
 #[must_use]
 pub fn canonical_scope_keys_excluding(
-    registry: &crate::FlavorRegistryFrozen,
+    registry: &crate::SpiiceRegistryFrozen,
     exclude: &[&str],
 ) -> Vec<ScopeKey> {
     let excluded: std::collections::HashSet<ScopeKey> = exclude
@@ -271,7 +271,7 @@ pub fn canonical_scope_keys_excluding(
 ///
 /// As [`canonical_scope_keys`].
 #[must_use]
-pub fn canonical_served_read_keys(registry: &crate::FlavorRegistryFrozen) -> Vec<ScopeKey> {
+pub fn canonical_served_read_keys(registry: &crate::SpiiceRegistryFrozen) -> Vec<ScopeKey> {
     let mut keys: Vec<ScopeKey> = registry
         .list_mcp_tools()
         .iter()
@@ -294,7 +294,7 @@ mod effect_tests {
 
     #[test]
     fn mandatory_served_reads_include_owner_reads_resources_and_the_guide() {
-        let registry = crate::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = crate::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let mandatory = super::canonical_served_read_keys(&registry);
         let canonical = super::canonical_scope_keys(&registry);
         for key in &mandatory {
@@ -407,10 +407,10 @@ mod effect_tests {
 #[cfg(test)]
 mod scope_key_tests {
     use super::{all_core_resources, canonical_scope_keys, canonical_scope_keys_excluding};
-    use crate::{FlavorRegistry, ScopeKey};
+    use crate::{ScopeKey, SpiiceRegistry};
 
-    fn default_registry() -> crate::FlavorRegistryFrozen {
-        FlavorRegistry::default()
+    fn default_registry() -> crate::SpiiceRegistryFrozen {
+        SpiiceRegistry::default()
             .try_freeze()
             .expect("the default registry seals")
     }

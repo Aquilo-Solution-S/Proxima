@@ -8,8 +8,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY . .
-RUN cargo build --release -p proxima-mcp \
-    && cp target/release/proxima-mcp /proxima-mcp
+RUN cargo build --release -p proxiima-mcp \
+    && cp target/release/proxiima-mcp /proxiima-mcp
 
 # Distroless cc image: glibc + libstdc++ (for aws-lc) + ca-certificates
 # (for outbound TLS to Zitadel/S3/embeddings), non-root by default.
@@ -19,13 +19,13 @@ FROM gcr.io/distroless/cc-debian12@sha256:e5d81ddde149641e2a9ba55be4545bc125c67d
 # to an MCP client that can already reach it.
 ARG VERSION=0.0.0
 ARG REVISION=unknown
-LABEL org.opencontainers.image.title="proxima-mcp" \
-      org.opencontainers.image.description="Proxima MCP server" \
+LABEL org.opencontainers.image.title="proxiima-mcp" \
+      org.opencontainers.image.description="Proxiima MCP server" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.source="https://github.com/Aquilo-Solution-S/Proxima"
-COPY --from=builder /proxima-mcp /usr/local/bin/proxima-mcp
+      org.opencontainers.image.source="https://github.com/Aquilo-Solution-S/proxiima"
+COPY --from=builder /proxiima-mcp /usr/local/bin/proxiima-mcp
 USER nonroot:nonroot
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/proxima-mcp"]
+ENTRYPOINT ["/usr/local/bin/proxiima-mcp"]

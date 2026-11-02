@@ -2,7 +2,7 @@ use sqlx::{PgConnection, Postgres, Transaction};
 
 use super::PgSidecarRegistryFrozen;
 use crate::error::map_err;
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 
 impl PgSidecarRegistryFrozen {
     /// Synchronize sidecars whose owner follows memory in the caller's migration transaction.
@@ -17,12 +17,44 @@ impl PgSidecarRegistryFrozen {
         &self,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<(), StorageError> {
-        sqlx::query("SELECT proxima_core.sync_owner_follows($1, $2)")
-            .bind(self.flavor_schema_names())
+        sqlx::query("SELECT proxiima_core.sync_owner_follows($1, $2)")
+            .bind(self.spiice_schema_names())
             .bind(self.owner_follows_memory_sidecar_tables())
             .execute(&mut **tx)
             .await
             .map_err(map_err)?;
+        Ok(())
+    }
+
+    /// Synchronize the frozen composition during transaction-local historical replay.
+    ///
+    /// # Errors
+    /// Propagates scope and database errors; the caller finalizes before committing.
+    #[doc(hidden)]
+    pub async fn sync_historical_owner_follows(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<(), StorageError> {
+        let schemas = self
+            .spiice_schema_names()
+            .iter()
+            .map(|name| crate::rename_bootstrap::historical_catalog_name(name))
+            .collect::<Vec<_>>();
+        let tables = self
+            .owner_follows_memory_sidecar_tables()
+            .iter()
+            .map(|name| crate::rename_bootstrap::historical_catalog_name(name))
+            .collect::<Vec<_>>();
+        // SQL-POLICY: fixed-fragment — namespace from embedded historical definitions.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {}core.sync_owner_follows($1, $2)",
+            crate::rename_bootstrap::historical_namespace_prefix()
+        )))
+        .bind(schemas)
+        .bind(tables)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
         Ok(())
     }
 
@@ -39,10 +71,10 @@ impl PgSidecarRegistryFrozen {
     pub async fn ensure_owner_follows(&self, conn: &mut PgConnection) -> Result<(), StorageError> {
         let expected = self.owner_follows_memory_sidecar_tables();
         let mut actual: Vec<String> = sqlx::query_scalar(
-            "SELECT table_name FROM proxima_core.owner_follows
+            "SELECT table_name FROM proxiima_core.owner_follows
               WHERE split_part(table_name, '.', 1) = ANY($1)",
         )
-        .bind(self.flavor_schema_names())
+        .bind(self.spiice_schema_names())
         .fetch_all(&mut *conn)
         .await
         .map_err(map_err)?;

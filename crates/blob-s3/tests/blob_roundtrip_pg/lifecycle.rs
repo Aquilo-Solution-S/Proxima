@@ -82,7 +82,7 @@ pub(super) fn lifecycle_store(pg: &PgStorage, config: &S3RuntimeConfig) -> Cited
 }
 
 pub(super) fn host_ctx(owner: OwnerId) -> AuthzContext {
-    proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ))
@@ -93,7 +93,7 @@ pub(super) fn host_ctx(owner: OwnerId) -> AuthzContext {
 #[tokio::test]
 async fn a_fact_citing_an_aborted_upload_is_a_conflict() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let (pg, db_name) = fresh_storage().await;
@@ -108,7 +108,7 @@ async fn a_fact_citing_an_aborted_upload_is_a_conflict() {
     let service = CitedBlobService::new(Arc::new(AbortAfterStagePort {
         inner: store.clone(),
     }) as Arc<dyn CitedBlobPort>);
-    let error = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+    let error = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg.clone()).storage_ports())
         .complete_upload_as_fact(&service, &ctx, owner, &upload_id, &[])
         .await
@@ -137,7 +137,7 @@ async fn a_fact_citing_an_aborted_upload_is_a_conflict() {
 #[tokio::test]
 async fn abort_after_completion_reports_not_aborted() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let (pg, db_name) = fresh_storage().await;
@@ -171,7 +171,7 @@ async fn abort_after_completion_reports_not_aborted() {
 #[tokio::test]
 async fn finish_after_expiry_is_a_conflict() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let (pg, db_name) = fresh_storage().await;
@@ -183,7 +183,7 @@ async fn finish_after_expiry_is_a_conflict() {
     let body: &'static [u8] = b"%PDF-1.7 never staged";
     let upload_id = staged_upload(&pool, &store, &config, &ctx, owner, "never.pdf", body).await;
     sqlx::query(
-        "UPDATE proxima_core.blob_uploads SET expires_at = now() - interval '1 hour'
+        "UPDATE proxiima_core.blob_uploads SET expires_at = now() - interval '1 hour'
           WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&upload_id).expect("upload id"))
@@ -212,7 +212,7 @@ async fn finish_after_expiry_is_a_conflict() {
 #[tokio::test]
 async fn a_staged_upload_past_its_ttl_still_finishes() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let (pg, db_name) = fresh_storage().await;
@@ -234,7 +234,7 @@ async fn a_staged_upload_past_its_ttl_still_finishes() {
         .await
         .expect("stage");
     sqlx::query(
-        "UPDATE proxima_core.blob_uploads SET expires_at = now() - interval '1 hour'
+        "UPDATE proxiima_core.blob_uploads SET expires_at = now() - interval '1 hour'
           WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&upload_id).expect("upload id"))
@@ -256,7 +256,7 @@ async fn a_staged_upload_past_its_ttl_still_finishes() {
 #[tokio::test]
 async fn find_held_blobs_answers_only_completed_uploads() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let (pg, db_name) = fresh_storage().await;
@@ -268,7 +268,7 @@ async fn find_held_blobs_answers_only_completed_uploads() {
 
     let unbacked = [9_u8; 32];
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')
+        "INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')
          ON CONFLICT (owner_id) DO NOTHING",
     )
     .bind(owner.into_inner())
@@ -276,7 +276,7 @@ async fn find_held_blobs_answers_only_completed_uploads() {
     .await
     .expect("owner row");
     sqlx::query(
-        "INSERT INTO proxima_core.blob (schema_id, owner_id, content_hash)
+        "INSERT INTO proxiima_core.blob (schema_id, owner_id, content_hash)
          VALUES ('core/uploaded-blob-v1', $1, $2)",
     )
     .bind(owner.into_inner())
@@ -317,7 +317,7 @@ async fn find_held_blobs_answers_only_completed_uploads() {
 #[tokio::test]
 async fn a_put_of_more_bytes_than_declared_does_not_land() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let (pg, db_name) = fresh_storage().await;
@@ -339,12 +339,13 @@ async fn a_put_of_more_bytes_than_declared_does_not_land() {
         )
         .await
         .expect("prepare");
-    let pending_key: String =
-        sqlx::query_scalar("SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1")
-            .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
-            .fetch_one(&pool)
-            .await
-            .expect("pending key");
+    let pending_key: String = sqlx::query_scalar(
+        "SELECT object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1",
+    )
+    .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
+    .fetch_one(&pool)
+    .await
+    .expect("pending key");
     let put = |body: Vec<u8>| {
         let mut request = reqwest::Client::new().put(&prepared.upload_url);
         for header in &prepared.headers {

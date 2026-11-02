@@ -1,18 +1,18 @@
 //! Schema verb — registry introspection.
 //!
 //! See docs/protocol.md §"Schema" and
-//! docs/build-a-flavor.md.
+//! docs/build-a-spiice.md.
 
 use crate::authz::{AuthorizationHook, AuthzContext, AuthzInput, AuthzOutcome, OwnerResolver};
 use crate::error::ProtocolError;
-use crate::flavor::contract::{
-    Band, BandComparability, CoreBandName, FlavorContract, LanguagePolicy, RankSource,
-    SearchProjectionDecl, SubstringArm,
-};
 use crate::mcp::RequestBehavior;
+use crate::spiice::contract::{
+    Band, BandComparability, CoreBandName, LanguagePolicy, RankSource, SearchProjectionDecl,
+    SpiiceContract, SubstringArm,
+};
 use crate::{
-    CapabilityTag, FlavorDescriptor, McpToolDescriptor, OwnerId, SchemaId, SchemaVersion,
-    SearchProjectionColumnKind, SidecarPayload,
+    CapabilityTag, McpToolDescriptor, OwnerId, SchemaId, SchemaVersion, SearchProjectionColumnKind,
+    SidecarPayload, SpiiceDescriptor,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -136,12 +136,12 @@ pub struct SchemaInfo {
     pub schema_version: SchemaVersion,
     pub kind: PayloadKind,
     pub filter_keys: Vec<String>,
-    /// Sidecar table identifier (qualified, e.g. `proxima_notes.note_v1`)
+    /// Sidecar table identifier (qualified, e.g. `proxiima_notes.note_v1`)
     /// when the payload trait declares one. `None` is valid for typed Fact
     /// and Goal schemas whose payload needs no schema-owned columns, and is
     /// the only value for citation schemas, typed or opaque.
     pub sidecar_table: Option<String>,
-    /// Natural-key columns for stateful Fact schemas (docs/build-a-flavor.md
+    /// Natural-key columns for stateful Fact schemas (docs/build-a-spiice.md
     /// Fact schemas). Empty for stateless / non-Fact schemas. Decides
     /// which series `handle` an ingest lands on, which is what makes
     /// heads-only `Query` return one row per key.
@@ -167,10 +167,10 @@ impl SchemaInfo {
     /// ingress parser, no JSON schema, and no sidecar table.
     ///
     /// `has_typed_ingress == false` is the typed/opaque discriminant the
-    /// registry enforces: `FlavorRegistry::try_freeze` asserts every schema
+    /// registry enforces: `SpiiceRegistry::try_freeze` asserts every schema
     /// either has a protocol-ingress parser or is an opaque `CitedObject`
     /// schema.
-    /// See docs/build-a-flavor.md.
+    /// See docs/build-a-spiice.md.
     #[must_use]
     pub(crate) fn opaque(
         schema_id: SchemaId,
@@ -192,7 +192,7 @@ impl SchemaInfo {
 }
 
 /// The Postgres schemas a composed registry stores into, sorted: core's
-/// `proxima_core`, then each schema that a linked flavor's contract names in
+/// `proxiima_core`, then each schema that a linked spiice's contract names in
 /// a surface table or a sidecar table (`<schema>.<table>`).
 ///
 /// The one derivation boot uses for the runtime-grant plan, the owner-RLS
@@ -200,8 +200,8 @@ impl SchemaInfo {
 /// scope. A host that freezes a registry without booting (a test, a tool)
 /// calls it to run the same checks or grants on the same set.
 #[must_use]
-pub fn composed_schema_names(registry: &FlavorRegistryFrozen) -> Vec<String> {
-    let mut schemas = vec!["proxima_core".to_owned()];
+pub fn composed_schema_names(registry: &SpiiceRegistryFrozen) -> Vec<String> {
+    let mut schemas = vec!["proxiima_core".to_owned()];
     for contract in registry.contracts() {
         for surface in contract.all_surfaces() {
             if let Some((schema, _)) = surface.table.split_once('.')
@@ -248,12 +248,12 @@ pub struct MemorySearchProjectionField {
 /// `bands` is an unordered `&[Band]` keyed by name, so a renderer that wants
 /// the exact arm has to search it. Freeze already proves a
 /// `RankSource::Projection` schema declares all three
-/// ([`FlavorRegistryError::ProjectionBandName`]), so the search can happen
+/// ([`SpiiceRegistryError::ProjectionBandName`]), so the search can happen
 /// there, once, instead of per statement on the query path — and the proof
 /// travels as a value the renderer destructures rather than as an error arm
 /// it can never take.
 ///
-/// [`FlavorRegistryError::ProjectionBandName`]: crate::flavor::FlavorRegistryError::ProjectionBandName
+/// [`SpiiceRegistryError::ProjectionBandName`]: crate::spiice::SpiiceRegistryError::ProjectionBandName
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RenderBands {
     pub exact: Band,
@@ -266,13 +266,13 @@ impl RenderBands {
     ///
     /// The one place the core renderer's arm names are listed. `Err` carries
     /// the first missing name, which is exactly what
-    /// [`FlavorRegistryError::ProjectionBandName`] reports.
+    /// [`SpiiceRegistryError::ProjectionBandName`] reports.
     ///
     /// # Errors
     ///
     /// The name of the first arm `bands` does not declare.
     ///
-    /// [`FlavorRegistryError::ProjectionBandName`]: crate::flavor::FlavorRegistryError::ProjectionBandName
+    /// [`SpiiceRegistryError::ProjectionBandName`]: crate::spiice::SpiiceRegistryError::ProjectionBandName
     pub fn resolve(bands: &[Band]) -> Result<Self, &'static str> {
         let named = |name: CoreBandName| {
             bands
@@ -292,7 +292,7 @@ impl RenderBands {
 /// One search surface, as the SQL builders need it — the runtime reading of
 /// a `SchemaContract` whose `search` is `Projected`.
 ///
-/// Built from the flavor contracts at freeze.
+/// Built from the spiice contracts at freeze.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemorySearchProjection {
     pub schema_id: SchemaId,
@@ -308,11 +308,11 @@ pub struct MemorySearchProjection {
     /// DECLARED column instead of assuming `t`. Not optional: freeze
     /// refuses a projected schema whose sidecar surface is absent or keyed
     /// on anything but a memory `t`
-    /// (`FlavorRegistryError::ProjectedSidecarNotMemoryKeyed`), so by the
+    /// (`SpiiceRegistryError::ProjectedSidecarNotMemoryKeyed`), so by the
     /// time a builder holds this value the column exists. The refusal is
     /// what keeps a renamed key column from becoming a silent `t` default.
     pub sidecar_key_column: String,
-    /// The flavor's projection table, where the vector lives.
+    /// The spiice's projection table, where the vector lives.
     pub projection_table: String,
     pub fields: Vec<MemorySearchProjectionField>,
     /// Sidecar column the projection's `tag` array was copied from.
@@ -337,21 +337,21 @@ pub struct MemorySearchProjection {
     /// rows — which is what makes deleting the blanket `LIKE` retry a
     /// mechanism change rather than a recall cut.
     pub substring: SubstringArm,
-    /// The owning flavor's candidate budget for ONE statement over its
+    /// The owning spiice's candidate budget for ONE statement over its
     /// projection ([`ProjectionSpec::overfetch_k`]).
     ///
-    /// [`ProjectionSpec::overfetch_k`]: crate::flavor::contract::ProjectionSpec::overfetch_k
+    /// [`ProjectionSpec::overfetch_k`]: crate::spiice::contract::ProjectionSpec::overfetch_k
     pub overfetch_k: u32,
-    /// The owning flavor's band-comparability claim
+    /// The owning spiice's band-comparability claim
     /// ([`ProjectionSpec::band_comparability`]). Core's merge admits a
     /// non-core projection only under [`BandComparability::CoreBands`].
     ///
-    /// [`ProjectionSpec::band_comparability`]: crate::flavor::contract::ProjectionSpec::band_comparability
+    /// [`ProjectionSpec::band_comparability`]: crate::spiice::contract::ProjectionSpec::band_comparability
     pub band_comparability: BandComparability,
-    /// The owning flavor's read shape ([`ProjectionSpec::rank_source`]).
-    /// Core's renderer serves [`RankSource::Projection`] flavors only.
+    /// The owning spiice's read shape ([`ProjectionSpec::rank_source`]).
+    /// Core's renderer serves [`RankSource::Projection`] spiices only.
     ///
-    /// [`ProjectionSpec::rank_source`]: crate::flavor::contract::ProjectionSpec::rank_source
+    /// [`ProjectionSpec::rank_source`]: crate::spiice::contract::ProjectionSpec::rank_source
     pub rank_source: RankSource,
 }
 
@@ -380,7 +380,7 @@ pub struct MemoryEmbedUnit {
     /// but a memory `t` ([`EmbeddedSidecarNotMemoryKeyed`]), so by the time
     /// a drain holds this value the column exists.
     ///
-    /// [`EmbeddedSidecarNotMemoryKeyed`]: crate::flavor::FlavorRegistryError::EmbeddedSidecarNotMemoryKeyed
+    /// [`EmbeddedSidecarNotMemoryKeyed`]: crate::spiice::SpiiceRegistryError::EmbeddedSidecarNotMemoryKeyed
     pub key_column: String,
 }
 
@@ -392,14 +392,14 @@ pub struct SchemaResponse {
     pub schemas: Vec<SchemaInfo>,
 }
 
-/// Build-time lookup acceleration for `FlavorRegistryFrozen`. Each map
+/// Build-time lookup acceleration for `SpiiceRegistryFrozen`. Each map
 /// stores the position of the *first* matching entry in the owning
 /// `Vec`, mirroring the `.iter().find()` first-wins semantics of the
 /// linear scans it replaces. The frozen vocabulary has no mutation
 /// surface, so a stored index never goes stale.
 ///
 /// Only the collections that scale with *schema* count and sit on the
-/// `FactIngest` / `GoalWrite` paths are indexed. `flavors` scales with
+/// `FactIngest` / `GoalWrite` paths are indexed. `spiices` scales with
 /// linked crate count and stays a linear scan — indexing a handful of
 /// entries would not earn its keep.
 #[derive(Debug, Clone, Default)]
@@ -425,7 +425,7 @@ impl FrozenIndex {
     fn build(
         schemas: &[SchemaInfo],
         protocol_ingress: &[ProtocolPayloadIngressEntry],
-        contracts: &[&'static FlavorContract],
+        contracts: &[&'static SpiiceContract],
         embed_units: &[MemoryEmbedUnit],
     ) -> Self {
         let mut index = Self::default();
@@ -468,7 +468,7 @@ impl FrozenIndex {
 /// stable across processes so a query plan does not depend on registration
 /// order.
 pub(crate) fn non_embeddable_schema_ids(
-    contracts: &[&'static FlavorContract],
+    contracts: &[&'static SpiiceContract],
     embed_units: &[MemoryEmbedUnit],
 ) -> Vec<String> {
     let mut embeds: BTreeMap<String, bool> = BTreeMap::new();
@@ -492,7 +492,7 @@ pub(crate) fn non_embeddable_schema_ids(
 }
 
 #[derive(Debug, Clone)]
-pub struct FlavorRegistryFrozen {
+pub struct SpiiceRegistryFrozen {
     schemas: Vec<SchemaInfo>,
     schema_capability_tags:
         HashMap<(SchemaId, SchemaVersion, PayloadKind), BTreeSet<CapabilityTag>>,
@@ -501,9 +501,9 @@ pub struct FlavorRegistryFrozen {
     protocol_ingress: Vec<ProtocolPayloadIngressEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     request_behaviors: Vec<Arc<dyn RequestBehavior>>,
-    flavors: Vec<FlavorDescriptor>,
-    contracts: Vec<&'static FlavorContract>,
-    /// Every linked flavor's scope declarations, flattened at freeze.
+    spiices: Vec<SpiiceDescriptor>,
+    contracts: Vec<&'static SpiiceContract>,
+    /// Every linked spiice's scope declarations, flattened at freeze.
     ///
     /// Flattened rather than walked per lookup because the consumer is a
     /// write path: an admission resolves its payload's `ScopeKind` to a
@@ -530,8 +530,8 @@ pub struct FlavorRegistryFrozen {
 /// be a `String` — the same refusal, raised at the one place the column is
 /// read, rather than a default no reader could tell from a declaration.
 pub fn contract_search_projections(
-    contracts: &[&'static FlavorContract],
-) -> Result<Vec<MemorySearchProjection>, crate::flavor::FlavorRegistryError> {
+    contracts: &[&'static SpiiceContract],
+) -> Result<Vec<MemorySearchProjection>, crate::spiice::SpiiceRegistryError> {
     let mut out = Vec::new();
     for contract in contracts {
         let Some(spec) = contract.projection.spec() else {
@@ -559,8 +559,8 @@ pub fn contract_search_projections(
                 sidecar_key_column: contract
                     .sidecar_memory_key_column(sidecar_table)
                     .ok_or(
-                        crate::flavor::FlavorRegistryError::ProjectedSidecarNotMemoryKeyed {
-                            flavor_id: contract.flavor_id,
+                        crate::spiice::SpiiceRegistryError::ProjectedSidecarNotMemoryKeyed {
+                            spiice_id: contract.spiice_id,
                             schema_id: schema.schema_id(),
                             table: sidecar_table,
                         },
@@ -580,8 +580,8 @@ pub fn contract_search_projections(
                 rank_weights: schema.search.rank_weight_array(),
                 render_bands: if spec.rank_source.is_projection() {
                     Some(RenderBands::resolve(bands).map_err(|missing| {
-                        crate::flavor::FlavorRegistryError::ProjectionBandName {
-                            flavor_id: contract.flavor_id,
+                        crate::spiice::SpiiceRegistryError::ProjectionBandName {
+                            spiice_id: contract.spiice_id,
                             schema_id: schema.schema_id(),
                             missing,
                         }
@@ -611,7 +611,7 @@ pub fn contract_search_projections(
 /// third: [`EmbeddingRecipe::resolve`] binds a unit to its sidecar table and
 /// never sees a `Surface`, so a key read anywhere downstream would be read
 /// from a convention. Resolved contract-wide
-/// ([`FlavorContract::sidecar_memory_key_column`]) for the reason that lookup
+/// ([`SpiiceContract::sidecar_memory_key_column`]) for the reason that lookup
 /// documents — one table may be registered under two `SchemaContract`s and
 /// its `Surface` is declared on exactly one of them.
 ///
@@ -621,10 +621,10 @@ pub fn contract_search_projections(
 /// keyed on the memory `t`. Refused rather than defaulted, on the same rule
 /// the projection lane keeps: the default is the defect.
 ///
-/// [`EmbeddingRecipe::resolve`]: crate::flavor::EmbeddingRecipe::resolve
+/// [`EmbeddingRecipe::resolve`]: crate::spiice::EmbeddingRecipe::resolve
 pub(crate) fn contract_embed_units(
-    contracts: &[&'static FlavorContract],
-) -> Result<Vec<MemoryEmbedUnit>, crate::flavor::FlavorRegistryError> {
+    contracts: &[&'static SpiiceContract],
+) -> Result<Vec<MemoryEmbedUnit>, crate::spiice::SpiiceRegistryError> {
     let mut out = Vec::new();
     for contract in contracts {
         for schema in contract.schemas {
@@ -633,8 +633,8 @@ pub(crate) fn contract_embed_units(
                     continue;
                 };
                 let key_column = contract.sidecar_memory_key_column(table).ok_or(
-                    crate::flavor::FlavorRegistryError::EmbeddedSidecarNotMemoryKeyed {
-                        flavor_id: contract.flavor_id,
+                    crate::spiice::SpiiceRegistryError::EmbeddedSidecarNotMemoryKeyed {
+                        spiice_id: contract.spiice_id,
                         schema_id: schema.schema_id(),
                         table,
                     },
@@ -653,9 +653,9 @@ pub(crate) fn contract_embed_units(
     Ok(out)
 }
 
-impl FlavorRegistryFrozen {
-    /// Freeze a `FlavorRegistry` into its immutable, index-accelerated
-    /// form — called by `FlavorRegistry::try_freeze` after validation.
+impl SpiiceRegistryFrozen {
+    /// Freeze a `SpiiceRegistry` into its immutable, index-accelerated
+    /// form — called by `SpiiceRegistry::try_freeze` after validation.
     /// Consumes the builder whole and rehomes
     /// every vocabulary field. A new vocabulary kind is added in the
     /// two struct definitions plus the destructure below, which the
@@ -667,15 +667,15 @@ impl FlavorRegistryFrozen {
     /// Propagates the refusals raised by the vocabulary builders it calls
     /// (see [`contract_search_projections`] and [`contract_embed_units`]).
     pub(crate) fn from_registry(
-        registry: crate::FlavorRegistry,
-    ) -> Result<Self, crate::flavor::FlavorRegistryError> {
-        let crate::FlavorRegistry {
+        registry: crate::SpiiceRegistry,
+    ) -> Result<Self, crate::spiice::SpiiceRegistryError> {
+        let crate::SpiiceRegistry {
             schemas,
             schema_capability_tags,
             protocol_ingress,
             mcp_tools,
             request_behaviors,
-            flavors,
+            spiices,
             contracts,
             scoped_schemas: _,
             owner_resolver,
@@ -685,7 +685,7 @@ impl FlavorRegistryFrozen {
             .iter()
             .flat_map(|contract| contract.scopes.iter().copied())
             .collect();
-        let schema_capability_tags = crate::flavor::schema_capability_map(&schema_capability_tags);
+        let schema_capability_tags = crate::spiice::schema_capability_map(&schema_capability_tags);
         let search_projections = contract_search_projections(&contracts)?;
         let embed_units = contract_embed_units(&contracts)?;
         let index = FrozenIndex::build(&schemas, &protocol_ingress, &contracts, &embed_units);
@@ -697,7 +697,7 @@ impl FlavorRegistryFrozen {
             protocol_ingress,
             mcp_tools,
             request_behaviors,
-            flavors,
+            spiices,
             contracts,
             scopes,
             owner_resolver,
@@ -706,32 +706,32 @@ impl FlavorRegistryFrozen {
         })
     }
 
-    /// One flavor's contract, by id.
+    /// One spiice's contract, by id.
     ///
     /// Deliberately the only lookup on this type. The declarations are
-    /// `static`s: a consumer that knows which flavor it means reads
-    /// [`crate::FLAVOR_0`] directly and needs no registry at all. This
+    /// `static`s: a consumer that knows which spiice it means reads
+    /// [`crate::SPIICE_0`] directly and needs no registry at all. This
     /// exists for the consumers that do NOT know — the storage sidecar
-    /// registry cross-checking whatever flavors happen to be linked. A
+    /// registry cross-checking whatever spiices happen to be linked. A
     /// broader accessor surface here would be API nobody calls, with the
     /// second copy of every walk that implies.
-    /// Every linked flavor's contract, in registration order.
+    /// Every linked spiice's contract, in registration order.
     ///
     /// The projection guardrail needs the whole set, not one by name: what
-    /// it checks is that the DATABASE and the LINKED FLAVORS agree, and
+    /// it checks is that the DATABASE and the LINKED SPIICES agree, and
     /// neither side can be asked schema by schema.
     #[must_use]
-    pub fn contracts(&self) -> &[&'static FlavorContract] {
+    pub fn contracts(&self) -> &[&'static SpiiceContract] {
         &self.contracts
     }
 
-    /// Every flavor-owned lifecycle scope declaration in this binary
-    /// (docs/build-a-flavor.md), one per [`crate::ScopeKind`].
+    /// Every spiice-owned lifecycle scope declaration in this binary
+    /// (docs/build-a-spiice.md), one per [`crate::ScopeKind`].
     ///
     /// The write path's only source for the fence key's namespace and the
     /// liveness probe's table and columns: storage spells neither, it reads
     /// them here. Freeze proved there is exactly one declaration per kind,
-    /// so a lookup that misses is a payload naming a scope no linked flavor
+    /// so a lookup that misses is a payload naming a scope no linked spiice
     /// owns — refused, not fenced with a guess.
     #[must_use]
     pub fn scopes(&self) -> &[crate::scope::ScopeDecl] {
@@ -739,7 +739,7 @@ impl FlavorRegistryFrozen {
     }
 
     /// The declaration for one [`crate::ScopeKind`], or `None` when no
-    /// linked flavor declares it.
+    /// linked spiice declares it.
     #[must_use]
     pub fn scope_decl(&self, kind: crate::ScopeKind) -> Option<&crate::scope::ScopeDecl> {
         self.scopes.iter().find(|decl| decl.kind == kind)
@@ -756,7 +756,7 @@ impl FlavorRegistryFrozen {
     ///
     /// A MISS is not darkness. The lineage walk that reads this treats an
     /// unknown schema as `OriginEdges` — expand what the row says — because
-    /// the alternative is that a flavor registered without a contract makes
+    /// the alternative is that a spiice registered without a contract makes
     /// its memories invisible to `core_think`, which is a worse failure than
     /// showing a pin whose declaration nobody wrote.
     #[must_use]
@@ -764,7 +764,7 @@ impl FlavorRegistryFrozen {
         &self,
         schema_id: &SchemaId,
         kind: crate::EntityKind,
-    ) -> Option<crate::flavor::Provenance> {
+    ) -> Option<crate::spiice::Provenance> {
         self.contracts
             .iter()
             .flat_map(|contract| contract.schemas.iter())
@@ -775,18 +775,18 @@ impl FlavorRegistryFrozen {
     }
 
     #[must_use]
-    pub fn flavor_contract(&self, flavor_id: &str) -> Option<&'static FlavorContract> {
+    pub fn spiice_contract(&self, spiice_id: &str) -> Option<&'static SpiiceContract> {
         self.contracts
             .iter()
             .copied()
-            .find(|contract| contract.flavor_id == flavor_id)
+            .find(|contract| contract.spiice_id == spiice_id)
     }
 
-    /// Whether `table` is a host-owned [`crate::FlavorContract::state_surfaces`]
+    /// Whether `table` is a host-owned [`crate::SpiiceContract::state_surfaces`]
     /// binding.
     ///
-    /// Host-state commands may only name non-core flavor state tables.
-    /// Memory sidecars, kernel surfaces, flavor #0 state (Goals, …),
+    /// Host-state commands may only name non-core spiice state tables.
+    /// Memory sidecars, kernel surfaces, spiice #0 state (Goals, …),
     /// and undeclared names are not bindings.
     #[must_use]
     pub fn is_declared_state_surface(&self, table: &str) -> bool {
@@ -800,7 +800,7 @@ impl FlavorRegistryFrozen {
     }
 
     /// Memory sidecar tables whose rows stay with the SOURCE owner on
-    /// transfer — [`crate::flavor::TransferRule::RetainAtSource`], the
+    /// transfer — [`crate::spiice::TransferRule::RetainAtSource`], the
     /// declaration that replaces `pg_sidecar!(owner_pinned: true)` as the
     /// authority.
     ///
@@ -973,18 +973,18 @@ impl FlavorRegistryFrozen {
         }
     }
 
-    /// All `FlavorDescriptor`s registered through `proxima_flavor!`.
+    /// All `SpiiceDescriptor`s registered through `proxiima_spiice!`.
     /// Order matches macro invocation order.
     #[must_use]
-    pub fn list_flavors(&self) -> &[FlavorDescriptor] {
-        &self.flavors
+    pub fn list_spiices(&self) -> &[SpiiceDescriptor] {
+        &self.spiices
     }
 
-    /// Lookup a flavor descriptor by its `flavor_id`
-    /// (e.g. `"proxima-notes"`).
+    /// Lookup a spiice descriptor by its `spiice_id`
+    /// (e.g. `"proxiima-notes"`).
     #[must_use]
-    pub fn flavor(&self, flavor_id: &str) -> Option<&FlavorDescriptor> {
-        self.flavors.iter().find(|f| f.flavor_id == flavor_id)
+    pub fn spiice(&self, spiice_id: &str) -> Option<&SpiiceDescriptor> {
+        self.spiices.iter().find(|f| f.spiice_id == spiice_id)
     }
 
     #[must_use]

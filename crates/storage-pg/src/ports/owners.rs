@@ -1,10 +1,10 @@
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     MembershipEndpointAuthority, MembershipMemberAuthority, MembershipWritePermit,
     OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort, OwnerWritePermit,
     SourceCursorPort,
 };
 
-use proxima_core::{
+use proxiima_core::{
     Cursor, EntityId, GroupId, MembershipRow, OwnerId, Relation, StorageError, UserId,
 };
 
@@ -60,7 +60,7 @@ use crate::{PgStorage, access, verbs};
 impl OwnerAccessReadPort for PgStorage {
     async fn resolve_membership(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         member: &OwnerId,
     ) -> Result<Vec<MembershipRow>, StorageError> {
         if let Some(scope) = owner_scope {
@@ -71,7 +71,7 @@ impl OwnerAccessReadPort for PgStorage {
             }
         } else {
             // Refuse missing authority after activation before opening platform access.
-            return Err(proxima_core::StorageError::ConstraintViolation(
+            return Err(proxiima_core::StorageError::ConstraintViolation(
                 "owner scope required".into(),
             ));
         }
@@ -82,10 +82,10 @@ impl OwnerAccessReadPort for PgStorage {
 
     async fn visible_home_owner(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         entity: EntityId,
         read_owners: &[OwnerId],
-    ) -> Result<Option<(OwnerId, proxima_core::AccessKind)>, StorageError> {
+    ) -> Result<Option<(OwnerId, proxiima_core::AccessKind)>, StorageError> {
         let mut homes = self
             .visible_home_owners(owner_scope, &[entity], read_owners)
             .await?;
@@ -94,10 +94,10 @@ impl OwnerAccessReadPort for PgStorage {
 
     async fn visible_home_owners(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         entities: &[EntityId],
         read_owners: &[OwnerId],
-    ) -> Result<Vec<Option<(OwnerId, proxima_core::AccessKind)>>, StorageError> {
+    ) -> Result<Vec<Option<(OwnerId, proxiima_core::AccessKind)>>, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
             crate::owner_scope::require_owner_scope(owner_scope)?,
@@ -120,7 +120,7 @@ impl OwnerAccessReadPort for PgStorage {
 
     async fn home_owner(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         entity: EntityId,
     ) -> Result<Option<OwnerId>, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
@@ -236,7 +236,7 @@ impl OwnerMembershipAdminPort for PgStorage {
 
     async fn list_group_members(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         group_id: GroupId,
     ) -> Result<Vec<(OwnerId, Relation)>, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
@@ -250,7 +250,7 @@ impl OwnerMembershipAdminPort for PgStorage {
 
     async fn list_group_members_page(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         group_id: GroupId,
         after: Option<(OwnerId, Relation)>,
         limit: i64,
@@ -274,8 +274,8 @@ impl OwnerTransferPort for PgStorage {
         permit: &OwnerWritePermit,
         entity: EntityId,
         to_owner: OwnerId,
-        surfaces: &proxima_core::owner_inverse::OwnerSurfaces,
-        embedding_spaces: &[proxima_core::EmbeddingSpace],
+        surfaces: &proxiima_core::owner_inverse::OwnerSurfaces,
+        embedding_spaces: &[proxiima_core::EmbeddingSpace],
     ) -> Result<bool, StorageError> {
         if permit.owner_scope().is_some() && permit.transfer_destination() != Some(to_owner) {
             return Err(StorageError::ConstraintViolation(
@@ -302,7 +302,7 @@ impl OwnerTransferPort for PgStorage {
 impl SourceCursorPort for PgStorage {
     async fn load_source_cursor(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         source: &str,
     ) -> Result<Option<Cursor>, StorageError> {
@@ -333,7 +333,7 @@ impl SourceCursorPort for PgStorage {
 
     async fn source_cursor_age(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         source: &str,
     ) -> Result<Option<std::time::Duration>, StorageError> {

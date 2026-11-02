@@ -2,20 +2,20 @@
 //!
 //! Every surface enumerator (erase partition, export bundle, transfer sweep)
 //! walks DECLARED surfaces, so a forgotten table is invisible to all of
-//! them. This starts at the catalog instead: every `proxima_core` base table
-//! is a flavor #0 surface or a `STORE_WIDE_TABLES` entry with a reason, and
+//! them. This starts at the catalog instead: every `proxiima_core` base table
+//! is a spiice #0 surface or a `STORE_WIDE_TABLES` entry with a reason, and
 //! the list names nothing stale and nothing declared.
 
 use std::collections::BTreeSet;
 
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{PgStorage, STORE_WIDE_TABLES};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{PgStorage, STORE_WIDE_TABLES};
 use uuid::Uuid;
 
 #[tokio::test]
 async fn every_core_base_table_is_declared_or_store_wide() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -48,7 +48,7 @@ async fn every_core_base_table_is_declared_or_store_wide() {
         let present: Vec<String> = sqlx::query_scalar(
             "SELECT table_schema || '.' || table_name
                FROM information_schema.tables
-              WHERE table_schema = 'proxima_core'
+              WHERE table_schema = 'proxiima_core'
                 AND table_type = 'BASE TABLE'
                 AND table_name <> '_sqlx_migrations'
               ORDER BY 1",
@@ -68,7 +68,7 @@ async fn every_core_base_table_is_declared_or_store_wide() {
         assert!(
             undeclared.is_empty(),
             "no erase, export or transfer can see these core tables: {undeclared:?}. \
-             Declare a flavor #0 Surface, or add a STORE_WIDE_TABLES entry saying why not."
+             Declare a spiice #0 Surface, or add a STORE_WIDE_TABLES entry saying why not."
         );
         let stale: Vec<&&str> = listed
             .iter()

@@ -1,4 +1,4 @@
-//! Engine composite — wires `FlavorRegistryFrozen` behind the typed
+//! Engine composite — wires `SpiiceRegistryFrozen` behind the typed
 //! verb surfaces of docs/protocol.md.
 
 mod access_admin;
@@ -31,7 +31,7 @@ use crate::authz::{EngineAuthority, EngineOperationAuthority, context_for_engine
 use crate::error::ProtocolError;
 use crate::llm::EmbeddingRouter;
 use crate::storage_ports::{EngineStoragePorts, OwnerWritePermit};
-use crate::verbs::schema::FlavorRegistryFrozen;
+use crate::verbs::schema::SpiiceRegistryFrozen;
 
 pub use crate::storage_ports::{HostStateCommand, HostStateOutcome};
 pub use access_admin::GroupMemberPage;
@@ -59,7 +59,7 @@ mod membership_storage;
 pub(crate) use membership_storage::MembershipStorage;
 
 pub struct Engine {
-    registry: FlavorRegistryFrozen,
+    registry: SpiiceRegistryFrozen,
     system_authority_binding: crate::authz::SystemAuthorityBinding,
     delegation_runtime_binding: crate::authz::DelegationRuntimeBinding,
     storage: EngineStoragePorts,

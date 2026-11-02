@@ -7,9 +7,9 @@ pub enum McpServerError {
     #[error("bind: {0}")]
     Bind(#[from] std::io::Error),
     #[error("storage: {0}")]
-    Storage(#[from] proxima_core::StorageError),
+    Storage(#[from] proxiima_core::StorageError),
     #[error("registry: {0}")]
-    Registry(#[from] proxima_core::FlavorRegistryError),
+    Registry(#[from] proxiima_core::SpiiceRegistryError),
     #[error("migration: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("axum: {0}")]

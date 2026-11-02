@@ -6,20 +6,20 @@ services:
     image: pgvector/pgvector:pg18
     restart: unless-stopped
     environment:
-      POSTGRES_USER: proxima
-      POSTGRES_PASSWORD: proxima
-      POSTGRES_DB: proxima
+      POSTGRES_USER: proxiima
+      POSTGRES_PASSWORD: proxiima
+      POSTGRES_DB: proxiima
     ports:
       # The host default is 5434 for compatibility. Override with
-      # PROXIMA_DEV_POSTGRES_PORT when that port is already in use.
-      - "127.0.0.1:${PROXIMA_DEV_POSTGRES_PORT:-5434}:5432"
+      # PROXIIMA_DEV_POSTGRES_PORT when that port is already in use.
+      - "127.0.0.1:${PROXIIMA_DEV_POSTGRES_PORT:-5434}:5432"
     # Bumped from the 64MB default — test parallelism creates many
     # transient databases and PG's per-backend hash/sort memory plus
     # FK validation scans during `run_migrations` blow the 64MB cap
     # under concurrent `cargo test`.
     shm_size: 1gb
     volumes:
-      - proxima_dev_pgdata:/var/lib/postgresql
+      - proxiima_dev_pgdata:/var/lib/postgresql
       - ./scripts/pg-init.sql:/docker-entrypoint-initdb.d/00-pg-stat-statements.sql:ro
     command:
       - "postgres"
@@ -46,7 +46,7 @@ services:
       - "-c"
       - "log_destination=stderr"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U proxima -d proxima"]
+      test: ["CMD-SHELL", "pg_isready -U proxiima -d proxiima"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -57,14 +57,14 @@ services:
   s3:
     image: rustfs/rustfs:1.0.0-beta.11@sha256:84ce557a0245a06a9aae5516f55ee0f007fca78d41df356f419306fdc0cb168c
     environment:
-      RUSTFS_ACCESS_KEY: proxima
-      RUSTFS_SECRET_KEY: proxima-dev
+      RUSTFS_ACCESS_KEY: proxiima
+      RUSTFS_SECRET_KEY: proxiima-dev
     ports:
       # The host default is 9100 for compatibility. Override with
-      # PROXIMA_DEV_S3_PORT when that port is already in use.
-      - "127.0.0.1:${PROXIMA_DEV_S3_PORT:-9100}:9000"
+      # PROXIIMA_DEV_S3_PORT when that port is already in use.
+      - "127.0.0.1:${PROXIIMA_DEV_S3_PORT:-9100}:9000"
     volumes:
-      - proxima_dev_s3_data:/data
+      - proxiima_dev_s3_data:/data
     healthcheck:
       # Any HTTP response means it is listening and serving. Not `curl -f`:
       # an S3 root request is unauthenticated, so a healthy server answers
@@ -84,20 +84,20 @@ services:
       s3:
         condition: service_healthy
     environment:
-      PROXIMA_S3_ACCESS_KEY_ID: proxima
-      PROXIMA_S3_SECRET_ACCESS_KEY: proxima-dev
+      PROXIIMA_S3_ACCESS_KEY_ID: proxiima
+      PROXIIMA_S3_SECRET_ACCESS_KEY: proxiima-dev
       AWS_DEFAULT_REGION: us-east-1
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -eu
-        AWS_ACCESS_KEY_ID="$${PROXIMA_S3_ACCESS_KEY_ID}"
-        AWS_SECRET_ACCESS_KEY="$${PROXIMA_S3_SECRET_ACCESS_KEY}"
+        AWS_ACCESS_KEY_ID="$${PROXIIMA_S3_ACCESS_KEY_ID}"
+        AWS_SECRET_ACCESS_KEY="$${PROXIIMA_S3_SECRET_ACCESS_KEY}"
         export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
-        aws --endpoint-url http://s3:9000 s3 mb s3://proxima-dev || true
+        aws --endpoint-url http://s3:9000 s3 mb s3://proxiima-dev || true
         aws --endpoint-url http://s3:9000 s3api put-bucket-versioning \
-          --bucket proxima-dev --versioning-configuration Status=Enabled
+          --bucket proxiima-dev --versioning-configuration Status=Enabled
 
 volumes:
-  proxima_dev_pgdata:
-  proxima_dev_s3_data:
+  proxiima_dev_pgdata:
+  proxiima_dev_s3_data:

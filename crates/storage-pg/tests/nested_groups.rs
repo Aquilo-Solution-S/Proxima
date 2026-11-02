@@ -4,11 +4,11 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseTarget, OwnerSurfaces};
-use proxima_core::storage_ports::OwnerInversePort;
-use proxima_core::{AccessCeiling, GroupId, OwnerId, Relation, Role, StorageError, UserId};
-use proxima_pg_testkit::{DbGuard, create_db, db_url, split_role_urls};
-use proxima_storage_pg::{
+use proxiima_core::owner_inverse::{EraseAuthorization, OwnerEraseTarget, OwnerSurfaces};
+use proxiima_core::storage_ports::OwnerInversePort;
+use proxiima_core::{AccessCeiling, GroupId, OwnerId, Relation, Role, StorageError, UserId};
+use proxiima_pg_testkit::{DbGuard, create_db, db_url, split_role_urls};
+use proxiima_storage_pg::{
     AuthorityTargets, PgPlatformScope, PgStorage, add_group_member, begin_migration_transaction,
     group_role, register_group, remove_group_member, remove_group_member_relation,
     replace_group_member_relation,
@@ -37,7 +37,7 @@ struct Harness {
 
 impl Harness {
     async fn new() -> TestResult<Self> {
-        let name = format!("proxima_test_nested_{}", Uuid::now_v7().simple());
+        let name = format!("proxiima_test_nested_{}", Uuid::now_v7().simple());
         create_db(&name).await?;
         let database = DbGuard::adopt(name.clone());
         let (runtime_url, platform_url) = split_role_urls(&name).await?;
@@ -46,10 +46,10 @@ impl Harness {
         let pool = PgPool::connect(&db_url(&name)).await?;
         let mut conn = platform.acquire().await?;
         let mut tx = begin_migration_transaction(&mut conn).await?;
-        proxima_storage_pg::run_core_schema(
+        proxiima_storage_pg::run_core_schema(
             &mut tx,
-            proxima_storage_pg::MissingMigrationPolicy::Reject,
-            proxima_storage_pg::VectorStorage::Local,
+            proxiima_storage_pg::MissingMigrationPolicy::Reject,
+            proxiima_storage_pg::VectorStorage::Local,
         )
         .await?;
         tx.commit().await?;
@@ -68,7 +68,7 @@ impl Harness {
         for _ in 0..count {
             let group = GroupId::new(Uuid::now_v7());
             // Seed the released registry shape too, before the v0.0.31 gateway exists.
-            sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'group')")
+            sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'group')")
                 .bind(group.into_inner())
                 .execute(&mut *tx)
                 .await?;
@@ -109,7 +109,7 @@ impl Harness {
         let expected = reference_climb(&self.pool).await?;
         let rows: Vec<(Uuid, Uuid, String, String, bool)> = sqlx::query_as(
             "SELECT member_user_id, group_id, read_ceiling::text, write_ceiling::text, manage
-             FROM proxima_core.group_role_projection ORDER BY member_user_id, group_id",
+             FROM proxiima_core.group_role_projection ORDER BY member_user_id, group_id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -151,12 +151,12 @@ fn ceiling(text: &str) -> AccessCeiling {
 /// Independent Rust traversal; neither the projection nor SQL's folding is an input.
 async fn reference_climb(pool: &PgPool) -> TestResult<Roles> {
     let rows: Vec<(Uuid, Uuid, Relation)> = sqlx::query_as(
-        "SELECT member_user_id, group_id, relation FROM proxima_core.group_memberships",
+        "SELECT member_user_id, group_id, relation FROM proxiima_core.group_memberships",
     )
     .fetch_all(pool)
     .await?;
     let edges: Vec<(Uuid, Uuid, Relation)> = sqlx::query_as(
-        "SELECT child_group_id, parent_group_id, relation FROM proxima_core.group_edges",
+        "SELECT child_group_id, parent_group_id, relation FROM proxiima_core.group_edges",
     )
     .fetch_all(pool)
     .await?;
@@ -244,40 +244,40 @@ async fn projection_equals_reference_after_seeded_person_and_group_write_sequenc
         h.assert_projection().await?;
     }
     let scope =
-        proxima_storage_pg::PgPlatformScope::new(h.platform.clone(), &["proxima_core"]).await?;
+        proxiima_storage_pg::PgPlatformScope::new(h.platform.clone(), &["proxiima_core"]).await?;
     let (runtime_url, _) = split_role_urls(h.database.name()).await?;
     let (_, platform_url) = split_role_urls(h.database.name()).await?;
-    let identity = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+    let identity = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
         &platform_url,
-        proxima_storage_pg::PgPoolConfig::default(),
-        proxima_storage_pg::PgTuning::default(),
+        proxiima_storage_pg::PgPoolConfig::default(),
+        proxiima_storage_pg::PgTuning::default(),
     )
     .await?;
     identity.initialize_store_number(1).await?;
     let storage = PgStorage::connect_with_config(
         &runtime_url,
-        proxima_storage_pg::PgPoolConfig::default(),
-        proxima_storage_pg::PgTuning::default(),
+        proxiima_storage_pg::PgPoolConfig::default(),
+        proxiima_storage_pg::PgTuning::default(),
         scope,
         1,
     )
     .await?;
     for person in people {
-        sqlx::query("INSERT INTO proxima_core.owners(owner_id,kind) VALUES($1,'personal') ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO proxiima_core.owners(owner_id,kind) VALUES($1,'personal') ON CONFLICT DO NOTHING")
             .bind(person.into_inner()).execute(&h.pool).await?;
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id: person.as_user(),
             drop_event_id: "seeded-drop".into(),
         });
         let surfaces = OwnerSurfaces::for_registry(
-            &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+            &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
         );
         let outcome = storage
             .erase_personal_owner(&auth, person.as_user(), &surfaces)
             .await?;
         assert!(matches!(
             outcome,
-            proxima_core::owner_inverse::OwnerEraseOutcome::Completed { .. }
+            proxiima_core::owner_inverse::OwnerEraseOutcome::Completed { .. }
         ));
         h.assert_projection().await?;
     }
@@ -331,7 +331,7 @@ async fn readding_same_group_edge_is_a_noop() -> TestResult {
         .await?;
     let before: Vec<(Uuid, Uuid, Relation)> = sqlx::query_as(
         "SELECT child_group_id, parent_group_id, relation
-         FROM proxima_core.group_edges
+         FROM proxiima_core.group_edges
          WHERE child_group_id = $1",
     )
     .bind(groups[1].into_inner())
@@ -340,7 +340,7 @@ async fn readding_same_group_edge_is_a_noop() -> TestResult {
     assert_eq!(before.len(), 1, "one stored group edge");
     let projection_before: Vec<(Uuid, Uuid, String, String, bool)> = sqlx::query_as(
         "SELECT member_user_id, group_id, read_ceiling::text, write_ceiling::text, manage
-         FROM proxima_core.group_role_projection
+         FROM proxiima_core.group_role_projection
          WHERE member_user_id = $1
          ORDER BY group_id",
     )
@@ -356,14 +356,14 @@ async fn readding_same_group_edge_is_a_noop() -> TestResult {
         .await
         .expect_err("a different relation requires replacement");
     assert!(matches!(
-        conflict.downcast_ref::<proxima_core::StorageError>(),
-        Some(proxima_core::StorageError::Conflict(message))
+        conflict.downcast_ref::<proxiima_core::StorageError>(),
+        Some(proxiima_core::StorageError::Conflict(message))
             if message == "group is already attached to a parent"
     ));
 
     let after: Vec<(Uuid, Uuid, Relation)> = sqlx::query_as(
         "SELECT child_group_id, parent_group_id, relation
-         FROM proxima_core.group_edges
+         FROM proxiima_core.group_edges
          WHERE child_group_id = $1",
     )
     .bind(groups[1].into_inner())
@@ -371,7 +371,7 @@ async fn readding_same_group_edge_is_a_noop() -> TestResult {
     .await?;
     let projection_after: Vec<(Uuid, Uuid, String, String, bool)> = sqlx::query_as(
         "SELECT member_user_id, group_id, read_ceiling::text, write_ceiling::text, manage
-         FROM proxima_core.group_role_projection
+         FROM proxiima_core.group_role_projection
          WHERE member_user_id = $1
          ORDER BY group_id",
     )
@@ -412,8 +412,8 @@ async fn roles_climb_only_and_take_weakest_path_then_strongest_alternative() -> 
     let role = group_role(&mut conn, person.as_user(), g[2])
         .await?
         .expect("ancestor role");
-    assert!(role.may_read(proxima_core::AccessKind::Goal));
-    assert!(!role.may_write(proxima_core::AccessKind::Fact));
+    assert!(role.may_read(proxiima_core::AccessKind::Goal));
+    assert!(!role.may_write(proxiima_core::AccessKind::Fact));
     drop(conn);
     h.assert_projection().await
 }
@@ -430,7 +430,7 @@ async fn database_and_host_refuse_second_parent_cycles_self_edges_and_person_kin
                 .await
                 .is_err()
         );
-        let error = sqlx::query("INSERT INTO proxima_core.group_edges (parent_group_id, child_group_id, relation) VALUES ($1,$2,'viewer')")
+        let error = sqlx::query("INSERT INTO proxiima_core.group_edges (parent_group_id, child_group_id, relation) VALUES ($1,$2,'viewer')")
             .bind(parent.into_inner()).bind(child.into_inner()).execute(&h.pool).await;
         assert!(
             error.is_err(),
@@ -438,15 +438,15 @@ async fn database_and_host_refuse_second_parent_cycles_self_edges_and_person_kin
         );
     }
     let personal_rows: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM proxima_core.group_memberships WHERE member_user_id = $1",
+        "SELECT count(*) FROM proxiima_core.group_memberships WHERE member_user_id = $1",
     )
     .bind(g[1].into_inner())
     .fetch_one(&h.pool)
     .await?;
     assert_eq!(personal_rows, 0, "registered group becomes an edge");
-    sqlx::query("INSERT INTO proxima_core.owners(owner_id,kind) VALUES($1,'personal') ON CONFLICT (owner_id) DO NOTHING")
+    sqlx::query("INSERT INTO proxiima_core.owners(owner_id,kind) VALUES($1,'personal') ON CONFLICT (owner_id) DO NOTHING")
         .bind(g[1].into_inner()).execute(&h.pool).await?;
-    assert!(sqlx::query("INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation) VALUES ($1,$2,'viewer')")
+    assert!(sqlx::query("INSERT INTO proxiima_core.group_memberships (group_id, member_user_id, relation) VALUES ($1,$2,'viewer')")
         .bind(g[0].into_inner()).bind(g[2].into_inner()).execute(&h.pool).await.is_err(), "raw person row cannot name group");
     let person = OwnerId::new(Uuid::now_v7());
     h.add(g[0], person, Relation::Viewer).await?;
@@ -457,7 +457,7 @@ async fn database_and_host_refuse_second_parent_cycles_self_edges_and_person_kin
     );
     tx.rollback().await?;
     assert!(
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id,kind) VALUES ($1,'group')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id,kind) VALUES ($1,'group')")
             .bind(person.into_inner())
             .execute(&h.pool)
             .await
@@ -487,7 +487,7 @@ async fn fixed_snapshot_isolation_refuses_membership_writes() -> TestResult {
         .await
         .expect_err("fixed snapshot refused");
         assert!(
-            matches!(error, proxima_core::StorageError::MembershipIsolation),
+            matches!(error, proxiima_core::StorageError::MembershipIsolation),
             "typed refusal: {error:?}"
         );
         tx.rollback().await?;
@@ -548,7 +548,7 @@ async fn racing_person_and_subgroup_writes_wait_on_one_tree_in_both_orders() -> 
             second
                 .commit()
                 .await
-                .map_err(|e| proxima_core::StorageError::Internal(e.to_string()))
+                .map_err(|e| proxiima_core::StorageError::Internal(e.to_string()))
         });
         wait_for_advisory(&h.pool, pid).await?;
         assert!(
@@ -574,7 +574,7 @@ async fn racing_person_and_subgroup_writes_wait_on_one_tree_in_both_orders() -> 
         second
             .commit()
             .await
-            .map_err(|e| proxima_core::StorageError::Internal(e.to_string()))
+            .map_err(|e| proxiima_core::StorageError::Internal(e.to_string()))
     });
     wait_for_advisory(&h.pool, pid).await?;
     first.commit().await?;
@@ -591,7 +591,7 @@ async fn racing_person_and_subgroup_writes_wait_on_one_tree_in_both_orders() -> 
         .await?;
     let group = g[1];
     let pending = tokio::spawn(async move {
-        sqlx::query("INSERT INTO proxima_core.group_memberships(group_id,member_user_id,relation) VALUES($1,$2,'ingest') ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO proxiima_core.group_memberships(group_id,member_user_id,relation) VALUES($1,$2,'ingest') ON CONFLICT DO NOTHING")
             .bind(group.into_inner()).bind(person.into_inner()).execute(&mut *second).await?;
         second.commit().await
     });
@@ -604,7 +604,7 @@ async fn racing_person_and_subgroup_writes_wait_on_one_tree_in_both_orders() -> 
 
 async fn scope(conn: &mut PgConnection, groups: &[GroupId]) -> TestResult {
     let ids: Vec<_> = groups.iter().map(|g| g.into_inner()).collect();
-    sqlx::query("SELECT set_config('app.proxima_scope','owner',true), set_config('app.owner',$1::uuid[]::text,true), set_config('app.manage_owner',$1::uuid[]::text,true)")
+    sqlx::query("SELECT set_config('app.proxiima_scope','owner',true), set_config('app.owner',$1::uuid[]::text,true), set_config('app.manage_owner',$1::uuid[]::text,true)")
         .bind(ids).execute(conn).await?;
     Ok(())
 }
@@ -618,9 +618,9 @@ async fn owner_scoped_writes_fold_the_whole_tree_without_leaking_platform_scope(
     let person = OwnerId::new(Uuid::now_v7());
     let mut tx = h.runtime.begin().await?;
     scope(&mut tx, &[g[2]]).await?;
-    sqlx::query("INSERT INTO proxima_core.group_memberships (group_id,member_user_id,relation) VALUES ($1,$2,'admin')")
+    sqlx::query("INSERT INTO proxiima_core.group_memberships (group_id,member_user_id,relation) VALUES ($1,$2,'admin')")
         .bind(g[2].into_inner()).bind(person.into_inner()).execute(&mut *tx).await?;
-    let current_scope: String = sqlx::query_scalar("SELECT current_setting('app.proxima_scope')")
+    let current_scope: String = sqlx::query_scalar("SELECT current_setting('app.proxiima_scope')")
         .fetch_one(&mut *tx)
         .await?;
     assert_eq!(
@@ -628,7 +628,7 @@ async fn owner_scoped_writes_fold_the_whole_tree_without_leaking_platform_scope(
         "trigger elevation must be scoped to the function"
     );
     let visible: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT group_id FROM proxima_core.group_role_projection WHERE member_user_id=$1",
+        "SELECT group_id FROM proxiima_core.group_role_projection WHERE member_user_id=$1",
     )
     .bind(person.into_inner())
     .fetch_all(&mut *tx)
@@ -640,7 +640,7 @@ async fn owner_scoped_writes_fold_the_whole_tree_without_leaking_platform_scope(
     );
     assert!(
         sqlx::query(
-            "UPDATE proxima_core.group_role_projection SET manage=true WHERE member_user_id=$1"
+            "UPDATE proxiima_core.group_role_projection SET manage=true WHERE member_user_id=$1"
         )
         .bind(person.into_inner())
         .execute(&mut *tx)
@@ -652,13 +652,13 @@ async fn owner_scoped_writes_fold_the_whole_tree_without_leaking_platform_scope(
     // Repeat and commit; compare with a platform-scoped write.
     let mut tx = h.runtime.begin().await?;
     scope(&mut tx, &[g[2]]).await?;
-    sqlx::query("INSERT INTO proxima_core.group_memberships (group_id,member_user_id,relation) VALUES ($1,$2,'admin')")
+    sqlx::query("INSERT INTO proxiima_core.group_memberships (group_id,member_user_id,relation) VALUES ($1,$2,'admin')")
         .bind(g[2].into_inner()).bind(person.into_inner()).execute(&mut *tx).await?;
     tx.commit().await?;
     h.assert_projection().await?;
     h.remove(g[2], person).await?;
     let mut tx = h.platform.begin().await?;
-    sqlx::query("SELECT set_config('app.proxima_scope','platform',true)")
+    sqlx::query("SELECT set_config('app.proxiima_scope','platform',true)")
         .execute(&mut *tx)
         .await?;
     add_group_member(&mut tx, g[2], person, Relation::Admin).await?;
@@ -669,7 +669,7 @@ async fn owner_scoped_writes_fold_the_whole_tree_without_leaking_platform_scope(
 #[tokio::test]
 async fn authority_rechecks_the_original_root_map_then_fences_the_fresh_roots() -> TestResult {
     let h = Harness::new().await?;
-    let scope = PgPlatformScope::new(h.platform.clone(), &["proxima_core"]).await?;
+    let scope = PgPlatformScope::new(h.platform.clone(), &["proxiima_core"]).await?;
     let groups = h.groups(3).await?;
     let (moving, stable, destination) = (groups[0], groups[1], groups[2]);
     let mut movement = scope.begin().await?;
@@ -737,7 +737,7 @@ async fn authority_rechecks_the_original_root_map_then_fences_the_fresh_roots() 
         .fetch_one(&mut *contender)
         .await?;
     let pending = tokio::spawn(async move {
-        sqlx::query("INSERT INTO proxima_core.group_lock_request (request_id, left_group_id) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO proxiima_core.group_lock_request (request_id, left_group_id) VALUES ($1, $2)")
             .bind(Uuid::now_v7()).bind(destination.into_inner()).execute(&mut *contender).await?;
         contender.commit().await
     });
@@ -751,7 +751,7 @@ async fn authority_rechecks_the_original_root_map_then_fences_the_fresh_roots() 
 #[tokio::test]
 async fn authority_refuses_a_new_direct_group_discovered_after_the_person_key_wait() -> TestResult {
     let h = Harness::new().await?;
-    let scope = PgPlatformScope::new(h.platform.clone(), &["proxima_core"]).await?;
+    let scope = PgPlatformScope::new(h.platform.clone(), &["proxiima_core"]).await?;
     let group = h.groups(1).await?[0];
     let person = UserId::new(Uuid::now_v7());
     let mut writer = scope.begin().await?;
@@ -759,13 +759,13 @@ async fn authority_refuses_a_new_direct_group_discovered_after_the_person_key_wa
     // The gateway can take the initially empty person's pseudotree, then
     // positively wait on this key before a new direct group is committed.
     sqlx::query(
-        "INSERT INTO proxima_core.group_lock_request (request_id, left_group_id) VALUES ($1, $2)",
+        "INSERT INTO proxiima_core.group_lock_request (request_id, left_group_id) VALUES ($1, $2)",
     )
     .bind(Uuid::now_v7())
     .bind(group.into_inner())
     .execute(&mut *writer)
     .await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('proxima-owner-kind:' || $1::uuid::text, 0))")
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('proxiima-owner-kind:' || $1::uuid::text, 0))")
         .bind(person.into_inner()).execute(&mut *writer).await?;
     let mut tx = scope.begin().await?;
     let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
@@ -787,7 +787,7 @@ async fn authority_refuses_a_new_direct_group_discovered_after_the_person_key_wa
     });
     wait_for_advisory(&h.pool, pid).await?;
     assert!(!pending.is_finished());
-    sqlx::query("INSERT INTO proxima_core.group_memberships (group_id, member_user_id, relation) VALUES ($1, $2, 'viewer')")
+    sqlx::query("INSERT INTO proxiima_core.group_memberships (group_id, member_user_id, relation) VALUES ($1, $2, 'viewer')")
         .bind(group.into_inner()).bind(person.into_inner()).execute(&mut *writer).await?;
     writer.commit().await?;
     let (tx, result) = pending.await?;
@@ -829,7 +829,7 @@ async fn authority_refuses_a_new_direct_group_discovered_after_the_person_key_wa
         .await?;
     let pending = tokio::spawn(async move {
         remove_group_member(&mut removal, group, person.into()).await?;
-        removal.commit().await.map_err(proxima_storage_pg::map_err)
+        removal.commit().await.map_err(proxiima_storage_pg::map_err)
     });
     wait_for_advisory(&h.pool, pid).await?;
     assert!(!pending.is_finished());

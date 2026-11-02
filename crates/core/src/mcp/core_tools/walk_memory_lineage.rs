@@ -137,7 +137,7 @@ fn default_limit() -> u32 {
 /// between pages.
 const LINEAGE_CURSOR: wire_cursor::FingerprintedCursor = wire_cursor::FingerprintedCursor {
     version: 1,
-    source: "proxima://memory/{id}/lineage page",
+    source: "proxiima://memory/{id}/lineage page",
     rebind_hint: "repeat the memory, direction, and depth that produced it",
 };
 
@@ -688,7 +688,7 @@ mod tests {
     async fn lineage_page_deduplicates_caps_and_deadline_marks_origins() {
         let mut ctx = ctx_for(UserId::new(uuid::Uuid::now_v7()), Vec::new());
         let reads = Arc::new(AtomicUsize::new(0));
-        ctx.services = crate::FlavorServices::with(
+        ctx.services = crate::SpiiceServices::with(
             crate::storage_ports::other_stores::OtherStoresService::new(Arc::new(
                 SlowLineageStore {
                     reads: Arc::clone(&reads),

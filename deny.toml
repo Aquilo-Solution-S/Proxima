@@ -1,4 +1,4 @@
-# cargo-deny configuration for the Proxima workspace.
+# cargo-deny configuration for the Proxiima workspace.
 # Schema: cargo-deny 0.19.x (the version bundled by cargo-deny-action v2.x).
 # 0.19 dropped the top-level `version` field and the old
 # advisories.vulnerability / .unmaintained / .unsound / .notice keys
@@ -76,7 +76,7 @@ confidence-threshold = 0.93
 [bans]
 multiple-versions = "warn"
 # Real crates.io `*` version requirements are a hazard and stay denied, but
-# workspace-internal path deps (`proxima-core = { path = "../core" }`) carry no
+# workspace-internal path deps (`proxiima-core = { path = "../core" }`) carry no
 # version field and cargo-deny would otherwise flag every one as a wildcard.
 wildcards = "deny"
 allow-wildcard-paths = true

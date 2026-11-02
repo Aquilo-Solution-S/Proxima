@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use proxima_core::{
+use proxiima_core::{
     AuthPath, Authenticator, AuthzContext, Credentials, GroupId, OwnerAccessPort, OwnerId,
     ServedSurface, authenticate,
 };
@@ -208,10 +208,9 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use async_trait::async_trait;
-    use proxima_core::{
-        AccessError, AccessKind, AuthError, Engine, ErrorCode, FlavorRegistry, ForwarderRole,
-        GetGraphReadRequest, GroupId, OwnerId, OwnerRoles, Relation, Role, ScopeKey, ToolScope,
-        UserId,
+    use proxiima_core::{
+        AccessError, AccessKind, AuthError, Engine, ErrorCode, ForwarderRole, GetGraphReadRequest,
+        GroupId, OwnerId, OwnerRoles, Relation, Role, ScopeKey, SpiiceRegistry, ToolScope, UserId,
     };
 
     fn fake_owner() -> OwnerId {
@@ -339,7 +338,7 @@ mod tests {
             let authz = AuthzContext::from_verified_forwarded_owner(
                 subject,
                 owner,
-                proxima_core::WriterAttribution {
+                proxiima_core::WriterAttribution {
                     by: uuid::Uuid::now_v7(),
                     via: None,
                 },
@@ -380,7 +379,7 @@ mod tests {
                 result: Ok(AuthzContext::from_verified_forwarded_owner(
                     subject,
                     claimed,
-                    proxima_core::WriterAttribution {
+                    proxiima_core::WriterAttribution {
                         by: uuid::Uuid::now_v7(),
                         via: None,
                     },
@@ -402,7 +401,7 @@ mod tests {
         let authz = AuthzContext::from_verified_forwarded_owner(
             subject,
             owner,
-            proxima_core::WriterAttribution {
+            proxiima_core::WriterAttribution {
                 by: uuid::Uuid::now_v7(),
                 via: None,
             },
@@ -520,7 +519,7 @@ mod tests {
             .resolve("host-token", other)
             .await
             .expect("host resolves");
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests());
 
         let err = engine
             .get_graph(&ctx.authz, &GetGraphReadRequest { owner })
@@ -644,7 +643,7 @@ mod tests {
         assert!(ctx.authz.can_access_owner(&owner));
 
         let group = owner.as_group();
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests());
         let err = engine
             .add_member(&ctx.authz, group, fake_user().into(), Relation::Editor)
             .await

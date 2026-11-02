@@ -2,7 +2,7 @@
 """Check that environment settings read by the source have one home.
 
 The scanner deliberately understands the small set of access shapes used by
-Proxima.  A new access shape must be taught here (or is rejected as dynamic);
+Proxiima.  A new access shape must be taught here (or is rejected as dynamic);
 it must not disappear into a broad regex.
 """
 
@@ -15,8 +15,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-NAME = r"PROXIMA_[A-Z0-9_]+"
-SOURCE_DIRS = ("apps", "crates", "flavors", "tools")
+NAME = r"PROXIIMA_[A-Z0-9_]+"
+SOURCE_DIRS = ("apps", "crates", "spiices", "tools")
 SOURCE_SUFFIXES = {".rs", ".py", ".sh", ".yml", ".yaml"}
 
 
@@ -245,7 +245,7 @@ def scan_file(path: Path) -> tuple[set[str], list[str]]:
         argument = match.group(1).strip()
         if argument.startswith(('"', "'")) or argument in constants or argument in {"key", "name"}:
             continue
-        # Non-Proxima constants (HOME, CI, test modes) are outside this table.
+        # Non-Proxiima constants (HOME, CI, test modes) are outside this table.
         if re.fullmatch(r"[A-Z][A-Z0-9_]*", argument):
             continue
         line = code.count("\n", 0, match.start()) + 1
@@ -309,7 +309,7 @@ def documented(root: Path) -> set[str]:
             names.add(first)
         elif first == "DATABASE_URL":
             continue
-        elif first.startswith("PROXIMA_") or first.startswith("DATABASE_URL"):
+        elif first.startswith("PROXIIMA_") or first.startswith("DATABASE_URL"):
             raise ValueError(f"invalid setting name in first table column: {first!r}")
     return names
 
@@ -335,33 +335,33 @@ def check(root: Path) -> int:
 
 
 def self_test() -> int:
-    with tempfile.TemporaryDirectory(prefix="proxima-settings-") as directory:
+    with tempfile.TemporaryDirectory(prefix="proxiima-settings-") as directory:
         root = Path(directory)
         (root / "apps").mkdir()
         (root / "scripts").mkdir()
         (root / "docs").mkdir()
         (root / "docker-compose.dev.yml").write_text(
-            'ports: ["${PROXIMA_COMPOSE_PORT:-5432}:5432"]\n', encoding="utf-8"
+            'ports: ["${PROXIIMA_COMPOSE_PORT:-5432}:5432"]\n', encoding="utf-8"
         )
-        fixture = '''// lookup("PROXIMA_COMMENT")
-const REAL: &str = "PROXIMA_CONST";
-const UNUSED: &str = "PROXIMA_UNUSED";
-const KEYS: &[&str] = &["PROXIMA_ARRAY"];
+        fixture = '''// lookup("PROXIIMA_COMMENT")
+const REAL: &str = "PROXIIMA_CONST";
+const UNUSED: &str = "PROXIIMA_UNUSED";
+const KEYS: &[&str] = &["PROXIIMA_ARRAY"];
 fn read(lookup: impl Fn(&str) -> Option<String>) {
   lookup(REAL);
   KEYS.iter().filter_map(|key| lookup(key));
-  non_empty(lookup, "PROXIMA_HELPER");
-  std::env::var("PROXIMA_LITERAL");
-  println!("std::env::var(\\\"PROXIMA_MEREDATA\\\") ${PROXIMA_MEREDATA}");
+  non_empty(lookup, "PROXIIMA_HELPER");
+  std::env::var("PROXIIMA_LITERAL");
+  println!("std::env::var(\\\"PROXIIMA_MEREDATA\\\") ${PROXIIMA_MEREDATA}");
   println!("{UNUSED}");
-  let _ = [("PROXIMA_FIXTURE", "value")];
+  let _ = [("PROXIIMA_FIXTURE", "value")];
 }
 '''
         (root / "apps" / "fixture.rs").write_text(fixture, encoding="utf-8")
         (root / "scripts" / "compose.sh").write_text(
-            '  echo "${PROXIMA_SHELL:-x}" # ${PROXIMA_SHELL_COMMENT}\n', encoding="utf-8"
+            '  echo "${PROXIIMA_SHELL:-x}" # ${PROXIIMA_SHELL_COMMENT}\n', encoding="utf-8"
         )
-        names = ["PROXIMA_ARRAY", "PROXIMA_COMPOSE_PORT", "PROXIMA_CONST", "PROXIMA_HELPER", "PROXIMA_LITERAL", "PROXIMA_SHELL"]
+        names = ["PROXIIMA_ARRAY", "PROXIIMA_COMPOSE_PORT", "PROXIIMA_CONST", "PROXIIMA_HELPER", "PROXIIMA_LITERAL", "PROXIIMA_SHELL"]
         table = "# Configuration\n> Status: current\n\n| Setting | Purpose | When needed | Reader |\n|---|---|---|---|\n"
         doc = table + "".join(f"| {name} | test | test | source |\n" for name in names)
         (root / "docs" / "configuration.md").write_text(
@@ -371,13 +371,13 @@ fn read(lookup: impl Fn(&str) -> Option<String>) {
         if check(root) != 0:
             return 1
         (root / "apps" / "fixture.rs").write_text(
-            fixture + 'std::env::var("PROXIMA_UNDOCUMENTED");\n', encoding="utf-8"
+            fixture + 'std::env::var("PROXIIMA_UNDOCUMENTED");\n', encoding="utf-8"
         )
         if check(root) == 0:
             return 1
         (root / "apps" / "fixture.rs").write_text(fixture, encoding="utf-8")
         (root / "docs" / "configuration.md").write_text(
-            doc + "| PROXIMA_MISSING | test | test | source |\n", encoding="utf-8"
+            doc + "| PROXIIMA_MISSING | test | test | source |\n", encoding="utf-8"
         )
         if check(root) == 0:
             return 1
@@ -388,16 +388,16 @@ fn read(lookup: impl Fn(&str) -> Option<String>) {
             return 1
         (root / "apps" / "fixture.rs").write_text(fixture, encoding="utf-8")
         (root / "scripts" / "fixture.py").write_text(
-            'import os\nKEY = "PROXIMA_PYTHON"\nos.getenv(KEY)\nos.environ["PROXIMA_PYTHON_WRITE"] = "fixture"\n',
+            'import os\nKEY = "PROXIIMA_PYTHON"\nos.getenv(KEY)\nos.environ["PROXIIMA_PYTHON_WRITE"] = "fixture"\n',
             encoding="utf-8",
         )
         (root / "docs" / "configuration.md").write_text(
-            doc + "| PROXIMA_PYTHON | test | test | source |\n", encoding="utf-8"
+            doc + "| PROXIIMA_PYTHON | test | test | source |\n", encoding="utf-8"
         )
         if check(root) != 0:
             return 1
         (root / "scripts" / "fixture.py").write_text(
-            'import os\nos.getenv("PROXIMA_PY_UNDOCUMENTED")\n', encoding="utf-8"
+            'import os\nos.getenv("PROXIIMA_PY_UNDOCUMENTED")\n', encoding="utf-8"
         )
         if check(root) == 0:
             return 1
@@ -409,7 +409,7 @@ fn read(lookup: impl Fn(&str) -> Option<String>) {
         (root / "scripts" / "fixture.py").unlink()
         (root / "docs" / "configuration.md").write_text(doc, encoding="utf-8")
         (root / "docs" / "configuration.md").write_text(
-            doc + "| PROXIMA_BAD-NAME | test | test | source |\n", encoding="utf-8"
+            doc + "| PROXIIMA_BAD-NAME | test | test | source |\n", encoding="utf-8"
         )
         try:
             documented(root)

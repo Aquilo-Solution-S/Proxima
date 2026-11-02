@@ -261,7 +261,7 @@ async fn goal_helper_accepts_only_goal_command_handles() {
         goal_write: goal.clone(),
         owner_access_read: goal,
     };
-    let registry = crate::FlavorRegistry::new().freeze_or_panic_for_tests();
+    let registry = crate::SpiiceRegistry::new().freeze_or_panic_for_tests();
     let req = crate::verbs::goal_write::TransitionGoalAtomicRequest {
         owner: OwnerId::from(crate::UserId::new(uuid::Uuid::now_v7())),
         prior_goal_id: crate::GoalId::new(uuid::Uuid::now_v7()),

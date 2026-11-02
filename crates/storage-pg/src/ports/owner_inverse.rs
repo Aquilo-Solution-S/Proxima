@@ -1,8 +1,8 @@
-use proxima_core::owner_inverse::{
+use proxiima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerExportBundle,
 };
-use proxima_core::storage_ports::OwnerInversePort;
-use proxima_core::{GroupId, OwnerId, SourceId, StorageError, UserId};
+use proxiima_core::storage_ports::OwnerInversePort;
+use proxiima_core::{GroupId, OwnerId, SourceId, StorageError, UserId};
 
 use crate::{PgStorage, verbs};
 
@@ -22,7 +22,7 @@ impl OwnerInversePort for PgStorage {
         &self,
         auth: &EraseAuthorization,
         group_id: GroupId,
-        tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        tables: &proxiima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerEraseOutcome, StorageError> {
         sealed_target(
             matches!(auth.audit().target(), OwnerEraseTarget::GroupOwner { group_id: authorized } if *authorized == group_id),
@@ -45,7 +45,7 @@ impl OwnerInversePort for PgStorage {
         &self,
         auth: &EraseAuthorization,
         user_id: UserId,
-        tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        tables: &proxiima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerEraseOutcome, StorageError> {
         sealed_target(
             matches!(auth.audit().target(), OwnerEraseTarget::PersonalOwner { user_id: authorized, .. } if *authorized == user_id),
@@ -69,7 +69,7 @@ impl OwnerInversePort for PgStorage {
         auth: &EraseAuthorization,
         group_id: GroupId,
         source_id: &SourceId,
-        tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        tables: &proxiima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerEraseOutcome, StorageError> {
         sealed_target(
             matches!(auth.audit().target(), OwnerEraseTarget::GroupSourceScope { group_id: authorized, source_id: source } if *authorized == group_id && source == source_id),
@@ -93,7 +93,7 @@ impl OwnerInversePort for PgStorage {
         auth: &EraseAuthorization,
         user_id: UserId,
         source_id: &SourceId,
-        tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        tables: &proxiima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerEraseOutcome, StorageError> {
         sealed_target(
             matches!(auth.audit().target(), OwnerEraseTarget::PersonalSourceScope { user_id: authorized, source_id: source, .. } if *authorized == user_id && source == source_id),
@@ -115,7 +115,7 @@ impl OwnerInversePort for PgStorage {
     async fn export_owner_bundle(
         &self,
         auth: &ExportAuthorization,
-        tables: &proxima_core::owner_inverse::OwnerSurfaces,
+        tables: &proxiima_core::owner_inverse::OwnerSurfaces,
     ) -> Result<OwnerExportBundle, StorageError> {
         let lifecycle = self.host_lifecycle_for_surfaces(tables)?;
         verbs::owner_export::export_owner_bundle(

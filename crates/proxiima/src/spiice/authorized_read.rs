@@ -1,0 +1,212 @@
+//! Authorized spiice-read facade.
+//!
+//! Lifted from a spiice's own store module: every one of these helpers routes candidate filtering through
+//! [`proxiima_core::Engine::query`], the same authorization/visibility path
+//! Owner-scoped reads use everywhere else (owner/group scoping). Spiice
+//! crates get typed, authorized
+//! payload projection without ever holding a raw `PgPool` or writing SQL
+//! against `proxiima_core.*` themselves.
+//!
+//! Series heads ride `Engine::query` `HeadsOnly` (`memory_head`).
+
+use std::collections::{HashMap, HashSet};
+
+use proxiima_core::verbs::query::{EntityKind, QueryRequest, SupersessionStatus};
+use proxiima_core::{
+    AbstractionPayload, AuthzContext, Engine, FactPayload, MemoryId, SchemaId, SidecarPayload,
+    ToolError,
+};
+
+/// Candidate id lists are bounded before they ever reach a query so a
+/// pathological caller cannot force an unbounded `IN (...)`/`ANY($1)` scan.
+const MAX_AUTHZ_CANDIDATES: usize = 2_000;
+
+/// Narrow `candidates` to the ids visible to `authz`, optionally
+/// restricted to one `entity_kind`/`schema_id`. Heads-only,
+/// same ordering-agnostic contract as the other helpers in this module.
+///
+/// # Errors
+///
+/// Rejects a zero limit. Otherwise returns [`Engine::query`] authorization
+/// or storage errors.
+pub async fn authorized_memory_ids(
+    engine: &Engine,
+    authz: &AuthzContext,
+    candidates: &[uuid::Uuid],
+    entity_kind: EntityKind,
+    schema_id: Option<SchemaId>,
+    limit: usize,
+) -> Result<Vec<MemoryId>, ToolError> {
+    proxiima_core::reject_zero_limit(Some(u32::try_from(limit).unwrap_or(u32::MAX)))?;
+    let candidates = bounded_candidates(candidates);
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut req = QueryRequest::readable();
+    req.entity_kind = Some(entity_kind);
+    req.schema_id = schema_id;
+    req.supersession = SupersessionStatus::HeadsOnly;
+    req.limit = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
+    req.include_payloads = false;
+    req.memory_ids = candidates.iter().copied().map(MemoryId::new).collect();
+
+    let visible = engine.query(authz, &req).await?;
+    let visible_ids = visible
+        .memories
+        .into_iter()
+        .map(|row| row.id.into_inner())
+        .collect::<HashSet<_>>();
+
+    Ok(candidates
+        .into_iter()
+        .filter(|id| visible_ids.contains(id))
+        .take(limit)
+        .map(MemoryId::new)
+        .collect())
+}
+
+/// Authorized, typed Fact payload fetch for a candidate id list.
+///
+/// Reads return the current hot head. A spiice-defined tombstone payload is
+/// itself a hot head and remains observable; it is not a core query state.
+///
+/// # Errors
+///
+/// Rejects a zero limit. Otherwise returns [`Engine::query`] authorization
+/// or storage errors.
+pub async fn authorized_fact_payloads<P>(
+    engine: &Engine,
+    authz: &AuthzContext,
+    candidates: &[uuid::Uuid],
+    limit: usize,
+) -> Result<Vec<(MemoryId, P)>, ToolError>
+where
+    P: FactPayload + Clone,
+{
+    let payloads = authorized_payloads(
+        engine,
+        authz,
+        candidates,
+        EntityKind::Fact,
+        P::schema_id(),
+        limit,
+    )
+    .await?;
+    Ok(payloads
+        .into_iter()
+        .filter_map(|(id, payload)| payload.downcast_ref::<P>().cloned().map(|p| (id, p)))
+        .collect())
+}
+
+/// Authorized, typed Abstraction payload fetch for a candidate id list.
+///
+/// `SupersessionStatus::HeadsOnly` is the chunk admit: ingest keeps one
+/// handle per `(owner, repo, path, index)`, so `memory_head.t` is the
+/// current revision. Do not pre-filter the candidate list.
+///
+/// # Errors
+///
+/// Rejects a zero limit. Otherwise returns [`Engine::query`] authorization
+/// or storage errors.
+pub async fn authorized_abstraction_payloads<P>(
+    engine: &Engine,
+    authz: &AuthzContext,
+    candidates: &[uuid::Uuid],
+    limit: usize,
+) -> Result<Vec<(MemoryId, P)>, ToolError>
+where
+    P: AbstractionPayload + Clone,
+{
+    let payloads = authorized_payloads(
+        engine,
+        authz,
+        candidates,
+        EntityKind::Abstraction,
+        P::schema_id(),
+        limit,
+    )
+    .await?;
+    Ok(payloads
+        .into_iter()
+        .filter_map(|(id, payload)| payload.downcast_ref::<P>().cloned().map(|p| (id, p)))
+        .collect())
+}
+
+/// The stored owner ids of the caller's read access set (`S_read`).
+///
+/// For a spiice that runs its own candidate scan before admitting through
+/// [`Engine::query`]. Binding this array into the scan's `owner_id = ANY($n)`
+/// is what makes a `gin(owner_id, search_tsv)` projection index reachable:
+/// with the owner reached through a join instead, the planner has the two
+/// halves of a two-column index on two relations and uses neither. It is a
+/// narrowing, never a widening — the same set the admit would have applied,
+/// applied one phase earlier.
+///
+/// # Errors
+///
+/// Returns `Forbidden` when the context authorizes no reads. When the host
+/// vetoes every readable owner the list is empty and `Ok`; a scan bound to
+/// it reads nothing.
+pub async fn read_owner_ids(
+    engine: &Engine,
+    authz: &AuthzContext,
+) -> Result<Vec<uuid::Uuid>, ToolError> {
+    Ok(engine
+        .authorized_read_owners(authz)
+        .await?
+        .into_iter()
+        .map(proxiima_core::OwnerId::into_inner)
+        .collect())
+}
+
+async fn authorized_payloads(
+    engine: &Engine,
+    authz: &AuthzContext,
+    candidates: &[uuid::Uuid],
+    entity_kind: EntityKind,
+    schema_id: SchemaId,
+    limit: usize,
+) -> Result<Vec<(MemoryId, SidecarPayload)>, ToolError> {
+    let candidates = bounded_candidates(candidates);
+    proxiima_core::reject_zero_limit(Some(u32::try_from(limit).unwrap_or(u32::MAX)))?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut req = QueryRequest::readable();
+    req.entity_kind = Some(entity_kind);
+    req.schema_id = Some(schema_id);
+    req.supersession = SupersessionStatus::HeadsOnly;
+    req.limit = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
+    req.include_payloads = true;
+    req.memory_ids = candidates.iter().copied().map(MemoryId::new).collect();
+
+    let response = engine.query(authz, &req).await?;
+    let mut by_id = response
+        .memories
+        .into_iter()
+        .filter_map(|row| row.payload.map(|payload| (row.id.into_inner(), payload)))
+        .collect::<HashMap<_, _>>();
+
+    Ok(candidates
+        .into_iter()
+        .filter_map(|id| {
+            by_id
+                .remove(&id)
+                .map(|payload| (MemoryId::new(id), payload))
+        })
+        .take(limit)
+        .collect())
+}
+
+fn bounded_candidates(candidates: &[uuid::Uuid]) -> Vec<uuid::Uuid> {
+    let cap = candidates.len().min(MAX_AUTHZ_CANDIDATES);
+    let mut seen = HashSet::with_capacity(cap);
+    candidates
+        .iter()
+        .copied()
+        .filter(|id| seen.insert(*id))
+        .take(MAX_AUTHZ_CANDIDATES)
+        .collect()
+}

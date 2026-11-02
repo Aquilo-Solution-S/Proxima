@@ -1,8 +1,8 @@
-# proxima-llm-openai-compat
+# proxiima-llm-openai-compat
 
-The reference `EmbeddingClient` implementation for Proxima.
+The reference `EmbeddingClient` implementation for Proxiima.
 
-`proxima-core` defines the `EmbeddingClient` trait but ships no concrete
+`proxiima-core` defines the `EmbeddingClient` trait but ships no concrete
 implementation — a host injects one at boot (`Arc<dyn EmbeddingClient>`,
 see [`docs/configuration.md`](../../docs/configuration.md)). This
 crate is the canonical OpenAI-compatible HTTP adapter.

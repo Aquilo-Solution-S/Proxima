@@ -1,6 +1,6 @@
 //! Build-time MCP tool registration for local development adapters.
 //!
-//! Composite binaries register tools through flavor crates at startup;
+//! Composite binaries register tools through spiice crates at startup;
 //! there is no runtime registration path.
 
 pub mod behavior;
@@ -26,7 +26,7 @@ pub use behavior::{
     ToolDescriptorView, ToolSource,
 };
 // The one enforcement point for the reserved `model_id` operator label.
-// Published because a flavor tool that accepts `model_id` must resolve it
+// Published because a spiice tool that accepts `model_id` must resolve it
 // the same way the core authoring tools do — the transport edges only see a
 // top-level field, so re-implementing this is how a nested one gets through.
 pub use core_tools::memory::util::operator_label;

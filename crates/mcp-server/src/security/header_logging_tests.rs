@@ -91,7 +91,7 @@ fn assert_warning(warnings: &[Warning], message: &str, category: Option<&str>) {
         warnings,
         [Warning {
             level: Level::WARN,
-            target: "proxima_mcp_server::security",
+            target: "proxiima_mcp_server::security",
             fields,
         }]
     );
@@ -115,7 +115,7 @@ fn guarded_app() -> Router {
         .route("/mcp", any(|| async { StatusCode::OK }))
         .layer(mcp_auth_layer_with_config(
             Arc::new(McpEdgeAuth::headless()),
-            proxima_core::RevalidationConfig::default(),
+            proxiima_core::RevalidationConfig::default(),
         ))
         .layer(cors_layer(default_allowlist()))
         .layer(host_guard_layer(HostAllowlist::default()))

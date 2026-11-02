@@ -174,7 +174,7 @@ pub(super) fn project_remote_memory(
 }
 
 /// Project a storage snapshot into the wire output shape shared by
-/// `get_memory`, the `proxima://memories` batch read, and
+/// `get_memory`, the `proxiima://memories` batch read, and
 /// `facts_citing_object`.
 ///
 /// `space` is the memory's own space: the key of its home owner

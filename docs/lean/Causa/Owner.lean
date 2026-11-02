@@ -48,7 +48,7 @@ namespace Causa
     field — no projection or construction outside this module), but equality
     is now computable and the mint `User.ofToken` is visible to proofs.
     Concrete user records (who exists, attributes, catalogs) remain inputs
-    from the world — flavor/engine sidecar data, never kernel fields. -/
+    from the world — spiice/engine sidecar data, never kernel fields. -/
 structure User where
   private mk ::
   private token : String

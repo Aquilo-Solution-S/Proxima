@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
-use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
-use proxima_core::{ColdObjectStore, StorageError};
-use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{ColdPurgeRetryOptions, ColdPurgeRetryOutcome, PgStorage};
+use proxiima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
+use proxiima_core::{ColdObjectStore, StorageError};
+use proxiima_pg_testkit::{db_url, drop_db, unique_db_name};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{ColdPurgeRetryOptions, ColdPurgeRetryOutcome, PgStorage};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
@@ -28,11 +28,11 @@ struct PauseAfterDelete {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for PauseAfterDelete {
-    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+    fn store_id(&self) -> &proxiima_core::ObjectStoreId {
         self.inner.store_id()
     }
 
-    async fn delete(&self, key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
+    async fn delete(&self, key: &str) -> Result<proxiima_core::PurgeDeleted, StorageError> {
         let deleted = self.inner.delete(key).await?;
         self.deleted.notify_one();
         self.release.notified().await;
@@ -70,10 +70,10 @@ async fn old_purge_completion_preserves_reenqueue_with_unchanged_timestamp() -> 
 
 async fn assert_reenqueue_survives(preserve_timestamp: bool) -> TestResult<()> {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return Ok(());
     }
-    let database = unique_db_name("proxima_reenqueue_purge");
+    let database = unique_db_name("proxiima_reenqueue_purge");
     create_core_db(&database).await?;
     let pg = PgStorage::connect_for_tests(db_url(&database)).await?;
     let config = S3RuntimeConfig {
@@ -196,7 +196,7 @@ async fn run_race(
     release.notify_one();
     let outcome = purge_task.await??;
     let store_after_old_purge = sqlx::query_scalar(
-        "SELECT object_store FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        "SELECT object_store FROM proxiima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(key)
     .fetch_optional(pg.pool_for_tests())
@@ -222,7 +222,7 @@ async fn run_race(
         .await?;
     let versions_after_retry = version_count(client, bucket, key).await?;
     let store_after_retry = sqlx::query_scalar(
-        "SELECT object_store FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        "SELECT object_store FROM proxiima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(key)
     .fetch_optional(pg.pool_for_tests())
@@ -245,13 +245,13 @@ async fn enqueue_modelled_producer(
     preserved_time: Option<time::OffsetDateTime>,
 ) -> TestResult<time::OffsetDateTime> {
     let mut tx = pool.begin().await?;
-    proxima_storage_pg::access::owner_columns::lock_object_keys_tx(&mut tx, &[key.to_owned()])
+    proxiima_storage_pg::access::owner_columns::lock_object_keys_tx(&mut tx, &[key.to_owned()])
         .await?;
     // Match the production missing-owner stage enqueue under its key fence.
     // Explicit SQL is the producer model, not a call to the stage API. The
     // optional preserved timestamp is an adversarial test-only control.
     let enqueued_at = sqlx::query_scalar(
-        "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+        "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
          VALUES ($1, NULL, $2)
          ON CONFLICT (object_store, object_key) DO UPDATE
             SET enqueued_at = COALESCE($3, now()), next_attempt_at = now()

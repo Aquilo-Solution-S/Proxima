@@ -1,4 +1,4 @@
-//! Opt-in local stage durations. Enable `proxima::stage_timing=debug` on the
+//! Opt-in local stage durations. Enable `proxiima::stage_timing=debug` on the
 //! host's existing tracing subscriber; no request content is recorded.
 
 use std::future::Future;
@@ -22,10 +22,10 @@ struct Timing {
 
 impl Timing {
     fn start(stage: &'static str) -> Self {
-        let active = tracing::enabled!(target: "proxima::stage_timing", tracing::Level::DEBUG)
+        let active = tracing::enabled!(target: "proxiima::stage_timing", tracing::Level::DEBUG)
             .then(|| {
                 let span = tracing::Span::current();
-                tracing::debug!(target: "proxima::stage_timing", parent: &span,
+                tracing::debug!(target: "proxiima::stage_timing", parent: &span,
                     stage, outcome = "started", "stage timing");
                 (Instant::now(), span)
             });
@@ -40,7 +40,7 @@ impl Timing {
 impl Drop for Timing {
     fn drop(&mut self) {
         if let Some((started, span)) = &self.active {
-            tracing::debug!(target: "proxima::stage_timing", parent: span,
+            tracing::debug!(target: "proxiima::stage_timing", parent: span,
                 stage = self.stage,
                 outcome = if self.completed { "finished" } else { "cancelled" },
                 elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
@@ -88,7 +88,7 @@ mod tests {
 
     impl Subscriber for Capture {
         fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-            metadata.target() == "proxima::stage_timing"
+            metadata.target() == "proxiima::stage_timing"
         }
         fn new_span(&self, _: &Attributes<'_>) -> Id {
             Id::from_u64(1)

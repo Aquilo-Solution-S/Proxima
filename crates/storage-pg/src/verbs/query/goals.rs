@@ -1,8 +1,8 @@
 use std::fmt::Write as _;
 
-use proxima_core::StorageError;
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::query::{
+use proxiima_core::StorageError;
+use proxiima_core::verbs::goal_write::GoalState;
+use proxiima_core::verbs::query::{
     EntityKind, GoalAssignmentFilter, GoalRow, QueryCursor, QueryRequest, SupersessionStatus,
 };
 use sqlx::PgConnection;
@@ -44,7 +44,7 @@ pub(super) async fn query_goals_on_connection(
         rows.truncate(limit);
         rows.last().map(|row| QueryCursor::Goal {
             handle: row.handle,
-            goal_id: proxima_core::GoalId::new(row.goal_id),
+            goal_id: proxiima_core::GoalId::new(row.goal_id),
         })
     } else {
         None
@@ -58,7 +58,7 @@ pub(super) async fn query_goals_on_connection(
 
 /// The time a Goal `t` was minted at, decoded by the shared UUID timestamp function.
 fn t_timestamp_sql(t: &str) -> String {
-    format!("proxima_core.memory_created_at({t})")
+    format!("proxiima_core.memory_created_at({t})")
 }
 
 /// The columns of a goal row, as [`GoalRowDb`] reads them. `g` is the goal
@@ -69,7 +69,7 @@ fn goal_columns() -> String {
     // least `t` among its rows. Both come from the same `t` derivation.
     let created_at = t_timestamp_sql("g.t");
     let set_at = t_timestamp_sql(
-        "(SELECT series.t FROM proxima_core.goal series \
+        "(SELECT series.t FROM proxiima_core.goal series \
            WHERE series.handle = g.handle ORDER BY series.t LIMIT 1)",
     );
     format!(
@@ -104,17 +104,17 @@ fn goal_page_sql(req: &QueryRequest, filters: &[GoalFilter]) -> String {
         return owner_head_page_sql(filters, fetch_limit);
     }
     let from = if heads_only {
-        "FROM proxima_core.goal_head h \
-         JOIN proxima_core.goal g ON g.handle = h.handle AND g.t = h.t"
+        "FROM proxiima_core.goal_head h \
+         JOIN proxiima_core.goal g ON g.handle = h.handle AND g.t = h.t"
     } else {
-        "FROM proxima_core.goal g \
-         JOIN proxima_core.goal_head h ON h.handle = g.handle"
+        "FROM proxiima_core.goal g \
+         JOIN proxiima_core.goal_head h ON h.handle = g.handle"
     };
     let columns = goal_columns();
     let mut sql = format!(
         "SELECT {columns} \
          {from} \
-         JOIN proxima_core.owners o ON o.owner_id = g.owner_id \
+         JOIN proxiima_core.owners o ON o.owner_id = g.owner_id \
          WHERE g.owner_id = ANY($1::uuid[])"
     );
     append_goal_filters(&mut sql, filters, |filter, next| {
@@ -155,10 +155,10 @@ fn owner_head_page_sql(filters: &[GoalFilter], fetch_limit: u64) -> String {
     let columns = goal_columns();
     let mut sql = format!(
         "SELECT page.* \
-         FROM proxima_core.owners o CROSS JOIN LATERAL ( \
+         FROM proxiima_core.owners o CROSS JOIN LATERAL ( \
            SELECT {columns} \
-           FROM proxima_core.goal_head h \
-           JOIN proxima_core.goal g ON g.t = h.t \
+           FROM proxiima_core.goal_head h \
+           JOIN proxiima_core.goal g ON g.t = h.t \
            WHERE h.owner_id = o.owner_id AND g.owner_id = o.owner_id"
     );
     append_goal_filters(&mut sql, filters, GoalFilter::head_predicate);
@@ -222,7 +222,7 @@ impl GoalFilter {
         match self {
             Self::Schema(_) => format!(" AND h.schema_id = ${placeholder}"),
             Self::States(_) => {
-                format!(" AND g.state = ANY(${placeholder}::proxima_core.goal_state[])")
+                format!(" AND g.state = ANY(${placeholder}::proxiima_core.goal_state[])")
             }
             Self::Unassigned => " AND g.assignment_t IS NULL".to_owned(),
             Self::Assignments(_) => format!(" AND g.assignment_t = ANY(${placeholder}::uuid[])"),

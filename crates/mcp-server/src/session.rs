@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use proxima_core::OwnerId;
+use proxiima_core::OwnerId;
 use tokio::sync::RwLock;
 
 /// Idle lifetime of a session binding. A binding not observed within this
@@ -194,7 +194,7 @@ pub fn owner_key(owner: OwnerId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_core::{GroupId, OwnerId, UserId};
+    use proxiima_core::{GroupId, OwnerId, UserId};
     use uuid::Uuid;
 
     fn user_owner() -> OwnerId {
@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(parse_owner_key("personal:not-a-uuid"), None);
     }
 
-    /// The `X-Proxima-Owner` header carries the bare id: the old
+    /// The `X-Proxiima-Owner` header carries the bare id: the old
     /// kind-prefixed spelling of a valid id is refused, with no alias.
     #[test]
     fn an_old_kind_prefixed_owner_header_is_refused() {

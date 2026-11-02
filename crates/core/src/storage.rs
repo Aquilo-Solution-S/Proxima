@@ -62,7 +62,7 @@ pub enum StorageError {
     SchemaResetRequired { details: String },
     #[error("not found")]
     NotFound,
-    /// A write named a flavor-owned lifecycle scope whose registry row is
+    /// A write named a spiice-owned lifecycle scope whose registry row is
     /// not there for this owner, asked WHILE HOLDING that scope's fence.
     /// Under the fence the answer is settled for the life of the
     /// transaction — an erase that committed first is visible and one that
@@ -158,7 +158,7 @@ pub struct SidecarPayload {
     /// value in a reader and the declaration survives the erasure without
     /// a downcast.
     references: Reader<Vec<PayloadReference>>,
-    /// The flavor-owned lifecycle scope this payload declares. Same
+    /// The spiice-owned lifecycle scope this payload declares. Same
     /// mechanism as `references`, and for the same reason: the admission
     /// fences the scope without knowing which concrete payload type it is
     /// writing. `None` for the payload kinds that are not memories (cited
@@ -317,12 +317,12 @@ impl SidecarPayload {
         (self.references)()
     }
 
-    /// The flavor-owned lifecycle scope this payload declares
-    /// (docs/build-a-flavor.md), or `None` when it declares none.
+    /// The spiice-owned lifecycle scope this payload declares
+    /// (docs/build-a-spiice.md), or `None` when it declares none.
     ///
     /// The admission path reads THIS: it is the only thing between a typed
     /// payload and the fence its scope's erase holds, and it answers for
-    /// every caller — protocol ingress, a flavor's own write, a host
+    /// every caller — protocol ingress, a spiice's own write, a host
     /// writing the payload straight through `Engine` — because the
     /// declaration travels with the value rather than with the caller.
     #[must_use]

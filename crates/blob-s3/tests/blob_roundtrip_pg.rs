@@ -1,21 +1,21 @@
 use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
-use proxima_blob_s3::{
+use proxiima_blob_s3::{
     BlobError, CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs, CitedBlobStore,
     CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareTs, S3RuntimeConfig,
 };
-use proxima_core::engine::{Engine, UploadCompleted, UploadCompletionExpectation};
-use proxima_core::error::ProtocolError;
-use proxima_core::storage_ports::{
+use proxiima_core::engine::{Engine, UploadCompleted, UploadCompletionExpectation};
+use proxiima_core::error::ProtocolError;
+use proxiima_core::storage_ports::{
     CitedBlobHeld, CitedBlobIntegrityMismatch, CitedBlobPort, CitedBlobReadError,
     CitedBlobReadPort, CitedBlobReadUrl, CitedBlobReconcileOutcome, CitedBlobService,
     CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS,
     OwnerInversePort,
 };
-use proxima_core::test_fixtures::owner_fixture;
-use proxima_core::{
-    AuthPath, AuthzContext, ColdObjectStore, EntityId, ErrorCode, FlavorRegistry, GroupId, OwnerId,
-    Relation, StorageError, UserId,
+use proxiima_core::test_fixtures::owner_fixture;
+use proxiima_core::{
+    AuthPath, AuthzContext, ColdObjectStore, EntityId, ErrorCode, GroupId, OwnerId, Relation,
+    SpiiceRegistry, StorageError, UserId,
 };
 use sha2::Digest;
 use std::num::NonZeroU64;
@@ -31,9 +31,9 @@ use std::time::{Duration, Instant};
 // to issue any owner-write permit. Request fixtures use HostBearer; the
 // global maintenance test below obtains its witness by consuming a dedicated
 // Engine through the same host boundary as production boot.
-use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
+use proxiima_pg_testkit::{db_url, drop_db, unique_db_name};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 #[path = "blob_roundtrip_pg/public_endpoint.rs"]
@@ -57,9 +57,9 @@ mod reconcile_claims;
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.
-fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
-    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
-        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+fn transfer_surfaces() -> proxiima_core::owner_inverse::OwnerSurfaces {
+    proxiima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
     )
 }
 
@@ -73,13 +73,13 @@ fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
 /// vacuous success — the objects it was supposed to reach were unreachable by
 /// the time it looked.
 async fn erase_owner_and_drain(pg: &PgStorage, store: &CitedBlobStore, owner: OwnerId) {
-    use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
+    use proxiima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
 
     let pg = pg.clone().with_cold(Arc::new(store.cold_store()));
     let surfaces = transfer_surfaces();
     // The registry, not the caller, says which erase applies to this id.
     let kind: String =
-        sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
+        sqlx::query_scalar("SELECT kind::text FROM proxiima_core.owners WHERE owner_id = $1")
             .bind(owner.into_inner())
             .fetch_one(pg.pool_for_tests())
             .await
@@ -110,7 +110,7 @@ async fn erase_owner_and_drain(pg: &PgStorage, store: &CitedBlobStore, owner: Ow
 }
 
 async fn fresh_storage() -> (PgStorage, String) {
-    let db_name = unique_db_name("proxima_blob_s3_test");
+    let db_name = unique_db_name("proxiima_blob_s3_test");
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -231,8 +231,8 @@ async fn complete_via_engine(
     upload_id: &str,
 ) -> Result<UploadCompleted, ProtocolError> {
     let service =
-        proxima_core::storage_ports::CitedBlobService::new(std::sync::Arc::new(store.clone()));
-    Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        proxiima_core::storage_ports::CitedBlobService::new(std::sync::Arc::new(store.clone()));
+    Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
         .complete_upload_as_fact(&service, ctx, owner, upload_id, &[])
         .await
@@ -246,7 +246,7 @@ async fn complete_via_engine_with_expectation(
     upload_id: &str,
     expectation: &UploadCompletionExpectation,
 ) -> Result<UploadCompleted, ProtocolError> {
-    Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+    Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
         .complete_upload_as_fact_with_expectation(blobs, ctx, owner, upload_id, &[], expectation)
         .await
@@ -259,12 +259,12 @@ async fn transfer_via_engine(
     destination: OwnerId,
 ) -> Result<(), ProtocolError> {
     let authz =
-        proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
+        proxiima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
             source_user,
             [(destination, Relation::Admin.role())],
             AuthPath::HostBearer,
         ));
-    Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+    Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
         .transfer_to_owner(&authz, entity, destination)
         .await
@@ -272,15 +272,15 @@ async fn transfer_via_engine(
 
 fn s3_config_for_dev() -> S3RuntimeConfig {
     S3RuntimeConfig {
-        bucket: std::env::var("PROXIMA_S3_BUCKET")
-            .expect("S3 target required: start docker-compose.dev.yml and set PROXIMA_S3_*"),
-        region: std::env::var("PROXIMA_S3_REGION").expect("PROXIMA_S3_REGION"),
-        endpoint_url: std::env::var("PROXIMA_S3_ENDPOINT_URL").ok(),
+        bucket: std::env::var("PROXIIMA_S3_BUCKET")
+            .expect("S3 target required: start docker-compose.dev.yml and set PROXIIMA_S3_*"),
+        region: std::env::var("PROXIIMA_S3_REGION").expect("PROXIIMA_S3_REGION"),
+        endpoint_url: std::env::var("PROXIIMA_S3_ENDPOINT_URL").ok(),
         public_endpoint_url: None,
-        plaintext_hosts: proxima_core::PlaintextHosts::none(),
-        key_pair: proxima_blob_s3::S3KeyPair::new(
-            std::env::var("PROXIMA_S3_ACCESS_KEY_ID").expect("PROXIMA_S3_ACCESS_KEY_ID"),
-            std::env::var("PROXIMA_S3_SECRET_ACCESS_KEY").expect("PROXIMA_S3_SECRET_ACCESS_KEY"),
+        plaintext_hosts: proxiima_core::PlaintextHosts::none(),
+        key_pair: proxiima_blob_s3::S3KeyPair::new(
+            std::env::var("PROXIIMA_S3_ACCESS_KEY_ID").expect("PROXIIMA_S3_ACCESS_KEY_ID"),
+            std::env::var("PROXIIMA_S3_SECRET_ACCESS_KEY").expect("PROXIIMA_S3_SECRET_ACCESS_KEY"),
         ),
         force_path_style: true,
         upload_ttl_seconds: 900,
@@ -311,10 +311,10 @@ async fn owner_fence_waiting(pool: &sqlx::PgPool, owner: OwnerId) -> Result<bool
                 AND NOT granted
                 AND mode = 'ExclusiveLock'
                 AND classid::bigint = ((hashtextextended(
-                    'proxima-owner-fence:' || $1::text, 0
+                    'proxiima-owner-fence:' || $1::text, 0
                 ) >> 32) & 4294967295)
                 AND objid::bigint = (hashtextextended(
-                    'proxima-owner-fence:' || $1::text, 0
+                    'proxiima-owner-fence:' || $1::text, 0
                 ) & 4294967295)
          )",
     )
@@ -329,7 +329,7 @@ async fn owner_fence_exclusive(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "SELECT pg_advisory_xact_lock(
-             hashtextextended('proxima-owner-fence:' || $1::text, 0)
+             hashtextextended('proxiima-owner-fence:' || $1::text, 0)
          )",
     )
     .bind(owner.into_inner())
@@ -438,7 +438,7 @@ where
 
 /// Purge debts still owed, over every store.
 async fn cold_purge_debt_count(pool: &sqlx::PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM proxima_core.cold_purge_pending")
+    sqlx::query_scalar("SELECT count(*) FROM proxiima_core.cold_purge_pending")
         .fetch_one(pool)
         .await
         .expect("count purge debts")
@@ -447,12 +447,12 @@ async fn cold_purge_debt_count(pool: &sqlx::PgPool) -> i64 {
 #[tokio::test]
 async fn prepare_then_complete_then_read_roundtrip() {
     // Opt-in integration test: needs a reachable S3 target. Skip
-    // (rather than panic) when PROXIMA_S3_* is unset so the default
+    // (rather than panic) when PROXIIMA_S3_* is unset so the default
     // `cargo test --workspace` is green without standing up an object store.
     // CI sets these (see .github/workflows/ci.yml), so the lane is not dark there.
     if !S3RuntimeConfig::present_in_env() {
         eprintln!(
-            "skipped: PROXIMA_S3_* unset (set PROXIMA_S3_BUCKET/REGION + run the s3 service to enable)"
+            "skipped: PROXIIMA_S3_* unset (set PROXIIMA_S3_BUCKET/REGION + run the s3 service to enable)"
         );
         return;
     }
@@ -468,7 +468,7 @@ async fn prepare_then_complete_then_read_roundtrip() {
     .expect("valid S3 config");
     let body = b"test-bytes";
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -488,7 +488,7 @@ async fn prepare_then_complete_then_read_roundtrip() {
     let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
 
     let row: (String, String) = sqlx::query_as(
-        "SELECT bucket, object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        "SELECT bucket, object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(upload_id)
     .fetch_one(&pool)
@@ -517,7 +517,7 @@ async fn prepare_then_complete_then_read_roundtrip() {
     // pending upload's.
     let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
     let final_key: (String,) =
-        sqlx::query_as("SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1")
+        sqlx::query_as("SELECT object_key FROM proxiima_core.blob_uploads WHERE blob_id = $1")
             .bind(cited_object_id)
             .fetch_one(&pool)
             .await
@@ -548,7 +548,7 @@ async fn prepare_then_complete_then_read_roundtrip() {
 #[allow(clippy::too_many_lines)]
 async fn upload_transitions_join_the_owner_fence() -> Result<(), Box<dyn std::error::Error>> {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return Ok(());
     }
 
@@ -562,7 +562,7 @@ async fn upload_transitions_join_the_owner_fence() -> Result<(), Box<dyn std::er
     )
     .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -578,7 +578,7 @@ async fn upload_transitions_join_the_owner_fence() -> Result<(), Box<dyn std::er
          END
          $$;
          CREATE TRIGGER block_upload_status_update
-         BEFORE UPDATE OF status ON proxima_core.blob_uploads
+         BEFORE UPDATE OF status ON proxiima_core.blob_uploads
          FOR EACH ROW
          WHEN (OLD.status IS DISTINCT FROM NEW.status)
          EXECUTE FUNCTION public.block_upload_status_update();"
@@ -615,7 +615,7 @@ async fn upload_transitions_join_the_owner_fence() -> Result<(), Box<dyn std::er
         .content_hash
         .to_vec();
     let finish_blob: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.blob (schema_id, owner_id, content_hash)
+        "INSERT INTO proxiima_core.blob (schema_id, owner_id, content_hash)
          VALUES ('core/uploaded-blob-v1', $1, $2)
          RETURNING blob_id",
     )
@@ -673,7 +673,7 @@ async fn upload_transitions_join_the_owner_fence() -> Result<(), Box<dyn std::er
     )
     .await;
     sqlx::query(
-        "UPDATE proxima_core.blob_uploads
+        "UPDATE proxiima_core.blob_uploads
             SET expires_at = now() - interval '1 second'
           WHERE upload_id = $1",
     )
@@ -718,7 +718,7 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
     use sqlx::Row as _;
 
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return Ok(());
     }
 
@@ -732,7 +732,7 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
     )
     .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -762,7 +762,7 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
          END
          $$;
          CREATE TRIGGER block_abort_status_update
-         BEFORE UPDATE OF status ON proxima_core.blob_uploads
+         BEFORE UPDATE OF status ON proxiima_core.blob_uploads
          FOR EACH ROW
          WHEN (OLD.status = 'pending' AND NEW.status = 'aborted')
          EXECUTE FUNCTION public.block_abort_status_update();"
@@ -824,7 +824,7 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
 
     let row = sqlx::query(
         "SELECT status::text, object_key, sha256, etag, blob_id, content_hash
-           FROM proxima_core.blob_uploads
+           FROM proxiima_core.blob_uploads
           WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&upload_id)?)
@@ -856,8 +856,8 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
     assert_s3_key_versions_absent(&config, &format!("pending/{upload_id}")).await;
     let corpus_counts: (i64, i64) = sqlx::query_as(
         "SELECT
-            (SELECT count(*) FROM proxima_core.blob WHERE owner_id = $1),
-            (SELECT count(*) FROM proxima_core.memory WHERE owner_id = $1)",
+            (SELECT count(*) FROM proxiima_core.blob WHERE owner_id = $1),
+            (SELECT count(*) FROM proxiima_core.memory WHERE owner_id = $1)",
     )
     .bind(owner.into_inner())
     .fetch_one(&pool)
@@ -876,7 +876,7 @@ async fn stage_rechecks_terminal_upload_before_publishing_locator()
 #[tokio::test]
 async fn verified_read_is_owner_exact_bounded_and_integrity_checked() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        eprintln!("skipped: PROXIIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
 
@@ -891,7 +891,7 @@ async fn verified_read_is_owner_exact_bounded_and_integrity_checked() {
     .expect("valid S3 config");
     let body = b"real";
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -926,10 +926,9 @@ async fn verified_read_is_owner_exact_bounded_and_integrity_checked() {
     assert!(matches!(error, CitedBlobReadError::TooLarge { .. }));
 
     let other = OwnerId::from(UserId::new(Uuid::now_v7()));
-    let other_ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-        &other,
-        AuthPath::HostBearer,
-    ));
+    let other_ctx = proxiima_core::test_fixtures::authenticated_context(
+        AuthzContext::single_owner(&other, AuthPath::HostBearer),
+    );
     let error = store
         .collect_verified(
             &other_ctx,
@@ -981,7 +980,7 @@ async fn verified_read_is_owner_exact_bounded_and_integrity_checked() {
 #[tokio::test]
 async fn conflicting_canonical_object_is_not_overwritten() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
 
@@ -1001,7 +1000,7 @@ async fn conflicting_canonical_object_is_not_overwritten() {
     let existing: &'static [u8] = b"a canonical object of an entirely different size";
     assert_ne!(body.len(), existing.len());
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -1102,7 +1101,7 @@ async fn staged_upload(
         .expect("prepare");
     let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
     let key: (String,) =
-        sqlx::query_as("SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1")
+        sqlx::query_as("SELECT object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1")
             .bind(upload_id)
             .fetch_one(pool)
             .await
@@ -1123,7 +1122,7 @@ async fn staged_upload(
 #[tokio::test]
 async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
 
@@ -1138,7 +1137,7 @@ async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed(
     .expect("valid S3 config");
     let body: &[u8] = b"%PDF-1.7 a handbook whose upload is contested";
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -1159,14 +1158,14 @@ async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed(
 
     let facts: i64 = sqlx::query_scalar(
         "SELECT count(*)::bigint
-           FROM proxima_core.memory m
-           JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
+           FROM proxiima_core.memory m
+           JOIN proxiima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
           WHERE m.schema_id = 'core/upload-v1'",
     )
     .fetch_one(&pool)
     .await
     .expect("count");
-    let objects: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.blob")
+    let objects: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.blob")
         .fetch_one(&pool)
         .await
         .expect("count");
@@ -1215,7 +1214,7 @@ async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed(
 ///
 /// Every other test in this file substitutes the SDK for the upload hop and
 /// asserts on the *shape* of the download URL. Neither presigned URL was
-/// ever dereferenced, so "a completed PDF is retrievable from Proxima" had
+/// ever dereferenced, so "a completed PDF is retrievable from Proxiima" had
 /// no carrier at any layer — the two hops that actually carry bytes were
 /// the untested ones. The headers matter: `prepare_upload` presigns with
 /// `content_type`, so a client that ignores `prepared.headers` gets
@@ -1223,7 +1222,7 @@ async fn a_completion_racing_an_abort_never_reports_a_committed_write_as_failed(
 #[tokio::test]
 async fn presigned_put_and_get_carry_the_bytes() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
 
@@ -1238,7 +1237,7 @@ async fn presigned_put_and_get_carry_the_bytes() {
     .expect("valid S3 config");
     let body: &[u8] = b"%PDF-1.7 a handbook that must survive the round trip";
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -1327,7 +1326,7 @@ async fn forge_uploaded_blob_row(
     content_hash_seed: u8,
 ) -> Uuid {
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
          VALUES ($1, 'personal')
          ON CONFLICT (owner_id) DO NOTHING",
     )
@@ -1336,7 +1335,7 @@ async fn forge_uploaded_blob_row(
     .await
     .expect("forged owner");
     let blob_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.blob
+        "INSERT INTO proxiima_core.blob
             (schema_id, owner_id, content_hash)
          VALUES ('core/uploaded-blob-v1', $1, $2)
          RETURNING blob_id",
@@ -1347,7 +1346,7 @@ async fn forge_uploaded_blob_row(
     .await
     .expect("forged blob row");
     sqlx::query(
-        "INSERT INTO proxima_core.blob_uploads
+        "INSERT INTO proxiima_core.blob_uploads
             (owner_id, bucket, object_key, filename, mime, expected_byte_len,
              status, blob_id, sha256, expires_at, completed_at, object_store)
          VALUES ($1, $2, $3, 'forged.pdf', 'application/pdf', 1,
@@ -1360,8 +1359,8 @@ async fn forge_uploaded_blob_row(
     .bind(vec![content_hash_seed; 32])
     // The store a row in this bucket would record: only the key is forged.
     .bind(
-        proxima_core::ObjectStoreId::derive_s3(
-            std::env::var("PROXIMA_S3_ENDPOINT_URL").ok().as_deref(),
+        proxiima_core::ObjectStoreId::derive_s3(
+            std::env::var("PROXIIMA_S3_ENDPOINT_URL").ok().as_deref(),
             bucket,
         )
         .expect("forged store id")
@@ -1407,7 +1406,7 @@ async fn complete_upload_fixture(
         )
         .await?;
     let pending: (String,) =
-        sqlx::query_as("SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1")
+        sqlx::query_as("SELECT object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1")
             .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
             .fetch_one(pool)
             .await
@@ -1418,7 +1417,7 @@ async fn complete_upload_fixture(
         .map_err(|err| BlobError::State(err.to_string()))?
         .blob;
     let stored: (String,) =
-        sqlx::query_as("SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1")
+        sqlx::query_as("SELECT object_key FROM proxiima_core.blob_uploads WHERE blob_id = $1")
             .bind(Uuid::parse_str(&completed.cited_object_id).expect("cited object id"))
             .fetch_one(pool)
             .await
@@ -1434,7 +1433,7 @@ async fn complete_upload_fixture(
 #[tokio::test]
 async fn read_url_refuses_locators_the_store_did_not_write() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        eprintln!("skipped: PROXIIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
 
@@ -1448,7 +1447,7 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
     )
     .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -1562,7 +1561,7 @@ async fn read_url_refuses_locators_the_store_did_not_write() {
 #[tokio::test]
 async fn a_transfer_moves_the_citation_without_copying_the_object() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        eprintln!("skipped: PROXIIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
 
@@ -1577,7 +1576,7 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
     .expect("valid S3 config");
     let source_user = UserId::new(Uuid::now_v7());
     let source = OwnerId::from(source_user);
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &source,
         AuthPath::HostBearer,
     ));
@@ -1602,7 +1601,7 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
 
     // The row moved; the key did not.
     let after_key: String =
-        sqlx::query_scalar("SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1")
+        sqlx::query_scalar("SELECT object_key FROM proxiima_core.blob_uploads WHERE blob_id = $1")
             .bind(completed.cited_object_id)
             .fetch_one(&pool)
             .await
@@ -1672,7 +1671,7 @@ async fn a_transfer_moves_the_citation_without_copying_the_object() {
 #[tokio::test]
 async fn erase_follows_the_transfer_rather_than_the_key() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        eprintln!("skipped: PROXIIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
 
@@ -1687,7 +1686,7 @@ async fn erase_follows_the_transfer_rather_than_the_key() {
     .expect("valid S3 config");
     let source_user = UserId::new(Uuid::now_v7());
     let source = OwnerId::from(source_user);
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &source,
         AuthPath::HostBearer,
     ));
@@ -1751,7 +1750,7 @@ fn group_destination() -> (OwnerId, AuthzContext) {
     let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
     let member = UserId::new(Uuid::now_v7());
     let ctx =
-        proxima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
+        proxiima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
             member,
             [(group, Relation::Admin.role())],
             AuthPath::HostBearer,
@@ -1761,7 +1760,7 @@ fn group_destination() -> (OwnerId, AuthzContext) {
 
 struct UploadedObject {
     cited_object_id: Uuid,
-    memory_id: proxima_core::MemoryId,
+    memory_id: proxiima_core::MemoryId,
     object_key: String,
 }
 
@@ -1788,7 +1787,7 @@ async fn upload_one_object(
         )
         .await?;
     let pending: (String,) =
-        sqlx::query_as("SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1")
+        sqlx::query_as("SELECT object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1")
             .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
             .fetch_one(pool)
             .await
@@ -1799,7 +1798,7 @@ async fn upload_one_object(
         .map_err(|err| BlobError::State(err.to_string()))?;
     let cited_object_id = Uuid::parse_str(&outcome.blob.cited_object_id).expect("cited object id");
     let object_key: String =
-        sqlx::query_scalar("SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1")
+        sqlx::query_scalar("SELECT object_key FROM proxiima_core.blob_uploads WHERE blob_id = $1")
             .bind(cited_object_id)
             .fetch_one(pool)
             .await
@@ -1861,7 +1860,7 @@ async fn dest_ctx_reads(
 )]
 async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        eprintln!("skipped: PROXIIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
 
@@ -1876,7 +1875,7 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
     .expect("valid S3 config");
     let body = b"cross-owner-bytes";
     let owner_a = owner_fixture();
-    let ctx_a = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx_a = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner_a,
         AuthPath::HostBearer,
     ));
@@ -1895,7 +1894,7 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
         .expect("prepare");
     let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
     let pending: (String,) =
-        sqlx::query_as("SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1")
+        sqlx::query_as("SELECT object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1")
             .bind(upload_id)
             .fetch_one(&pool)
             .await
@@ -1907,7 +1906,7 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
         .blob;
 
     let owner_b = OwnerId::from(UserId::new(Uuid::now_v7()));
-    let ctx_b = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx_b = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner_b,
         AuthPath::HostBearer,
     ));
@@ -1937,7 +1936,7 @@ async fn cross_owner_ids_are_refused_under_the_other_owners_authz() {
     assert!(matches!(err, BlobError::State(_)), "got {err:?}");
     // B's attempts left A's upload row exactly as A completed it.
     let status: (String,) =
-        sqlx::query_as("SELECT status::text FROM proxima_core.blob_uploads WHERE upload_id = $1")
+        sqlx::query_as("SELECT status::text FROM proxiima_core.blob_uploads WHERE upload_id = $1")
             .bind(upload_id)
             .fetch_one(&pool)
             .await
@@ -1979,7 +1978,7 @@ async fn owner_erase_removes_the_completed_blobs_object() {
     // enqueues the key and the post-commit drain destroys it. Opt-in, needs an
     // S3 target like the roundtrip above.
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        eprintln!("skipped: PROXIIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
 
@@ -1994,7 +1993,7 @@ async fn owner_erase_removes_the_completed_blobs_object() {
     .expect("valid S3 config");
     let body = b"ocr-scan-with-pii";
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -2014,7 +2013,7 @@ async fn owner_erase_removes_the_completed_blobs_object() {
         .expect("prepare");
     let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
     let pending: (String, String) = sqlx::query_as(
-        "SELECT bucket, object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        "SELECT bucket, object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(upload_id)
     .fetch_one(&pool)
@@ -2027,7 +2026,7 @@ async fn owner_erase_removes_the_completed_blobs_object() {
         .blob;
     let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
     let final_key: (String,) =
-        sqlx::query_as("SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1")
+        sqlx::query_as("SELECT object_key FROM proxiima_core.blob_uploads WHERE blob_id = $1")
             .bind(cited_object_id)
             .fetch_one(&pool)
             .await
@@ -2071,7 +2070,7 @@ async fn owner_erase_removes_the_completed_blobs_object() {
 #[allow(clippy::too_many_lines)] // replay cleanup and owner-purge assertions share one fixture
 async fn versioned_bucket_purge_removes_all_object_versions() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        eprintln!("skipped: PROXIIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
 
@@ -2106,7 +2105,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
     .expect("valid S3 config");
     let (service, counters) = counted_blob_service(&store);
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -2125,7 +2124,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
         .await
         .expect("prepare");
     let pending: (String, String) = sqlx::query_as(
-        "SELECT bucket, object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
+        "SELECT bucket, object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
     .fetch_one(&pool)
@@ -2147,7 +2146,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
     assert_eq!(counters.finish_calls.load(Ordering::SeqCst), 1);
     let cited_object_id = Uuid::parse_str(&completed.cited_object_id).expect("cited object id");
     let final_key: (String,) =
-        sqlx::query_as("SELECT object_key FROM proxima_core.blob_uploads WHERE blob_id = $1")
+        sqlx::query_as("SELECT object_key FROM proxiima_core.blob_uploads WHERE blob_id = $1")
             .bind(cited_object_id)
             .fetch_one(&pool)
             .await
@@ -2239,7 +2238,7 @@ async fn versioned_bucket_purge_removes_all_object_versions() {
 #[tokio::test]
 async fn versioned_cold_delete_removes_exact_key_versions_and_preserves_prefix_collision() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        eprintln!("skipped: PROXIIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
     let base = s3_config_for_dev();
@@ -2343,7 +2342,7 @@ fn hex32(hex: &str) -> [u8; 32] {
 #[tokio::test]
 async fn find_held_blobs_reports_only_this_owners_artefacts() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        eprintln!("skipped: PROXIIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
 
@@ -2358,7 +2357,7 @@ async fn find_held_blobs_reports_only_this_owners_artefacts() {
     .expect("valid S3 config");
 
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -2376,7 +2375,7 @@ async fn find_held_blobs_reports_only_this_owners_artefacts() {
         .await
         .expect("prepare");
     let pending: (String,) =
-        sqlx::query_as("SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1")
+        sqlx::query_as("SELECT object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1")
             .bind(Uuid::parse_str(&prepared.upload_id).expect("upload id"))
             .fetch_one(&pool)
             .await
@@ -2411,10 +2410,9 @@ async fn find_held_blobs_reports_only_this_owners_artefacts() {
     // genuinely exists gets the same answer as for one that does not:
     // nothing. Not a denial, which would itself confirm the artefact.
     let other = OwnerId::from(UserId::new(Uuid::now_v7()));
-    let other_ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-        &other,
-        AuthPath::HostBearer,
-    ));
+    let other_ctx = proxiima_core::test_fixtures::authenticated_context(
+        AuthzContext::single_owner(&other, AuthPath::HostBearer),
+    );
     let cross = store
         .find_held_blobs(&other_ctx, other, &[held_hash])
         .await
@@ -2518,13 +2516,13 @@ async fn assert_owner_reconcile_isolated(
 
 async fn reconcile_with_bound_authority(store: &CitedBlobStore) -> CitedBlobReconcileOutcome {
     let (_, authority) =
-        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+        Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
     store
         .bind_system_authority(&authority)
         .expect("test store binds to its maintenance engine");
 
     let (_, foreign_authority) =
-        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+        Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
     let foreign_error = store
         .reconcile_all(&foreign_authority)
         .await
@@ -2563,7 +2561,7 @@ async fn reconcile_with_bound_authority(store: &CitedBlobStore) -> CitedBlobReco
 )]
 async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (run the s3 service to enable)");
+        eprintln!("skipped: PROXIIMA_S3_* unset (run the s3 service to enable)");
         return;
     }
     let (pg, db_name) = fresh_storage().await;
@@ -2577,7 +2575,7 @@ async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator(
     .expect("valid S3 config");
     let owner_id = Uuid::now_v7();
     let owner = OwnerId::from(UserId::new(owner_id));
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -2590,10 +2588,9 @@ async fn reconcile_tells_a_lost_object_from_an_orphan_and_from_a_forged_locator(
 
     // 2. LOST: a real upload whose object is then deleted underneath it.
     let other = OwnerId::from(UserId::new(Uuid::now_v7()));
-    let other_ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-        &other,
-        AuthPath::HostBearer,
-    ));
+    let other_ctx = proxiima_core::test_fixtures::authenticated_context(
+        AuthzContext::single_owner(&other, AuthPath::HostBearer),
+    );
     let (lost_id, lost_key) =
         complete_upload_fixture(&pg, &store, &config, &pool, &other_ctx, other)
             .await
@@ -2712,12 +2709,13 @@ async fn prepare_and_put_upload(
         .await
         .expect("prepare");
     let upload_id = Uuid::parse_str(&prepared.upload_id).expect("upload id");
-    let pending_key: String =
-        sqlx::query_scalar("SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1")
-            .bind(upload_id)
-            .fetch_one(pool)
-            .await
-            .expect("pending object key");
+    let pending_key: String = sqlx::query_scalar(
+        "SELECT object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1",
+    )
+    .bind(upload_id)
+    .fetch_one(pool)
+    .await
+    .expect("pending object key");
     put_object_via_sdk(config, &pending_key, body).await;
     (prepared.upload_id, pending_key)
 }
@@ -2732,14 +2730,14 @@ fn upload_expectation(body: &[u8], mime: &str, filename: &str) -> UploadCompleti
 }
 
 async fn corpus_counts(pool: &sqlx::PgPool) -> (i64, i64) {
-    let blobs: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.blob")
+    let blobs: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.blob")
         .fetch_one(pool)
         .await
         .expect("blob count");
     let facts: i64 = sqlx::query_scalar(
         "SELECT count(*)::bigint
-           FROM proxima_core.memory m
-           JOIN proxima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
+           FROM proxiima_core.memory m
+           JOIN proxiima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
           WHERE m.schema_id = 'core/upload-v1'",
     )
     .fetch_one(pool)
@@ -2749,7 +2747,7 @@ async fn corpus_counts(pool: &sqlx::PgPool) -> (i64, i64) {
 }
 
 async fn upload_status(pool: &sqlx::PgPool, upload_id: &str) -> String {
-    sqlx::query_scalar("SELECT status::text FROM proxima_core.blob_uploads WHERE upload_id = $1")
+    sqlx::query_scalar("SELECT status::text FROM proxiima_core.blob_uploads WHERE upload_id = $1")
         .bind(Uuid::parse_str(upload_id).expect("upload id"))
         .fetch_one(pool)
         .await
@@ -2832,7 +2830,7 @@ async fn exact_key_version_ids(config: &S3RuntimeConfig, key: &str) -> Vec<(Stri
 #[tokio::test]
 async fn changed_expectation_on_completed_upload_does_not_mutate_corpus() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
 
@@ -2848,7 +2846,7 @@ async fn changed_expectation_on_completed_upload_does_not_mutate_corpus() {
     let (service, counters) = counted_blob_service(&store);
     let body: &'static [u8] = b"completed-expectation-cannot-change";
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -2915,7 +2913,7 @@ async fn changed_expectation_on_completed_upload_does_not_mutate_corpus() {
 #[allow(clippy::too_many_lines)] // four independent metadata mismatches share one abort proof
 async fn fresh_pending_expectation_mismatches_are_abortable_and_owe_canonical() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
 
@@ -2931,7 +2929,7 @@ async fn fresh_pending_expectation_mismatches_are_abortable_and_owe_canonical() 
     let (service, counters) = counted_blob_service(&store);
     let body: &'static [u8] = b"fresh-pending-mismatch";
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -3078,7 +3076,7 @@ async fn fresh_pending_expectation_mismatches_are_abortable_and_owe_canonical() 
 #[tokio::test]
 async fn corrected_expectation_retry_uses_recorded_canonical_bytes() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
 
@@ -3096,7 +3094,7 @@ async fn corrected_expectation_retry_uses_recorded_canonical_bytes() {
     let replacement: &'static [u8] = b"canonical-retry-replaced";
     assert_eq!(original.len(), replacement.len());
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -3168,7 +3166,7 @@ async fn corrected_expectation_retry_uses_recorded_canonical_bytes() {
 #[allow(clippy::too_many_lines)] // the versioned cleanup and entry-stage proof share one fixture
 async fn versioned_abort_purges_pending_versions_and_the_canonical_object() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
 
@@ -3200,7 +3198,7 @@ async fn versioned_abort_purges_pending_versions_and_the_canonical_object() {
     )
     .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -3336,7 +3334,7 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
     )
     .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -3367,7 +3365,7 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
     .expect("create locator barrier function");
     sqlx::query(
         "CREATE TRIGGER upload_locator_barrier_trigger
-         BEFORE UPDATE OF object_key ON proxima_core.blob_uploads
+         BEFORE UPDATE OF object_key ON proxiima_core.blob_uploads
          FOR EACH STATEMENT EXECUTE FUNCTION upload_locator_barrier()",
     )
     .execute(&pool)
@@ -3417,7 +3415,7 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
         .await
         .expect("create pending delete marker");
     sqlx::query(
-        "UPDATE proxima_core.blob_uploads\n            SET status = $3::proxima_core.blob_upload_status, aborted_at = now()\n          WHERE owner_id = $1 AND upload_id = $2",
+        "UPDATE proxiima_core.blob_uploads\n            SET status = $3::proxiima_core.blob_upload_status, aborted_at = now()\n          WHERE owner_id = $1 AND upload_id = $2",
     )
     .bind(owner.into_inner())
     .bind(upload_uuid)
@@ -3445,7 +3443,7 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
         "the repair drained its debt"
     );
     let locator: (String, Option<Vec<u8>>, Option<String>) = sqlx::query_as(
-        "SELECT object_key, sha256, etag FROM proxima_core.blob_uploads\n          WHERE upload_id = $1",
+        "SELECT object_key, sha256, etag FROM proxiima_core.blob_uploads\n          WHERE upload_id = $1",
     )
     .bind(upload_uuid)
     .fetch_one(&pool)
@@ -3460,7 +3458,7 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
     );
     assert!(locator.2.is_some(), "repair records the canonical etag");
 
-    sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxima_core.blob_uploads")
+    sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxiima_core.blob_uploads")
         .execute(&pool)
         .await
         .expect("drop locator barrier trigger");
@@ -3475,7 +3473,7 @@ async fn post_put_terminal_race(terminal_sql: &'static str, expected_error: &'st
 #[tokio::test]
 async fn post_put_abort_race_repairs_locator_and_purges_pending_versions() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     post_put_terminal_race("aborted", "upload is aborted").await;
@@ -3484,7 +3482,7 @@ async fn post_put_abort_race_repairs_locator_and_purges_pending_versions() {
 #[tokio::test]
 async fn post_put_expiry_race_repairs_locator_and_purges_pending_versions() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     post_put_terminal_race("expired", "upload is expired").await;
@@ -3508,7 +3506,7 @@ async fn post_put_expiry_race_repairs_locator_and_purges_pending_versions() {
 #[allow(clippy::too_many_lines)] // two barriers and two tasks to pin one window
 async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
 
@@ -3529,7 +3527,7 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
     )
     .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -3558,7 +3556,7 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
             END
          $$;
          CREATE TRIGGER erase_delete_barrier_trigger
-         AFTER DELETE ON proxima_core.blob_uploads
+         AFTER DELETE ON proxiima_core.blob_uploads
          FOR EACH STATEMENT EXECUTE FUNCTION erase_delete_barrier();",
     )
     .execute(&pool)
@@ -3575,7 +3573,7 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
 
     let erase_pg = pg.clone().with_cold(Arc::new(store.cold_store()));
     let erase_task = tokio::spawn(async move {
-        use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseTarget};
+        use proxiima_core::owner_inverse::{EraseAuthorization, OwnerEraseTarget};
         let user_id = owner.as_user();
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
             user_id,
@@ -3651,7 +3649,7 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
     // object; the stage that lost to it owes the same key again. Whichever
     // order their purges ran in, a drain leaves neither bytes nor debt.
     let stores: Vec<String> = sqlx::query_scalar(
-        "SELECT object_store FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        "SELECT object_store FROM proxiima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(&canonical_key)
     .fetch_all(&pool)
@@ -3663,14 +3661,14 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
     );
     let drain_pg = pg.clone().with_cold(Arc::new(store.cold_store()));
     drain_pg
-        .retry_cold_object_purges(proxima_storage_pg::ColdPurgeRetryOptions::default())
+        .retry_cold_object_purges(proxiima_storage_pg::ColdPurgeRetryOptions::default())
         .await
         .expect("drain");
-    let _ = sqlx::query("UPDATE proxima_core.cold_purge_pending SET next_attempt_at = now()")
+    let _ = sqlx::query("UPDATE proxiima_core.cold_purge_pending SET next_attempt_at = now()")
         .execute(&pool)
         .await;
     drain_pg
-        .retry_cold_object_purges(proxima_storage_pg::ColdPurgeRetryOptions::default())
+        .retry_cold_object_purges(proxiima_storage_pg::ColdPurgeRetryOptions::default())
         .await
         .expect("drain");
     assert!(
@@ -3683,7 +3681,7 @@ async fn erase_snapshotted_before_the_canonical_put_still_owes_the_object() {
     assert_eq!(corpus_counts(&pool).await, (0, 0));
 
     sqlx::raw_sql(
-        "DROP TRIGGER erase_delete_barrier_trigger ON proxima_core.blob_uploads;
+        "DROP TRIGGER erase_delete_barrier_trigger ON proxiima_core.blob_uploads;
          DROP FUNCTION erase_delete_barrier();
          DROP SEQUENCE erase_delete_probe;",
     )
@@ -3742,7 +3740,7 @@ async fn hold_stage_after_canonical_put(body: &'static [u8]) -> StageHeldAfterCa
     )
     .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -3772,7 +3770,7 @@ async fn hold_stage_after_canonical_put(body: &'static [u8]) -> StageHeldAfterCa
     .expect("create locator barrier function");
     sqlx::query(
         "CREATE TRIGGER upload_locator_barrier_trigger
-         BEFORE UPDATE OF object_key ON proxima_core.blob_uploads
+         BEFORE UPDATE OF object_key ON proxiima_core.blob_uploads
          FOR EACH STATEMENT EXECUTE FUNCTION upload_locator_barrier()",
     )
     .execute(&pool)
@@ -3826,7 +3824,7 @@ async fn hold_stage_after_canonical_put(body: &'static [u8]) -> StageHeldAfterCa
 }
 
 async fn drop_locator_barrier_and_db(pool: sqlx::PgPool, db_name: &str) {
-    sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxima_core.blob_uploads")
+    sqlx::query("DROP TRIGGER upload_locator_barrier_trigger ON proxiima_core.blob_uploads")
         .execute(&pool)
         .await
         .expect("drop locator barrier trigger");
@@ -3855,7 +3853,7 @@ async fn drop_locator_barrier_and_db(pool: sqlx::PgPool, db_name: &str) {
 #[tokio::test]
 async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
 
@@ -3885,7 +3883,7 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         .await
         .expect("create pending delete marker");
     sqlx::query(
-        "DELETE FROM proxima_core.blob_uploads
+        "DELETE FROM proxiima_core.blob_uploads
           WHERE owner_id = $1 AND upload_id = $2",
     )
     .bind(owner.into_inner())
@@ -3906,7 +3904,7 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
     // The debt is durable and names the store it is owed against. The owner
     // is NULL because the owner row is exactly what was erased.
     let debt: (String, Option<Uuid>) = sqlx::query_as(
-        "SELECT object_store, owner_id FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        "SELECT object_store, owner_id FROM proxiima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(&canonical_key)
     .fetch_one(&pool)
@@ -3938,7 +3936,7 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
         .clone()
         .with_cold(Arc::new(store.cold_store()))
         .retry_cold_object_purges(
-            proxima_storage_pg::ColdPurgeRetryOptions::default().batch_size(10),
+            proxiima_storage_pg::ColdPurgeRetryOptions::default().batch_size(10),
         )
         .await
         .expect("the drain accepts a debt against the bucket it is wired to");
@@ -3963,7 +3961,7 @@ async fn erase_after_the_canonical_put_owes_the_object_to_the_purge_queue() {
 #[tokio::test]
 async fn a_transferred_row_keeps_the_canonical_object_out_of_the_purge_queue() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
 
@@ -3980,12 +3978,12 @@ async fn a_transferred_row_keeps_the_canonical_object_out_of_the_purge_queue() {
         ..
     } = hold_stage_after_canonical_put(body).await;
     let other_owner = Uuid::now_v7();
-    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+    sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
         .bind(other_owner)
         .execute(&pool)
         .await
         .expect("other owner");
-    sqlx::query("UPDATE proxima_core.blob_uploads SET owner_id = $1 WHERE upload_id = $2")
+    sqlx::query("UPDATE proxiima_core.blob_uploads SET owner_id = $1 WHERE upload_id = $2")
         .bind(other_owner)
         .bind(upload_uuid)
         .execute(&pool)
@@ -4001,7 +3999,7 @@ async fn a_transferred_row_keeps_the_canonical_object_out_of_the_purge_queue() {
         matches!(error, BlobError::State(ref message) if message == "upload not found for Owner")
     );
     let owed: i64 = sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        "SELECT count(*)::bigint FROM proxiima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(&canonical_key)
     .fetch_one(&pool)
@@ -4031,7 +4029,7 @@ async fn a_transferred_row_keeps_the_canonical_object_out_of_the_purge_queue() {
 #[tokio::test]
 async fn expired_at_entry_completion_and_abort_preserve_pending_versions() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
 
@@ -4063,7 +4061,7 @@ async fn expired_at_entry_completion_and_abort_preserve_pending_versions() {
     )
     .expect("valid S3 config");
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -4088,7 +4086,7 @@ async fn expired_at_entry_completion_and_abort_preserve_pending_versions() {
         .await
         .expect("create pending delete marker");
     sqlx::query(
-        "UPDATE proxima_core.blob_uploads\n            SET status = 'expired', error_message = 'upload expired'\n          WHERE owner_id = $1 AND upload_id = $2",
+        "UPDATE proxiima_core.blob_uploads\n            SET status = 'expired', error_message = 'upload expired'\n          WHERE owner_id = $1 AND upload_id = $2",
     )
     .bind(owner.into_inner())
     .bind(Uuid::parse_str(&upload_id).expect("upload id"))

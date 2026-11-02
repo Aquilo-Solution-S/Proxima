@@ -679,7 +679,7 @@ mod tests {
     use crate::authz::{
         AuthPath, AuthorizationHook, AuthzContext, AuthzInput, AuthzOperation, MembershipChange,
     };
-    use crate::{EntityId, ErrorCode, FlavorRegistry, GroupId, MemoryId, OwnerId, UserId};
+    use crate::{EntityId, ErrorCode, GroupId, MemoryId, OwnerId, SpiiceRegistry, UserId};
     use uuid::Uuid;
 
     /// The destination gate has two paths and they must never merge.
@@ -705,7 +705,7 @@ mod tests {
         let entity = EntityId::Memory(MemoryId::new(Uuid::now_v7()));
 
         let engine = || {
-            crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            crate::Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
                 .with_storage_ports(
                     MembershipStorage {
                         observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(
@@ -774,7 +774,7 @@ mod tests {
 
     #[test]
     fn access_admin_bootstrap_group_admin_is_not_mcp_exposed() {
-        let frozen = FlavorRegistry::default().freeze_or_panic_for_tests();
+        let frozen = SpiiceRegistry::default().freeze_or_panic_for_tests();
 
         for tool in frozen.list_mcp_tools() {
             assert_ne!(
@@ -799,7 +799,7 @@ mod tests {
 
     #[tokio::test]
     async fn access_admin_bootstrap_group_admin_requires_operator_authority() {
-        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let engine = crate::Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests());
         let group = GroupId::new(Uuid::now_v7());
         let first_admin = UserId::new(Uuid::now_v7());
         let authz = AuthzContext::for_subject(first_admin, AuthPath::HostBearer);
@@ -830,7 +830,7 @@ mod tests {
         let admin = UserId::new(Uuid::now_v7());
         let member = UserId::new(Uuid::now_v7());
         let changes = Arc::new(Mutex::new(Vec::new()));
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(RecordingMembershipHook {
             changes: changes.clone(),
         }));
@@ -921,7 +921,7 @@ mod tests {
         veto: Option<(MembershipChange, Relation)>,
     ) -> (crate::Engine, SeenChanges) {
         let seen = SeenChanges::default();
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(RelationHook {
             veto,
             seen: seen.clone(),
@@ -1166,7 +1166,7 @@ mod tests {
 
     #[tokio::test]
     async fn access_admin_transfer_refuses_goal_entities_before_owner_lookup() {
-        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let engine = crate::Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests());
         let caller = UserId::new(Uuid::now_v7());
         let authz = AuthzContext::for_subject(caller, AuthPath::HostBearer);
         let goal = crate::EntityId::Goal(crate::GoalId::new(Uuid::now_v7()));
@@ -1188,7 +1188,7 @@ mod tests {
 
     #[tokio::test]
     async fn access_admin_transfer_refuses_a_personal_destination() {
-        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let engine = crate::Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests());
         let caller = UserId::new(Uuid::now_v7());
         let authz = AuthzContext::for_subject(caller, AuthPath::HostBearer);
         let entity = crate::EntityId::Memory(crate::MemoryId::new(Uuid::now_v7()));
@@ -1213,7 +1213,7 @@ mod tests {
         let entity = EntityId::Memory(MemoryId::new(Uuid::now_v7()));
         let authz = AuthzContext::for_subject(caller, AuthPath::HostBearer);
 
-        let missing = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let missing = crate::Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(
                 membership_storage_with_home(caller, source_group, None).storage_ports(),
             )
@@ -1228,7 +1228,7 @@ mod tests {
         // The old bare home-owner lookup returned it and leaked Forbidden;
         // the visibility lookup must collapse it to the same miss as above.
         foreign_storage.entity_readable = false;
-        let foreign = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let foreign = crate::Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(foreign_storage.storage_ports())
             .transfer_to_owner(&authz, entity, destination)
             .await
@@ -1269,7 +1269,7 @@ mod tests {
         );
 
         // add_member: write-without-manage is denied before touching storage.
-        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let engine = crate::Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(
                 membership_storage_with_home(member, group, Some(group_owner)).storage_ports(),
             );
@@ -1384,7 +1384,7 @@ mod tests {
         );
 
         let storage_with_relation = |relation: Relation| {
-            crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+            crate::Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
                 .with_storage_ports(
                     MembershipStorage {
                         observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(
@@ -1451,7 +1451,7 @@ mod tests {
 
         // Admin on the destination in storage — the authority the grant
         // must NOT be able to borrow.
-        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let engine = crate::Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(
                 MembershipStorage {
                     observed_entity_reads: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -1493,7 +1493,7 @@ mod tests {
         let destination = GroupId::new(Uuid::now_v7());
         let mut storage = membership_storage_with_home(caller, destination, Some(source));
         storage.membership_relation = Relation::Admin;
-        let engine = crate::Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let engine = crate::Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(storage.storage_ports());
         let ordinary = AuthzContext::for_subject(caller, AuthPath::HostBearer);
         engine

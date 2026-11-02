@@ -1,4 +1,4 @@
-//! Proxima MCP server transport layer.
+//! Proxiima MCP server transport layer.
 //!
 //! Owns the shared MCP handler plus Streamable HTTP serving used by
 //! the headless binary and the embedded Tauri Shell listener.

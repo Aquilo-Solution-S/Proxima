@@ -9,7 +9,7 @@
 
 use std::ops::RangeInclusive;
 
-use proxima_core::{StorageError, env_value};
+use proxiima_core::{StorageError, env_value};
 
 pub(crate) const DEFAULT_HNSW_EF_SEARCH: u32 = 100;
 pub(crate) const DEFAULT_HNSW_MAX_SCAN_TUPLES: u32 = 20_000;
@@ -94,10 +94,10 @@ impl PgTuning {
     ///
     /// # Errors
     ///
-    /// Returns `StorageError::Unavailable` when a `PROXIMA_PG_*` tuning
+    /// Returns `StorageError::Unavailable` when a `PROXIIMA_PG_*` tuning
     /// variable is set to a value this crate cannot parse.
     pub fn from_env() -> Result<Self, StorageError> {
-        Ok(Self::from_lookup(&proxima_core::process_env)?.unwrap_or_default())
+        Ok(Self::from_lookup(&proxiima_core::process_env)?.unwrap_or_default())
     }
 
     /// Read tuning from an injected environment, or `None` when that
@@ -112,13 +112,13 @@ impl PgTuning {
     /// "tunes something": the test below is `resolved != Self::default()`, and
     /// nothing finer is available without per-field `Option`s. So an
     /// environment that sets a knob to its *shipped* value —
-    /// `PROXIMA_PG_HNSW_EF_SEARCH=100` — resolves to `PgTuning::default()`
+    /// `PROXIIMA_PG_HNSW_EF_SEARCH=100` — resolves to `PgTuning::default()`
     /// and reads here as silence, and a caller layering it
     /// (`self.pg_tuning.or(base.pg_tuning)`) keeps the programmatic tuning.
     /// The environment can therefore move a deployment OFF the defaults but
     /// not back ONTO them; only non-default values are expressible.
     ///
-    /// Every value goes through [`proxima_core::env_value`], so a variable
+    /// Every value goes through [`proxiima_core::env_value`], so a variable
     /// set to the empty string (or to whitespace) reads as unset rather
     /// than as a value that fails to parse. A malformed value is an error
     /// rather than a silent fallback, so a typo cannot quietly ship the
@@ -140,18 +140,18 @@ impl PgTuning {
         Ok(Self {
             hnsw_ef_search: env_int_in_range(
                 lookup,
-                "PROXIMA_PG_HNSW_EF_SEARCH",
+                "PROXIIMA_PG_HNSW_EF_SEARCH",
                 defaults.hnsw_ef_search,
                 &HNSW_EF_SEARCH_RANGE,
             )?,
             hnsw_iterative_scan: HnswIterativeScan::from_lookup(
                 lookup,
-                "PROXIMA_PG_HNSW_ITERATIVE_SCAN",
+                "PROXIIMA_PG_HNSW_ITERATIVE_SCAN",
                 defaults.hnsw_iterative_scan,
             )?,
             hnsw_max_scan_tuples: env_int_in_range(
                 lookup,
-                "PROXIMA_PG_HNSW_MAX_SCAN_TUPLES",
+                "PROXIIMA_PG_HNSW_MAX_SCAN_TUPLES",
                 defaults.hnsw_max_scan_tuples,
                 &HNSW_MAX_SCAN_TUPLES_RANGE,
             )?,
@@ -187,20 +187,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_core::env_from_pairs as env;
+    use proxiima_core::env_from_pairs as env;
 
     #[test]
     fn a_malformed_value_names_the_variable_it_came_from() {
         for (key, value, expected) in [
             (
-                "PROXIMA_PG_HNSW_ITERATIVE_SCAN",
+                "PROXIIMA_PG_HNSW_ITERATIVE_SCAN",
                 "relaxed",
-                "invalid PROXIMA_PG_HNSW_ITERATIVE_SCAN=relaxed",
+                "invalid PROXIIMA_PG_HNSW_ITERATIVE_SCAN=relaxed",
             ),
             (
-                "PROXIMA_PG_HNSW_EF_SEARCH",
+                "PROXIIMA_PG_HNSW_EF_SEARCH",
                 "wide",
-                "invalid integer PROXIMA_PG_HNSW_EF_SEARCH=wide",
+                "invalid integer PROXIIMA_PG_HNSW_EF_SEARCH=wide",
             ),
         ] {
             let err = PgTuning::from_lookup(&env(&[(key, value)])).unwrap_err();
@@ -222,10 +222,10 @@ mod tests {
     #[test]
     fn an_out_of_range_hnsw_knob_refuses_at_boot() {
         for (key, value) in [
-            ("PROXIMA_PG_HNSW_EF_SEARCH", "0"),
-            ("PROXIMA_PG_HNSW_EF_SEARCH", "1001"),
-            ("PROXIMA_PG_HNSW_MAX_SCAN_TUPLES", "0"),
-            ("PROXIMA_PG_HNSW_MAX_SCAN_TUPLES", "2147483648"),
+            ("PROXIIMA_PG_HNSW_EF_SEARCH", "0"),
+            ("PROXIIMA_PG_HNSW_EF_SEARCH", "1001"),
+            ("PROXIIMA_PG_HNSW_MAX_SCAN_TUPLES", "0"),
+            ("PROXIIMA_PG_HNSW_MAX_SCAN_TUPLES", "2147483648"),
         ] {
             let err = PgTuning::from_lookup(&env(&[(key, value)])).unwrap_err();
             assert!(

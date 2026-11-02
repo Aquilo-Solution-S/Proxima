@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 

@@ -2,13 +2,13 @@
 //!
 //! Every test names its families after a fresh id, so concurrent runs on one
 //! server never see each other's templates. The one test that builds in a
-//! built-in family owns `proxima_tmpl_split_*` (nothing else in the workspace
+//! built-in family owns `proxiima_tmpl_split_*` (nothing else in the workspace
 //! builds there since the split-core fixture moved to a host family).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use proxima_pg_testkit::{
+use proxiima_pg_testkit::{
     TemplateFamily, db_url, drop_db, drop_stale_templates, drop_stale_templates_in,
     ensure_template, ensure_template_in, sweep_stale_test_dbs, wait_until_database_idle,
 };
@@ -31,7 +31,7 @@ fn family(prefix: &str) -> TemplateFamily {
 }
 
 async fn exists(name: &str) -> bool {
-    proxima_pg_testkit::database_exists(name)
+    proxiima_pg_testkit::database_exists(name)
         .await
         .expect("exists")
 }
@@ -251,7 +251,7 @@ async fn a_family_collects_nothing_outside_itself() {
 async fn built_in_and_host_collection_never_meet() {
     let host = family(&format!("tfmeet{}_", unique_id()));
     let host_template = built(&host, 1).await;
-    let builtin = || format!("proxima_tmpl_split_{:016x}", random_hash());
+    let builtin = || format!("proxiima_tmpl_split_{:016x}", random_hash());
     let (first, second, third) = (builtin(), builtin(), builtin());
 
     // Built-in collection: building `second` collects `first`; collecting with
@@ -299,10 +299,10 @@ async fn built_in_and_host_collection_never_meet() {
 
 #[tokio::test]
 async fn the_untracked_sweep_never_takes_a_template() {
-    // A `proxima_` name is a candidate of the sweep's untracked leftovers;
+    // A `proxiima_` name is a candidate of the sweep's untracked leftovers;
     // only a UUID-suffixed name older than the grace is taken, and a template
     // ends in 16 hex digits.
-    let family = family(&format!("proxima_tfsweep{}_", unique_id()));
+    let family = family(&format!("proxiima_tfsweep{}_", unique_id()));
     let template = built(&family, 3).await;
     sweep_stale_test_dbs().await.expect("sweep");
     let survived = exists(&template).await;

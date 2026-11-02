@@ -391,7 +391,7 @@ impl OwnerRoles {
 /// The forwarding ceilings accepted by a host policy.
 ///
 /// ```compile_fail
-/// use proxima_core::{ForwarderRole, Role};
+/// use proxiima_core::{ForwarderRole, Role};
 /// let _ = ForwarderRole::new(Role::personal());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -487,7 +487,7 @@ pub trait OwnerAccessPort: Send + Sync {
     Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type, serde::Serialize, schemars::JsonSchema,
 )]
 #[sqlx(
-    type_name = "proxima_core.membership_relation",
+    type_name = "proxiima_core.membership_relation",
     rename_all = "lowercase"
 )]
 #[serde(rename_all = "lowercase")]

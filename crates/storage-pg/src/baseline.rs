@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 
 const RESET_DETAILS: &str = "this release installs the core schema fresh: a store built from an earlier core migration set (version 56 or below) cannot be upgraded in place; reinstall it, or reset a development database";
 
@@ -37,7 +37,7 @@ pub(crate) fn check(
 mod tests {
     use std::collections::BTreeSet;
 
-    use proxima_core::StorageError;
+    use proxiima_core::StorageError;
 
     use super::check;
 

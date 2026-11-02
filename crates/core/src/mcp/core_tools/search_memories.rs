@@ -138,7 +138,7 @@ pub struct SearchMemoriesArgs {
     pub kind: Option<SearchMemoriesKind>,
     #[serde(default)]
     #[schemars(
-        description = "Only this schema, e.g. `core/agent-note-v1`; ids via `proxima://schemas`."
+        description = "Only this schema, e.g. `core/agent-note-v1`; ids via `proxiima://schemas`."
     )]
     pub schema_id: Option<String>,
     #[serde(default)]
@@ -180,7 +180,7 @@ pub struct SearchMemoriesArgs {
     #[serde(default)]
     #[schemars(
         range(min = 1),
-        description = "Body character cap for include_body; default 8000, larger values are clamped. A cut body sets body_truncated=true; read the full text via proxima://memory/{id}."
+        description = "Body character cap for include_body; default 8000, larger values are clamped. A cut body sets body_truncated=true; read the full text via proxiima://memory/{id}."
     )]
     pub body_max_chars: Option<usize>,
     #[serde(default)]
@@ -277,7 +277,7 @@ pub struct SearchMemoryOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
     /// `Some(true)` when the hydrated `body` was cut to `body_max_chars`;
-    /// the untruncated text is available via `proxima://memory/{id}`.
+    /// the untruncated text is available via `proxiima://memory/{id}`.
     /// Present only when a body was hydrated (`include_body=true`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body_truncated: Option<bool>,
@@ -541,7 +541,7 @@ async fn search_local(
     until: Option<time::OffsetDateTime>,
 ) -> Result<SearchMemoriesOutput, McpToolError> {
     use tracing::Instrument as _;
-    let span = tracing::debug_span!(target: "proxima::stage_timing", "memory_search",
+    let span = tracing::debug_span!(target: "proxiima::stage_timing", "memory_search",
         search = %uuid::Uuid::now_v7(), work = "query");
     let mode = SearchMode::from(args.mode);
     let spaces = resolve_search_spaces(ctx, &args.spaces)?;
@@ -1343,7 +1343,7 @@ async fn embed_query_for_search(
         embed.embed_query(query, crate::llm::QueryTask::DEFAULT),
     )
     .instrument(
-        tracing::debug_span!(target: "proxima::stage_timing", "query_embedding", work = "query"),
+        tracing::debug_span!(target: "proxiima::stage_timing", "query_embedding", work = "query"),
     )
     .await
     .map_err(|err| {

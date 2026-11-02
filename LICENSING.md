@@ -1,21 +1,21 @@
 # Licensing
 
-Proxima is licensed under **Apache License, Version 2.0**.
+Proxiima is licensed under **Apache License, Version 2.0**.
 
 ## Single License for All Components
 
-The entire project — core engine, flavors, and documentation —
+The entire project — core engine, spiices, and documentation —
 uses Apache-2.0. This includes:
 
-- `crates/core/` (`proxima-core`)
-- `flavors/<name>/`
+- `crates/core/` (`proxiima-core`)
+- `spiices/<name>/`
 - `docs/`
 
 ## What This Means
 
 **Apache-2.0** allows anyone to:
 
-- Use Proxima for any purpose (commercial, non-commercial, internal, public)
+- Use Proxiima for any purpose (commercial, non-commercial, internal, public)
 - Modify the source code
 - Redistribute original or modified versions
 - Use in proprietary products without obligation to open-source derivatives
@@ -28,11 +28,11 @@ foundation projects intended for wide adoption.
 Aquilo Solutions offers commercial services on top of the open source
 project:
 
-- **Hosted Service** — Managed Proxima instances (Proxima Cloud)
+- **Hosted Service** — Managed Proxiima instances (Proxiima Cloud)
 - **Enterprise Features** — Closed-source add-ons (advanced access control,
   compliance packs, multi-owner collaboration)
 - **Support & Services** — 24/7 SLA, implementation, training, consulting
-- **Marketplace** — Certified flavors and integrations
+- **Marketplace** — Certified spiices and integrations
 
 For commercial inquiries, contact:
 
@@ -53,7 +53,7 @@ commercial offerings. Mechanism:
 ## Why Apache 2.0
 
 Apache 2.0 maximizes adoption and ecosystem growth. Companies can use
-Proxima in proprietary products without legal friction, which drives
+Proxiima in proprietary products without legal friction, which drives
 wider deployment, more contributors, and a healthier community.
 
 The open source project serves as the marketing engine for Aquilo's

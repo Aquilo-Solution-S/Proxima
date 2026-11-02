@@ -1,4 +1,4 @@
-# Compile-time performance optimizations for Proxima workspace
+# Compile-time performance optimizations for Proxiima workspace
 # See: https://doc.rust-lang.org/cargo/reference/config.html
 
 [build]
@@ -25,7 +25,7 @@ pipelining = true
 # Tested results:
 #   - First build: ~16s (with ccache caching C compilation)
 #   - Subsequent builds: ~0.6s (full cache hits)
-#   - Without ccache: ~10-15s for proxima-core, much longer for full workspace
+#   - Without ccache: ~10-15s for proxiima-core, much longer for full workspace
 
 # Artifact size reduction:
 #   - debug=0 for deps: ~70% reduction in debug artifacts

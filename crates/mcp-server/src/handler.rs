@@ -2,7 +2,7 @@
 //!
 //! The SDK exposes dynamic tools through direct
 //! `ServerHandler::list_tools` / `call_tool` overrides. This adapter
-//! projects the frozen build-time `FlavorRegistry` tool descriptors
+//! projects the frozen build-time `SpiiceRegistry` tool descriptors
 //! into MCP tool metadata at request time.
 
 use std::borrow::Cow;
@@ -10,13 +10,13 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_core::mcp::{
+use proxiima_core::mcp::{
     McpToolAnnotations, McpToolCtx, McpToolDescriptor, McpToolError, McpToolErrorKind, ToolContent,
     ToolDescriptorView, ToolEffect, ToolReply, all_core_resources, mcp_wire_output_schema,
     normalize_mcp_output_schema, provider_safe_tool_name, tool_name_matches,
 };
-use proxima_core::{
-    FlavorRegistryFrozen, McpAuthorContext, MemoryId, UNKNOWN_OPERATOR_LABEL,
+use proxiima_core::{
+    McpAuthorContext, MemoryId, SpiiceRegistryFrozen, UNKNOWN_OPERATOR_LABEL,
     resolve_operator_label,
 };
 use rmcp::ServerHandler;
@@ -34,11 +34,11 @@ use rmcp::service::{MaybeSendFuture, Peer, RequestContext, RoleServer, Subscript
 use crate::selfdoc;
 
 /// Product name reported to MCP clients on `initialize`.
-const SERVER_NAME: &str = "proxima";
+const SERVER_NAME: &str = "proxiima";
 
-/// Newest MCP revision Proxima implements. rmcp's default admits every
+/// Newest MCP revision Proxiima implements. rmcp's default admits every
 /// revision rmcp knows, so an rmcp upgrade that learns a newer one would
-/// start serving it before Proxima meets it: `2026-07-28` was admitted that
+/// start serving it before Proxiima meets it: `2026-07-28` was admitted that
 /// way while the SEP-2549 list cache hints it requires were missing, and a
 /// client on it rejected `tools/list`. Raise this only with the revision's
 /// server obligations met; a test fails when rmcp knows a newer one.
@@ -57,7 +57,7 @@ const LIST_CACHE_SCOPE: CacheScope = CacheScope::Private;
 use crate::auth::McpAuthContext;
 use crate::host_tools::McpHostTool;
 use crate::server::{McpToolHost, ToolInvocationError};
-use proxima_core::{CapabilitySet, KeyDeclaration, ResourceKey, ScopeKey, ToolName};
+use proxiima_core::{CapabilitySet, KeyDeclaration, ResourceKey, ScopeKey, ToolName};
 
 #[derive(Clone, Debug)]
 pub struct DynamicHandler {
@@ -87,7 +87,7 @@ impl DynamicHandler {
 
     /// Start the ordinary tool call with a fresh observation of the scope gate.
     ///
-    /// The returned cell is the exact [`JudgedKey`](proxima_core::mcp::JudgedKey)
+    /// The returned cell is the exact [`JudgedKey`](proxiima_core::mcp::JudgedKey)
     /// installed in the call's context. Retain it, await the future, then read
     /// it after either success or refusal. It stays empty if the request fails
     /// before the gate derives a key. Each invocation allocates its own cell;
@@ -101,10 +101,10 @@ impl DynamicHandler {
         request: CallToolRequestParams,
         context: &RequestContext<RoleServer>,
     ) -> (
-        proxima_core::mcp::JudgedKey,
+        proxiima_core::mcp::JudgedKey,
         impl Future<Output = Result<CallToolResponse, ErrorData>> + MaybeSendFuture + use<>,
     ) {
-        let judged = proxima_core::mcp::JudgedKey::default();
+        let judged = proxiima_core::mcp::JudgedKey::default();
         let observation = judged.clone();
         let server = self.server.clone();
         let auth = auth_context(context);
@@ -185,7 +185,7 @@ impl DynamicHandler {
 /// `list_tools` applies, so self-documentation never references a tool the
 /// caller cannot see.
 pub(crate) fn advertised_tool_ids(
-    registry: &FlavorRegistryFrozen,
+    registry: &SpiiceRegistryFrozen,
     caller: Caller<'_>,
 ) -> BTreeSet<&'static str> {
     registry
@@ -229,10 +229,10 @@ impl ServerHandler for DynamicHandler {
             tools.list_changed = Some(true);
         }
         // NOT `Implementation::from_build_env()`: those `env!` macros expand
-        // against rmcp's own manifest, so every Proxima deployment introduced
+        // against rmcp's own manifest, so every Proxiima deployment introduced
         // itself as `rmcp 2.2.0` and no client or operator could tell which
         // release they were talking to.
-        info.server_info = Implementation::new(SERVER_NAME, proxima_core::RELEASE_VERSION);
+        info.server_info = Implementation::new(SERVER_NAME, proxiima_core::RELEASE_VERSION);
         info
     }
 
@@ -363,7 +363,7 @@ impl ServerHandler for DynamicHandler {
 
     /// Answers are always [`ReadResourceResponse::Complete`]. rmcp 3 widened
     /// this return type for MRTR (SEP-2322), whose other variant lets a server
-    /// pause mid-request to ask the *client* for input. Proxima resolves every
+    /// pause mid-request to ask the *client* for input. Proxiima resolves every
     /// resource from its own store under the caller's already-established
     /// scope, so there is nothing to ask back for — see [`call_tool`] for the
     /// same reasoning on the tool path.
@@ -388,7 +388,7 @@ impl ServerHandler for DynamicHandler {
             if uri == selfdoc::HOW_TO_URI {
                 if !how_to_allowed_for_auth(auth.as_ref()) {
                     return Err(mcp_tool_error_to_error_data(&McpToolError::NotAuthorized(
-                        proxima_core::protocol::resource::HOW_TO.into(),
+                        proxiima_core::protocol::resource::HOW_TO.into(),
                     )));
                 }
                 let ctx = how_to_ctx?;
@@ -402,7 +402,7 @@ impl ServerHandler for DynamicHandler {
                 ])
                 .into());
             }
-            if !uri.starts_with("proxima://") {
+            if !uri.starts_with("proxiima://") {
                 return Err(ErrorData::resource_not_found(
                     format!("unknown resource {uri}"),
                     None,
@@ -443,7 +443,7 @@ impl ServerHandler for DynamicHandler {
                             .registry()
                             .list_mcp_tools()
                             .iter()
-                            .find(|d| d.name == proxima_core::protocol::tool::CORE_SEARCH_MEMORIES)
+                            .find(|d| d.name == proxiima_core::protocol::tool::CORE_SEARCH_MEMORIES)
                             .map(|d| project_dispatcher_actions_for_auth(caller, d))
                             .unwrap_or_default(),
                     )
@@ -461,7 +461,7 @@ impl ServerHandler for DynamicHandler {
                     let schema = match &search_schema {
                         Some(schema)
                             if descriptor.name
-                                == proxima_core::protocol::tool::CORE_SEARCH_MEMORIES =>
+                                == proxiima_core::protocol::tool::CORE_SEARCH_MEMORIES =>
                         {
                             schema.clone()
                         }
@@ -523,16 +523,16 @@ impl ServerHandler for DynamicHandler {
     }
 
     /// Answers are always [`CallToolResponse::Complete`]. rmcp 3 widened this
-    /// return type for two draft extensions Proxima deliberately does not
+    /// return type for two draft extensions Proxiima deliberately does not
     /// implement:
     ///
     /// - `InputRequired` (MRTR, SEP-2322) pauses a call to elicit input from
-    ///   the client. Every Proxima tool is a single authorized store
+    ///   the client. Every Proxiima tool is a single authorized store
     ///   operation whose arguments arrive complete; a missing or malformed one
     ///   is a caller error, reported as such by
     ///   `tool_invocation_error_to_error_data`, not a prompt to fill in.
     /// - `Task` (SEP-2663) hands back a task id for the client to poll. That
-    ///   is for long-running work; Proxima answers inline.
+    ///   is for long-running work; Proxiima answers inline.
     ///
     /// Neither is advertised in [`get_info`]'s capabilities, so a spec-abiding
     /// client never expects them.
@@ -586,7 +586,7 @@ async fn with_progress_heartbeat<F: Future>(
 /// a not-authorized message lists the caller's still-allowed actions.
 #[must_use]
 pub fn tool_invocation_error_to_error_data(
-    registry: &FlavorRegistryFrozen,
+    registry: &SpiiceRegistryFrozen,
     err: ToolInvocationError,
     auth: Option<&McpAuthContext>,
 ) -> ErrorData {
@@ -608,11 +608,11 @@ pub fn tool_invocation_error_to_error_data(
 ///
 /// The candidate actions come off the descriptor's `action_arg_specs`, which
 /// is the enumeration every other seam reads. Sourced from the substrate
-/// `all_core_actions()` table, a denied *flavor* dispatcher listed nothing,
+/// `all_core_actions()` table, a denied *spiice* dispatcher listed nothing,
 /// so the one caller who most needs the hint — someone holding a partial
 /// palette on a tool the substrate has never heard of — got the bare message.
 fn not_authorized_message(
-    registry: &FlavorRegistryFrozen,
+    registry: &SpiiceRegistryFrozen,
     name: &str,
     auth: Option<&McpAuthContext>,
 ) -> String {
@@ -722,12 +722,13 @@ pub fn mcp_tool_error_to_error_data(err: &McpToolError) -> ErrorData {
 fn idempotency_conflict_data(err: &McpToolError) -> Option<serde_json::Value> {
     let existing = match err {
         McpToolError::Protocol(inner)
-            if inner.code == proxima_core::error::ErrorCode::IdempotencyConflict =>
+            if inner.code == proxiima_core::error::ErrorCode::IdempotencyConflict =>
         {
             inner.existing
         }
-        McpToolError::Storage(proxima_core::StorageError::IdempotencyConflict {
-            existing, ..
+        McpToolError::Storage(proxiima_core::StorageError::IdempotencyConflict {
+            existing,
+            ..
         }) => *existing,
         _ => return None,
     };
@@ -863,7 +864,7 @@ async fn caller_search_input_schema(
     ctx: &McpToolCtx,
     schema: serde_json::Value,
 ) -> Result<serde_json::Value, ErrorData> {
-    proxima_core::mcp::core_tools::search_memories::caller_input_schema(ctx, schema)
+    proxiima_core::mcp::core_tools::search_memories::caller_input_schema(ctx, schema)
         .await
         .map_err(generic_internal_error)
 }
@@ -885,7 +886,7 @@ fn to_rmcp_annotations(annotations: McpToolAnnotations) -> ToolAnnotations {
     hints
 }
 
-fn raw_resource_from_meta(meta: &proxima_core::flavor::ResourceContract) -> Resource {
+fn raw_resource_from_meta(meta: &proxiima_core::spiice::ResourceContract) -> Resource {
     Resource::new(static_resource_uri(meta.uri_template), meta.name)
         .with_title(meta.title)
         .with_description(meta.description)
@@ -893,7 +894,7 @@ fn raw_resource_from_meta(meta: &proxima_core::flavor::ResourceContract) -> Reso
 }
 
 fn raw_resource_template_from_meta(
-    meta: &proxima_core::flavor::ResourceContract,
+    meta: &proxiima_core::spiice::ResourceContract,
 ) -> ResourceTemplate {
     ResourceTemplate::new(meta.uri_template, meta.name)
         .with_title(meta.title)
@@ -912,7 +913,7 @@ fn static_resource_uri(uri_template: &str) -> String {
 /// deployment surface admit it, and its owner role allows the declaration.
 pub(crate) fn resource_allowed_for_auth(
     auth: Option<&McpAuthContext>,
-    resource: &proxima_core::flavor::ResourceContract,
+    resource: &proxiima_core::spiice::ResourceContract,
 ) -> bool {
     resource_declaration_allowed_for_auth(auth, resource.key(), resource.declaration())
 }
@@ -933,8 +934,8 @@ fn resource_declaration_allowed_for_auth(
 pub(crate) fn how_to_allowed_for_auth(auth: Option<&McpAuthContext>) -> bool {
     resource_declaration_allowed_for_auth(
         auth,
-        proxima_core::mcp::how_to_resource_key(),
-        proxima_core::mcp::how_to_resource_declaration(),
+        proxiima_core::mcp::how_to_resource_key(),
+        proxiima_core::mcp::how_to_resource_declaration(),
     )
 }
 
@@ -946,7 +947,7 @@ pub(crate) fn advertised_resource_scope_keys(
         .map(|resource| resource.scope_key)
         .collect();
     if how_to_allowed_for_auth(auth) {
-        keys.insert(proxima_core::protocol::resource::HOW_TO);
+        keys.insert(proxiima_core::protocol::resource::HOW_TO);
     }
     keys
 }
@@ -1014,12 +1015,12 @@ fn canonical_tool_name(server: &McpToolHost, request_name: &str) -> Option<Strin
 fn request_services(
     server: &McpToolHost,
     context: &RequestContext<RoleServer>,
-) -> Result<proxima_core::FlavorServices, ErrorData> {
+) -> Result<proxiima_core::SpiiceServices, ErrorData> {
     context
         .extensions
         .get::<http::request::Parts>()
         .map_or_else(
-            || Ok(proxima_core::FlavorServices::default()),
+            || Ok(proxiima_core::SpiiceServices::default()),
             |parts| server.request_services(&parts.headers, &parts.extensions),
         )
         .map_err(|err| mcp_tool_error_to_error_data(&err))
@@ -1107,7 +1108,7 @@ impl<'a> Caller<'a> {
 ///
 /// A dispatcher is visible when at least one of its actions is in scope,
 /// permitted by the caller's owner role, and (in a listing) shown by every
-/// request behavior. This keeps a mixed flavor dispatcher useful to a viewer
+/// request behavior. This keeps a mixed spiice dispatcher useful to a viewer
 /// without advertising its writes.
 pub(crate) fn tool_allowed_for_auth(caller: Caller<'_>, descriptor: &McpToolDescriptor) -> bool {
     let scope = caller.auth.map(|ctx| ctx.authz.capabilities());
@@ -1156,7 +1157,7 @@ fn owner_role_allows(auth: Option<&McpAuthContext>, read_only: bool) -> bool {
 }
 
 /// MCP/REST tool-level projection for the actions visible to one caller:
-/// the [`ToolEffect::join`](proxima_core::ToolEffect::join) of those
+/// the [`ToolEffect::join`](proxiima_core::ToolEffect::join) of those
 /// actions, so a caller who sees only a dispatcher's reads is told it reads.
 /// `None` when the caller sees no action at all.
 pub(crate) fn annotations_for_auth(
@@ -1187,7 +1188,7 @@ pub const MODEL_ID_ARG: &str = "model_id";
 /// The reserved call-context arguments that name the caller's own Self Perspective, in the
 /// order they are read.
 pub const SELF_PERSPECTIVE_ARGS: [&str; 3] = [
-    "_proxima_caller_self_perspective",
+    "_proxiima_caller_self_perspective",
     "caller_self_perspective",
     "current_root_perspective_memory_id",
 ];
@@ -1249,7 +1250,7 @@ fn caller_self_perspective_from_args(
             None,
         ));
     };
-    let id = proxima_core::mcp::parse_wire_uuid(raw).map_err(|err| {
+    let id = proxiima_core::mcp::parse_wire_uuid(raw).map_err(|err| {
         ErrorData::invalid_params(format!("{field} must be a valid UUID: {err}"), None)
     })?;
     Ok(Some(MemoryId::new(id)))
@@ -1281,7 +1282,7 @@ fn host_tool_in_scope(capabilities: &CapabilitySet, name: &str, effect: ToolEffe
     match ToolName::parse(name) {
         Ok(name) => capabilities.admits(
             &ScopeKey::Tool(name),
-            proxima_core::KeyDeclaration::shared(Some(effect)),
+            proxiima_core::KeyDeclaration::shared(Some(effect)),
         ),
         Err(_) => false,
     }
@@ -1359,11 +1360,11 @@ mod output_contract_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_core::mcp::Replay;
-    use proxima_core::protocol::{
+    use proxiima_core::mcp::Replay;
+    use proxiima_core::protocol::{
         action as protocol_action, resource as protocol_resource, tool as protocol_tool,
     };
-    use proxima_core::{ServedSurface, ToolScope};
+    use proxiima_core::{ServedSurface, ToolScope};
 
     fn palette(ids: &[&str]) -> ToolScope {
         ToolScope::Palette(
@@ -1380,11 +1381,11 @@ mod tests {
             .map_err(|error| mcp_tool_error_to_error_data(&error))
     }
 
-    fn flavor_descriptor(name: &'static str, effect: Option<ToolEffect>) -> McpToolDescriptor {
+    fn spiice_descriptor(name: &'static str, effect: Option<ToolEffect>) -> McpToolDescriptor {
         McpToolDescriptor {
             name,
             description: "stub",
-            origin: proxima_core::mcp::McpToolOrigin::Flavor("proxima-stub".to_string()),
+            origin: proxiima_core::mcp::McpToolOrigin::Spiice("proxiima-stub".to_string()),
             produces_schema_ids: &[],
             args_schema: serde_json::json!({"type": "object"}),
             dispatcher_schema: None,
@@ -1392,46 +1393,46 @@ mod tests {
             action_arg_specs: &[],
             argv_action_specs: &[],
             effect,
-            audience: proxima_core::mcp::McpToolAudience::Shared,
+            audience: proxiima_core::mcp::McpToolAudience::Shared,
             call: &|_, _| Box::pin(async { Ok(serde_json::json!({})) }),
             title: "Test tool",
         }
     }
 
-    const MIXED_ACTIONS: &[proxima_core::mcp::McpActionArgSpec] = &[
-        proxima_core::mcp::McpActionArgSpec {
+    const MIXED_ACTIONS: &[proxiima_core::mcp::McpActionArgSpec] = &[
+        proxiima_core::mcp::McpActionArgSpec {
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
             effect: ToolEffect::ReadOnly,
-            audience: proxima_core::mcp::McpToolAudience::Shared,
+            audience: proxiima_core::mcp::McpToolAudience::Shared,
             title: "Test action",
         },
-        proxima_core::mcp::McpActionArgSpec {
+        proxiima_core::mcp::McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id"],
             required_fields: &["id"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
-            audience: proxima_core::mcp::McpToolAudience::Shared,
+            audience: proxiima_core::mcp::McpToolAudience::Shared,
             title: "Test action",
         },
     ];
 
     /// The argv twin of [`MIXED_ACTIONS`]: one command that reads, one that
     /// writes.
-    const MIXED_ARGV_ACTIONS: &[proxima_core::mcp::McpArgvActionSpec] = &[
-        proxima_core::mcp::McpArgvActionSpec {
+    const MIXED_ARGV_ACTIONS: &[proxiima_core::mcp::McpArgvActionSpec] = &[
+        proxiima_core::mcp::McpArgvActionSpec {
             action: "approval",
             argv_prefix: &["approval"],
             effect: ToolEffect::ReadOnly,
-            audience: proxima_core::mcp::McpToolAudience::Shared,
+            audience: proxiima_core::mcp::McpToolAudience::Shared,
             title: "Test action",
         },
-        proxima_core::mcp::McpArgvActionSpec {
+        proxiima_core::mcp::McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
-            audience: proxima_core::mcp::McpToolAudience::Shared,
+            audience: proxiima_core::mcp::McpToolAudience::Shared,
             title: "Test action",
         },
     ];
@@ -1449,21 +1450,21 @@ mod tests {
 
         assert!(!tool_allowed_for_auth(
             caller,
-            &flavor_descriptor("stub_undeclared", None)
+            &spiice_descriptor("stub_undeclared", None)
         ));
         assert!(!tool_allowed_for_auth(
             caller,
-            &flavor_descriptor(
+            &spiice_descriptor(
                 "stub_write",
                 Some(ToolEffect::Additive(Replay::NonIdempotent))
             )
         ));
         assert!(tool_allowed_for_auth(
             caller,
-            &flavor_descriptor("stub_read", Some(ToolEffect::ReadOnly))
+            &spiice_descriptor("stub_read", Some(ToolEffect::ReadOnly))
         ));
 
-        let mut mixed = flavor_descriptor("stub_mixed", None);
+        let mut mixed = spiice_descriptor("stub_mixed", None);
         mixed.action_arg_specs = MIXED_ACTIONS;
         assert!(tool_allowed_for_auth(caller, &mixed));
         assert!(action_allowed_for_auth(caller, &mixed, "look"));
@@ -1471,8 +1472,8 @@ mod tests {
 
         // Owner audience is still a registered read; owner authorization
         // remains independent of deployment command selection.
-        let mut owner_read = flavor_descriptor("stub_owner_read", Some(ToolEffect::ReadOnly));
-        owner_read.audience = proxima_core::mcp::McpToolAudience::Owner;
+        let mut owner_read = spiice_descriptor("stub_owner_read", Some(ToolEffect::ReadOnly));
+        owner_read.audience = proxiima_core::mcp::McpToolAudience::Owner;
         assert!(tool_allowed_for_auth(caller, &owner_read));
         let held = full_auth(ToolScope::Palette(vec![
             ScopeKey::parse("stub_owner_read").expect("a scope key"),
@@ -1494,12 +1495,12 @@ mod tests {
         let caller = Caller::new(Some(&auth));
         assert!(!tool_allowed_for_auth(
             caller,
-            &flavor_descriptor("stub_read", Some(ToolEffect::ReadOnly))
+            &spiice_descriptor("stub_read", Some(ToolEffect::ReadOnly))
         ));
-        let mut owner_read = flavor_descriptor("stub_owner_read", Some(ToolEffect::ReadOnly));
-        owner_read.audience = proxima_core::mcp::McpToolAudience::Owner;
+        let mut owner_read = spiice_descriptor("stub_owner_read", Some(ToolEffect::ReadOnly));
+        owner_read.audience = proxiima_core::mcp::McpToolAudience::Owner;
         assert!(!tool_allowed_for_auth(caller, &owner_read));
-        let mut mixed = flavor_descriptor("stub_mixed", None);
+        let mut mixed = spiice_descriptor("stub_mixed", None);
         mixed.action_arg_specs = MIXED_ACTIONS;
         assert!(!tool_allowed_for_auth(caller, &mixed));
         assert!(!action_allowed_for_auth(caller, &mixed, "look"));
@@ -1524,12 +1525,12 @@ mod tests {
     /// the palette.
     #[test]
     fn a_resource_is_listed_only_where_it_is_admitted() {
-        let owner = proxima_core::OwnerId::from(proxima_core::UserId::new(uuid::Uuid::now_v7()));
+        let owner = proxiima_core::OwnerId::from(proxiima_core::UserId::new(uuid::Uuid::now_v7()));
         let stranger = McpAuthContext {
             owner,
-            authz: proxima_core::AuthzContext::for_subject(
-                proxima_core::UserId::new(uuid::Uuid::now_v7()),
-                proxima_core::AuthPath::HostBearer,
+            authz: proxiima_core::AuthzContext::for_subject(
+                proxiima_core::UserId::new(uuid::Uuid::now_v7()),
+                proxiima_core::AuthPath::HostBearer,
             )
             .with_tool_scope(ToolScope::All),
         };
@@ -1544,7 +1545,7 @@ mod tests {
         let memory = all_core_resources()
             .find(|resource| resource.scope_key == protocol_resource::MEMORY)
             .expect("the memory resource");
-        let write = proxima_core::flavor::ResourceContract {
+        let write = proxiima_core::spiice::ResourceContract {
             read_only: false,
             ..*memory
         };
@@ -1562,12 +1563,12 @@ mod tests {
     }
 
     fn full_auth(scope: ToolScope) -> McpAuthContext {
-        let owner = proxima_core::OwnerId::from(proxima_core::UserId::new(uuid::Uuid::now_v7()));
+        let owner = proxiima_core::OwnerId::from(proxiima_core::UserId::new(uuid::Uuid::now_v7()));
         McpAuthContext {
             owner,
-            authz: proxima_core::AuthzContext::single_owner(
+            authz: proxiima_core::AuthzContext::single_owner(
                 &owner,
-                proxima_core::AuthPath::HostBearer,
+                proxiima_core::AuthPath::HostBearer,
             )
             .with_tool_scope(scope),
         }
@@ -1576,12 +1577,12 @@ mod tests {
     /// An auth context whose token binds a model identity, as the OIDC
     /// subject map produces for a configured runner principal.
     fn trusted_auth(trusted_model_id: &str) -> McpAuthContext {
-        let owner = proxima_core::OwnerId::from(proxima_core::UserId::new(uuid::Uuid::now_v7()));
+        let owner = proxiima_core::OwnerId::from(proxiima_core::UserId::new(uuid::Uuid::now_v7()));
         McpAuthContext {
             owner,
-            authz: proxima_core::AuthzContext::single_owner(
+            authz: proxiima_core::AuthzContext::single_owner(
                 &owner,
-                proxima_core::AuthPath::HostBearer,
+                proxiima_core::AuthPath::HostBearer,
             )
             .with_trusted_model_id(trusted_model_id)
             .expect("a well-formed runner id binds"),
@@ -1589,7 +1590,7 @@ mod tests {
     }
 
     /// Fails when an rmcp upgrade knows a revision newer than the one
-    /// Proxima serves: implement the new revision's server obligations
+    /// Proxiima serves: implement the new revision's server obligations
     /// (list cache hints, lifecycle, headers, errors), then raise
     /// `MAX_PROTOCOL_VERSION`. Admitting it by default is how AQS/aquilo#9484
     /// happened.
@@ -1607,7 +1608,7 @@ mod tests {
         let self_id = uuid::Uuid::now_v7();
         let args = serde_json::json!({
             "model_id": "test-model",
-            "_proxima_caller_self_perspective": self_id.to_string(),
+            "_proxiima_caller_self_perspective": self_id.to_string(),
         });
 
         let author = author_from_args(&args, None, "unknown", "0").expect("author context");
@@ -1623,7 +1624,7 @@ mod tests {
     fn strip_call_context_args_removes_reserved_metadata() {
         let mut args = serde_json::json!({
             "payload": {},
-            "_proxima_caller_self_perspective": uuid::Uuid::now_v7().to_string(),
+            "_proxiima_caller_self_perspective": uuid::Uuid::now_v7().to_string(),
             "caller_self_perspective": uuid::Uuid::now_v7().to_string(),
             "current_root_perspective_memory_id": uuid::Uuid::now_v7().to_string(),
         });
@@ -1631,7 +1632,7 @@ mod tests {
         strip_call_context_args(&mut args);
 
         assert!(args.get("payload").is_some());
-        assert!(args.get("_proxima_caller_self_perspective").is_none());
+        assert!(args.get("_proxiima_caller_self_perspective").is_none());
         assert!(args.get("caller_self_perspective").is_none());
         assert!(args.get("current_root_perspective_memory_id").is_none());
     }
@@ -1836,7 +1837,7 @@ mod tests {
 
     #[test]
     fn palette_scope_narrows_advertised_dispatcher_actions() {
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let goal = registry
             .list_mcp_tools()
             .iter()
@@ -1890,7 +1891,7 @@ mod tests {
 
     #[test]
     fn all_scope_leaves_dispatcher_actions_unchanged() {
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let goal = registry
             .list_mcp_tools()
             .iter()
@@ -1903,7 +1904,7 @@ mod tests {
 
     #[test]
     fn not_authorized_message_lists_allowed_actions() {
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let scope = palette(&[protocol_action::CORE_GOAL_SET]);
         let auth = full_auth(scope);
         let err = tool_invocation_error_to_error_data(
@@ -1922,14 +1923,14 @@ mod tests {
         );
     }
 
-    /// The retry hint reaches a FLAVOR dispatcher too. Built from
+    /// The retry hint reaches a SPIICE dispatcher too. Built from
     /// `all_core_actions()` — a table over substrate names — this message
-    /// listed nothing for a flavor tool, so the caller holding a partial
+    /// listed nothing for a spiice tool, so the caller holding a partial
     /// palette on a tool the substrate never heard of got no hint at all.
     #[test]
-    fn not_authorized_lists_a_flavor_dispatchers_allowed_actions() {
+    fn not_authorized_lists_a_spiice_dispatchers_allowed_actions() {
         use futures_util::future::BoxFuture;
-        use proxima_core::mcp::{McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
+        use proxiima_core::mcp::{McpActionArgSpec, McpTool, McpToolCtx, McpToolError};
 
         #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
         #[serde(tag = "action", rename_all = "snake_case")]
@@ -1953,15 +1954,15 @@ mod tests {
 
         impl McpTool for StubDispatchTool {
             const TITLE: &'static str = "Test tool";
-            const NAME: &'static str = "proxima-stub_dispatch";
-            const DESCRIPTION: &'static str = "A flavor dispatcher.";
+            const NAME: &'static str = "proxiima-stub_dispatch";
+            const DESCRIPTION: &'static str = "A spiice dispatcher.";
             const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
                 McpActionArgSpec {
                     action: "look",
                     allowed_fields: &["id"],
                     required_fields: &["id"],
                     effect: ToolEffect::Additive(Replay::NonIdempotent),
-                    audience: proxima_core::mcp::McpToolAudience::Shared,
+                    audience: proxiima_core::mcp::McpToolAudience::Shared,
                     title: "Test action",
                 },
                 McpActionArgSpec {
@@ -1969,7 +1970,7 @@ mod tests {
                     allowed_fields: &["id"],
                     required_fields: &["id"],
                     effect: ToolEffect::Additive(Replay::NonIdempotent),
-                    audience: proxima_core::mcp::McpToolAudience::Shared,
+                    audience: proxiima_core::mcp::McpToolAudience::Shared,
                     title: "Test action",
                 },
             ];
@@ -1983,21 +1984,21 @@ mod tests {
             }
         }
 
-        let mut registry = proxima_core::FlavorRegistry::new();
-        registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxima-stub");
+        let mut registry = proxiima_core::SpiiceRegistry::new();
+        registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxiima-stub");
         let registry = registry.freeze_or_panic_for_tests();
 
-        let scope = palette(&["proxima-stub_dispatch:look"]);
+        let scope = palette(&["proxiima-stub_dispatch:look"]);
         let auth = full_auth(scope);
         let err = tool_invocation_error_to_error_data(
             &registry,
-            McpToolError::NotAuthorized("proxima-stub_dispatch:touch".into()).into(),
+            McpToolError::NotAuthorized("proxiima-stub_dispatch:touch".into()).into(),
             Some(&auth),
         );
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
         assert!(
             err.message
-                .contains("allowed proxima-stub_dispatch actions: look"),
+                .contains("allowed proxiima-stub_dispatch actions: look"),
             "message: {}",
             err.message
         );
@@ -2090,7 +2091,7 @@ mod tests {
     fn tool_scope_denials_remain_invalid_request() {
         // No auth threaded (e.g. direct-handler path) → bare message, no
         // allowed-action enrichment.
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let err = tool_invocation_error_to_error_data(
             &registry,
             McpToolError::NotAuthorized(protocol_action::CORE_GOAL_SET.into()).into(),
@@ -2107,12 +2108,12 @@ mod tests {
         );
     }
 
-    /// A viewer sees a flavor's read tool in `tools/list`.
+    /// A viewer sees a spiice's read tool in `tools/list`.
     /// Read-vs-write comes from the descriptor's own effect, never from its
     /// name.
     #[test]
-    fn a_viewer_sees_a_flavor_read_tool_and_not_its_write_tool() {
-        use proxima_core::{AuthPath, AuthzContext, GroupId, OwnerId, UserId, access::Role};
+    fn a_viewer_sees_a_spiice_read_tool_and_not_its_write_tool() {
+        use proxiima_core::{AuthPath, AuthzContext, GroupId, OwnerId, UserId, access::Role};
 
         let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let viewer = McpAuthContext {
@@ -2124,29 +2125,29 @@ mod tests {
             ),
         };
 
-        let read = flavor_descriptor("proxima-stub_search", Some(ToolEffect::ReadOnly));
-        let write = flavor_descriptor(
-            "proxima-stub_write",
+        let read = spiice_descriptor("proxiima-stub_search", Some(ToolEffect::ReadOnly));
+        let write = spiice_descriptor(
+            "proxiima-stub_write",
             Some(ToolEffect::Additive(Replay::NonIdempotent)),
         );
         // No name-keyed fallback: a substrate descriptor that declares
         // nothing is a write, whatever its name.
         let silent_core = McpToolDescriptor {
-            origin: proxima_core::mcp::McpToolOrigin::Substrate,
-            ..flavor_descriptor(protocol_tool::CORE_SEARCH_MEMORIES, None)
+            origin: proxiima_core::mcp::McpToolOrigin::Substrate,
+            ..spiice_descriptor(protocol_tool::CORE_SEARCH_MEMORIES, None)
         };
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let core_read = registry
             .mcp_tool(protocol_tool::CORE_SEARCH_MEMORIES)
             .expect("core search is registered");
 
         assert!(
             tool_allowed_for_auth(Caller::new(Some(&viewer)), &read),
-            "a flavor tool that declares read_only must be visible to a viewer"
+            "a spiice tool that declares read_only must be visible to a viewer"
         );
         assert!(
             !tool_allowed_for_auth(Caller::new(Some(&viewer)), &write),
-            "a flavor write tool must stay hidden from a viewer"
+            "a spiice write tool must stay hidden from a viewer"
         );
         assert!(
             !tool_allowed_for_auth(Caller::new(Some(&viewer)), &silent_core),
@@ -2160,17 +2161,17 @@ mod tests {
 
     #[test]
     fn a_bogus_action_scope_never_advertises_a_flat_tool() {
-        use proxima_core::{AuthPath, AuthzContext, OwnerId, UserId};
+        use proxiima_core::{AuthPath, AuthzContext, OwnerId, UserId};
 
         let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
-        let descriptor = flavor_descriptor("proxima-stub_search", Some(ToolEffect::ReadOnly));
+        let descriptor = spiice_descriptor("proxiima-stub_search", Some(ToolEffect::ReadOnly));
         let auth = McpAuthContext {
             owner,
             authz: AuthzContext::for_subject(
                 UserId::new(uuid::Uuid::now_v7()),
                 AuthPath::HostBearer,
             )
-            .with_tool_scope(palette(&["proxima-stub_search:bogus"])),
+            .with_tool_scope(palette(&["proxiima-stub_search:bogus"])),
         };
 
         assert!(descriptor.action_arg_specs.is_empty());
@@ -2182,7 +2183,7 @@ mod tests {
 
     #[test]
     fn a_viewer_sees_only_the_read_leaf_of_a_mixed_dispatcher() {
-        use proxima_core::{AuthPath, AuthzContext, GroupId, OwnerId, UserId, access::Role};
+        use proxiima_core::{AuthPath, AuthzContext, GroupId, OwnerId, UserId, access::Role};
 
         let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let viewer = McpAuthContext {
@@ -2196,11 +2197,11 @@ mod tests {
         let no_fields = serde_json::json!({
             "type": "object", "properties": {}, "additionalProperties": false
         });
-        let dispatcher = proxima_core::mcp::McpDispatcherSchema {
+        let dispatcher = proxiima_core::mcp::McpDispatcherSchema {
             discriminator: "action".to_owned(),
             description: None,
             actions: ["look", "touch"]
-                .map(|action| proxima_core::mcp::McpActionSchema {
+                .map(|action| proxiima_core::mcp::McpActionSchema {
                     action: action.to_owned(),
                     description: None,
                     argument_schema: no_fields.clone(),
@@ -2212,7 +2213,7 @@ mod tests {
             dispatcher_schema: Some(dispatcher),
             action_arg_specs: MIXED_ACTIONS,
             // Parent says read; the write action must not inherit it.
-            ..flavor_descriptor("proxima-stub_dispatch", Some(ToolEffect::ReadOnly))
+            ..spiice_descriptor("proxiima-stub_dispatch", Some(ToolEffect::ReadOnly))
         };
         assert!(
             tool_allowed_for_auth(Caller::new(Some(&viewer)), &mixed),
@@ -2253,10 +2254,10 @@ mod tests {
 
     #[test]
     fn scoped_dispatcher_projection_preserves_allowed_argument_schema_metadata() {
-        use proxima_core::access::Role;
-        use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OwnerId, UserId};
+        use proxiima_core::access::Role;
+        use proxiima_core::{AuthPath, AuthzContext, GroupId, OwnerId, SpiiceRegistry, UserId};
 
-        let registry = FlavorRegistry::default().freeze_or_panic_for_tests();
+        let registry = SpiiceRegistry::default().freeze_or_panic_for_tests();
         let descriptor = registry
             .list_mcp_tools()
             .iter()
@@ -2310,7 +2311,7 @@ mod tests {
     /// read-capable-only owner every one of those reads.
     #[test]
     fn a_viewer_keeps_the_annotated_read_command_of_an_argv_dispatcher() {
-        use proxima_core::{
+        use proxiima_core::{
             AuthPath, AuthzContext, GroupId, OwnerId, ToolScope, UserId, access::Role,
         };
 
@@ -2327,8 +2328,8 @@ mod tests {
         let cli = McpToolDescriptor {
             argv_action_specs: MIXED_ARGV_ACTIONS,
             // The tool writes; only the annotated command opts out.
-            ..flavor_descriptor(
-                "proxima-stub_cli",
+            ..spiice_descriptor(
+                "proxiima-stub_cli",
                 Some(ToolEffect::Additive(Replay::NonIdempotent)),
             )
         };
@@ -2374,18 +2375,18 @@ mod tests {
     /// (which `try_freeze` refuses on a dispatcher) lends it to no command.
     #[test]
     fn an_argv_command_classifies_from_its_own_effect_never_the_tools() {
-        const WRITE: &[proxima_core::mcp::McpArgvActionSpec] =
-            &[proxima_core::mcp::McpArgvActionSpec {
+        const WRITE: &[proxiima_core::mcp::McpArgvActionSpec] =
+            &[proxiima_core::mcp::McpArgvActionSpec {
                 action: "approval",
                 argv_prefix: &["approval"],
                 effect: ToolEffect::Additive(Replay::NonIdempotent),
-                audience: proxima_core::mcp::McpToolAudience::Shared,
+                audience: proxiima_core::mcp::McpToolAudience::Shared,
                 title: "Test action",
             }];
 
         let tool = McpToolDescriptor {
             argv_action_specs: WRITE,
-            ..flavor_descriptor("proxima-stub_cli", Some(ToolEffect::ReadOnly))
+            ..spiice_descriptor("proxiima-stub_cli", Some(ToolEffect::ReadOnly))
         };
         assert!(!tool.action_is_read_only("approval"));
         assert!(
@@ -2401,9 +2402,9 @@ mod tests {
 
     #[test]
     fn denial_hints_exclude_actions_forbidden_by_the_owner_role() {
-        use proxima_core::{AuthPath, AuthzContext, GroupId, OwnerId, UserId, access::Role};
+        use proxiima_core::{AuthPath, AuthzContext, GroupId, OwnerId, UserId, access::Role};
 
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
         let viewer = McpAuthContext {
             owner,
@@ -2432,7 +2433,7 @@ mod tests {
     // action specs.
     #[test]
     fn every_core_tool_is_annotated() {
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         for descriptor in registry.list_mcp_tools() {
             if descriptor.name.starts_with("core_") {
                 assert!(
@@ -2446,7 +2447,7 @@ mod tests {
 
     #[test]
     fn core_tool_effects_encode_expected_semantics() {
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let hints = |name: &str| {
             registry
                 .mcp_tool(name)
@@ -2497,7 +2498,7 @@ mod tests {
         assert_eq!(membership.read_only, Some(false));
         assert_eq!(membership.destructive, Some(true));
 
-        // Flavor-shipped / unknown tools are not in the substrate registry.
+        // Spiice-shipped / unknown tools are not in the substrate registry.
         assert!(registry.mcp_tool("company/upsert").is_none());
     }
 

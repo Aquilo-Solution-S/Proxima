@@ -26,8 +26,8 @@ pub(super) async fn ensure_goal_children_closed(
 ) -> Result<(), StorageError> {
     let rows: Vec<(uuid::Uuid, GoalState)> = sqlx::query_as(
         "SELECT h.t, g.state
-           FROM proxima_core.goal g
-           JOIN proxima_core.goal_head h ON h.handle = g.handle AND h.t = g.t
+           FROM proxiima_core.goal g
+           JOIN proxiima_core.goal_head h ON h.handle = g.handle AND h.t = g.t
           WHERE g.owner_id = $1 AND g.parent_handle = $2
           ORDER BY h.handle",
     )

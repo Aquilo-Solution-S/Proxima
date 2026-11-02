@@ -63,12 +63,12 @@ def markdown_files() -> list[Path]:
                          if name.endswith(".md") and (ROOT / name).is_file()}))
     files.extend(sorted((ROOT / "apps").glob("*/README.md")))
     files.extend(sorted((ROOT / "crates").glob("*/README.md")))
-    files.extend(sorted((ROOT / "flavors").glob("*/README.md")))
+    files.extend(sorted((ROOT / "spiices").glob("*/README.md")))
     return files
 
 
 def is_ignored_scheme(target: str) -> bool:
-    return target.startswith(("http://", "https://", "mailto:", "proxima://"))
+    return target.startswith(("http://", "https://", "mailto:", "proxiima://"))
 
 
 def main() -> int:
@@ -90,8 +90,8 @@ def main() -> int:
                 continue
             for target in LINK_RE.findall(line):
                 for prefix in (
-                    "https://github.com/Aquilo-Solution-S/Proxima/blob/main/",
-                    "https://github.com/Aquilo-Solution-S/Proxima/tree/main/",
+                    "https://github.com/Aquilo-Solution-S/proxiima/blob/main/",
+                    "https://github.com/Aquilo-Solution-S/proxiima/tree/main/",
                 ):
                     if target.startswith(prefix):
                         dest = unquote(target.removeprefix(prefix).split("#")[0])

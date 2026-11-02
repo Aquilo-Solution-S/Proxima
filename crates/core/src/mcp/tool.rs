@@ -27,7 +27,7 @@ pub(crate) fn title_problem(title: &str) -> Option<&'static str> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpToolOrigin {
     Substrate,
-    Flavor(String),
+    Spiice(String),
 }
 
 /// Who a tool or action is for.
@@ -158,7 +158,7 @@ impl McpToolDescriptor {
     /// dispatcher's [`ToolEffect::join`](crate::mcp::ToolEffect::join) over
     /// every action.
     ///
-    /// `FlavorRegistry::try_freeze` guarantees `Some` for every registered
+    /// `SpiiceRegistry::try_freeze` guarantees `Some` for every registered
     /// tool.
     #[must_use]
     pub fn effect(&self) -> Option<crate::mcp::ToolEffect> {
@@ -524,7 +524,7 @@ pub struct McpActionArgSpec {
     pub action: &'static str,
     /// The short name a person reads for this action ("Create a goal"). A
     /// sentence-case phrase of at most [`MAX_TITLE_CHARS`] characters on one
-    /// line; `FlavorRegistry::try_freeze` refuses anything else.
+    /// line; `SpiiceRegistry::try_freeze` refuses anything else.
     pub title: &'static str,
     pub allowed_fields: &'static [&'static str],
     pub required_fields: &'static [&'static str],
@@ -802,7 +802,7 @@ pub trait McpTool: Send + Sync + 'static {
     /// The actions this tool dispatches, or `&[]` for a flat tool. See
     /// [`crate::Tool::ACTION_ARG_SPECS`] — this is the single enumeration of
     /// a dispatcher's action set, and the blanket impl below forwards it
-    /// from `Tool` so a flavor dispatcher declares it in exactly one place.
+    /// from `Tool` so a spiice dispatcher declares it in exactly one place.
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[];
     /// The actions of an argv-keyed dispatcher, or `&[]`. See
     /// [`crate::Tool::ARGV_ACTION_SPECS`] — the single enumeration for a
@@ -959,7 +959,7 @@ mod flat_tool_tests {
     use super::{McpTool, McpUnknownFieldPolicy, prepare_flat_tool_args};
     use crate::mcp::{McpAuthorContext, McpToolCtx, McpToolError, McpToolErrorKind};
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, MemoryId, OwnerId, Tool, ToolCtx,
+        AuthPath, AuthzContext, MemoryId, OwnerId, SpiiceRegistry, SpiiceServices, Tool, ToolCtx,
         ToolError, UserId,
     };
 
@@ -978,7 +978,7 @@ mod flat_tool_tests {
 
     impl Tool for CallerTool {
         const TITLE: &'static str = "Test tool";
-        const NAME: &'static str = "proxima-test_caller";
+        const NAME: &'static str = "proxiima-test_caller";
         const DESCRIPTION: &'static str = "Echo generic caller context.";
 
         type Args = CallerArgs;
@@ -1011,7 +1011,7 @@ mod flat_tool_tests {
         let ctx = McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            registry: Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "planner/model".into(),
                 trusted_model_id: None,
@@ -1020,9 +1020,9 @@ mod flat_tool_tests {
                 caller_self_perspective: Some(caller_self_perspective),
             },
             caller_self_perspective: Some(caller_self_perspective),
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         };
 
         let output = <CallerTool as McpTool>::call(ctx, CallerArgs {})

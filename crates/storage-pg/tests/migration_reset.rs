@@ -2,17 +2,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use proxima_core::StorageError;
-use proxima_pg_testkit::{
+use proxiima_core::StorageError;
+use proxiima_pg_testkit::{
     DbGuard, admin_url_or_skip, create_db, split_role_urls, split_role_urls_without_pgvector,
 };
-use proxima_storage_pg::{
+use proxiima_storage_pg::{
     PgMigrationStorage, PgPoolConfig, PgTuning, VectorStorage, core_migrator_for, definitions,
     ensure_core_schema_current,
 };
 use sqlx::AssertSqlSafe;
 
-const BASELINE: &str = include_str!("../migrations/0057_baseline.sql");
+const BASELINE: &str = include_str!("../fixtures/0057_baseline.sql");
 
 /// Both store kinds, each with the database its roles are provisioned for.
 const KINDS: [VectorStorage; 2] = [VectorStorage::Local, VectorStorage::HostIndex];
@@ -28,7 +28,7 @@ fn definition_files(vectors: VectorStorage) -> Vec<&'static str> {
 
 fn definitions_record_sql(checksum: &str, release: &str) -> String {
     format!(
-        "CREATE OR REPLACE FUNCTION proxima_core.definitions_applied()
+        "CREATE OR REPLACE FUNCTION proxiima_core.definitions_applied()
          RETURNS TABLE(checksum text, release text) LANGUAGE sql IMMUTABLE
          AS $$ SELECT '{checksum}', '{release}' $$"
     )
@@ -54,7 +54,7 @@ fn declared_names(source: &str, keyword: &str) -> BTreeMap<String, usize> {
             .split(['(', ' ', '\t'])
             .next()
             .unwrap_or_default()
-            .trim_start_matches("proxima_core.");
+            .trim_start_matches("proxiima_core.");
         if !name.is_empty() {
             *names.entry(name.to_owned()).or_insert(0) += 1;
         }
@@ -70,7 +70,7 @@ async fn catalog_snapshot(pool: &sqlx::PgPool) -> Vec<String> {
                        CASE WHEN p.prokind <> 'a' THEN pg_get_functiondef(p.oid) ELSE '' END)
            FROM pg_proc p
            JOIN pg_namespace n ON n.oid = p.pronamespace
-          WHERE n.nspname = 'proxima_core'
+          WHERE n.nspname = 'proxiima_core'
           ORDER BY p.proname, pg_get_function_identity_arguments(p.oid), p.prokind",
     )
     .fetch_all(pool)
@@ -84,7 +84,7 @@ async fn catalog_snapshot(pool: &sqlx::PgPool) -> Vec<String> {
            FROM pg_proc p
            JOIN pg_namespace n ON n.oid = p.pronamespace
            JOIN pg_aggregate a ON a.aggfnoid = p.oid
-          WHERE n.nspname = 'proxima_core'
+          WHERE n.nspname = 'proxiima_core'
           ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)",
     )
     .fetch_all(pool)
@@ -95,7 +95,7 @@ async fn catalog_snapshot(pool: &sqlx::PgPool) -> Vec<String> {
            FROM pg_trigger t
            JOIN pg_class c ON c.oid = t.tgrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace
-          WHERE n.nspname = 'proxima_core' AND NOT t.tgisinternal
+          WHERE n.nspname = 'proxiima_core' AND NOT t.tgisinternal
           ORDER BY c.relname, t.tgname",
     )
     .fetch_all(pool)
@@ -108,7 +108,7 @@ async fn catalog_snapshot(pool: &sqlx::PgPool) -> Vec<String> {
            FROM pg_policy p
            JOIN pg_class c ON c.oid = p.polrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace
-          WHERE n.nspname = 'proxima_core'
+          WHERE n.nspname = 'proxiima_core'
           ORDER BY c.relname, p.polname",
     )
     .fetch_all(pool)
@@ -123,7 +123,7 @@ async fn migration_db(
 ) -> Option<(String, PgMigrationStorage, DbGuard)> {
     admin_url_or_skip()?;
     let name = format!(
-        "proxima_mig_reset_{prefix}_{}",
+        "proxiima_mig_reset_{prefix}_{}",
         uuid::Uuid::new_v4().simple()
     );
     create_db(&name).await.expect("create test database");
@@ -179,10 +179,10 @@ async fn fresh_database_runs_its_kinds_migrations_and_definitions() {
         let (extension, vector_column, vector_functions): (bool, bool, bool) = sqlx::query_as(
             "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector'),
                     EXISTS (SELECT 1 FROM information_schema.columns
-                             WHERE table_schema = 'proxima_core'
+                             WHERE table_schema = 'proxiima_core'
                                AND table_name = 'embeddings' AND column_name = 'vec'),
                     EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-                             WHERE n.nspname = 'proxima_core'
+                             WHERE n.nspname = 'proxiima_core'
                                AND p.proname = 'vector_candidates_d384')",
         )
         .fetch_one(&pool)
@@ -208,7 +208,7 @@ async fn definitions_pass_is_idempotent() {
         let before = catalog_snapshot(&pool).await;
         sqlx::raw_sql(AssertSqlSafe(definitions_record_sql(
             "deadbeef",
-            proxima_core::RELEASE_VERSION,
+            proxiima_core::RELEASE_VERSION,
         )))
         .execute(&pool)
         .await
@@ -220,7 +220,7 @@ async fn definitions_pass_is_idempotent() {
 }
 
 #[tokio::test]
-async fn definitions_preserve_flavor_trigger() {
+async fn definitions_preserve_spiice_trigger() {
     let Some((_name, migration, _guard)) = migration_db("trigger", VectorStorage::Local).await
     else {
         return;
@@ -228,25 +228,25 @@ async fn definitions_preserve_flavor_trigger() {
     migration.run_migrations().await.expect("first migration");
     let pool = migration.clone_pool_for_backend();
     sqlx::raw_sql(
-        "CREATE FUNCTION proxima_core.test_flavor_trigger()
+        "CREATE FUNCTION proxiima_core.test_spiice_trigger()
          RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
-         CREATE TRIGGER test_flavor_trigger
-         BEFORE INSERT ON proxima_core.installation
-         FOR EACH ROW EXECUTE FUNCTION proxima_core.test_flavor_trigger()",
+         CREATE TRIGGER test_spiice_trigger
+         BEFORE INSERT ON proxiima_core.installation
+         FOR EACH ROW EXECUTE FUNCTION proxiima_core.test_spiice_trigger()",
     )
     .execute(&pool)
     .await
-    .expect("flavor trigger");
+    .expect("spiice trigger");
     sqlx::raw_sql(AssertSqlSafe(definitions_record_sql(
         "deadbeef",
-        proxima_core::RELEASE_VERSION,
+        proxiima_core::RELEASE_VERSION,
     )))
     .execute(&pool)
     .await
     .expect("force definitions pass");
     migration.run_migrations().await.expect("definitions rerun");
     let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='test_flavor_trigger')",
+        "SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='test_spiice_trigger')",
     )
     .fetch_one(&pool)
     .await
@@ -287,7 +287,7 @@ async fn census(vectors: VectorStorage) {
     let live: BTreeMap<String, usize> = sqlx::query_scalar(
         "SELECT p.proname FROM pg_proc p
            JOIN pg_namespace n ON n.oid = p.pronamespace
-          WHERE n.nspname = 'proxima_core'",
+          WHERE n.nspname = 'proxiima_core'",
     )
     .fetch_all(&pool)
     .await
@@ -312,10 +312,10 @@ async fn census(vectors: VectorStorage) {
                 name
             });
         }
-        if let Some(on) = line.find(" ON proxima_core.")
+        if let Some(on) = line.find(" ON proxiima_core.")
             && let Some(name) = trigger_name.take()
         {
-            let table = line[on + " ON proxima_core.".len()..]
+            let table = line[on + " ON proxiima_core.".len()..]
                 .split_whitespace()
                 .next()
                 .unwrap_or_default()
@@ -328,7 +328,7 @@ async fn census(vectors: VectorStorage) {
         "SELECT c.relname, t.tgname FROM pg_trigger t
            JOIN pg_class c ON c.oid = t.tgrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace
-          WHERE n.nspname = 'proxima_core' AND NOT t.tgisinternal",
+          WHERE n.nspname = 'proxiima_core' AND NOT t.tgisinternal",
     )
     .fetch_all(&pool)
     .await
@@ -339,7 +339,7 @@ async fn census(vectors: VectorStorage) {
     let tables: BTreeSet<String> = definitions::POLICIES
         .lines()
         .filter_map(|line| {
-            line.split("'proxima_core', '")
+            line.split("'proxiima_core', '")
                 .nth(1)?
                 .split('\'')
                 .next()
@@ -350,9 +350,9 @@ async fn census(vectors: VectorStorage) {
         .into_iter()
         .flat_map(|table| {
             [
-                "proxima_owner_read",
-                "proxima_owner_write",
-                "proxima_platform",
+                "proxiima_owner_read",
+                "proxiima_owner_write",
+                "proxiima_platform",
             ]
             .map(|policy| (table.clone(), policy.to_owned()))
         })
@@ -363,7 +363,7 @@ async fn census(vectors: VectorStorage) {
             .flat_map(|file| file.lines())
             .filter_map(|line| {
                 let declaration = line.trim().strip_prefix("CREATE POLICY ")?;
-                let (policy, rest) = declaration.split_once(" ON proxima_core.")?;
+                let (policy, rest) = declaration.split_once(" ON proxiima_core.")?;
                 let table = rest.split_whitespace().next()?;
                 Some((table.to_owned(), policy.to_owned()))
             }),
@@ -372,7 +372,7 @@ async fn census(vectors: VectorStorage) {
         "SELECT c.relname, p.polname FROM pg_policy p
            JOIN pg_class c ON c.oid = p.polrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace
-          WHERE n.nspname = 'proxima_core'",
+          WHERE n.nspname = 'proxiima_core'",
     )
     .fetch_all(&pool)
     .await
@@ -390,7 +390,7 @@ async fn newer_definitions_release_refuses_run_and_preflight() {
     migration.run_migrations().await.expect("first migration");
     let pool = migration.clone_pool_for_backend();
     sqlx::query(
-        "CREATE OR REPLACE FUNCTION proxima_core.definitions_applied()
+        "CREATE OR REPLACE FUNCTION proxiima_core.definitions_applied()
          RETURNS TABLE(checksum text, release text) LANGUAGE sql IMMUTABLE
          AS $$ SELECT 'deadbeef', '99.0.0' $$",
     )
@@ -408,7 +408,7 @@ async fn newer_definitions_release_refuses_run_and_preflight() {
     );
     let preflight_error = ensure_core_schema_current(
         &pool,
-        proxima_storage_pg::MissingMigrationPolicy::Reject,
+        proxiima_storage_pg::MissingMigrationPolicy::Reject,
         VectorStorage::Local,
     )
     .await
@@ -430,7 +430,7 @@ async fn same_release_checksum_drift_reapplies_definitions() {
     let pool = migration.clone_pool_for_backend();
     sqlx::raw_sql(AssertSqlSafe(definitions_record_sql(
         "deadbeef",
-        proxima_core::RELEASE_VERSION,
+        proxiima_core::RELEASE_VERSION,
     )))
     .execute(&pool)
     .await
@@ -475,7 +475,7 @@ async fn a_pre_reset_ledger_is_refused_and_left_as_it_was() {
                 migration.run_migrations().await,
                 ensure_core_schema_current(
                     &pool,
-                    proxima_storage_pg::MissingMigrationPolicy::Allow,
+                    proxiima_storage_pg::MissingMigrationPolicy::Allow,
                     vectors,
                 )
                 .await,
@@ -488,7 +488,7 @@ async fn a_pre_reset_ledger_is_refused_and_left_as_it_was() {
             }
             let (rows, schema): (i64, bool) = sqlx::query_as(
                 "SELECT (SELECT count(*) FROM public._sqlx_migrations),
-                        EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'proxima_core')",
+                        EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'proxiima_core')",
             )
             .fetch_one(&pool)
             .await

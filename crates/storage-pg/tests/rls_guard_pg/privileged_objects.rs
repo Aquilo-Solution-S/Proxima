@@ -1,7 +1,7 @@
 //! Catalog refusals for objects that can change whose RLS/SQL authority applies.
 
-use proxima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
-use proxima_storage_pg::{PgPlatformScope, assert_runtime_rls, begin_owner_transaction};
+use proxiima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
+use proxiima_storage_pg::{PgPlatformScope, assert_runtime_rls, begin_owner_transaction};
 use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
@@ -50,7 +50,7 @@ async fn platform_guard_completes_with_one_connection() {
         .await
         .unwrap();
     }
-    let options = proxima_pg_testkit::db_url(&database)
+    let options = proxiima_pg_testkit::db_url(&database)
         .parse::<sqlx::postgres::PgConnectOptions>()
         .unwrap()
         .username(&owner)
@@ -136,7 +136,7 @@ async fn platform_definer_view_leaks_forged_scope_but_invoker_view_is_owner_scop
     .await;
 
     let mut forged = runtime.begin().await.unwrap();
-    sqlx::query("SET LOCAL app.proxima_scope = 'platform'")
+    sqlx::query("SET LOCAL app.proxiima_scope = 'platform'")
         .execute(&mut *forged)
         .await
         .unwrap();
@@ -185,7 +185,7 @@ async fn platform_definer_view_leaks_forged_scope_but_invoker_view_is_owner_scop
         )
         .unwrap(),
     };
-    let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("view-test".into()))
+    let authz = proxiima_core::authenticate(&verifier, &Credentials::Bearer("view-test".into()))
         .await
         .unwrap();
     let mut scoped = begin_owner_transaction(&runtime, authz.owner_scope().unwrap())
@@ -491,7 +491,7 @@ async fn definer_function_guards_check_owner_search_path_and_execute_grants() {
     runtime.close().await;
     platform.close().await;
     cleanup(&database, admin, &owner, &runtime_role).await;
-    let control = PgPool::connect(&proxima_pg_testkit::admin_url())
+    let control = PgPool::connect(&proxiima_pg_testkit::admin_url())
         .await
         .unwrap();
     for role in [&bypass, &inherited, &set_only] {
@@ -548,7 +548,7 @@ async fn trigger_definer_executes_without_a_direct_grant_and_exempts_only_execut
         )
         .unwrap(),
     };
-    let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("trigger-test".into()))
+    let authz = proxiima_core::authenticate(&verifier, &Credentials::Bearer("trigger-test".into()))
         .await
         .unwrap();
     let mut transaction = begin_owner_transaction(&runtime, authz.owner_scope().unwrap())
@@ -696,7 +696,7 @@ async fn definer_search_path_refuses_set_only_access_to_a_trusted_schema_owner()
     runtime.close().await;
     platform.close().await;
     cleanup(&database, admin, &owner, &runtime_role).await;
-    let control = PgPool::connect(&proxima_pg_testkit::admin_url())
+    let control = PgPool::connect(&proxiima_pg_testkit::admin_url())
         .await
         .unwrap();
     execute(

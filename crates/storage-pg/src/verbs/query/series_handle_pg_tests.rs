@@ -1,20 +1,20 @@
 //! The series-head lookup against a sidecar keyed on its own column name.
 
-use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::test_fixtures::{authenticated_context, owner_fixture};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::verbs::query::SidecarAtom;
-use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, Engine, FactIngestPort, FlavorRegistry, OwnerId, SchemaId,
-    SchemaVersion, StorageError,
+use proxiima_core::storage_ports::OwnerWritePermit;
+use proxiima_core::test_fixtures::{authenticated_context, owner_fixture};
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::verbs::query::SidecarAtom;
+use proxiima_core::{
+    AccessKind, AuthPath, AuthzContext, Engine, FactIngestPort, OwnerId, SchemaId, SchemaVersion,
+    SpiiceRegistry, StorageError,
 };
-use proxima_pg_testkit::drop_db;
+use proxiima_pg_testkit::drop_db;
 
 use super::owned_head_handle;
 use crate::test_fixtures::fresh_pg;
 
-const SCHEMA: &str = "proxima-test/series-head-v1";
-const RENAMED_TABLE: &str = "proxima_core.renamed_series_note_v1";
+const SCHEMA: &str = "proxiima-test/series-head-v1";
+const RENAMED_TABLE: &str = "proxiima_core.renamed_series_note_v1";
 const RENAMED_KEY: &str = "note_memory_id";
 
 fn draft() -> FactWriteCommand {
@@ -33,14 +33,14 @@ fn draft() -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
 
 async fn write_permit(owner: &OwnerId) -> Result<OwnerWritePermit, StorageError> {
     let user_id = owner.as_user();
-    let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+    let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests());
     engine
         .authorize_owner_write(
             &authenticated_context(AuthzContext::for_subject(user_id, AuthPath::HostBearer)),
@@ -54,9 +54,9 @@ async fn write_permit(owner: &OwnerId) -> Result<OwnerWritePermit, StorageError>
 /// A sidecar keyed on a column of its own naming is reachable through the
 /// series-head lookup.
 ///
-/// The lookup joins the sidecar back to `proxima_core.memory` and used to
+/// The lookup joins the sidecar back to `proxiima_core.memory` and used to
 /// spell that join `m.t = s.t` whatever `pg_sidecar!(key: …)` said, so a
-/// flavor keyed on any other column could not use it at all: an ingest
+/// spiice keyed on any other column could not use it at all: an ingest
 /// looking for its own current head found none and appended a second
 /// series instead of a later `t` on the first. `m.t` and `h.t` in the
 /// statement are the kernel tables' own keys and stay fixed; only the
@@ -67,7 +67,7 @@ async fn write_permit(owner: &OwnerId) -> Result<OwnerWritePermit, StorageError>
 #[tokio::test]
 async fn a_sidecar_keyed_on_its_own_column_name_is_found_by_the_series_head_lookup()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, db_name) = fresh_pg("proxima_spg_series_key").await;
+    let (pg, db_name) = fresh_pg("proxiima_spg_series_key").await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
         let permit = write_permit(&owner).await?;
@@ -75,16 +75,16 @@ async fn a_sidecar_keyed_on_its_own_column_name_is_found_by_the_series_head_look
         let pool = pg.pool_for_tests();
 
         sqlx::query(
-            "CREATE TABLE proxima_core.renamed_series_note_v1 (
+            "CREATE TABLE proxiima_core.renamed_series_note_v1 (
                  note_memory_id uuid PRIMARY KEY
-                                REFERENCES proxima_core.memory (t) ON DELETE CASCADE,
+                                REFERENCES proxiima_core.memory (t) ON DELETE CASCADE,
                  slug           text NOT NULL
              )",
         )
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.renamed_series_note_v1 (note_memory_id, slug)
+            "INSERT INTO proxiima_core.renamed_series_note_v1 (note_memory_id, slug)
              VALUES ($1, 'north-quay')",
         )
         .bind(outcome.memory_id.into_inner())

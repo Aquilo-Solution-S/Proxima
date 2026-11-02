@@ -6,7 +6,7 @@
 //! schema is listenable, so the consumers see goal writes on the same feed as
 //! every other Fact (docs/host-integration.md). `GoalChangeV1::LISTENABLE` is
 //! `false` because listenability is a runtime fact here, not a type one:
-//! `FlavorRegistry::publish_goal_changes` turns it on before freeze.
+//! `SpiiceRegistry::publish_goal_changes` turns it on before freeze.
 //!
 //! Storage composes the payload inside the goal transaction, because the new
 //! version's `t` and the series handle are minted there.
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 /// What a pause does with the work a scheduler already queued for the goal.
 ///
-/// Proxima records the decision and does not interpret it. Running work
+/// Proxiima records the decision and does not interpret it. Running work
 /// finishes either way.
 #[derive(
     Debug,
@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 )]
 #[serde(rename_all = "snake_case")]
 #[sqlx(
-    type_name = "proxima_core.goal_pending_work",
+    type_name = "proxiima_core.goal_pending_work",
     rename_all = "snake_case"
 )]
 pub enum PendingWork {
@@ -83,7 +83,10 @@ pub enum GoalChange {
 /// The discriminant of [`GoalChange`], as the sidecar's `change_kind`
 /// column stores it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.goal_change_kind", rename_all = "snake_case")]
+#[sqlx(
+    type_name = "proxiima_core.goal_change_kind",
+    rename_all = "snake_case"
+)]
 pub enum GoalChangeKind {
     Set,
     Modify,
@@ -228,7 +231,7 @@ impl FactPayload for GoalChangeV1 {
     /// `false` as a type constant, listenable at runtime: core always
     /// registers the schema, so a stored Fact is readable, and a runtime with
     /// at least one outbox consumer turns it on before freeze
-    /// (`FlavorRegistry::publish_goal_changes`). With no consumer there is
+    /// (`SpiiceRegistry::publish_goal_changes`). With no consumer there is
     /// nobody to tell, and a goal write stays as it was.
     const LISTENABLE: bool = false;
 
@@ -247,7 +250,7 @@ impl FactPayload for GoalChangeV1 {
     }
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_core.goal_change_v1")
+        Some("proxiima_core.goal_change_v1")
     }
 
     /// The payload schema, including the closed change variants and bare UUIDs.

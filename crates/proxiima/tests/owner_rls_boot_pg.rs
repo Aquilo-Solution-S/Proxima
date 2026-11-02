@@ -1,0 +1,704 @@
+//! Boot the embedded facade with automatic owner-RLS activation using split
+//! platform/runtime roles.  This is deliberately a boot test: the lower-level
+//! policy census and role refusal matrix live in storage-pg's RLS tests.
+
+#[path = "fixtures/setup_error.rs"]
+#[allow(dead_code, reason = "each suite uses part of the shared fixture")]
+mod setup_error;
+use async_trait::async_trait;
+use proxiima::spiice::{NamedMigrator, SpiiceBundle, SpiiceRegistry, SpiiceRegistryError};
+use proxiima::{AppInfo, FactWrite, Proxiima, QueryRequest, ServedSurface, SpiiceApp};
+use proxiima_core::{
+    AccessKind, AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
+    ErrorCode, GroupId, OwnerId, OwnerRoles, UserId,
+};
+use proxiima_pg_testkit::{admin_url, create_db, db_url, drop_db, quoted_ident, unique_db_name};
+use proxiima_storage_pg::PgPoolConfig;
+use setup_error::expect_described;
+use sqlx::postgres::PgConnectOptions;
+use sqlx::{AssertSqlSafe, ConnectOptions, PgPool};
+use std::str::FromStr;
+use std::sync::OnceLock;
+
+static BOOT_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+struct SyntheticAuthenticator {
+    subject: UserId,
+}
+#[async_trait]
+impl Authenticator for SyntheticAuthenticator {
+    async fn authenticate(&self, _: &Credentials) -> Result<AuthzContext, AuthError> {
+        Ok(AuthzContext::server_resolved(
+            OwnerRoles::for_subject(self.subject, []).unwrap(),
+            AuthPath::HostBearer,
+        ))
+    }
+}
+
+async fn exec(pool: &PgPool, sql: impl Into<String>) {
+    sqlx::raw_sql(AssertSqlSafe(sql.into()))
+        .execute(pool)
+        .await
+        .expect("fixture SQL");
+}
+
+/// The platform role migrates with no parameter ACL: owner RLS must activate
+/// without any superuser-only grant.
+async fn assert_no_scope_parameter_grant(admin: &PgPool, platform: &str) {
+    let granted: bool =
+        sqlx::query_scalar("SELECT has_parameter_privilege($1, 'app.proxiima_scope', 'SET')")
+            .bind(platform)
+            .fetch_one(admin)
+            .await
+            .expect("parameter privilege probe");
+    assert!(
+        !granted,
+        "fixture platform role must not hold SET on app.proxiima_scope"
+    );
+}
+
+async fn cleanup(database: &str, admin: PgPool, runtime: &str, platform: &str) {
+    admin.close().await;
+    drop_db(database).await.expect("drop database");
+    let control = expect_described("control connection", PgPool::connect(&admin_url()).await).await;
+    // SQL-POLICY: fixed-fragment — uniquely generated fixture roles, quoted identifiers.
+    exec(
+        &control,
+        format!("DROP ROLE IF EXISTS {}", quoted_ident(runtime)),
+    )
+    .await;
+    // SQL-POLICY: fixed-fragment — uniquely generated fixture roles, quoted identifiers.
+    exec(
+        &control,
+        format!("DROP ROLE IF EXISTS {}", quoted_ident(platform)),
+    )
+    .await;
+    control.close().await;
+}
+
+async fn setup() -> (String, PgPool, String, String, OwnerId, String, String) {
+    let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
+    let migration = expect_described(
+        "platform storage",
+        proxiima_storage_pg::PgMigrationStorage::connect_with_config(
+            &platform_url,
+            PgPoolConfig::default(),
+            proxiima_storage_pg::PgTuning::default(),
+        )
+        .await,
+    )
+    .await;
+    expect_described("core schema", migration.run_migrations().await).await;
+    migration.clone_pool_for_backend().close().await;
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+    sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        .bind(owner.into_inner())
+        .execute(&admin)
+        .await
+        .expect("fixture owner");
+    (
+        database,
+        admin,
+        runtime_url,
+        platform_url,
+        owner,
+        runtime,
+        platform,
+    )
+}
+
+async fn setup_fresh() -> (String, PgPool, String, String, String, String) {
+    let database = unique_db_name("proxiima_owner_rls_fresh");
+    expect_described("create database", create_db(&database).await).await;
+    let admin = expect_described("admin", PgPool::connect(&db_url(&database)).await).await;
+    exec(
+        &admin,
+        "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS btree_gin; CREATE EXTENSION IF NOT EXISTS pg_trgm",
+    )
+    .await;
+    let suffix = uuid::Uuid::now_v7().simple().to_string();
+    let platform = format!("owner_rls_fresh_platform_{suffix}");
+    let runtime = format!("owner_rls_fresh_runtime_{suffix}");
+    let password = format!("pw_{suffix}");
+    for role in [&platform, &runtime] {
+        exec(
+            &admin,
+            format!(
+                "CREATE ROLE {} LOGIN PASSWORD '{}' NOSUPERUSER NOBYPASSRLS",
+                quoted_ident(role),
+                password
+            ),
+        )
+        .await;
+    }
+    exec(
+        &admin,
+        format!(
+            "GRANT CREATE ON DATABASE {} TO {}; GRANT USAGE, CREATE ON SCHEMA public TO {}; ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE ON SCHEMAS TO {}; ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {}; ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE, SELECT ON SEQUENCES TO {}",
+            quoted_ident(&database), quoted_ident(&platform), quoted_ident(&platform), quoted_ident(&platform), quoted_ident(&runtime),
+            quoted_ident(&platform), quoted_ident(&runtime), quoted_ident(&platform), quoted_ident(&runtime)
+        ),
+    )
+    .await;
+    // SQL-POLICY: fixed-fragment — the migration role is a quoted fixture identifier.
+    exec(
+        &admin,
+        format!(
+            "GRANT proxiima_search TO {} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE",
+            quoted_ident(&platform)
+        ),
+    )
+    .await;
+    assert_no_scope_parameter_grant(&admin, &platform).await;
+    let runtime_url = PgConnectOptions::from_str(&db_url(&database))
+        .expect("database URL")
+        .username(&runtime)
+        .password(&password)
+        .to_url_lossy()
+        .to_string();
+    let platform_url = PgConnectOptions::from_str(&db_url(&database))
+        .expect("database URL")
+        .username(&platform)
+        .password(&password)
+        .to_url_lossy()
+        .to_string();
+    (
+        database,
+        admin,
+        runtime_url,
+        platform_url,
+        runtime,
+        platform,
+    )
+}
+
+struct ExampleApp;
+
+impl SpiiceBundle for ExampleApp {
+    fn register(registry: &mut SpiiceRegistry) -> Result<(), SpiiceRegistryError> {
+        proxiima_example::ExampleSpiice::register(registry)
+    }
+
+    fn register_pg_sidecars(registry: &mut proxiima::spiice::PgSidecarRegistry) {
+        proxiima_example::ExampleSpiice::register_pg_sidecars(registry);
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        proxiima_example::ExampleSpiice::migrators()
+    }
+}
+
+impl SpiiceApp for ExampleApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "owner-rls-boot-test",
+            title: "Owner RLS Boot Test",
+            version: "1",
+        }
+    }
+}
+
+async fn boot(
+    runtime_url: String,
+    platform_url: Option<String>,
+    owner: OwnerId,
+    skip_migrations: bool,
+) -> Result<proxiima::BuiltProxiima, proxiima::ProxiimaError> {
+    let mut app = Proxiima::<ExampleApp>::app()
+        .store_number(0)
+        .database_url(runtime_url)
+        .owner(owner)
+        .served_surface(ServedSurface::All)
+        .pg_pool_config(PgPoolConfig::default());
+    if let Some(platform_url) = platform_url {
+        app = app.platform_database_url(platform_url);
+    }
+    if skip_migrations {
+        app = app.skip_migrations();
+    }
+    app.build().await
+}
+
+#[tokio::test]
+async fn split_role_boot_accepts_runtime_with_platform_scope() {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
+    let result = boot(
+        runtime_url.clone(),
+        Some(platform_url.clone()),
+        owner,
+        false,
+    )
+    .await;
+    let booted = expect_described("split-role boot", result).await;
+    let authz = proxiima_core::authenticate(
+        &SyntheticAuthenticator {
+            subject: owner.as_user(),
+        },
+        &Credentials::Bearer("synthetic-token".into()),
+    )
+    .await
+    .expect("verified synthetic authentication");
+    let note = AgentNoteV1 {
+        note_id: uuid::Uuid::now_v7(),
+        title: "RLS boot roundtrip".into(),
+        body: "verified owner scope".into(),
+        tags: Vec::new(),
+        idempotency_key: Some("owner-rls-boot".into()),
+    };
+    let outcome = booted
+        .host()
+        .engine()
+        .ingest_fact(&authz, FactWrite::new(owner, "test/owner-rls", &note))
+        .await
+        .expect("verified fact ingest");
+    let response = booted
+        .host()
+        .engine()
+        .query(&authz, &QueryRequest::readable())
+        .await
+        .expect("verified owner query");
+    assert!(
+        response
+            .memories
+            .iter()
+            .any(|memory| memory.id == outcome.memory_id)
+    );
+    let verify = expect_described("runtime verify pool", PgPool::connect(&runtime_url).await).await;
+    let mut verify_tx = verify.begin().await.expect("runtime verify transaction");
+    sqlx::query("SELECT set_config('app.proxiima_scope', 'owner', true), set_config('app.owner', $1::text, true)")
+        .bind(format!("{{{}}}", owner.into_inner()))
+        .execute(&mut *verify_tx)
+        .await
+        .expect("bind existing owner scope");
+    let existing_owner: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.owners WHERE owner_id = $1")
+            .bind(owner.into_inner())
+            .fetch_one(&mut *verify_tx)
+            .await
+            .expect("existing owner survives upgrade");
+    assert_eq!(existing_owner, 1);
+    verify_tx
+        .rollback()
+        .await
+        .expect("rollback verify transaction");
+    verify.close().await;
+    booted.shutdown().await;
+    let second = expect_described(
+        "second automatic migration is idempotent",
+        boot(runtime_url, Some(platform_url), owner, false).await,
+    )
+    .await;
+    second.shutdown().await;
+
+    cleanup(&database, admin, &runtime, &platform).await;
+}
+
+#[tokio::test]
+async fn fresh_split_role_boot_migrates_core_and_example_automatically() {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+    let first = expect_described(
+        "fresh core+example automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
+    )
+    .await;
+    first.shutdown().await;
+    let (base_tables, spiice_tables): (i64, i64) = sqlx::query_as(
+        "SELECT
+           (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'proxiima_core'),
+           (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'proxiima_example')",
+    )
+    .fetch_one(&admin)
+    .await
+    .expect("fresh schema census");
+    assert!(base_tables > 0);
+    assert_eq!(
+        spiice_tables, 5,
+        "notebooks, settings, stamp, and the two memory sidecars"
+    );
+    exec(
+        &admin,
+        format!(
+            "INSERT INTO proxiima_core.owners(owner_id, kind) VALUES ('{}', 'personal')",
+            owner.into_inner()
+        ),
+    )
+    .await;
+    let second = expect_described(
+        "fresh second boot",
+        boot(runtime_url, Some(platform_url), owner, true).await,
+    )
+    .await;
+    second.shutdown().await;
+    cleanup(&database, admin, &runtime, &platform).await;
+}
+
+async fn assert_insecure_single_owner_roundtrip(owner: OwnerId) {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
+    let built = expect_described(
+        "insecure single-owner boot with enforcing split roles",
+        Proxiima::<ExampleApp>::app()
+            .database_url(runtime_url)
+            .store_number(0)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .allow_insecure_single_owner()
+            .served_surface(ServedSurface::All)
+            .build()
+            .await,
+    )
+    .await;
+    let authz = built.single_owner_authz().expect("explicitly opted in");
+    assert_eq!(authz.auth_path(), AuthPath::HostBearer);
+    let scope = authz.owner_scope().expect("sealed host owner scope");
+    assert_eq!(scope.readable_owners(AccessKind::Fact), vec![owner]);
+    assert_eq!(scope.writable_owners(AccessKind::Fact), vec![owner]);
+
+    let foreign_subject = UserId::new(uuid::Uuid::now_v7());
+    let foreign_owner = OwnerId::from(foreign_subject);
+    let foreign_authz = proxiima_core::authenticate(
+        &SyntheticAuthenticator {
+            subject: foreign_subject,
+        },
+        &Credentials::Bearer("synthetic-token".into()),
+    )
+    .await
+    .expect("foreign owner authentication");
+    let note = AgentNoteV1 {
+        note_id: uuid::Uuid::now_v7(),
+        title: "Insecure host owner RLS".into(),
+        body: "Only the configured owner can read and write".into(),
+        tags: Vec::new(),
+        idempotency_key: None,
+    };
+    let engine = built.host().engine();
+    let foreign = engine
+        .ingest_fact(
+            &foreign_authz,
+            FactWrite::new(foreign_owner, "test/foreign-owner", &note),
+        )
+        .await
+        .expect("seed foreign owner's private fact");
+    let own = engine
+        .ingest_fact(&authz, FactWrite::new(owner, "test/insecure-owner", &note))
+        .await
+        .expect("raw single-owner context writes under owner RLS");
+    let response = engine
+        .query(&authz, &QueryRequest::readable())
+        .await
+        .expect("raw single-owner context reads under owner RLS");
+    assert!(response.memories.iter().any(|row| row.id == own.memory_id));
+    assert!(response.memories.iter().all(|row| row.owner == owner));
+    assert!(
+        response
+            .memories
+            .iter()
+            .all(|row| row.id != foreign.memory_id)
+    );
+    let denied = engine
+        .ingest_fact(
+            &authz,
+            FactWrite::new(foreign_owner, "test/forbidden-owner", &note),
+        )
+        .await
+        .expect_err("single-owner context cannot write the foreign owner");
+    assert_eq!(denied.code, ErrorCode::Forbidden);
+    assert!(authz.narrowed_to_owner(foreign_owner).is_none());
+    built.shutdown().await;
+    cleanup(&database, admin, &runtime, &platform).await;
+}
+
+#[tokio::test]
+async fn insecure_personal_owner_reads_and_writes_under_split_role_rls() {
+    assert_insecure_single_owner_roundtrip(OwnerId::from(UserId::new(uuid::Uuid::now_v7()))).await;
+}
+
+#[tokio::test]
+async fn insecure_group_owner_reads_and_writes_under_split_role_rls() {
+    assert_insecure_single_owner_roundtrip(OwnerId::from(GroupId::new(uuid::Uuid::now_v7()))).await;
+}
+
+#[tokio::test]
+async fn split_role_boot_refuses_missing_platform_scope() {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, _platform_url, owner, runtime, platform) = setup().await;
+    let result = boot(runtime_url, None, owner, false).await;
+    assert!(
+        result.is_err(),
+        "enforced owner RLS must require a platform database URL"
+    );
+    cleanup(&database, admin, &runtime, &platform).await;
+}
+
+#[tokio::test]
+async fn split_role_boot_refuses_runtime_table_owner() {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
+    )
+    .await;
+    exec(&admin, format!("DO $$ DECLARE r record; BEGIN FOR r IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'proxiima_core' AND c.relkind IN ('r','p') LOOP EXECUTE format('ALTER TABLE %I.%I OWNER TO {}', r.nspname, r.relname); END LOOP; END $$", quoted_ident(&runtime))).await;
+    assert!(
+        boot(runtime_url, Some(platform_url), owner, true)
+            .await
+            .is_err()
+    );
+    cleanup(&database, admin, &runtime, &platform).await;
+}
+
+#[tokio::test]
+async fn split_role_boot_refuses_runtime_bypassrls() {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
+    // SQL-POLICY: fixed-fragment — generated role identifier is quoted.
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
+    )
+    .await;
+    // SQL-POLICY: fixed-fragment — the generated fixture role is identifier-quoted.
+    exec(
+        &admin,
+        format!("ALTER ROLE {} BYPASSRLS", quoted_ident(&runtime)),
+    )
+    .await;
+    assert!(
+        boot(runtime_url, Some(platform_url), owner, true)
+            .await
+            .is_err()
+    );
+    cleanup(&database, admin, &runtime, &platform).await;
+}
+
+#[tokio::test]
+async fn split_role_boot_refuses_missing_force_rls() {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
+    )
+    .await;
+    exec(
+        &admin,
+        "ALTER TABLE proxiima_core.memory NO FORCE ROW LEVEL SECURITY",
+    )
+    .await;
+    assert!(
+        boot(runtime_url, Some(platform_url), owner, true)
+            .await
+            .is_err()
+    );
+    cleanup(&database, admin, &runtime, &platform).await;
+}
+
+#[tokio::test]
+async fn split_role_boot_refuses_unprotected_new_table() {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
+    )
+    .await;
+    exec(&admin, "CREATE TABLE proxiima_core.unprotected_sidecar (id uuid PRIMARY KEY, owner_id uuid NOT NULL)").await;
+    assert!(
+        boot(runtime_url, Some(platform_url), owner, true)
+            .await
+            .is_err()
+    );
+    cleanup(&database, admin, &runtime, &platform).await;
+}
+
+#[tokio::test]
+async fn split_role_boot_refuses_mismatched_baseline_checksum() {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE public._sqlx_migrations SET checksum = decode('00', 'hex') WHERE version = $1",
+    )
+    .bind(
+        proxiima_storage_pg::core_migrator()
+            .iter()
+            .next()
+            .expect("baseline")
+            .version,
+    )
+    .execute(&admin)
+    .await
+    .expect("corrupt baseline checksum");
+    assert!(
+        boot(runtime_url, Some(platform_url), owner, true)
+            .await
+            .is_err()
+    );
+    cleanup(&database, admin, &runtime, &platform).await;
+}
+
+#[tokio::test]
+async fn split_role_boot_refuses_unrelated_newer_ledger_version() {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
+    expect_described(
+        "initial automatic migration",
+        boot(
+            runtime_url.clone(),
+            Some(platform_url.clone()),
+            owner,
+            false,
+        )
+        .await,
+    )
+    .await;
+    sqlx::query("INSERT INTO public._sqlx_migrations (version, description, success, checksum, execution_time) VALUES (9000, 'unrelated', true, decode('00', 'hex'), 0)")
+        .execute(&admin).await.expect("insert unrelated ledger row");
+    assert!(
+        boot(runtime_url, Some(platform_url), owner, true)
+            .await
+            .is_err()
+    );
+    cleanup(&database, admin, &runtime, &platform).await;
+}
+
+/// Non-superuser backends of `role` on `database`.
+async fn role_backends(admin: &PgPool, database: &str, role: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM pg_stat_activity WHERE datname = $1 AND usename = $2",
+    )
+    .bind(database)
+    .bind(role)
+    .fetch_one(admin)
+    .await
+    .expect("backend census")
+}
+
+/// `PROXIIMA_PG_*` bounds the platform pool as well as the runtime pool. The
+/// platform pool used to be a bare `PgPool::connect`: ten connections and no
+/// statement timeout whatever the host configured. With a maximum of two,
+/// two open platform transactions hold the whole pool and a third waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn split_role_boot_bounds_the_platform_pool_by_the_pool_config() {
+    let _guard = BOOT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
+    let booted = expect_described(
+        "split-role boot with a two-connection pool policy",
+        Proxiima::<ExampleApp>::app()
+            .store_number(0)
+            .database_url(runtime_url)
+            .platform_database_url(platform_url)
+            .owner(owner)
+            .served_surface(ServedSurface::All)
+            .pg_pool_config(PgPoolConfig {
+                max_connections: 2,
+                statement_timeout: std::time::Duration::from_millis(7_250),
+                ..PgPoolConfig::default()
+            })
+            .build()
+            .await,
+    )
+    .await;
+    let scope = booted.host().platform_scope_for_host();
+    let mut first = scope.begin().await.expect("first platform transaction");
+    let second = scope.begin().await.expect("second platform transaction");
+    let timeout: String = sqlx::query_scalar("SELECT current_setting('statement_timeout')")
+        .fetch_one(&mut *first)
+        .await
+        .expect("platform session timeout");
+    assert_eq!(
+        timeout, "7250ms",
+        "the platform pool sends the statement timeout"
+    );
+    let third = tokio::time::timeout(std::time::Duration::from_secs(1), scope.begin()).await;
+    assert!(
+        third.is_err(),
+        "a third platform transaction waits while two hold the pool"
+    );
+    assert_eq!(role_backends(&admin, &database, &platform).await, 2);
+    drop((first, second));
+    let third = scope
+        .begin()
+        .await
+        .expect("a released connection serves the next transaction");
+    drop(third);
+    booted.shutdown().await;
+    cleanup(&database, admin, &runtime, &platform).await;
+}

@@ -2,15 +2,15 @@
 
 use std::collections::HashSet;
 
-use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::verbs::goal_write::{
+use proxiima_core::storage_ports::OwnerWritePermit;
+use proxiima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalDraft,
     GoalEvidenceRef, GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalState,
     GoalWriteOutcome, ModifyGoalAtomicRequest, SystemOrigin, TransitionGoalAtomicRequest,
 };
-use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{
+use proxiima_core::verbs::schema::PayloadKind;
+use proxiima_core::{
     EntityKind, GoalChange, GoalId, MemoryId, OwnerId, SchemaId, SchemaVersion, StorageError,
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};

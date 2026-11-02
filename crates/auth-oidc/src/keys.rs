@@ -1456,7 +1456,7 @@ mod http_tests {
             crate::config::OidcAuthConfig {
                 issuer: issuer.clone(),
                 jwks_uri: None,
-                audience: "proxima-api".into(),
+                audience: "proxiima-api".into(),
                 allowed_subjects: None,
                 leeway_secs: 0,
             },
@@ -1467,7 +1467,7 @@ mod http_tests {
         for kid in ["k1", "k2", "good"] {
             let header = serde_json::json!({"alg": "RS256", "kid": kid});
             let claims = serde_json::json!({
-                "sub": "subject-1", "iss": issuer, "aud": "proxima-api", "exp": 4_102_444_800_u64
+                "sub": "subject-1", "iss": issuer, "aud": "proxiima-api", "exp": 4_102_444_800_u64
             });
             let input = format!(
                 "{}.{}",

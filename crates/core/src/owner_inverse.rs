@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::flavor::{
+use crate::spiice::{
     CounterRule, EraseLeg, ExportRule, ForgetLeg, HostStateEraseDisposition, KeyShape, SchemaRef,
     Surface, TransferLeg,
 };
@@ -19,7 +19,7 @@ use crate::storage_ports::StateSurfaceName;
 use crate::{AuthPath, GroupId, OwnerId, SourceId, UserId};
 
 /// Every relation an owner-scoped erase or export has to answer for, read
-/// off the frozen flavor contracts.
+/// off the frozen spiice contracts.
 ///
 /// What a surface's inverse is, `Surface::erase` says; what it is keyed on,
 /// `Surface::key` says; which counter it feeds, `Surface::counter` says. The
@@ -87,7 +87,7 @@ struct HostLifecycleLedger {
 
 impl HostLifecycleLedger {
     fn record(&mut self, surface: &Surface) -> Result<(), OwnerSurfacesError> {
-        let crate::flavor::EraseRule::HostState {
+        let crate::spiice::EraseRule::HostState {
             whole_owner,
             source,
             exact_fact,
@@ -126,14 +126,14 @@ impl HostLifecycleLedger {
 }
 
 impl OwnerSurfaces {
-    /// Read every flavor's declared surfaces off one frozen registry.
+    /// Read every spiice's declared surfaces off one frozen registry.
     ///
     /// The engine calls this; so should anything else that needs the set,
     /// because legs assembled by hand are legs that can disagree.
     ///
     /// Each surface's [`EraseLeg`] is resolved HERE, where the surface and
-    /// the flavor that declared it are both in scope, because a bespoke leg
-    /// is a per-flavor declaration and the flattened set has no flavor left
+    /// the spiice that declared it are both in scope, because a bespoke leg
+    /// is a per-spiice declaration and the flattened set has no spiice left
     /// in it. The erase then reads the answer instead of re-deriving one.
     ///
     /// # Panics
@@ -142,7 +142,7 @@ impl OwnerSurfaces {
     /// inverse surface, or is absent from the declaring contract's
     /// `state_surfaces`. Boot paths should use [`Self::try_for_registry`].
     #[must_use]
-    pub fn for_registry(registry: &crate::FlavorRegistryFrozen) -> Self {
+    pub fn for_registry(registry: &crate::SpiiceRegistryFrozen) -> Self {
         Self::try_for_registry(registry)
             .expect("frozen registry must have unique host lifecycle table declarations")
     }
@@ -156,7 +156,7 @@ impl OwnerSurfaces {
     /// lifecycle/generic overlap, or a lifecycle surface not present in its
     /// contract's `state_surfaces`.
     pub fn try_for_registry(
-        registry: &crate::FlavorRegistryFrozen,
+        registry: &crate::SpiiceRegistryFrozen,
     ) -> Result<Self, OwnerSurfacesError> {
         let mut surfaces = Vec::new();
         let mut legs = BTreeMap::new();
@@ -168,7 +168,7 @@ impl OwnerSurfaces {
         for contract in registry.contracts() {
             for schema in contract.schemas {
                 for surface in schema.surfaces {
-                    if matches!(surface.forget, crate::flavor::ForgetRule::DumpThenCascade)
+                    if matches!(surface.forget, crate::spiice::ForgetRule::DumpThenCascade)
                         && matches!(ForgetLeg::derive(surface), ForgetLeg::Marked)
                         && let KeyShape::MemoryT { column } = surface.key
                     {
@@ -187,7 +187,7 @@ impl OwnerSurfaces {
                 state_tables.insert(surface.table);
             }
             for surface in contract.all_surfaces() {
-                if matches!(surface.erase, crate::flavor::EraseRule::HostState { .. })
+                if matches!(surface.erase, crate::spiice::EraseRule::HostState { .. })
                     && !contract
                         .state_surfaces
                         .iter()
@@ -226,10 +226,10 @@ impl OwnerSurfaces {
     ///
     /// The seam a test uses to exercise a shape core declares no instance of
     /// — blob-keyed citation sidecars, or a second `RetainAtSource` table —
-    /// without registering a whole flavor. Production reaches for
+    /// without registering a whole spiice. Production reaches for
     /// [`Self::for_registry`]. Every surface here classifies against an
     /// EMPTY bespoke list, which is the honest answer: a surface no contract
-    /// declares has no flavor to have exempted it.
+    /// declares has no spiice to have exempted it.
     ///
     /// # Panics
     ///
@@ -300,7 +300,7 @@ impl OwnerSurfaces {
         &self.host_lifecycle
     }
 
-    /// Whether any linked flavor explicitly declares this physical table as
+    /// Whether any linked spiice explicitly declares this physical table as
     /// a host-owned state surface.
     #[must_use]
     pub fn is_declared_state_surface(&self, table: &str) -> bool {
@@ -314,7 +314,7 @@ impl OwnerSurfaces {
             .is_ok()
     }
 
-    /// Which leg destroys `table`'s rows, as its declaring flavor resolved
+    /// Which leg destroys `table`'s rows, as its declaring spiice resolved
     /// it at registry time.
     ///
     /// [`EraseLeg::Unreachable`] for a table this set does not carry — the
@@ -329,12 +329,12 @@ impl OwnerSurfaces {
     }
 
     /// Which leg moves `table`'s rows on a transfer, as its declaring
-    /// flavor resolved it at registry time.
+    /// spiice resolved it at registry time.
     ///
     /// [`TransferLeg::Unreachable`] for a table this set does not carry —
     /// the same answer as a surface nothing moves, because to this set they
     /// are the same thing. The transfer reads this and never re-derives:
-    /// the whole point of resolving once, where the surface and the flavor
+    /// the whole point of resolving once, where the surface and the spiice
     /// that declared it are both in scope, is that the boot check and the
     /// verb cannot disagree.
     #[must_use]
@@ -400,7 +400,7 @@ impl OwnerSurfaces {
     /// The transfer's whole generic input. Ordered by table name so the
     /// statements a transfer runs are a function of the declarations and
     /// nothing else — not of hash iteration, not of declaration order
-    /// inside a flavor.
+    /// inside a spiice.
     #[must_use]
     pub fn generated_transfer_legs(&self) -> Vec<(&'static str, TransferLeg)> {
         self.surfaces
@@ -434,7 +434,7 @@ impl OwnerSurfaces {
 
 /// The embedding queue, which [`OwnerSurfaces::generated_forget_legs`] orders
 /// before the rows a queue claim authorizes.
-const EMBEDDING_JOBS_TABLE: &str = "proxima_core.embedding_jobs";
+const EMBEDDING_JOBS_TABLE: &str = "proxiima_core.embedding_jobs";
 
 /// The entity an owner erase names.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -535,7 +535,7 @@ pub struct OwnerExportBundle {
     /// empty: absence in the bundle would otherwise be indistinguishable
     /// from a surface the export forgot.
     pub tables: BTreeMap<String, Vec<serde_json::Value>>,
-    /// Pins projected from the exported `proxima_core.memory` rows'
+    /// Pins projected from the exported `proxiima_core.memory` rows'
     /// `origins` and `refs` arrays. Not a surface — there is no edge table —
     /// so it stays its own field.
     pub edges: Vec<serde_json::Value>,
@@ -908,15 +908,15 @@ mod generated_forget_order_tests {
     #[test]
     fn generated_forget_legs_deletes_jobs_before_heads() {
         let surfaces =
-            OwnerSurfaces::for_registry(&crate::FlavorRegistry::new().freeze_or_panic_for_tests());
+            OwnerSurfaces::for_registry(&crate::SpiiceRegistry::new().freeze_or_panic_for_tests());
         let legs = surfaces.generated_forget_legs();
         let index = |table: &str| {
             legs.iter()
                 .position(|(name, _)| *name == table)
                 .unwrap_or_else(|| panic!("{table} is a generated forget leg"))
         };
-        let jobs = index("proxima_core.embedding_jobs");
-        assert!(jobs < index("proxima_core.embedding_heads"));
-        assert!(jobs < index("proxima_core.embeddings"));
+        let jobs = index("proxiima_core.embedding_jobs");
+        assert!(jobs < index("proxiima_core.embedding_heads"));
+        assert!(jobs < index("proxiima_core.embeddings"));
     }
 }

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 /// Per pool. A serving host holds two pools (runtime and platform), so the
@@ -49,7 +49,7 @@ impl PgPoolConfig {
     /// Returns [`StorageError::Unavailable`] when a configured value is not a
     /// valid non-negative integer, or when max connections is zero.
     pub fn from_env() -> Result<Self, StorageError> {
-        Ok(Self::from_lookup(&proxima_core::process_env)?.unwrap_or_default())
+        Ok(Self::from_lookup(&proxiima_core::process_env)?.unwrap_or_default())
     }
 
     /// Read pool policy from an injected lookup.
@@ -78,7 +78,7 @@ impl PgPoolConfig {
     pub fn validate(self) -> Result<Self, StorageError> {
         if self.max_connections == 0 {
             return Err(StorageError::Unavailable(
-                "PROXIMA_PG_MAX_CONNECTIONS=0 is not a usable pool size; a connection pool needs at least one connection"
+                "PROXIIMA_PG_MAX_CONNECTIONS=0 is not a usable pool size; a connection pool needs at least one connection"
                     .into(),
             ));
         }
@@ -89,28 +89,28 @@ impl PgPoolConfig {
         let defaults = Self::default();
         let (max_connections, max_connections_configured) = env_int_with_presence(
             lookup,
-            "PROXIMA_PG_MAX_CONNECTIONS",
+            "PROXIIMA_PG_MAX_CONNECTIONS",
             defaults.max_connections,
         )?;
         let (statement_timeout_ms, statement_timeout_configured) = env_int_with_presence(
             lookup,
-            "PROXIMA_PG_STATEMENT_TIMEOUT_MS",
+            "PROXIIMA_PG_STATEMENT_TIMEOUT_MS",
             u64::try_from(defaults.statement_timeout.as_millis())
                 .expect("default statement timeout fits u64 milliseconds"),
         )?;
         let (acquire_timeout_secs, acquire_timeout_configured) = env_int_with_presence(
             lookup,
-            "PROXIMA_PG_ACQUIRE_TIMEOUT_SECS",
+            "PROXIIMA_PG_ACQUIRE_TIMEOUT_SECS",
             defaults.acquire_timeout.as_secs(),
         )?;
         let (idle_timeout_secs, idle_timeout_configured) = env_int_with_presence(
             lookup,
-            "PROXIMA_PG_IDLE_TIMEOUT_SECS",
+            "PROXIIMA_PG_IDLE_TIMEOUT_SECS",
             defaults.idle_timeout.as_secs(),
         )?;
         let (max_lifetime_secs, max_lifetime_configured) = env_int_with_presence(
             lookup,
-            "PROXIMA_PG_MAX_LIFETIME_SECS",
+            "PROXIIMA_PG_MAX_LIFETIME_SECS",
             defaults.max_lifetime.as_secs(),
         )?;
         let config = Self {
@@ -134,7 +134,7 @@ impl PgPoolConfig {
     /// Build a lazy pool under this policy, opening no connection yet.
     ///
     /// Every serving pool a host builds goes through this policy, the
-    /// platform pool included, so `PROXIMA_PG_*` bounds all of them. The first
+    /// platform pool included, so `PROXIIMA_PG_*` bounds all of them. The first
     /// acquire opens the first connection; constructors that validate the
     /// pool (`PgPlatformScope::new`) hold that one connection for every check.
     ///
@@ -180,13 +180,13 @@ impl PgPoolConfig {
 
 /// Parse one pool integer while retaining whether the lookup supplied a
 /// non-empty value. Value equality with the default cannot answer that
-/// presence question: an explicit default still outranks flavor configuration.
+/// presence question: an explicit default still outranks spiice configuration.
 fn env_int_with_presence<T: std::str::FromStr>(
     lookup: &impl Fn(&str) -> Option<String>,
     key: &str,
     default: T,
 ) -> Result<(T, bool), StorageError> {
-    let Some(value) = proxima_core::env_value(lookup, key) else {
+    let Some(value) = proxiima_core::env_value(lookup, key) else {
         return Ok((default, false));
     };
     value
@@ -198,7 +198,7 @@ fn env_int_with_presence<T: std::str::FromStr>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_core::env_from_pairs as env;
+    use proxiima_core::env_from_pairs as env;
 
     #[test]
     fn defaults_are_the_finite_pool_policy() {
@@ -218,11 +218,11 @@ mod tests {
     #[test]
     fn injected_lookup_resolves_every_pool_setting() {
         let config = PgPoolConfig::from_lookup(&env(&[
-            ("PROXIMA_PG_MAX_CONNECTIONS", "25"),
-            ("PROXIMA_PG_STATEMENT_TIMEOUT_MS", "45000"),
-            ("PROXIMA_PG_ACQUIRE_TIMEOUT_SECS", "7"),
-            ("PROXIMA_PG_IDLE_TIMEOUT_SECS", "900\n"),
-            ("PROXIMA_PG_MAX_LIFETIME_SECS", "2400"),
+            ("PROXIIMA_PG_MAX_CONNECTIONS", "25"),
+            ("PROXIIMA_PG_STATEMENT_TIMEOUT_MS", "45000"),
+            ("PROXIIMA_PG_ACQUIRE_TIMEOUT_SECS", "7"),
+            ("PROXIIMA_PG_IDLE_TIMEOUT_SECS", "900\n"),
+            ("PROXIIMA_PG_MAX_LIFETIME_SECS", "2400"),
         ]))
         .unwrap()
         .expect("non-default pool policy");
@@ -243,16 +243,20 @@ mod tests {
     fn malformed_and_zero_pool_size_fail_at_resolution() {
         for (key, value, message) in [
             (
-                "PROXIMA_PG_MAX_CONNECTIONS",
+                "PROXIIMA_PG_MAX_CONNECTIONS",
                 "twenty",
-                "invalid integer PROXIMA_PG_MAX_CONNECTIONS=twenty",
+                "invalid integer PROXIIMA_PG_MAX_CONNECTIONS=twenty",
             ),
             (
-                "PROXIMA_PG_MAX_LIFETIME_SECS",
+                "PROXIIMA_PG_MAX_LIFETIME_SECS",
                 "-1",
-                "invalid integer PROXIMA_PG_MAX_LIFETIME_SECS=-1",
+                "invalid integer PROXIIMA_PG_MAX_LIFETIME_SECS=-1",
             ),
-            ("PROXIMA_PG_MAX_CONNECTIONS", "0", "at least one connection"),
+            (
+                "PROXIIMA_PG_MAX_CONNECTIONS",
+                "0",
+                "at least one connection",
+            ),
         ] {
             let error = PgPoolConfig::from_lookup(&env(&[(key, value)]))
                 .expect_err("invalid pool config must fail resolution");
@@ -277,7 +281,7 @@ mod tests {
         assert_eq!(options.get_max_lifetime(), Some(Duration::from_secs(23)));
         assert_eq!(
             config
-                .connect_options("postgres://user:secret@localhost/proxima")
+                .connect_options("postgres://user:secret@localhost/proxiima")
                 .unwrap()
                 .get_options(),
             Some("-c statement_timeout=17000")
@@ -290,7 +294,7 @@ mod tests {
     /// of 1), which a transaction-mode pooler would refuse.
     #[tokio::test]
     async fn a_lazy_pool_applies_the_policy_on_its_connections() {
-        let Some(url) = proxima_pg_testkit::admin_url_or_skip() else {
+        let Some(url) = proxiima_pg_testkit::admin_url_or_skip() else {
             return;
         };
         let pool = PgPoolConfig {

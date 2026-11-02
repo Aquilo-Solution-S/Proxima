@@ -21,7 +21,7 @@ VALID_PROOFS = (
     "SQL-POLICY: fixed-fragment",
     "SQL-POLICY: QueryBuilder-bound-values",
     # The projection generator. `crates/storage-pg/src/projection.rs`
-    # builds one statement per projected schema out of `FlavorContract`
+    # builds one statement per projected schema out of `SpiiceContract`
     # declarations — every spliced name goes through `PgIdent` INSIDE the
     # generator, and every value is a bind ($1 memory id, $2 language, $3
     # schema id). The execution sites hold an opaque `String` off the frozen
@@ -38,7 +38,7 @@ VALID_PROOFS = (
     # the same file is the thing to re-read.
     #
     # `crates/storage-pg/src/access/scope_surfaces.rs` is the third:
-    # `generate_probe` splices a flavor's `ScopeDecl` — registry table, id
+    # `generate_probe` splices a spiice's `ScopeDecl` — registry table, id
     # column, owner kind and owner id columns — each through `PgIdent`, and
     # the probe binds all three values it compares. Its execution site holds
     # an `Arc<str>` resolved off the frozen registry, so again the proof is
@@ -72,7 +72,7 @@ class Site:
 
 
 def rust_files() -> list[Path]:
-    roots = [ROOT / p for p in ("crates", "apps", "flavors", "examples")]
+    roots = [ROOT / p for p in ("crates", "apps", "spiices", "examples")]
     files: list[Path] = []
     for root in roots:
         if not root.exists():
@@ -268,7 +268,7 @@ def run_fixture(path: Path) -> int:
 # bound values, frozen contracts, and per-site proof comments, not this count.
 # Any inventory change requires inspecting --inventory and updating this pin;
 # historical review evidence belongs under .local rather than in the gate.
-EXPECTED_DYNAMIC_SQL_SITES = 211
+EXPECTED_DYNAMIC_SQL_SITES = 215
 
 
 def run_self_test() -> int:

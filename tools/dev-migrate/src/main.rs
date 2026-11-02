@@ -1,17 +1,17 @@
 //! Bootstrap a blank Postgres with the substrate schema and every in-repo
-//! flavor sidecar, in the same order a composite host boots them.
+//! spiice sidecar, in the same order a composite host boots them.
 //!
 //! `sqlx migrate run` cannot do this: it records every source into one
-//! `_sqlx_migrations` table, while core and each flavor keep their own ledger
-//! (`public._sqlx_migrations_<flavor>` for a flavor). This bin delegates to the same
-//! framework facade used by embedded hosts: core first, then flavors in
+//! `_sqlx_migrations` table, while core and each spiice keep their own ledger
+//! (`public._sqlx_migrations_<spiice>` for a spiice). This bin delegates to the same
+//! framework facade used by embedded hosts: core first, then spiices in
 //! composition order, with duplicate migration versions rejected up front.
 //!
 //! Usage:
 //!
 //! ```text
-//! cargo run -p proxima-dev-migrate -- --database-url postgres://proxima:proxima@localhost/<db>
-//! # or: DATABASE_URL=postgres://proxima:proxima@localhost/<db> cargo run -p proxima-dev-migrate
+//! cargo run -p proxiima-dev-migrate -- --database-url postgres://proxiima:proxiima@localhost/<db>
+//! # or: DATABASE_URL=postgres://proxiima:proxiima@localhost/<db> cargo run -p proxiima-dev-migrate
 //! ```
 //!
 //! The target database URL always comes from `--database-url <URL>` when
@@ -21,22 +21,22 @@
 //! extension, and the host sets the same kind with `RuntimeBuilder::vector_index`.
 //! Two repair modes exist beyond the plain migration run:
 //!
-//! - `--reset`: destructive drop-and-recreate of every `proxima_*` schema
+//! - `--reset`: destructive drop-and-recreate of every `proxiima_*` schema
 //!   (see [`reset_local_dev_database`]) — the same namespace
-//!   the core ledger preflight calls Proxima's, so a schema left by a
-//!   flavor no longer compiled in cannot make boot demand a reset the reset
-//!   cannot deliver. Requires `PROXIMA_RESET_CONFIRM` and refuses non-local
+//!   the core ledger preflight calls Proxiima's, so a schema left by a
+//!   spiice no longer compiled in cannot make boot demand a reset the reset
+//!   cannot deliver. Requires `PROXIIMA_RESET_CONFIRM` and refuses non-local
 //!   hosts and protected database names as a second, independent guard
 //!   against pointing this at anything but a scratch dev database. Refuses,
 //!   listing them, when objects outside those schemas depend on them (a
 //!   consumer's FK, view, trigger or policy the `CASCADE` would drop while
 //!   the consumer's ledger rows still claim it); `--reset-dependent-lanes`
-//!   accepts the loss and also deletes the shared-ledger rows no Proxima lane
+//!   accepts the loss and also deletes the shared-ledger rows no Proxiima lane
 //!   owns, so the consumer's lane re-runs instead of trusting stale rows.
 
-use proxima::flavor::FlavorBundle;
-use proxima::{missing_migration_policy_from_lookup, run_core_and_flavor_migrations_with_policy};
-use proxima_storage_pg::{
+use proxiima::spiice::SpiiceBundle;
+use proxiima::{missing_migration_policy_from_lookup, run_core_and_spiice_migrations_with_policy};
+use proxiima_storage_pg::{
     CORE_MIGRATION_VERSION_CEILING, PgMigrationStorage, PgPoolConfig, PgTuning, VectorStorage,
 };
 
@@ -46,19 +46,19 @@ const RESET_FLAG: &str = "--reset";
 const RESET_DEPENDENT_LANES_FLAG: &str = "--reset-dependent-lanes";
 // Keep the destructive-reset confirmation versioned so stale operator scripts
 // do not silently opt in to a future baseline reset.
-const RESET_CONFIRM_ENV: &str = "PROXIMA_RESET_CONFIRM";
+const RESET_CONFIRM_ENV: &str = "PROXIIMA_RESET_CONFIRM";
 const RESET_CONFIRM_VALUE: &str = "reset-my-dev-db";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args(std::env::args().skip(1))?;
     let missing_policy =
-        missing_migration_policy_from_lookup(&proxima_core::process_env)?.unwrap_or_default();
-    let url = resolve_database_url(&args, &proxima_core::process_env)?;
-    let store_number = store_number(&proxima_core::process_env)?;
+        missing_migration_policy_from_lookup(&proxiima_core::process_env)?.unwrap_or_default();
+    let url = resolve_database_url(&args, &proxiima_core::process_env)?;
+    let store_number = store_number(&proxiima_core::process_env)?;
     print_target(&url)?;
 
-    let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+    let pg = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
         &url,
         PgPoolConfig::from_env()?,
         PgTuning::from_env()?,
@@ -75,13 +75,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         DependentLanes::Refuse
     };
     if args.reset {
-        reset_local_dev_database(&pg, &url, dependent_lanes, &proxima_core::process_env).await?;
+        reset_local_dev_database(&pg, &url, dependent_lanes, &proxiima_core::process_env).await?;
     } else if dependent_lanes == DependentLanes::Reset {
         return Err(format!("{RESET_DEPENDENT_LANES_FLAG} only qualifies {RESET_FLAG}").into());
     }
-    let report = run_core_and_flavor_migrations_with_policy(
+    let report = run_core_and_spiice_migrations_with_policy(
         &pg,
-        compiled_flavor_migrators(),
+        compiled_spiice_migrators(),
         &compiled_pg_sidecars()?,
         missing_policy,
     )
@@ -93,44 +93,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The migrators of the flavors this binary is built with.
-fn compiled_flavor_migrators() -> Vec<proxima::flavor::NamedMigrator> {
-    <proxima_example::ExampleFlavor as FlavorBundle>::migrators()
+/// The migrators of the spiices this binary is built with.
+fn compiled_spiice_migrators() -> Vec<proxiima::spiice::NamedMigrator> {
+    <proxiima_example::ExampleSpiice as SpiiceBundle>::migrators()
 }
 
-/// The schemas the compiled flavors own: core's plus one per flavor, from
+/// The schemas the compiled spiices own: core's plus one per spiice, from
 /// the frozen registry, the same names boot and the census use.
 fn compiled_schema_names() -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    Ok(proxima::host::composed_schema_names(&compiled_registry()?))
+    Ok(proxiima::host::composed_schema_names(&compiled_registry()?))
 }
 
-fn compiled_registry() -> Result<proxima::FlavorRegistryFrozen, Box<dyn std::error::Error>> {
-    let mut registry = proxima::flavor::FlavorRegistry::new();
-    <proxima_example::ExampleFlavor as FlavorBundle>::register(&mut registry)?;
+fn compiled_registry() -> Result<proxiima::SpiiceRegistryFrozen, Box<dyn std::error::Error>> {
+    let mut registry = proxiima::spiice::SpiiceRegistry::new();
+    <proxiima_example::ExampleSpiice as SpiiceBundle>::register(&mut registry)?;
     Ok(registry.try_freeze()?)
 }
 
-/// The same core/flavor sidecars the migration runner installs at boot.
+/// The same core/spiice sidecars the migration runner installs at boot.
 fn compiled_pg_sidecars()
--> Result<proxima::flavor::PgSidecarRegistryFrozen, Box<dyn std::error::Error>> {
+-> Result<proxiima::spiice::PgSidecarRegistryFrozen, Box<dyn std::error::Error>> {
     let registry = compiled_registry()?;
-    let mut sidecars = proxima::flavor::PgSidecarRegistry::new();
-    proxima::flavor::register_core_pg_sidecars(&mut sidecars);
-    <proxima_example::ExampleFlavor as FlavorBundle>::register_pg_sidecars(&mut sidecars);
+    let mut sidecars = proxiima::spiice::PgSidecarRegistry::new();
+    proxiima::spiice::register_core_pg_sidecars(&mut sidecars);
+    <proxiima_example::ExampleSpiice as SpiiceBundle>::register_pg_sidecars(&mut sidecars);
     Ok(sidecars.freeze_against(&registry)?)
 }
 
-/// The one predicate for "a Proxima schema": every `proxima_*` namespace, the same set the core
+/// The one predicate for "a Proxiima schema": every `proxiima_*` namespace, the same set the core
 /// ledger preflight probes when it decides a database needs a reset. A macro, so each statement
 /// below stays one fixed string literal (`concat!`) instead of a dynamic SQL site.
-macro_rules! is_proxima_schema {
+macro_rules! is_proxiima_schema {
     ($column:literal) => {
-        concat!($column, r" LIKE 'proxima\_%' ESCAPE '\'")
+        concat!($column, r" LIKE 'proxiima\_%' ESCAPE '\'")
     };
 }
 
-/// Every `proxima_*` schema outside `owned`, sorted.
-async fn unowned_proxima_schemas(
+/// Every `proxiima_*` schema outside `owned`, sorted.
+async fn unowned_proxiima_schemas(
     pool: &sqlx::PgPool,
     owned: &[String],
 ) -> Result<Vec<String>, sqlx::Error> {
@@ -138,7 +138,7 @@ async fn unowned_proxima_schemas(
         "SELECT schema_name::text
            FROM information_schema.schemata
           WHERE ",
-        is_proxima_schema!("schema_name"),
+        is_proxiima_schema!("schema_name"),
         "
             AND NOT (schema_name = ANY($1::text[]))
           ORDER BY schema_name"
@@ -172,7 +172,7 @@ fn parse_args(command_line: impl IntoIterator<Item = String>) -> Result<Args, St
                 let value = rest.next().filter(|value| !value.starts_with("--"));
                 args.database_url = Some(value.ok_or(concat!(
                     "--database-url requires a value, e.g. ",
-                    "--database-url postgres://proxima:proxima@localhost/proxima"
+                    "--database-url postgres://proxiima:proxiima@localhost/proxiima"
                 ))?);
             }
             other => match other.strip_prefix("--database-url=") {
@@ -193,20 +193,20 @@ fn resolve_database_url(
     if let Some(url) = &args.database_url {
         return Ok(url.clone());
     }
-    proxima_core::env_value(lookup, "DATABASE_URL").ok_or_else(|| {
+    proxiima_core::env_value(lookup, "DATABASE_URL").ok_or_else(|| {
         "database URL required: pass --database-url <URL> or set DATABASE_URL, \
-         e.g. postgres://proxima:proxima@localhost/proxima"
+         e.g. postgres://proxiima:proxiima@localhost/proxiima"
             .into()
     })
 }
 
-/// `PROXIMA_STORE_NUMBER`, which initializes the store.
+/// `PROXIIMA_STORE_NUMBER`, which initializes the store.
 fn store_number(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<u16, Box<dyn std::error::Error>> {
-    let raw = proxima_core::env_value(lookup, "PROXIMA_STORE_NUMBER")
-        .ok_or("PROXIMA_STORE_NUMBER is required to initialize the store")?;
-    Ok(proxima::parse_store_number(&raw)?)
+    let raw = proxiima_core::env_value(lookup, "PROXIIMA_STORE_NUMBER")
+        .ok_or("PROXIIMA_STORE_NUMBER is required to initialize the store")?;
+    Ok(proxiima::parse_store_number(&raw)?)
 }
 
 /// Print the resolved target host/database before any migration or
@@ -222,39 +222,39 @@ fn print_target(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// What `--reset` does with objects outside `proxima_*` that depend on it.
+/// What `--reset` does with objects outside `proxiima_*` that depend on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DependentLanes {
     /// Refuse and list them: nothing is dropped, no ledger row is touched.
     Refuse,
-    /// Drop them with Proxima's schemas and delete the shared-ledger rows no
-    /// Proxima lane owns (`--reset-dependent-lanes`).
+    /// Drop them with Proxiima's schemas and delete the shared-ledger rows no
+    /// Proxiima lane owns (`--reset-dependent-lanes`).
     Reset,
 }
 
 /// Objects of other lanes that `DROP SCHEMA .. CASCADE` would take with the
-/// `proxima_*` schemas, as `(object, what it depends on)`. Direct edges only:
+/// `proxiima_*` schemas, as `(object, what it depends on)`. Direct edges only:
 /// whatever depends on a listed object goes with it too.
 ///
 /// Two directions, both from `pg_depend`:
 ///
 /// - an object outside depends on one inside — a consumer's FK to
-///   `proxima_core.memory`, a view over it, a trigger or policy calling a
-///   Proxima routine, a column of a Proxima type;
-/// - an object attached to a Proxima table depends on a user object outside
-///   — a consumer's trigger or policy on `proxima_core.memory` whose routine
+///   `proxiima_core.memory`, a view over it, a trigger or policy calling a
+///   Proxiima routine, a column of a Proxiima type;
+/// - an object attached to a Proxiima table depends on a user object outside
+///   — a consumer's trigger or policy on `proxiima_core.memory` whose routine
 ///   lives in the consumer's schema. Extension members and system objects
-///   are what Proxima's own lane references, so they do not count.
+///   are what Proxiima's own lane references, so they do not count.
 ///
 /// Internal (`i`) and extension (`e`, `x`) edges are skipped: a toast table
 /// in `pg_toast` is part of its table, not a dependent lane. Not detectable:
-/// a consumer object on a Proxima table that references only Proxima or
-/// built-in objects — the catalog cannot tell it from Proxima's own.
+/// a consumer object on a Proxiima table that references only Proxiima or
+/// built-in objects — the catalog cannot tell it from Proxiima's own.
 const FOREIGN_DEPENDENTS: &str = concat!(
     r"
-WITH proxima AS (
+WITH proxiima AS (
     SELECT oid FROM pg_catalog.pg_namespace WHERE ",
-    is_proxima_schema!("nspname"),
+    is_proxiima_schema!("nspname"),
     r"
 ), holder (classid, objid, nsp) AS (
     SELECT 'pg_catalog.pg_class'::regclass::oid, c.oid, c.relnamespace FROM pg_catalog.pg_class c
@@ -281,8 +281,8 @@ WITH proxima AS (
                 FROM pg_catalog.pg_default_acl f
 ), edge AS (
     SELECT d.classid, d.objid, d.objsubid, d.refclassid, d.refobjid, d.refobjsubid, d.deptype,
-           COALESCE(dh.nsp IN (SELECT oid FROM proxima), false) AS dependent_inside,
-           COALESCE(rh.nsp IN (SELECT oid FROM proxima), false) AS referenced_inside
+           COALESCE(dh.nsp IN (SELECT oid FROM proxiima), false) AS dependent_inside,
+           COALESCE(rh.nsp IN (SELECT oid FROM proxiima), false) AS referenced_inside
       FROM pg_catalog.pg_depend d
       LEFT JOIN holder dh ON dh.classid = d.classid AND dh.objid = d.objid
       LEFT JOIN holder rh ON rh.classid = d.refclassid AND rh.objid = d.refobjid
@@ -348,7 +348,7 @@ async fn census_foreign_dependents(
     let dependents: Vec<(String, String)> =
         sqlx::query_as(FOREIGN_DEPENDENTS).fetch_all(pool).await?;
     if !dependents.is_empty() {
-        eprintln!("objects of other lanes that DROP SCHEMA proxima_* .. CASCADE drops:");
+        eprintln!("objects of other lanes that DROP SCHEMA proxiima_* .. CASCADE drops:");
         for (object, on) in &dependents {
             eprintln!("  - {object} (depends on {on})");
         }
@@ -363,11 +363,11 @@ async fn census_foreign_dependents(
                 .map(|(object, _)| object.as_str())
                 .collect();
             Err(format!(
-                "dev reset refuses: {} object(s) of other lanes depend on the proxima_* schemas or \
+                "dev reset refuses: {} object(s) of other lanes depend on the proxiima_* schemas or \
                  sit on them ({}), and the CASCADE would drop them (and whatever depends on them) \
                  while their lanes' ledger rows still claim them. Reset those lanes first (drop \
                  their objects and delete their ledger rows), or pass {RESET_DEPENDENT_LANES_FLAG} \
-                 to drop them here and delete every ledger row no Proxima lane owns \
+                 to drop them here and delete every ledger row no Proxiima lane owns \
                  (public._sqlx_migrations and the other public._sqlx_migrations_* tables), so \
                  those lanes re-run from scratch",
                 objects.len(),
@@ -417,30 +417,30 @@ async fn reset_local_dev_database_confirmed(
     let pool = pg.clone_pool_for_backend();
     census_foreign_dependents(&pool, dependent_lanes).await?;
 
-    // A schema this binary's compiled flavors did not create is reported and then dropped with
-    // the rest, not refused: the core ledger preflight counts every `proxima_*` schema as
-    // Proxima's, so a reset that refused one would leave boot demanding a reset it cannot get.
+    // A schema this binary's compiled spiices did not create is reported and then dropped with
+    // the rest, not refused: the core ledger preflight counts every `proxiima_*` schema as
+    // Proxiima's, so a reset that refused one would leave boot demanding a reset it cannot get.
     // The report names it before it goes.
-    let unowned_schemas = unowned_proxima_schemas(&pool, &compiled_schema_names()?).await?;
+    let unowned_schemas = unowned_proxiima_schemas(&pool, &compiled_schema_names()?).await?;
     if !unowned_schemas.is_empty() {
         eprintln!(
-            "dropping schemas no compiled flavor of this binary owns: {}",
+            "dropping schemas no compiled spiice of this binary owns: {}",
             unowned_schemas.join(", ")
         );
     }
 
-    // Everything attributable to Proxima goes: the whole core version
+    // Everything attributable to Proxiima goes: the whole core version
     // namespace (which covers retired and draft rows without enumerating
-    // them — see docs/contributing.md), plus every flavor version the
-    // compiled flavors embed (covering rows a database from earlier in the v0.0.7 cycle still
-    // tracks in the shared table), plus each compiled flavor's own tracking
+    // them — see docs/contributing.md), plus every spiice version the
+    // compiled spiices embed (covering rows a database from earlier in the v0.0.7 cycle still
+    // tracks in the shared table), plus each compiled spiice's own tracking
     // table. A date-shaped row in the shared table that no compiled migrator
     // recognizes cannot be attributed, so it is left behind and reported —
     // strict migration refuses it until the operator resets that lane explicitly.
-    let mut flavor_versions = Vec::new();
-    let mut flavor_ledger_tables = Vec::new();
-    for migrator in compiled_flavor_migrators() {
-        flavor_versions.extend(
+    let mut spiice_versions = Vec::new();
+    let mut spiice_ledger_tables = Vec::new();
+    for migrator in compiled_spiice_migrators() {
+        spiice_versions.extend(
             migrator
                 .migrator()
                 .iter()
@@ -448,15 +448,15 @@ async fn reset_local_dev_database_confirmed(
         );
         let table = migrator.migrator().table_name.clone();
         if table != "_sqlx_migrations" && table != "public._sqlx_migrations" {
-            flavor_ledger_tables.push(table);
+            spiice_ledger_tables.push(table);
         }
     }
 
-    // Every `proxima_*` schema, by the one predicate the preflight uses, not a list of the names
+    // Every `proxiima_*` schema, by the one predicate the preflight uses, not a list of the names
     // this binary happens to know.
     let schemas: Vec<String> = sqlx::query_scalar(concat!(
         "SELECT nspname::text FROM pg_namespace WHERE ",
-        is_proxima_schema!("nspname"),
+        is_proxiima_schema!("nspname"),
         " ORDER BY nspname"
     ))
     .fetch_all(&pool)
@@ -472,7 +472,7 @@ async fn reset_local_dev_database_confirmed(
          BEGIN
              FOR schema_name IN
                  SELECT nspname FROM pg_namespace WHERE ",
-        is_proxima_schema!("nspname"),
+        is_proxiima_schema!("nspname"),
         "
              LOOP
                  EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', schema_name);
@@ -481,14 +481,14 @@ async fn reset_local_dev_database_confirmed(
     ))
     .execute(&pool)
     .await?;
-    for table in flavor_ledger_tables {
-        eprintln!("dropping flavor ledger table: {table}");
+    for table in spiice_ledger_tables {
+        eprintln!("dropping spiice ledger table: {table}");
         sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE IF EXISTS {table}")))
             .execute(&pool)
             .await?;
     }
     if dependent_lanes == DependentLanes::Reset {
-        delete_dependent_lane_rows(&pool, &flavor_versions).await?;
+        delete_dependent_lane_rows(&pool, &spiice_versions).await?;
     }
     let migration_table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
@@ -502,7 +502,7 @@ async fn reset_local_dev_database_confirmed(
               RETURNING version",
         )
         .bind(CORE_MIGRATION_VERSION_CEILING)
-        .bind(&flavor_versions)
+        .bind(&spiice_versions)
         .fetch_all(&pool)
         .await?;
         eprintln!("deleted migration versions: {deleted:?}");
@@ -520,16 +520,16 @@ async fn reset_local_dev_database_confirmed(
     Ok(())
 }
 
-/// With dependents dropped, a ledger row no Proxima lane owns may claim one of
+/// With dependents dropped, a ledger row no Proxiima lane owns may claim one of
 /// them. The reset cannot say which lane built which object, so the opt-in
 /// deletes every such row — in the shared `public._sqlx_migrations`, and in
 /// every other `public._sqlx_migrations_*` table (the facade's per-lane
-/// ledgers; the compiled flavors' were dropped above) — and the consumer's
+/// ledgers; the compiled spiices' were dropped above) — and the consumer's
 /// migrators re-run their lanes. Objects of those lanes the reset did not drop
 /// are the consumer's to reset (docs/contributing.md §Reset).
 async fn delete_dependent_lane_rows(
     pool: &sqlx::PgPool,
-    flavor_versions: &[i64],
+    spiice_versions: &[i64],
 ) -> Result<(), sqlx::Error> {
     let shared_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations') IS NOT NULL")
@@ -543,7 +543,7 @@ async fn delete_dependent_lane_rows(
               RETURNING version",
         )
         .bind(CORE_MIGRATION_VERSION_CEILING)
-        .bind(flavor_versions)
+        .bind(spiice_versions)
         .fetch_all(pool)
         .await?;
         eprintln!(
@@ -576,9 +576,9 @@ async fn delete_dependent_lane_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima::run_core_and_flavor_migrations;
-    use proxima_core::env_from_pairs as env;
-    use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
+    use proxiima::run_core_and_spiice_migrations;
+    use proxiima_core::env_from_pairs as env;
+    use proxiima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
     use sqlx::migrate::MigrateError;
 
     fn parsed(argv: &[&str]) -> Result<Args, String> {
@@ -595,8 +595,8 @@ mod tests {
                 error.to_string().contains("database URL required"),
                 "{error}"
             );
-            let error =
-                store_number(&env(&[("PROXIMA_STORE_NUMBER", blank)])).expect_err("blank is unset");
+            let error = store_number(&env(&[("PROXIIMA_STORE_NUMBER", blank)]))
+                .expect_err("blank is unset");
             assert!(error.to_string().contains("is required"), "{error}");
         }
         assert_eq!(
@@ -605,7 +605,7 @@ mod tests {
             "postgres://u@h/d"
         );
         assert_eq!(
-            store_number(&env(&[("PROXIMA_STORE_NUMBER", " 3 ")])).expect("padded number"),
+            store_number(&env(&[("PROXIIMA_STORE_NUMBER", " 3 ")])).expect("padded number"),
             3
         );
         let flag = Args {
@@ -658,34 +658,34 @@ mod tests {
 
     async fn run_compiled_migrations(
         pg: &PgMigrationStorage,
-    ) -> Result<proxima::MigrationRunReport, Box<dyn std::error::Error>> {
+    ) -> Result<proxiima::MigrationRunReport, Box<dyn std::error::Error>> {
         let sidecars = compiled_pg_sidecars()?;
-        Ok(run_core_and_flavor_migrations(pg, compiled_flavor_migrators(), &sidecars).await?)
+        Ok(run_core_and_spiice_migrations(pg, compiled_spiice_migrators(), &sidecars).await?)
     }
 
     // A date-shaped ledger row no compiled migrator recognizes — e.g. a
-    // flavor lane retired before the version-namespace rules existed. The
+    // spiice lane retired before the version-namespace rules existed. The
     // reset cannot attribute it, so it must survive and block strict migration
     // rather than be deleted by guesswork.
     const UNATTRIBUTABLE_TIMESTAMP_MIGRATION_VERSION: i64 = 20_260_622_000_000;
 
-    /// A schema left by a flavor no longer compiled in is reported as
-    /// unowned; the compiled flavors' schemas are not.
+    /// A schema left by a spiice no longer compiled in is reported as
+    /// unowned; the compiled spiices' schemas are not.
     #[tokio::test]
-    async fn reset_reports_a_leftover_retired_flavor_schema_as_unowned() {
-        let db_name = unique_db_name("proxima_dev_migrate_unowned");
+    async fn reset_reports_a_leftover_retired_spiice_schema_as_unowned() {
+        let db_name = unique_db_name("proxiima_dev_migrate_unowned");
         create_db(&db_name).await.expect("PG required for tests");
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
             sqlx::raw_sql(
-                "CREATE SCHEMA proxima_core; CREATE SCHEMA proxima_example; \
-                 CREATE SCHEMA proxima_retired",
+                "CREATE SCHEMA proxiima_core; CREATE SCHEMA proxiima_example; \
+                 CREATE SCHEMA proxiima_retired",
             )
             .execute(&pool)
             .await?;
             assert_eq!(
-                unowned_proxima_schemas(&pool, &compiled_schema_names()?).await?,
-                ["proxima_retired"]
+                unowned_proxiima_schemas(&pool, &compiled_schema_names()?).await?,
+                ["proxiima_retired"]
             );
             pool.close().await;
             Ok(())
@@ -695,37 +695,37 @@ mod tests {
         result.expect("unowned schema report");
     }
 
-    /// The example flavor's own ledger, which the reset test seeds next to
-    /// the shared one: the reset attributes it to the compiled flavor and
+    /// The example spiice's own ledger, which the reset test seeds next to
+    /// the shared one: the reset attributes it to the compiled spiice and
     /// drops it with its schema.
     async fn assert_example_ledger_dropped(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT to_regclass('public._sqlx_migrations_proxima_example') IS NOT NULL",
+            "SELECT to_regclass('public._sqlx_migrations_proxiima_example') IS NOT NULL",
         )
         .fetch_one(pool)
         .await?;
-        assert!(!exists, "reset drops the compiled flavor's ledger");
+        assert!(!exists, "reset drops the compiled spiice's ledger");
         Ok(())
     }
 
     #[tokio::test]
     async fn reset_deletes_core_namespace_rows_and_reports_leftovers() {
-        let db_name = unique_db_name("proxima_dev_migrate_reset");
+        let db_name = unique_db_name("proxiima_dev_migrate_reset");
         create_db(&db_name).await.expect("PG required for tests");
         let url = db_url(&db_name);
         let (_, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
         let result: Result<(), Box<dyn std::error::Error>> = async {
-            let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+            let pg = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
                 &platform_url,
                 PgPoolConfig::from_env()?,
                 PgTuning::from_env()?,
             )
             .await?;
-            sqlx::query("CREATE SCHEMA proxima_core")
+            sqlx::query("CREATE SCHEMA proxiima_core")
                 .execute(&pg.clone_pool_for_backend())
                 .await?;
-            sqlx::query("CREATE SCHEMA proxima_example")
+            sqlx::query("CREATE SCHEMA proxiima_example")
                 .execute(&pg.clone_pool_for_backend())
                 .await?;
             sqlx::raw_sql(
@@ -737,7 +737,7 @@ mod tests {
                     checksum bytea NOT NULL,
                     execution_time bigint NOT NULL
                 );
-                CREATE TABLE public._sqlx_migrations_proxima_example
+                CREATE TABLE public._sqlx_migrations_proxiima_example
                     (LIKE public._sqlx_migrations INCLUDING ALL);",
             )
             .execute(&pg.clone_pool_for_backend())
@@ -787,15 +787,15 @@ mod tests {
                 .expect_err("unattributable versions block migration after reset");
             assert!(
                 matches!(
-                    refused.downcast_ref::<proxima::MigrationError>(),
-                    Some(proxima::MigrationError::Core(MigrateError::VersionMissing(
-                        UNATTRIBUTABLE_TIMESTAMP_MIGRATION_VERSION
-                    )))
+                    refused.downcast_ref::<proxiima::MigrationError>(),
+                    Some(proxiima::MigrationError::Core(
+                        MigrateError::VersionMissing(UNATTRIBUTABLE_TIMESTAMP_MIGRATION_VERSION)
+                    ))
                 ),
                 "{refused:?}"
             );
             let core_exists: bool =
-                sqlx::query_scalar("SELECT to_regnamespace('proxima_core') IS NOT NULL")
+                sqlx::query_scalar("SELECT to_regnamespace('proxiima_core') IS NOT NULL")
                     .fetch_one(&pg.clone_pool_for_backend())
                     .await?;
             assert!(
@@ -820,22 +820,22 @@ mod tests {
     }
 
     /// A consumer lane's row in the shared ledger: timestamp-shaped, in the
-    /// downstream-host suffix lane (lane ordering: crates/proxima/src/migrations.rs; see docs/host-integration.md).
+    /// downstream-host suffix lane (lane ordering: crates/proxiima/src/migrations.rs; see docs/host-integration.md).
     const CONSUMER_LANE_VERSION: i64 = 20_260_924_000_060;
 
-    /// What a consumer lane embedding Proxima builds on `proxima_core`: an FK
+    /// What a consumer lane embedding Proxiima builds on `proxiima_core`: an FK
     /// and a view that depend on it, and a trigger on its table whose routine
     /// lives in the consumer's schema.
     const CONSUMER_LANE: &str = "
         CREATE SCHEMA consumer;
         CREATE TABLE consumer.orders (
             id bigint PRIMARY KEY,
-            memory_t uuid NOT NULL REFERENCES proxima_core.memory (t)
+            memory_t uuid NOT NULL REFERENCES proxiima_core.memory (t)
         );
-        CREATE VIEW consumer.memory_ids AS SELECT t FROM proxima_core.memory;
+        CREATE VIEW consumer.memory_ids AS SELECT t FROM proxiima_core.memory;
         CREATE FUNCTION consumer.audit() RETURNS trigger
             LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
-        CREATE TRIGGER consumer_audit AFTER INSERT ON proxima_core.memory
+        CREATE TRIGGER consumer_audit AFTER INSERT ON proxiima_core.memory
             FOR EACH ROW EXECUTE FUNCTION consumer.audit();";
 
     /// `CONSUMER_LANE` with its row in the shared ledger, plus a second lane
@@ -868,13 +868,13 @@ mod tests {
 
     #[tokio::test]
     async fn reset_refuses_to_cascade_into_a_consumer_lane_unless_asked() {
-        let db_name = unique_db_name("proxima_dev_migrate_reset_consumer");
+        let db_name = unique_db_name("proxiima_dev_migrate_reset_consumer");
         create_db(&db_name).await.expect("PG required for tests");
         let url = db_url(&db_name);
         let (_, platform_url) = split_role_urls(&db_name).await.expect("split role URLs");
 
         let result: Result<(), Box<dyn std::error::Error>> = async {
-            let pg = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+            let pg = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
                 &platform_url,
                 PgPoolConfig::from_env()?,
                 PgTuning::from_env()?,
@@ -903,7 +903,7 @@ mod tests {
                 .await
             };
             let core_exists = || async {
-                sqlx::query_scalar::<_, bool>("SELECT to_regnamespace('proxima_core') IS NOT NULL")
+                sqlx::query_scalar::<_, bool>("SELECT to_regnamespace('proxiima_core') IS NOT NULL")
                     .fetch_one(&admin)
                     .await
             };
@@ -913,12 +913,12 @@ mod tests {
             let before = ledger().await?;
             let refusal = reset_local_dev_database_confirmed(&pg, &url, DependentLanes::Refuse)
                 .await
-                .expect_err("a consumer lane depends on proxima_core")
+                .expect_err("a consumer lane depends on proxiima_core")
                 .to_string();
             for named in [
                 "constraint orders_memory_t_fkey on table consumer.orders",
                 "view consumer.memory_ids",
-                "trigger consumer_audit on table proxima_core.memory",
+                "trigger consumer_audit on table proxiima_core.memory",
             ] {
                 assert!(refusal.contains(named), "{named} missing from: {refusal}");
             }
@@ -953,23 +953,23 @@ mod tests {
                 .execute(&admin)
                 .await?;
 
-            // Opt-in: the dependents go with Proxima's schemas, and so does
-            // every ledger row no Proxima lane owns, shared or per-lane —
+            // Opt-in: the dependents go with Proxiima's schemas, and so does
+            // every ledger row no Proxiima lane owns, shared or per-lane —
             // none is left claiming an object that no longer exists.
             reset_local_dev_database_confirmed(&pg, &url, DependentLanes::Reset).await?;
-            assert!(!core_exists().await?, "proxima_core is dropped");
+            assert!(!core_exists().await?, "proxiima_core is dropped");
             assert_eq!(consumer_fks().await?, 0, "the consumer FK went with it");
             assert!(
                 ledger().await?.is_empty(),
                 "no orphaned ledger row may survive the opt-in reset"
             );
 
-            // Proxima's own lane is not a dependent of itself, nor is a
+            // Proxiima's own lane is not a dependent of itself, nor is a
             // default ACL scoped to one of its schemas: a freshly migrated
             // database resets without the opt-in.
             run_compiled_migrations(&pg).await?;
             sqlx::query(
-                "ALTER DEFAULT PRIVILEGES IN SCHEMA proxima_core GRANT SELECT ON TABLES TO PUBLIC",
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA proxiima_core GRANT SELECT ON TABLES TO PUBLIC",
             )
             .execute(&admin)
             .await?;
@@ -984,7 +984,7 @@ mod tests {
     }
     #[tokio::test]
     async fn explicit_lane_reset_checks_ledger_permissions_without_foreign_dependents() {
-        let db = proxima_pg_testkit::SplitRoleDb::create("proxima_reset_ledger_permission", &[])
+        let db = proxiima_pg_testkit::SplitRoleDb::create("proxiima_reset_ledger_permission", &[])
             .await
             .expect("owned PG required");
         let pg = PgMigrationStorage::connect_with_config(
@@ -997,7 +997,7 @@ mod tests {
         let admin = sqlx::PgPool::connect(&db.admin_url())
             .await
             .expect("admin pool");
-        sqlx::query("CREATE SCHEMA proxima_reset_guard")
+        sqlx::query("CREATE SCHEMA proxiima_reset_guard")
             .execute(&pg.clone_pool_for_backend())
             .await
             .expect("reset marker");
@@ -1016,7 +1016,7 @@ mod tests {
             "{refused}"
         );
         let marker_exists: bool =
-            sqlx::query_scalar("SELECT to_regnamespace('proxima_reset_guard') IS NOT NULL")
+            sqlx::query_scalar("SELECT to_regnamespace('proxiima_reset_guard') IS NOT NULL")
                 .fetch_one(&admin)
                 .await
                 .expect("marker probe");

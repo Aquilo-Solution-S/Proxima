@@ -86,7 +86,7 @@ impl<'a> MembershipWritePermit<'a> {
     /// The production constructor is private to the engine.
     ///
     /// ```compile_fail
-    /// use proxima_core::storage_ports::MembershipWritePermit;
+    /// use proxiima_core::storage_ports::MembershipWritePermit;
     /// let _ = MembershipWritePermit::new(todo!(), todo!(), todo!(), todo!());
     /// ```
     pub(crate) const fn new(

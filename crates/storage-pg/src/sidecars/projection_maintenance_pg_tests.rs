@@ -16,30 +16,30 @@ use crate::PgStorage;
 use crate::core_pg_sidecars;
 use crate::test_fixtures::create_core_db;
 use crate::verbs::memory_timeseries::ingest_fact_timeseries;
-use proxima_core::owner_inverse::{
+use proxiima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerSurfaces,
 };
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     MemoryAuthoringPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
 };
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::{
     AccessKind, AgentNoteV1, EntityId, FactPayload, GroupId, MemoryId, OwnerId, SchemaId,
     SchemaVersion, SidecarPayload, StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
+use proxiima_pg_testkit::{db_url, drop_db, unique_db_name};
 use uuid::Uuid;
 
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.
-fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
-    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
-        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+fn transfer_surfaces() -> proxiima_core::owner_inverse::OwnerSurfaces {
+    proxiima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
     )
 }
 
-const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
+const AGENT_NOTE: &str = "proxiima_core.agent_note_v1";
 
 /// `language` is the write's own: `agent-note-v1` declares
 /// `LanguagePolicy::PerRow`, so the draft has to name one. A fixture that
@@ -56,7 +56,7 @@ fn draft(language: Option<&str>) -> FactWriteCommand {
         rendered_text: None,
         lexical_language: Some(
             language
-                .unwrap_or(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT)
+                .unwrap_or(proxiima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT)
                 .to_owned(),
         ),
         receipt: None,
@@ -65,7 +65,7 @@ fn draft(language: Option<&str>) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
@@ -139,7 +139,7 @@ async fn projection_of(
                 lexical_language::text AS lexical_language,
                 tag,
                 search_tsv <> ''::tsvector AS has_vector
-           FROM proxima_core.projection
+           FROM proxiima_core.projection
           WHERE memory_id = $1",
     )
     .bind(t.into_inner())
@@ -166,7 +166,7 @@ where
 
 #[tokio::test]
 async fn a_write_files_one_projection_row_carrying_the_owner_the_tag_and_the_language() {
-    with_db("proxima_proj_write", async |pg| {
+    with_db("proxiima_proj_write", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, Some("german")).await?;
@@ -192,8 +192,8 @@ async fn memory_language_of(
     t: MemoryId,
 ) -> Result<(String, String), sqlx::Error> {
     sqlx::query_as(
-        "SELECT lexical_language::text, proxima_core.lexical_config()::text
-           FROM proxima_core.memory WHERE t = $1",
+        "SELECT lexical_language::text, proxiima_core.lexical_config()::text
+           FROM proxiima_core.memory WHERE t = $1",
     )
     .bind(t.into_inner())
     .fetch_one(pool)
@@ -205,7 +205,7 @@ async fn memory_language_of(
 /// projection row. A write at the deployment default carries the default.
 #[tokio::test]
 async fn a_memory_carries_the_language_its_write_projected_with() {
-    with_db("proxima_proj_memory_language", async |pg| {
+    with_db("proxiima_proj_memory_language", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let german = write_note(pool, owner, Some("german")).await?;
@@ -234,7 +234,7 @@ async fn a_memory_carries_the_language_its_write_projected_with() {
 /// schema's declared policy.
 #[tokio::test]
 async fn a_per_row_schema_refuses_a_write_that_named_no_language() {
-    with_db("proxima_proj_no_language", async |pg| {
+    with_db("proxiima_proj_no_language", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let mut write = draft(None);
@@ -282,7 +282,7 @@ async fn a_per_row_schema_refuses_a_write_that_named_no_language() {
 
 #[tokio::test]
 async fn a_transfer_moves_the_projection_row_with_the_admission() {
-    with_db("proxima_proj_transfer", async |pg| {
+    with_db("proxiima_proj_transfer", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let dest = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::transfer_for_tests(owner, AccessKind::Fact, dest);
@@ -308,7 +308,7 @@ async fn a_transfer_moves_the_projection_row_with_the_admission() {
              the ranked arm reads p.owner_id and nothing else"
         );
         let memory_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(t.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -323,7 +323,7 @@ async fn a_transfer_moves_the_projection_row_with_the_admission() {
 
 #[tokio::test]
 async fn forgetting_takes_the_projection_row_and_keeps_the_sidecar_row() {
-    with_db("proxima_proj_forget", async |pg| {
+    with_db("proxiima_proj_forget", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
@@ -340,7 +340,7 @@ async fn forgetting_takes_the_projection_row_and_keeps_the_sidecar_row() {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
+                "SELECT count(*)::bigint FROM proxiima_core.agent_note_v1 WHERE t = $1",
             )
             .bind(t.into_inner())
             .fetch_one(pool)
@@ -355,8 +355,8 @@ async fn forgetting_takes_the_projection_row_and_keeps_the_sidecar_row() {
 
 /// The owner inverse reaches the projection WITHOUT being taught about it.
 ///
-/// `projection.memory_id` is `REFERENCES proxima_core.memory (t) ON DELETE
-/// CASCADE`, and an owner erase deletes `proxima_core.memory` rows, so
+/// `projection.memory_id` is `REFERENCES proxiima_core.memory (t) ON DELETE
+/// CASCADE`, and an owner erase deletes `proxiima_core.memory` rows, so
 /// the projection goes with them. Nothing in `verbs::owner_erase`
 /// names a projection table and nothing should: the erase is the inverse
 /// of the write at the scope the write happened, and the constraint is
@@ -367,7 +367,7 @@ async fn forgetting_takes_the_projection_row_and_keeps_the_sidecar_row() {
 /// was destroyed.
 #[tokio::test]
 async fn an_owner_erase_takes_the_owners_projection_rows_by_cascade() {
-    with_db("proxima_proj_owner_erase", async |pg| {
+    with_db("proxiima_proj_owner_erase", async |pg| {
         let user = UserId::new(Uuid::now_v7());
         let owner = OwnerId::from(user);
         let bystander = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -380,7 +380,7 @@ async fn an_owner_erase_takes_the_owners_projection_rows_by_cascade() {
             drop_event_id: "projection-cascade".into(),
         });
         let sidecar_tables = OwnerSurfaces::for_registry(
-            &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+            &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
         );
         let outcome = pg
             .erase_personal_owner(&auth, user, &sidecar_tables)
@@ -422,14 +422,14 @@ async fn an_owner_erase_takes_the_owners_projection_rows_by_cascade() {
 /// this test file a row and fail.
 #[tokio::test]
 async fn a_projection_row_cannot_claim_a_schema_its_memory_is_not() {
-    with_db("proxima_proj_schema_guard", async |pg| {
+    with_db("proxiima_proj_schema_guard", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
 
         // The write path already filed the row; clear it so the two runs
         // below are the only writers and the PK cannot mask the result.
-        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
+        sqlx::query("DELETE FROM proxiima_core.projection WHERE memory_id = $1")
             .bind(t.into_inner())
             .execute(pool)
             .await?;
@@ -439,12 +439,12 @@ async fn a_projection_row_cannot_claim_a_schema_its_memory_is_not() {
             "the fixture starts empty"
         );
 
-        let note_schema = proxima_core::FLAVOR_0
+        let note_schema = proxiima_core::SPIICE_0
             .schemas
             .iter()
             .find(|schema| schema.schema_id().as_str() == AgentNoteV1::SCHEMA_ID)
             .expect("the note schema is declared");
-        let sql = crate::projection::projection_insert_sql(&proxima_core::FLAVOR_0, note_schema)
+        let sql = crate::projection::projection_insert_sql(&proxiima_core::SPIICE_0, note_schema)
             .expect("the generator emits a valid statement");
 
         // A real, declared schema id — and not this memory's.
@@ -488,7 +488,7 @@ async fn a_projection_row_cannot_claim_a_schema_its_memory_is_not() {
     .await;
 }
 
-/// Flavor #0's note declaration, re-pointed at a sidecar that keys its
+/// Spiice #0's note declaration, re-pointed at a sidecar that keys its
 /// memory on a column of its own naming.
 ///
 /// Everything else is the shipped declaration, so the statement under test
@@ -499,23 +499,23 @@ fn a_note_contract_keyed_on(
     table: &'static str,
     key_column: &'static str,
 ) -> (
-    proxima_core::flavor::FlavorContract,
-    &'static proxima_core::flavor::SchemaContract,
+    proxiima_core::spiice::SpiiceContract,
+    &'static proxiima_core::spiice::SchemaContract,
 ) {
-    let mut surface = proxima_core::FLAVOR_0
+    let mut surface = proxiima_core::SPIICE_0
         .surface_for(AGENT_NOTE)
         .expect("the note sidecar is declared");
     surface.table = table;
-    surface.key = proxima_core::flavor::KeyShape::MemoryT { column: key_column };
-    let mut schema = *proxima_core::FLAVOR_0
+    surface.key = proxiima_core::spiice::KeyShape::MemoryT { column: key_column };
+    let mut schema = *proxiima_core::SPIICE_0
         .schemas
         .iter()
         .find(|schema| schema.schema_id().as_str() == AgentNoteV1::SCHEMA_ID)
         .expect("the note schema is declared");
     schema.sidecar_table = Some(table);
     schema.surfaces = Box::leak(Box::new([surface]));
-    let schema: &'static proxima_core::flavor::SchemaContract = Box::leak(Box::new(schema));
-    let mut contract = proxima_core::FLAVOR_0;
+    let schema: &'static proxiima_core::spiice::SchemaContract = Box::leak(Box::new(schema));
+    let mut contract = proxiima_core::SPIICE_0;
     contract.schemas = std::slice::from_ref(schema);
     (contract, schema)
 }
@@ -525,7 +525,7 @@ fn a_note_contract_keyed_on(
 ///
 /// `KeyShape::MemoryT { column }` exists because the erase and export lanes
 /// have no other way to learn which column carries the id; a downstream
-/// flavor that keyed its sidecar on such a name got no projection rows,
+/// spiice that keyed its sidecar on such a name got no projection rows,
 /// because the generator spelled the sidecar side of its join `t` whatever
 /// the declaration said. The generated text is asserted in the module's own
 /// unit tests; what this adds is the half a string comparison cannot reach
@@ -534,16 +534,16 @@ fn a_note_contract_keyed_on(
 ///
 /// Deliberately NOT routed through `insert_memory_sidecar`: reaching that
 /// path with a renamed key needs a payload type, a `pg_sidecar!`
-/// registration and a second flavor contract in the frozen registry, which
+/// registration and a second spiice contract in the frozen registry, which
 /// would exercise the registry rather than the generator. The statement
 /// that path runs is the one executed here — `attach_projections` stores
 /// exactly this function's output.
 #[tokio::test]
 async fn a_sidecar_keyed_on_its_own_column_name_still_files_its_projection_row() {
-    const RENAMED_TABLE: &str = "proxima_core.renamed_note_v1";
+    const RENAMED_TABLE: &str = "proxiima_core.renamed_note_v1";
     const RENAMED_KEY: &str = "note_memory_id";
 
-    with_db("proxima_proj_renamed_key", async |pg| {
+    with_db("proxiima_proj_renamed_key", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
@@ -551,15 +551,15 @@ async fn a_sidecar_keyed_on_its_own_column_name_still_files_its_projection_row()
         // The real write path already filed this (memory, schema) pair;
         // clear it so the renamed statement is the only writer and the
         // primary key cannot mask the result.
-        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
+        sqlx::query("DELETE FROM proxiima_core.projection WHERE memory_id = $1")
             .bind(t.into_inner())
             .execute(pool)
             .await?;
 
         sqlx::query(
-            "CREATE TABLE proxima_core.renamed_note_v1 (
+            "CREATE TABLE proxiima_core.renamed_note_v1 (
                  note_memory_id uuid PRIMARY KEY
-                                REFERENCES proxima_core.memory (t) ON DELETE CASCADE,
+                                REFERENCES proxiima_core.memory (t) ON DELETE CASCADE,
                  title          text   NOT NULL,
                  body           text   NOT NULL,
                  tags           text[] NOT NULL DEFAULT '{}'
@@ -568,7 +568,7 @@ async fn a_sidecar_keyed_on_its_own_column_name_still_files_its_projection_row()
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.renamed_note_v1 (note_memory_id, title, body, tags)
+            "INSERT INTO proxiima_core.renamed_note_v1 (note_memory_id, title, body, tags)
              VALUES ($1, 'harbour survey', 'the pilings under the north quay are sound',
                      ARRAY['survey'])",
         )
@@ -625,12 +625,12 @@ use crate::integrity::{IntegrityFinding, IntegrityViolation};
 /// report nobody can act on.
 #[tokio::test]
 async fn a_deleted_projection_row_fails_the_check_and_rebuild_repairs_it() {
-    with_db("proxima_integrity_projection", async |pg| {
+    with_db("proxiima_integrity_projection", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
 
-        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
+        sqlx::query("DELETE FROM proxiima_core.projection WHERE memory_id = $1")
             .bind(t.into_inner())
             .execute(pool)
             .await?;
@@ -647,7 +647,7 @@ async fn a_deleted_projection_row_fails_the_check_and_rebuild_repairs_it() {
             &vec![IntegrityFinding::UnprojectedSidecarRows {
                 sidecar_table: AGENT_NOTE.to_owned(),
                 schema_id: AgentNoteV1::SCHEMA_ID.to_owned(),
-                projection_table: "proxima_core.projection".to_owned(),
+                projection_table: "proxiima_core.projection".to_owned(),
                 rows: 1,
             }],
             "exactly the one row, and only the projection class"
@@ -683,7 +683,7 @@ async fn a_deleted_projection_row_fails_the_check_and_rebuild_repairs_it() {
 /// those conditions.
 #[tokio::test]
 async fn an_undeclared_sidecar_row_is_caught_and_the_finding_says_there_is_no_repair() {
-    with_db("proxima_integrity_undeclared", async |pg| {
+    with_db("proxiima_integrity_undeclared", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
 
@@ -709,20 +709,20 @@ async fn an_undeclared_sidecar_row_is_caught_and_the_finding_says_there_is_no_re
         tx.commit().await?;
 
         sqlx::query(
-            "ALTER TABLE proxima_core.agent_note_v1
+            "ALTER TABLE proxiima_core.agent_note_v1
                  DISABLE TRIGGER agent_note_v1_declared_by_memory",
         )
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+            "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $1, 'title', 'body', '{}')",
         )
         .bind(outcome.memory_id.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
-            "ALTER TABLE proxima_core.agent_note_v1
+            "ALTER TABLE proxiima_core.agent_note_v1
                  ENABLE TRIGGER agent_note_v1_declared_by_memory",
         )
         .execute(pool)
@@ -762,7 +762,7 @@ async fn an_undeclared_sidecar_row_is_caught_and_the_finding_says_there_is_no_re
 /// of.
 #[tokio::test]
 async fn a_stamp_with_no_row_is_refused_at_commit() {
-    with_db("proxima_presence_write", async |pg| {
+    with_db("proxiima_presence_write", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
 
@@ -812,10 +812,11 @@ async fn a_stamp_with_no_row_is_refused_at_commit() {
 
         // Nothing landed: the transaction that stamped is the one that was
         // refused.
-        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE t = $1")
-            .bind(memory_id)
-            .fetch_one(pool)
-            .await?;
+        let rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory WHERE t = $1")
+                .bind(memory_id)
+                .fetch_one(pool)
+                .await?;
         assert_eq!(rows, 0, "the refused write left no memory row");
         Ok(())
     })
@@ -830,23 +831,23 @@ async fn a_stamp_with_no_row_is_refused_at_commit() {
 /// already carries.
 #[tokio::test]
 async fn an_orphaned_stamp_is_caught_and_the_finding_says_there_is_no_repair() {
-    with_db("proxima_presence_orphan", async |pg| {
+    with_db("proxiima_presence_orphan", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
 
         sqlx::query(
-            "ALTER TABLE proxima_core.agent_note_v1
+            "ALTER TABLE proxiima_core.agent_note_v1
                  DISABLE TRIGGER agent_note_v1_declared_by_memory_on_delete",
         )
         .execute(pool)
         .await?;
-        sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.agent_note_v1 WHERE t = $1")
             .bind(t.into_inner())
             .execute(pool)
             .await?;
         sqlx::query(
-            "ALTER TABLE proxima_core.agent_note_v1
+            "ALTER TABLE proxiima_core.agent_note_v1
                  ENABLE TRIGGER agent_note_v1_declared_by_memory_on_delete",
         )
         .execute(pool)
@@ -886,7 +887,7 @@ async fn an_orphaned_stamp_is_caught_and_the_finding_says_there_is_no_repair() {
 /// second half of this test is that case.
 #[tokio::test]
 async fn deleting_a_stamped_row_is_refused_unless_its_memory_goes_too() {
-    with_db("proxima_orphan_guard", async |pg| {
+    with_db("proxiima_orphan_guard", async |pg| {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let pool = pg.pool_for_tests();
         let t = write_note(pool, owner, None).await?;
@@ -895,7 +896,7 @@ async fn deleting_a_stamped_row_is_refused_unless_its_memory_goes_too() {
         // The row alone. Deferred, so the DELETE itself succeeds and the
         // COMMIT is what refuses.
         let mut tx = pool.begin().await?;
-        sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.agent_note_v1 WHERE t = $1")
             .bind(memory_id)
             .execute(&mut *tx)
             .await?;
@@ -912,7 +913,7 @@ async fn deleting_a_stamped_row_is_refused_unless_its_memory_goes_too() {
         // The row is still there: the refused transaction took nothing with
         // it.
         let rows: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM proxima_core.agent_note_v1 WHERE t = $1")
+            sqlx::query_scalar("SELECT count(*) FROM proxiima_core.agent_note_v1 WHERE t = $1")
                 .bind(memory_id)
                 .fetch_one(pool)
                 .await?;
@@ -920,22 +921,22 @@ async fn deleting_a_stamped_row_is_refused_unless_its_memory_goes_too() {
 
         // The same DELETE, with the memory row going in the same
         // transaction. This is forget's order — the sidecar FK to
-        // `proxima_core.memory` has no ON DELETE CASCADE, so the sidecar row
+        // `proxiima_core.memory` has no ON DELETE CASCADE, so the sidecar row
         // has to go first — and it is exactly why the guard is deferred.
         let mut tx = pool.begin().await?;
-        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
+        sqlx::query("DELETE FROM proxiima_core.projection WHERE memory_id = $1")
             .bind(memory_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM proxima_core.agent_note_v1 WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.agent_note_v1 WHERE t = $1")
             .bind(memory_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.memory WHERE t = $1")
             .bind(memory_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM proxima_core.memory_head WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.memory_head WHERE t = $1")
             .bind(memory_id)
             .execute(&mut *tx)
             .await?;
@@ -955,29 +956,29 @@ struct RefusingCold {
 }
 
 #[async_trait::async_trait]
-impl proxima_core::ColdObjectStore for RefusingCold {
-    async fn delete(&self, _key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
+impl proxiima_core::ColdObjectStore for RefusingCold {
+    async fn delete(&self, _key: &str) -> Result<proxiima_core::PurgeDeleted, StorageError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Err(StorageError::Internal("restore must not delete".into()))
     }
 
-    fn store_id(&self) -> &proxima_core::ObjectStoreId {
-        static ID: std::sync::LazyLock<proxima_core::ObjectStoreId> =
+    fn store_id(&self) -> &proxiima_core::ObjectStoreId {
+        static ID: std::sync::LazyLock<proxiima_core::ObjectStoreId> =
             std::sync::LazyLock::new(|| {
-                proxima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
+                proxiima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
             });
         &ID
     }
 }
 
 /// #488 S14. Forget, then the sidecar table grows a `NOT NULL DEFAULT`
-/// column (a later flavor migration), then restore: the memory is back,
+/// column (a later spiice migration), then restore: the memory is back,
 /// searchable in the language it was written in (German, not the
 /// deployment default), queued for embedding in the route's spaces, and
 /// no object store was asked for anything.
 #[tokio::test]
 async fn a_restore_rebuilds_the_projection_in_the_written_language_after_the_sidecar_grew() {
-    with_db("proxima_proj_restore", async |pg| {
+    with_db("proxiima_proj_restore", async |pg| {
         let cold = std::sync::Arc::new(RefusingCold::default());
         let pg = pg.clone().with_cold(cold.clone());
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -990,20 +991,20 @@ async fn a_restore_rebuilds_the_projection_in_the_written_language_after_the_sid
         pg.forget_memory(&permit, t).await?;
         assert_eq!(projection_of(pool, t).await?, None);
         sqlx::query(
-            "ALTER TABLE proxima_core.agent_note_v1
+            "ALTER TABLE proxiima_core.agent_note_v1
                ADD COLUMN restore_probe text NOT NULL DEFAULT 'added after the forget'",
         )
         .execute(pool)
         .await?;
 
-        let spaces = [proxima_core::EmbeddingSpace::new(
+        let spaces = [proxiima_core::EmbeddingSpace::new(
             "restore-model",
-            proxima_core::EmbeddingDim::D1024,
+            proxiima_core::EmbeddingDim::D1024,
         )];
         pg.restore_memory(&permit, t, &spaces).await?;
 
         let forgotten: bool = sqlx::query_scalar(
-            "SELECT forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+            "SELECT forgotten_at IS NOT NULL FROM proxiima_core.memory WHERE t = $1",
         )
         .bind(t.into_inner())
         .fetch_one(pool)
@@ -1016,7 +1017,7 @@ async fn a_restore_rebuilds_the_projection_in_the_written_language_after_the_sid
         // so this matches only a projection rebuilt in the written language.
         let matches: bool = sqlx::query_scalar(
             "SELECT search_tsv @@ plainto_tsquery('german', 'pilings')
-               FROM proxima_core.projection WHERE memory_id = $1",
+               FROM proxiima_core.projection WHERE memory_id = $1",
         )
         .bind(t.into_inner())
         .fetch_one(pool)
@@ -1026,7 +1027,7 @@ async fn a_restore_rebuilds_the_projection_in_the_written_language_after_the_sid
             "lexically searchable in the language it was written in"
         );
         let jobs: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT owner_id, model_id FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+            "SELECT owner_id, model_id FROM proxiima_core.embedding_jobs WHERE entity_id = $1",
         )
         .bind(t.into_inner())
         .fetch_all(pool)

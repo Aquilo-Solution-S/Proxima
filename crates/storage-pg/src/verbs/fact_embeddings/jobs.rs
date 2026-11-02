@@ -1,5 +1,5 @@
-use proxima_core::storage_ports::{EmbeddingJobStatusCounts, OwnerWritePermit};
-use proxima_core::{
+use proxiima_core::storage_ports::{EmbeddingJobStatusCounts, OwnerWritePermit};
+use proxiima_core::{
     EmbeddingJobClaim, EmbeddingJobDiagnostic, EmbeddingJobState, EmbeddingSpace, MemoryId,
     OwnerId, StorageError, check_diagnostic_unit_count,
 };
@@ -28,7 +28,7 @@ use crate::sidecars::int_to_u64;
 /// list to prevent duplicate work.
 const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
              SELECT job_id
-               FROM proxima_core.embedding_jobs
+               FROM proxiima_core.embedding_jobs
               WHERE status = 'pending'
                 AND owner_id <> ALL($2::uuid[])
                 AND NOT EXISTS (
@@ -43,11 +43,11 @@ const CLAIM_EMBEDDING_JOBS_SQL: &str = "WITH claimed AS (
               LIMIT $1
          )
          , settled AS (
-         UPDATE proxima_core.embedding_jobs j
+         UPDATE proxiima_core.embedding_jobs j
             SET status = 'processing',
                 claimed_at = now(),
                 claim_token = uuidv7()
-           FROM claimed, proxima_core.memory m, proxima_core.owners o /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+           FROM claimed, proxiima_core.memory m, proxiima_core.owners o /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
           WHERE j.job_id = claimed.job_id
             AND m.t = j.entity_id
             AND m.forgotten_at IS NULL
@@ -75,7 +75,7 @@ pub fn claim_embedding_jobs_sql_for_tests() -> &'static str {
 
 /// Return `processing` jobs claimed before the window to `pending`. Rides
 /// `embedding_jobs_processing_idx`, which holds the jobs in flight alone.
-const RECLAIM_STALE_EMBEDDING_JOBS_SQL: &str = "UPDATE proxima_core.embedding_jobs
+const RECLAIM_STALE_EMBEDDING_JOBS_SQL: &str = "UPDATE proxiima_core.embedding_jobs
             SET status = 'pending',
                 claimed_at = NULL,
                 claim_token = NULL
@@ -159,20 +159,20 @@ async fn missing_embedding_ids<'e>(
     exclude_existing_jobs: bool,
     kinds: Option<&[PgMemoryKind]>,
 ) -> Result<Vec<MemoryId>, StorageError> {
-    // Chunks are memory rows. A second arm against a flavor chunk sidecar is a subset of
+    // Chunks are memory rows. A second arm against a spiice chunk sidecar is a subset of
     // this anti-join and duplicates t.
     let rows = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT m.t
-           FROM proxima_core.memory_head h
-           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+           FROM proxiima_core.memory_head h
+           JOIN proxiima_core.memory m ON m.handle = h.handle AND m.t = h.t AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
           WHERE m.owner_id = $1
             AND NOT (m.schema_id = ANY($4::text[]))
             AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.embedding_heads eh
+                SELECT 1 FROM proxiima_core.embedding_heads eh
                  WHERE eh.entity_id = m.t AND eh.model_id = $2 AND eh.dim = $6
             )
             AND (NOT $5::boolean OR NOT EXISTS (
-                SELECT 1 FROM proxima_core.embedding_jobs j
+                SELECT 1 FROM proxiima_core.embedding_jobs j
                  WHERE j.owner_id = m.owner_id
                    AND j.entity_id = m.t
                    AND j.model_id = $2
@@ -339,8 +339,8 @@ async fn exit_claim<'e, E: PgExecutor<'e>>(
 ) -> Result<(), StorageError> {
     let result = bind_claim_fence(
         sqlx::query(concat!(
-            "UPDATE proxima_core.embedding_jobs
-                SET status = $7::proxima_core.embedding_job_status,
+            "UPDATE proxiima_core.embedding_jobs
+                SET status = $7::proxiima_core.embedding_job_status,
                     claimed_at = NULL,
                     claim_token = NULL,
                     last_error = $8
@@ -369,7 +369,7 @@ pub async fn complete_embedding_job<'e, E: PgExecutor<'e>>(
 ) -> Result<(), StorageError> {
     let result = bind_claim_fence(
         sqlx::query(concat!(
-            "DELETE FROM proxima_core.embedding_jobs WHERE ",
+            "DELETE FROM proxiima_core.embedding_jobs WHERE ",
             claim_fence!()
         )),
         claim.into(),
@@ -404,7 +404,7 @@ pub async fn renew_embedding_jobs<'e, E: PgExecutor<'e>>(
         .map(|claim| claim.owner.into_inner())
         .collect();
     let result = sqlx::query(
-        "UPDATE proxima_core.embedding_jobs j
+        "UPDATE proxiima_core.embedding_jobs j
             SET claimed_at = now()
            FROM unnest($1::uuid[], $2::uuid[], $3::uuid[])
                 AS claim(job_id, claim_token, owner_id)
@@ -588,7 +588,7 @@ async fn enqueue_missing_embedding_jobs_on_connection(
     }
     let entity_ids: Vec<uuid::Uuid> = ids.into_iter().map(MemoryId::into_inner).collect();
     let result = sqlx::query(
-        "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
+        "INSERT INTO proxiima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
          SELECT t, $2, $4, $1
            FROM unnest($3::uuid[]) AS t
          ON CONFLICT (owner_id, entity_id, model_id, dim)
@@ -618,7 +618,7 @@ pub async fn count_embedding_job_status<'e>(
         "SELECT
              count(*) FILTER (WHERE status IN ('pending', 'processing')),
              count(*) FILTER (WHERE status IN ('failed', 'failed_permanent'))
-           FROM proxima_core.embedding_jobs
+           FROM proxiima_core.embedding_jobs
           WHERE owner_id = $1",
     )
     .bind(owner_id)
@@ -643,7 +643,7 @@ pub async fn count_embedding_job_status<'e>(
 /// # Errors
 ///
 /// [`StorageError::ConstraintViolation`] when `entities` names more than
-/// [`proxima_core::MAX_EMBEDDING_DIAGNOSTIC_UNITS`] memories. Storage
+/// [`proxiima_core::MAX_EMBEDDING_DIAGNOSTIC_UNITS`] memories. Storage
 /// errors from the read, or a job row whose status or width is not one
 /// this binary knows.
 pub(crate) async fn embedding_job_diagnostics<'e>(
@@ -666,8 +666,8 @@ pub(crate) async fn embedding_job_diagnostics<'e>(
                 CASE WHEN j.status = 'processing'
                      THEN floor(extract(epoch FROM (now() - j.claimed_at)))::bigint
                 END AS claim_age_seconds
-           FROM proxima_core.embedding_jobs j
-           JOIN proxima_core.memory m /* FORGET-POLICY: live-only (under owner RLS, a job follows a readable memory) */
+           FROM proxiima_core.embedding_jobs j
+           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (under owner RLS, a job follows a readable memory) */
              ON m.t = j.entity_id AND m.owner_id = j.owner_id
           WHERE j.owner_id = $1
             AND j.entity_id = ANY($2::uuid[])
@@ -738,8 +738,8 @@ pub(crate) fn embedding_job_state(
 #[cfg(test)]
 mod diagnostic_state_tests {
     use super::embedding_job_state;
-    use proxima_core::EmbeddingJobState;
-    use proxima_core::StorageError;
+    use proxiima_core::EmbeddingJobState;
+    use proxiima_core::StorageError;
 
     #[test]
     fn an_unknown_status_is_refused_at_the_label() {
@@ -839,7 +839,7 @@ pub(crate) async fn enqueue_embedding_jobs_in_tx<'s>(
         return Ok(());
     }
     sqlx::query(
-        "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
+        "INSERT INTO proxiima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
          SELECT $1, space.model_id, space.dim, $4
            FROM unnest($2::text[], $3::smallint[]) AS space(model_id, dim)
          ON CONFLICT (owner_id, entity_id, model_id, dim)
@@ -860,12 +860,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_embedding_scan_does_not_probe_flavor_tables() {
+    fn missing_embedding_scan_does_not_probe_spiice_tables() {
         let src = include_str!("jobs.rs");
         let needle = format!("{}{}", "to_reg", "class(");
         assert!(
             !src.contains(&needle),
-            "chunks are memory rows; do not dual-scan a flavor sidecar"
+            "chunks are memory rows; do not dual-scan a spiice sidecar"
         );
     }
 
@@ -895,17 +895,21 @@ mod tests {
     fn job_claim_shape_tracks_durable_claim_state() {
         let claim = EmbeddingJobClaim {
             job_id: uuid::Uuid::from_u128(2),
-            owner: OwnerId::from(proxima_core::UserId::new(uuid::Uuid::from_u128(1))),
-            entity_kind: proxima_core::EntityKind::Fact,
+            owner: OwnerId::from(proxiima_core::UserId::new(uuid::Uuid::from_u128(1))),
+            entity_kind: proxiima_core::EntityKind::Fact,
             entity_id: MemoryId::new(uuid::Uuid::from_u128(3)),
-            space: EmbeddingSpace::new("model", proxima_core::EmbeddingDim::D768),
+            space: EmbeddingSpace::new("model", proxiima_core::EmbeddingDim::D768),
             claim_token: uuid::Uuid::from_u128(4),
         };
         assert_eq!(claim.space.model_id(), "model");
 
         let migration = include_str!("../../../migrations/0057_baseline.sql");
+        let historical_table = format!(
+            "CREATE TABLE {}core.embedding_jobs (",
+            crate::rename_bootstrap::historical_namespace_prefix()
+        );
         let job_table = migration
-            .split_once("CREATE TABLE proxima_core.embedding_jobs (")
+            .split_once(historical_table.as_str())
             .expect("the migration defines embedding_jobs")
             .1
             .split_once("\n);")

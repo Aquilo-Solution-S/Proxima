@@ -1,6 +1,6 @@
 //! The identity re-proof: the projection must not move a single result.
 //!
-//! With flavor #0's weights all `WEIGHT_UNIFORM` there is ONE distinct
+//! With spiice #0's weights all `WEIGHT_UNIFORM` there is ONE distinct
 //! level, so every lexeme lands in `tsvector` class `D` — which is what
 //! `to_tsvector` produces unweighted — and no weight array is passed to
 //! `ts_rank_cd`. The stored vector is therefore byte-identical to the one
@@ -37,16 +37,16 @@
 //! # The two-schema cases, and why they exist
 //!
 //! The eight single-schema cases cannot see the two changes that matter most
-//! when the per-schema fan-out collapses into one statement per flavor. The
+//! when the per-schema fan-out collapses into one statement per spiice. The
 //! corpus therefore carries `core/agent-derivation-v1` rows as well, and the
 //! cases below it exercise:
 //!
-//! - **hits in two schemas** — the single flavor-wide overfetch window
+//! - **hits in two schemas** — the single spiice-wide overfetch window
 //!   replaces the union of per-schema windows.
 //! - **mixed arms across schemas** — `cartograph` is a LEXEME in a
 //!   derivation (the word appears verbatim) and only a SUBSTRING in a note
 //!   (`cartography` stems to `cartographi`). This is the exact case a
-//!   flavor-wide "the ranked arm returned nothing" trigger would lose: the
+//!   spiice-wide "the ranked arm returned nothing" trigger would lose: the
 //!   ranked arm returns derivations, so it is not empty, and the note rows
 //!   only survive because the trigger is computed per SCHEMA.
 //! - **a tag filter** — the `p.tag` predicate across two schemas.
@@ -58,7 +58,7 @@
 //! which is what makes them a pin rather than a snapshot. The two-schema cases
 //! pass `kind: None`, which is how they see both.
 //!
-//! `Hybrid` is deliberately NOT pinned. One global top-k per flavor can move a
+//! `Hybrid` is deliberately NOT pinned. One global top-k per spiice can move a
 //! hybrid page — a row with weak lexical rank but strong similarity does not
 //! ride in on its own schema's window — and that movement is a documented
 //! breaking change, not an identity claim.
@@ -76,17 +76,17 @@
 //! nearly true rather than true. See that test.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::storage_ports::MemoryReadPort;
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::query::{
+use proxiima_core::storage_ports::MemoryReadPort;
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::query::{
     EntityKind, MemorySearchPage, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus,
     TagMatch,
 };
-use proxima_core::verbs::schema::MemorySearchProjection;
-use proxima_core::{OwnerId, UserId};
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
+use proxiima_core::verbs::schema::MemorySearchProjection;
+use proxiima_core::{OwnerId, UserId};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
 use uuid::Uuid;
 
 /// Small enough for CI, large enough that the overfetch window, the tie
@@ -248,7 +248,7 @@ const DERIVATION_SCHEMA: &str = "core/agent-derivation-v1";
 /// `Engine::search` passes. Hand-picking one here would leave the
 /// projection-selection gates unexercised.
 fn projections() -> Vec<MemorySearchProjection> {
-    proxima_core::FlavorRegistry::new()
+    proxiima_core::SpiiceRegistry::new()
         .freeze_or_panic_for_tests()
         .search_projections()
         .to_vec()
@@ -265,13 +265,13 @@ async fn project(
     schema_id: &str,
     language: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    let schema = proxima_core::FLAVOR_0
+    let schema = proxiima_core::SPIICE_0
         .schemas
         .iter()
         .find(|schema| schema.schema_id().as_str() == schema_id)
         .unwrap_or_else(|| panic!("{schema_id} is declared"));
     let sql =
-        proxima_storage_pg::projection::projection_insert_sql(&proxima_core::FLAVOR_0, schema)
+        proxiima_storage_pg::projection::projection_insert_sql(&proxiima_core::SPIICE_0, schema)
             .expect("the generator emits a valid statement");
     // SQL-POLICY: generated
     sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -295,9 +295,9 @@ fn handle_for(t: Uuid) -> Uuid {
 /// exactly one insert into it, so the memory stamps exactly this one.
 fn sidecar_of(schema_id: &str) -> &'static str {
     match schema_id {
-        NOTE_SCHEMA => "proxima_core.agent_note_v1",
-        DERIVATION_SCHEMA => "proxima_core.agent_derivation_v1",
-        INTERPRETATION_SCHEMA => "proxima_core.interpretation_v1",
+        NOTE_SCHEMA => "proxiima_core.agent_note_v1",
+        DERIVATION_SCHEMA => "proxiima_core.agent_derivation_v1",
+        INTERPRETATION_SCHEMA => "proxiima_core.interpretation_v1",
         other => panic!("no sidecar seeded for {other}"),
     }
 }
@@ -316,8 +316,8 @@ async fn admit(
 ) -> Result<(), sqlx::Error> {
     let handle = handle_for(t);
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)",
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, $2::proxiima_core.memory_kind, $3, $4, $5)",
     )
     .bind(handle)
     .bind(kind)
@@ -337,7 +337,7 @@ async fn admit(
         hash.extend_from_slice(t.as_bytes());
         Some(
             sqlx::query_scalar(
-                "INSERT INTO proxima_core.content (content_id, owner_id, schema_id, content_hash)
+                "INSERT INTO proxiima_core.content (content_id, owner_id, schema_id, content_hash)
                  VALUES ($1, $2, $3, $4) RETURNING content_id",
             )
             .bind(t)
@@ -349,9 +349,9 @@ async fn admit(
         )
     };
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
              (handle, t, kind, owner_id, schema_id, origins, content_id, sidecar_tables, occurred_at, \"by\", via)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, ARRAY[$8], CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+         VALUES ($1, $2, $3::proxiima_core.memory_kind, $4, $5, $6, $7, ARRAY[$8], CASE WHEN $3::proxiima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -382,7 +382,7 @@ async fn seed(
 ) -> Result<(), sqlx::Error> {
     for owner_index in 0..OWNERS {
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
         .bind(owner_at(owner_index).into_inner())
@@ -396,7 +396,7 @@ async fn seed(
         let owner_id = owner.into_inner();
         admit(&mut stamped, owner_id, note.t, "fact", NOTE_SCHEMA, &[]).await?;
         sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+            "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(note.t)
@@ -420,7 +420,7 @@ async fn seed(
         )
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.agent_derivation_v1
+            "INSERT INTO proxiima_core.agent_derivation_v1
                  (t, title, body, tags, model_id, client_name, client_version)
              VALUES ($1, $2, $3, $4, 'test-model', 'identity-fixture', '1')",
         )
@@ -562,7 +562,7 @@ fn cases() -> Vec<(&'static str, MemorySearchRequest)> {
             // THE substring-trigger case. `cartograph` is a lexeme in a
             // derivation and only a substring in a note, so the ranked
             // arm returns rows for one schema and nothing for the other.
-            // A flavor-wide "ranked returned nothing" trigger drops every
+            // A spiice-wide "ranked returned nothing" trigger drops every
             // note below; a per-schema one keeps them.
             "all-owners/relevance/mixed-arms/cartograph",
             any_kind(request(
@@ -574,7 +574,7 @@ fn cases() -> Vec<(&'static str, MemorySearchRequest)> {
         (
             // The `p.tag` predicate, across two schemas in one statement.
             // Both declare a `tag_column`; the request narrows rows, and
-            // `core_search_flavors` is what would narrow the SCHEMA SET if
+            // `core_search_spiices` is what would narrow the SCHEMA SET if
             // one of them did not.
             "all-owners/relevance/tagged/bucket-1",
             tagged(any_kind(request(
@@ -609,7 +609,7 @@ fn tagged(mut req: MemorySearchRequest) -> MemorySearchRequest {
 }
 
 fn scoped(mut req: MemorySearchRequest) -> MemorySearchRequest {
-    req.schema_id = Some(proxima_core::SchemaId::new(DERIVATION_SCHEMA.to_owned()));
+    req.schema_id = Some(proxiima_core::SchemaId::new(DERIVATION_SCHEMA.to_owned()));
     req
 }
 
@@ -858,7 +858,7 @@ async fn run_identity(
     expected: &[(&str, &[&str])],
     language_for: impl Fn(usize) -> Option<&'static str>,
 ) {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -874,9 +874,9 @@ async fn run_identity(
         .await?;
 
         let (has_simple, stored_stopword): (bool, bool) = sqlx::query_as(
-            "SELECT EXISTS (SELECT 1 FROM proxima_core.lexical_languages
+            "SELECT EXISTS (SELECT 1 FROM proxiima_core.lexical_languages
                              WHERE config = 'simple'::regconfig),
-                    EXISTS (SELECT 1 FROM proxima_core.projection
+                    EXISTS (SELECT 1 FROM proxiima_core.projection
                              WHERE lexical_language = 'simple'::regconfig
                                AND search_tsv @@ to_tsquery('simple', 'the'))",
         )
@@ -889,9 +889,9 @@ async fn run_identity(
             );
             let query_nodes: (i32, i32) = sqlx::query_as(
                 "SELECT numnode(websearch_to_tsquery('english',
-                            proxima_core.lexical_query_text('english', 'the'))),
+                            proxiima_core.lexical_query_text('english', 'the'))),
                         numnode(websearch_to_tsquery('simple',
-                            proxima_core.lexical_query_text('simple', 'the')))",
+                            proxiima_core.lexical_query_text('simple', 'the')))",
             )
             .fetch_one(pg.pool_for_tests())
             .await?;
@@ -988,7 +988,7 @@ async fn seed_note_revision(
     body: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
              (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
          VALUES ($1, $2, 'fact', $3, $4, ARRAY[$5], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
@@ -1000,7 +1000,7 @@ async fn seed_note_revision(
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+        "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
          VALUES ($1, $2, $3, $4, '{}')",
     )
     .bind(t)
@@ -1018,7 +1018,7 @@ async fn seed_note_revision(
 async fn seed_starvation(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     let owner_id = owner_at(0).into_inner();
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
          VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
     )
     .bind(owner_id)
@@ -1036,7 +1036,7 @@ async fn seed_starvation(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         // the handle, so it is created pointing at the revision it will
         // later supersede — which is exactly the order a real write takes.
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'fact', $2, $3, $4)",
         )
         .bind(handle)
@@ -1055,7 +1055,7 @@ async fn seed_starvation(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         )
         .await?;
         seed_note_revision(&mut stamped, owner_id, handle, head, HEAD_TITLE, HEAD_BODY).await?;
-        sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+        sqlx::query("UPDATE proxiima_core.memory_head SET t = $2 WHERE handle = $1")
             .bind(handle)
             .bind(head)
             .execute(&mut *stamped)
@@ -1075,7 +1075,7 @@ async fn seed_starvation(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     )
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.agent_derivation_v1
+        "INSERT INTO proxiima_core.agent_derivation_v1
              (t, title, body, tags, model_id, client_name, client_version)
          VALUES ($1, $2, $3, '{}', 'test-model', 'identity-fixture', '1')",
     )
@@ -1140,7 +1140,7 @@ const STARVATION_EXPECTED: &[(&str, &[&str])] = &[
 /// candidates; `search_admit_sql(heads_only)` then drops every superseded
 /// revision from the hit set, and `HeadsOnly` is the tool default and what
 /// `core_recall` sends. Five per-schema windows of twenty could absorb a
-/// backlog that one flavor-wide window of twenty cannot, so at `limit = 1`
+/// backlog that one spiice-wide window of twenty cannot, so at `limit = 1`
 /// twenty-five superseded revisions of one schema starved the other
 /// schema's live row out of the window entirely — and the starved schema
 /// was then reported "missing" and re-found by the SUBSTRING arm, which
@@ -1174,7 +1174,7 @@ const STARVATION_EXPECTED: &[(&str, &[&str])] = &[
 /// inside the region where the baseline was itself right.
 #[tokio::test]
 async fn a_superseded_backlog_does_not_starve_the_page() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1224,7 +1224,7 @@ async fn a_superseded_backlog_does_not_starve_the_page() {
 ///
 /// `LanguagePolicy::PerRow` is the whole reason the query side ORs one
 /// `websearch_to_tsquery` per registered configuration, and that CTE is
-/// computed once per flavor rather than once per schema. If one statement over
+/// computed once per spiice rather than once per schema. If one statement over
 /// four schemas got the multilingual query side wrong, this is the case that
 /// says so.
 #[tokio::test]
@@ -1238,7 +1238,7 @@ async fn mixed_configurations_preserve_content_scores_and_strip_query_stopwords(
 // applies and the candidate side did not, and it is NOT a variant of
 // supersession: every row below is a current head.
 
-/// Flavor #0's other Perspective — the schema that gets starved here.
+/// Spiice #0's other Perspective — the schema that gets starved here.
 const INTERPRETATION_SCHEMA: &str = "core/interpretation-v1";
 
 /// Abstraction-kind decoys. Chosen by the same rule as
@@ -1257,7 +1257,7 @@ const KIND_PROBE_FILLER: usize = 6;
 /// One owner, one anchor note, [`KIND_DECOYS`] ABSTRACTION-kind derivations
 /// matching strongly, and one PERSPECTIVE interpretation matching weakly.
 ///
-/// The derivations' schema is `core/agent-derivation-v1`, which flavor #0
+/// The derivations' schema is `core/agent-derivation-v1`, which spiice #0
 /// registers under BOTH `Abstraction` and `Perspective`. That is what makes
 /// the corpus a counterexample rather than a tautology: a
 /// `kind = Perspective` request cannot narrow the schema away, so the
@@ -1266,7 +1266,7 @@ const KIND_PROBE_FILLER: usize = 6;
 async fn seed_kind_probe(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     let owner_id = owner_at(0).into_inner();
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
          VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
     )
     .bind(owner_id)
@@ -1279,7 +1279,7 @@ async fn seed_kind_probe(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     let anchor = det_uuid(100);
     admit(&mut stamped, owner_id, anchor, "fact", NOTE_SCHEMA, &[]).await?;
     sqlx::query(
-        "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+        "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
          VALUES ($1, $2, 'anchor', $3, '{}')",
     )
     .bind(anchor)
@@ -1301,7 +1301,7 @@ async fn seed_kind_probe(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         )
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.agent_derivation_v1
+            "INSERT INTO proxiima_core.agent_derivation_v1
                  (t, title, body, tags, model_id, client_name, client_version)
              VALUES ($1, 'atlas atlas', 'atlas atlas atlas cartography', '{}',
                      'test-model', 'identity-fixture', '1')",
@@ -1333,7 +1333,7 @@ async fn seed_kind_probe(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         .collect::<Vec<_>>()
         .join(" ");
     sqlx::query(
-        "INSERT INTO proxima_core.interpretation_v1
+        "INSERT INTO proxiima_core.interpretation_v1
              (t, claim, confidence, model_id, client_name, client_version)
          VALUES ($1, $2, 50, 'test-model', 'identity-fixture', '1')",
     )
@@ -1400,11 +1400,11 @@ const KIND_PROBE_EXPECTED: &[(&str, &[&str])] = &[
 ///
 /// **This is the case that falsified "supersession was the last unmirrored
 /// admit filter".** `search_admit_sql` binds `kind` as `$3`; the candidate
-/// statements did not, because `core_search_flavors` was believed to have
+/// statements did not, because `core_search_spiices` was believed to have
 /// narrowed the participating SCHEMA set already. It does — but
 /// `core/agent-derivation-v1` is registered under two payload kinds, so
 /// narrowing by schema leaves the abstraction-kind ROWS of a Perspective
-/// schema in the scan, and `proxima_core.projection` carries no kind column
+/// schema in the scan, and `proxiima_core.projection` carries no kind column
 /// to tell them apart.
 ///
 /// Every row in this corpus is a current head, so `HeadsOnly` changes
@@ -1419,7 +1419,7 @@ const KIND_PROBE_EXPECTED: &[(&str, &[&str])] = &[
 /// score.
 #[tokio::test]
 async fn a_kind_filter_does_not_starve_the_page() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }

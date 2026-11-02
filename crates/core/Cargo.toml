@@ -1,5 +1,5 @@
 [package]
-name = "proxima-core"
+name = "proxiima-core"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 publish = false
 
 [lib]
-name = "proxima_core"
+name = "proxiima_core"
 
 [lints]
 workspace = true

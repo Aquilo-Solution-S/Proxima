@@ -1,10 +1,10 @@
 //! Direct candidate calls must authorize ids, scores, and counts before returning.
 
 use super::*;
-use proxima_core::OwnerScope;
-use proxima_pg_testkit::DbGuard;
-use proxima_storage_pg::begin_owner_transaction;
-use proxima_storage_pg::test_fixtures::fresh_pg;
+use proxiima_core::OwnerScope;
+use proxiima_pg_testkit::DbGuard;
+use proxiima_storage_pg::begin_owner_transaction;
+use proxiima_storage_pg::test_fixtures::fresh_pg;
 use sqlx::PgConnection;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -20,10 +20,10 @@ impl TextLeg {
     fn sql(self) -> &'static str {
         match self {
             Self::Lexical => {
-                "SELECT t, lexical_score, count(*) OVER () FROM proxima_core.search_lexical_candidates($1, $2, NULL, NULL, NULL, NULL, $3, ARRAY['core/agent-note-v1'], true, false, true, 'fact', false)"
+                "SELECT t, lexical_score, count(*) OVER () FROM proxiima_core.search_lexical_candidates($1, $2, NULL, NULL, NULL, NULL, $3, ARRAY['core/agent-note-v1'], true, false, true, 'fact', false)"
             }
             Self::Substring => {
-                "SELECT t, lexical_score, count(*) OVER () FROM proxima_core.search_substring_candidates($1, $2, NULL, NULL, NULL, NULL, $3, ARRAY['core/agent-note-v1'], true, false, true, 'fact', false)"
+                "SELECT t, lexical_score, count(*) OVER () FROM proxiima_core.search_substring_candidates($1, $2, NULL, NULL, NULL, NULL, $3, ARRAY['core/agent-note-v1'], true, false, true, 'fact', false)"
             }
         }
     }
@@ -58,7 +58,7 @@ async fn vector_candidates(
 ) -> Result<Vec<CandidateRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT memory_id, similarity_score, count(*) OVER ()
-           FROM proxima_core.vector_candidates_d1024($1, 'test-embed', $2, 8)",
+           FROM proxiima_core.vector_candidates_d1024($1, 'test-embed', $2, 8)",
     )
     .bind(owners)
     .bind(vector)
@@ -215,23 +215,23 @@ async fn stale_accelerator_owners_never_leak_candidate_ids_scores_or_counts() ->
     assert!(semantic[0].1 > semantic[1].1);
     baseline.commit().await?;
     let admin = fixture.pg.pool_for_tests();
-    sqlx::query("UPDATE proxima_core.projection SET owner_id = $1 WHERE memory_id = $2")
+    sqlx::query("UPDATE proxiima_core.projection SET owner_id = $1 WHERE memory_id = $2")
         .bind(fixture.owner.into_inner())
         .bind(fixture.theirs)
         .execute(admin)
         .await?;
-    sqlx::query("UPDATE proxima_core.embeddings SET owner_id = $1 WHERE entity_id = $2")
+    sqlx::query("UPDATE proxiima_core.embeddings SET owner_id = $1 WHERE entity_id = $2")
         .bind(fixture.owner.into_inner())
         .bind(fixture.theirs)
         .execute(admin)
         .await?;
-    sqlx::query("UPDATE proxima_core.embedding_heads SET owner_id = $1 WHERE entity_id = $2")
+    sqlx::query("UPDATE proxiima_core.embedding_heads SET owner_id = $1 WHERE entity_id = $2")
         .bind(fixture.owner.into_inner())
         .bind(fixture.theirs)
         .execute(admin)
         .await?;
     let memory_owner: Uuid =
-        sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+        sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
             .bind(fixture.theirs)
             .fetch_one(admin)
             .await?;
@@ -313,7 +313,7 @@ async fn substring_candidates_answer_for_the_requested_schemas_only() -> TestRes
         for (schemas, expected) in &cases {
             let mut tx = begin_owner_transaction(&runtime, &scope).await?;
             let rows: Vec<(Uuid, f32)> = sqlx::query_as(
-                "SELECT t, lexical_score FROM proxima_core.search_substring_candidates(
+                "SELECT t, lexical_score FROM proxiima_core.search_substring_candidates(
                      '%needle%', 8, NULL, NULL, NULL, NULL, $1, $2, true, $3, true, 'fact', false)",
             )
             .bind(&owners[..])

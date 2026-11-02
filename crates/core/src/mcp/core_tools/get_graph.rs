@@ -33,9 +33,9 @@ pub struct GetGraphOutput {
     /// operator signal on this readiness resource. A `reconcile` requeues the
     /// `failed` ones; it does not requeue `failed_permanent` ones.
     pub failed_embedding_jobs: u64,
-    /// Static schema catalog from the frozen `FlavorRegistry`.
+    /// Static schema catalog from the frozen `SpiiceRegistry`.
     pub schemas: Vec<SchemaItem>,
-    /// Dispatchable substrate and flavor-registered MCP tool ids.
+    /// Dispatchable substrate and spiice-registered MCP tool ids.
     pub substrate_tools: Vec<SubstrateToolItem>,
 }
 

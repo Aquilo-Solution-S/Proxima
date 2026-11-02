@@ -48,6 +48,6 @@ impl FactPayload for UtteranceV1 {
     }
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_core.utterance_v1")
+        Some("proxiima_core.utterance_v1")
     }
 }

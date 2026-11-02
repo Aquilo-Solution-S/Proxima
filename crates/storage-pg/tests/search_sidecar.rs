@@ -1,5 +1,5 @@
-//! Projection-first core search: one ranked statement per flavor over
-//! `<flavor>.projection`, a DECLARED substring arm over the schemas it
+//! Projection-first core search: one ranked statement per spiice over
+//! `<spiice>.projection`, a DECLARED substring arm over the schemas it
 //! returned nothing for, then admit via `memory_head`.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
@@ -15,25 +15,25 @@ mod hybrid_rrf;
 #[path = "search_sidecar/candidates.rs"]
 mod candidates;
 
-use proxima_core::flavor::{
+use proxiima_core::spiice::{
     Band, BandComparability, LanguagePolicy, RankSource, SubstringArm, WEIGHT_UNIFORM,
 };
-use proxima_core::flavor0::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING};
-use proxima_core::storage_ports::MemoryReadPort;
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::query::{
+use proxiima_core::spiice0::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING};
+use proxiima_core::storage_ports::MemoryReadPort;
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
-use proxima_core::verbs::schema::{
+use proxiima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind, RenderBands,
 };
-use proxima_core::{OwnerId, SchemaId, SchemaVersion, SearchProjectionColumnKind, UserId};
-use proxima_pg_testkit::{db_url, drop_db, split_role_urls_for};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
+use proxiima_core::{OwnerId, SchemaId, SchemaVersion, SearchProjectionColumnKind, UserId};
+use proxiima_pg_testkit::{db_url, drop_db, split_role_urls_for};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
 use uuid::Uuid;
 
-/// The out-of-tree fixture flavor's bands: core's, referenced. Referencing
+/// The out-of-tree fixture spiice's bands: core's, referenced. Referencing
 /// them IS the band-comparability claim, which is what makes
 /// `BandComparability::CoreBands` below an assertion rather than a label.
 const DOCS_BANDS: &[Band] = &[BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING];
@@ -47,7 +47,7 @@ fn note_projection() -> MemorySearchProjection {
     // The shipped declaration, not a second copy of it. This fixture used
     // to restate `core/agent-note-v1`'s columns by hand, which meant the
     // test agreed with the contract only by coincidence.
-    proxima_core::FlavorRegistry::new()
+    proxiima_core::SpiiceRegistry::new()
         .freeze_or_panic_for_tests()
         .search_projections()
         .iter()
@@ -57,9 +57,9 @@ fn note_projection() -> MemorySearchProjection {
 }
 
 /// A query vector in the fixtures' 1024-wide `test-embed` space.
-fn test_semantic(vector: Vec<f32>) -> proxima_core::SpaceVector {
-    proxima_core::SpaceVector::new(
-        proxima_core::EmbeddingSpace::new("test-embed", proxima_core::EmbeddingDim::D1024),
+fn test_semantic(vector: Vec<f32>) -> proxiima_core::SpaceVector {
+    proxiima_core::SpaceVector::new(
+        proxiima_core::EmbeddingSpace::new("test-embed", proxiima_core::EmbeddingDim::D1024),
         vector,
     )
     .expect("1024-wide test vector")
@@ -100,13 +100,13 @@ async fn project(
     schema_id: &str,
     language: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    let schema = proxima_core::FLAVOR_0
+    let schema = proxiima_core::SPIICE_0
         .schemas
         .iter()
         .find(|schema| schema.schema_id().as_str() == schema_id)
         .expect("declared schema");
     let sql =
-        proxima_storage_pg::projection::projection_insert_sql(&proxima_core::FLAVOR_0, schema)
+        proxiima_storage_pg::projection::projection_insert_sql(&proxiima_core::SPIICE_0, schema)
             .expect("the generator emits a valid statement");
     // SQL-POLICY: generated
     sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -137,7 +137,7 @@ async fn seed_note_lang(
 ) -> Result<Uuid, sqlx::Error> {
     let owner_id = owner.into_inner();
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
          VALUES ($1, 'personal')
          ON CONFLICT DO NOTHING",
     )
@@ -147,7 +147,7 @@ async fn seed_note_lang(
     let handle = Uuid::now_v7();
     let t = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
          VALUES ($1, 'fact', 'core/agent-note-v1', $2, $3)",
     )
     .bind(handle)
@@ -159,10 +159,10 @@ async fn seed_note_lang(
     // that names a sidecar table it has no row in is refused at COMMIT.
     let mut stamped = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
              (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
          VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
-                 ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+                 ARRAY['proxiima_core.agent_note_v1'], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -170,7 +170,7 @@ async fn seed_note_lang(
     .execute(&mut *stamped)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+        "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
          VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(t)
@@ -197,11 +197,11 @@ fn embed_vector_xy(x: f32, y: f32) -> pgvector::Vector {
 }
 
 async fn create_docs_search_surface(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    sqlx::query("CREATE SCHEMA proxima_docs")
+    sqlx::query("CREATE SCHEMA proxiima_docs")
         .execute(pool)
         .await?;
     sqlx::query(
-        "CREATE TABLE proxima_docs.section_text_v1 (
+        "CREATE TABLE proxiima_docs.section_text_v1 (
             t uuid PRIMARY KEY,
             text text NOT NULL,
             tags text[] NOT NULL
@@ -210,29 +210,29 @@ async fn create_docs_search_surface(pool: &sqlx::PgPool) -> Result<(), sqlx::Err
     .execute(pool)
     .await?;
     sqlx::query(
-        "CREATE TABLE proxima_docs.projection (
+        "CREATE TABLE proxiima_docs.projection (
             memory_id uuid NOT NULL
-                REFERENCES proxima_core.memory (t) ON DELETE CASCADE,
+                REFERENCES proxiima_core.memory (t) ON DELETE CASCADE,
             schema_id text NOT NULL,
-            owner_id uuid NOT NULL REFERENCES proxima_core.owners (owner_id),
+            owner_id uuid NOT NULL REFERENCES proxiima_core.owners (owner_id),
             search_tsv tsvector NOT NULL,
             tag text[] NOT NULL DEFAULT '{}',
             lexical_language regconfig NOT NULL
-                DEFAULT proxima_core.lexical_config()
-                REFERENCES proxima_core.lexical_languages (config),
+                DEFAULT proxiima_core.lexical_config()
+                REFERENCES proxiima_core.lexical_languages (config),
             PRIMARY KEY (memory_id, schema_id)
          )",
     )
     .execute(pool)
     .await?;
-    sqlx::query("GRANT USAGE ON SCHEMA proxima_docs TO proxima_test_runtime")
+    sqlx::query("GRANT USAGE ON SCHEMA proxiima_docs TO proxiima_test_runtime")
         .execute(pool)
         .await?;
-    sqlx::query("GRANT SELECT ON ALL TABLES IN SCHEMA proxima_docs TO proxima_test_runtime")
+    sqlx::query("GRANT SELECT ON ALL TABLES IN SCHEMA proxiima_docs TO proxiima_test_runtime")
         .execute(pool)
         .await?;
     let artifacts =
-        proxima_storage_pg::search_candidates::candidate_artifacts_for_tests(&[docs_projection()])
+        proxiima_storage_pg::search_candidates::candidate_artifacts_for_tests(&[docs_projection()])
             .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
     for artifact in artifacts {
         // SQL-POLICY: generated — fixed candidate functions from the fixture projection.
@@ -245,17 +245,17 @@ async fn create_docs_search_surface(pool: &sqlx::PgPool) -> Result<(), sqlx::Err
 
 fn docs_projection() -> MemorySearchProjection {
     MemorySearchProjection {
-        schema_id: SchemaId::new("proxima-docs/section-text-v1".to_string()),
+        schema_id: SchemaId::new("proxiima-docs/section-text-v1".to_string()),
         schema_version: SchemaVersion::new(1),
         kind: PayloadKind::Abstraction,
-        sidecar_table: "proxima_docs.section_text_v1".into(),
+        sidecar_table: "proxiima_docs.section_text_v1".into(),
         sidecar_key_column: "t".into(),
         fields: vec![MemorySearchProjectionField {
             column: "text".into(),
             kind: SearchProjectionColumnKind::Text,
             weight: WEIGHT_UNIFORM,
         }],
-        projection_table: "proxima_docs.projection".into(),
+        projection_table: "proxiima_docs.projection".into(),
         tag_column: Some("tags".into()),
         language: LanguagePolicy::PerRow {
             column: "lexical_language",
@@ -280,8 +280,8 @@ async fn seed_docs_note(
     let handle = Uuid::now_v7();
     let t = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, 'abstraction', 'proxima-docs/section-text-v1', $2, $3)",
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'abstraction', 'proxiima-docs/section-text-v1', $2, $3)",
     )
     .bind(handle)
     .bind(owner_id)
@@ -292,8 +292,8 @@ async fn seed_docs_note(
     hash[..16].copy_from_slice(t.as_bytes());
     hash[16..].copy_from_slice(t.as_bytes());
     let content_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
-         VALUES ($1, 'proxima-docs/section-text-v1', $2)
+        "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
+         VALUES ($1, 'proxiima-docs/section-text-v1', $2)
          RETURNING content_id",
     )
     .bind(owner_id)
@@ -301,9 +301,9 @@ async fn seed_docs_note(
     .fetch_one(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
             (handle, t, kind, owner_id, schema_id, origins, content_id, \"by\", via)
-         VALUES ($1, $2, 'abstraction', $3, 'proxima-docs/section-text-v1', ARRAY[$4]::uuid[], $5, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+         VALUES ($1, $2, 'abstraction', $3, 'proxiima-docs/section-text-v1', ARRAY[$4]::uuid[], $5, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -313,7 +313,7 @@ async fn seed_docs_note(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_docs.section_text_v1 (t, text, tags)
+        "INSERT INTO proxiima_docs.section_text_v1 (t, text, tags)
          VALUES ($1, $2, $3)",
     )
     .bind(t)
@@ -322,21 +322,21 @@ async fn seed_docs_note(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_docs.projection
+        "INSERT INTO proxiima_docs.projection
             (memory_id, schema_id, owner_id, search_tsv, tag)
          SELECT c.t,
-                'proxima-docs/section-text-v1',
+                'proxiima-docs/section-text-v1',
                 m.owner_id,
                 COALESCE(
-                    proxima_core.lexical_tsv(
-                        proxima_core.lexical_config(),
-                        proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '')])
+                    proxiima_core.lexical_tsv(
+                        proxiima_core.lexical_config(),
+                        proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '')])
                     ),
                     ''::tsvector
                 ),
                 c.tags
-           FROM proxima_docs.section_text_v1 c
-           JOIN proxima_core.memory m ON m.t = c.t
+           FROM proxiima_docs.section_text_v1 c
+           JOIN proxiima_core.memory m ON m.t = c.t
           WHERE c.t = $1",
     )
     .bind(t)
@@ -352,7 +352,7 @@ async fn seed_embedding(
     vector: &pgvector::Vector,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO proxima_core.embeddings
+        "INSERT INTO proxiima_core.embeddings
             (entity_id, model_id, dim, embedding_version, vec, owner_id)
          VALUES ($1, 'test-embed', 1024, 1, $2, $3)",
     )
@@ -362,7 +362,7 @@ async fn seed_embedding(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.embedding_heads
+        "INSERT INTO proxiima_core.embedding_heads
             (entity_id, model_id, dim, embedding_version, owner_id)
          VALUES ($1, 'test-embed', 1024, 1, $2)",
     )
@@ -375,7 +375,7 @@ async fn seed_embedding(
 
 #[tokio::test]
 async fn lexical_search_is_sidecar_first_then_owner_admit() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -455,7 +455,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
         // blanket retry behind it, the arm is the only thing that finds this
         // row.
         let arm_off = MemorySearchProjection {
-            substring: proxima_core::flavor::SubstringArm::Off,
+            substring: proxiima_core::spiice::SubstringArm::Off,
             ..note_projection()
         };
         let refused = pg
@@ -479,15 +479,15 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             .await?;
         assert!(miss.results.is_empty());
 
-        let flavor = MemorySearchProjection {
-            schema_id: SchemaId::new("proxima-example/note-v1".into()),
-            sidecar_table: "proxima_example.note_v1".into(),
-            projection_table: "proxima_example.projection".into(),
+        let spiice = MemorySearchProjection {
+            schema_id: SchemaId::new("proxiima-example/note-v1".into()),
+            sidecar_table: "proxiima_example.note_v1".into(),
+            projection_table: "proxiima_example.projection".into(),
             band_comparability: BandComparability::Divergent {
-                why: "the flavor has its own score bands",
+                why: "the spiice has its own score bands",
             },
             rank_source: RankSource::SidecarWithProjectionOwner {
-                why: "the flavor supplies its own renderer",
+                why: "the spiice supplies its own renderer",
             },
             render_bands: None,
             ..note_projection()
@@ -496,12 +496,12 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
             .search_memories(
                 Some(&owner_scope_for_tests(&[owner])),
                 &search_req(owner, "keyword needle"),
-                &[flavor],
+                &[spiice],
             )
             .await?;
         assert!(
             skipped.results.is_empty(),
-            "a divergent sidecar-ranked flavor stays outside the core renderer"
+            "a divergent sidecar-ranked spiice stays outside the core renderer"
         );
 
         Ok(())
@@ -514,7 +514,7 @@ async fn lexical_search_is_sidecar_first_then_owner_admit() {
 
 #[tokio::test]
 async fn lexical_search_does_not_let_other_owner_fill_overfetch() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -557,12 +557,12 @@ async fn lexical_search_does_not_let_other_owner_fill_overfetch() {
 }
 
 #[tokio::test]
-async fn tagged_search_scans_flavor_sidecars() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+async fn tagged_search_scans_spiice_sidecars() {
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
-    split_role_urls_for(&db_name, &["proxima_docs"])
+    split_role_urls_for(&db_name, &["proxiima_docs"])
         .await
         .expect("split docs roles");
     let url = db_url(&db_name);
@@ -572,7 +572,7 @@ async fn tagged_search_scans_flavor_sidecars() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let other_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
              SELECT unnest($1::uuid[]), 'personal' ON CONFLICT DO NOTHING",
         )
         .bind(vec![owner.into_inner(), other_owner.into_inner()])
@@ -585,7 +585,7 @@ async fn tagged_search_scans_flavor_sidecars() {
             owner,
             origin,
             "Antriebswelle im Getriebe",
-            &["proxima-docs", "shared"],
+            &["proxiima-docs", "shared"],
         )
         .await?;
         let other_t = seed_docs_note(
@@ -603,14 +603,14 @@ async fn tagged_search_scans_flavor_sidecars() {
             other_owner,
             other_origin,
             "Antriebswelle im Getriebe",
-            &["proxima-docs", "shared"],
+            &["proxiima-docs", "shared"],
         )
         .await?;
 
         let projection = docs_projection();
         let projections = std::slice::from_ref(&projection);
         let scope = owner_scope_for_tests(&[owner]);
-        let ids = |page: &proxima_core::verbs::query::MemorySearchPage| {
+        let ids = |page: &proxiima_core::verbs::query::MemorySearchPage| {
             let mut ids = page
                 .results
                 .iter()
@@ -641,7 +641,7 @@ async fn tagged_search_scans_flavor_sidecars() {
         assert_eq!(
             ids(&page),
             expected,
-            "unscoped search must reach matching flavor text"
+            "unscoped search must reach matching spiice text"
         );
         assert!(!page.has_more, "hidden owners cannot add continuation");
 
@@ -653,7 +653,7 @@ async fn tagged_search_scans_flavor_sidecars() {
         assert_eq!(
             ids(&page),
             expected,
-            "a schema id reaches the flavor without tags"
+            "a schema id reaches the spiice without tags"
         );
 
         let mut no_tags = projection.clone();
@@ -668,14 +668,14 @@ async fn tagged_search_scans_flavor_sidecars() {
         );
 
         for (tag_match, tags, mut expected_ids) in [
-            (TagMatch::Any, vec!["proxima-docs"], vec![t]),
+            (TagMatch::Any, vec!["proxiima-docs"], vec![t]),
             (
                 TagMatch::Any,
-                vec!["proxima-docs", "other"],
+                vec!["proxiima-docs", "other"],
                 vec![t, other_t],
             ),
-            (TagMatch::All, vec!["proxima-docs", "shared"], vec![t]),
-            (TagMatch::All, vec!["proxima-docs", "other"], Vec::new()),
+            (TagMatch::All, vec!["proxiima-docs", "shared"], vec![t]),
+            (TagMatch::All, vec!["proxiima-docs", "other"], Vec::new()),
             (TagMatch::Any, vec!["absent"], Vec::new()),
         ] {
             let mut tagged = unscoped.clone();
@@ -688,16 +688,16 @@ async fn tagged_search_scans_flavor_sidecars() {
             assert_eq!(
                 ids(&page),
                 expected_ids,
-                "{tag_match:?} tags {tags:?} narrow flavor rows"
+                "{tag_match:?} tags {tags:?} narrow spiice rows"
             );
         }
 
         let mut tagged = unscoped.clone();
-        tagged.tags = vec!["proxima-docs".into()];
+        tagged.tags = vec!["proxiima-docs".into()];
         let page = pg
             .search_memories(Some(&scope), &tagged, projections)
             .await?;
-        assert_eq!(page.results.len(), 1, "tagged search must hit flavor text");
+        assert_eq!(page.results.len(), 1, "tagged search must hit spiice text");
         assert_eq!(page.results[0].memory_id.into_inner(), t);
         let page = pg
             .search_memories(Some(&scope), &tagged, std::slice::from_ref(&no_tags))
@@ -724,12 +724,12 @@ async fn tagged_search_scans_flavor_sidecars() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("flavor sidecar search failed");
+    result.expect("spiice sidecar search failed");
 }
 
 #[tokio::test]
 async fn lexical_search_matches_german_via_lexical_languages() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -749,7 +749,7 @@ async fn lexical_search_matches_german_via_lexical_languages() {
         .await?;
         let registered: bool = sqlx::query_scalar(
             "SELECT EXISTS (
-                 SELECT 1 FROM proxima_core.lexical_languages
+                 SELECT 1 FROM proxiima_core.lexical_languages
                   WHERE config = 'german'::regconfig
              )",
         )
@@ -779,7 +779,7 @@ async fn lexical_search_matches_german_via_lexical_languages() {
 
 #[tokio::test]
 async fn simple_rows_retain_vectors_after_default_switch_and_query_analysis() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -789,17 +789,17 @@ async fn simple_rows_retain_vectors_after_default_switch_and_query_analysis() {
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
 
-        sqlx::query("SELECT proxima_core.set_lexical_config('simple')")
+        sqlx::query("SELECT proxiima_core.set_lexical_config('simple')")
             .execute(pool)
             .await?;
         let simple = seed_note(pool, owner, "Stopword", "the checkpoint").await?;
-        sqlx::query("SELECT proxima_core.set_lexical_config('english')")
+        sqlx::query("SELECT proxiima_core.set_lexical_config('english')")
             .execute(pool)
             .await?;
 
         let stamped_simple: bool = sqlx::query_scalar(
             "SELECT lexical_language = 'simple'::regconfig
-               FROM proxima_core.projection
+               FROM proxiima_core.projection
               WHERE memory_id = $1",
         )
         .bind(simple)
@@ -811,7 +811,7 @@ async fn simple_rows_retain_vectors_after_default_switch_and_query_analysis() {
         );
         let stored_the: bool = sqlx::query_scalar(
             "SELECT search_tsv @@ to_tsquery('simple', 'the')
-               FROM proxima_core.projection WHERE memory_id = $1",
+               FROM proxiima_core.projection WHERE memory_id = $1",
         )
         .bind(simple)
         .fetch_one(pool)
@@ -843,7 +843,7 @@ async fn simple_rows_retain_vectors_after_default_switch_and_query_analysis() {
             .await?;
         let no_ranked_terms: bool = sqlx::query_scalar(
             "SELECT numnode(websearch_to_tsquery('simple',
-                        proxima_core.lexical_query_text('simple', 'the'))) = 0",
+                        proxiima_core.lexical_query_text('simple', 'the'))) = 0",
         )
         .fetch_one(pool)
         .await?;
@@ -869,7 +869,7 @@ async fn simple_rows_retain_vectors_after_default_switch_and_query_analysis() {
 
 #[tokio::test]
 async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -880,7 +880,7 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
 
         let initial_default_is_english: bool =
-            sqlx::query_scalar("SELECT proxima_core.lexical_config() = 'english'::regconfig")
+            sqlx::query_scalar("SELECT proxiima_core.lexical_config() = 'english'::regconfig")
                 .fetch_one(pool)
                 .await?;
         assert!(
@@ -889,14 +889,14 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
         );
 
         let english = seed_note(pool, owner, "Cats", "the cats sleep on the sofa").await?;
-        sqlx::query("SELECT proxima_core.set_lexical_config('german')")
+        sqlx::query("SELECT proxiima_core.set_lexical_config('german')")
             .execute(pool)
             .await?;
         let german = seed_note(pool, owner, "Tiere", "die Katzen schlafen auf dem Sofa").await?;
 
         let stamped: Vec<(Uuid, String)> = sqlx::query_as(
             "SELECT memory_id, lexical_language::text
-               FROM proxima_core.projection
+               FROM proxiima_core.projection
               WHERE memory_id = ANY($1::uuid[])
               ORDER BY memory_id",
         )
@@ -910,7 +910,7 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
         );
 
         let default_is_german: bool =
-            sqlx::query_scalar("SELECT proxima_core.lexical_config() = 'german'::regconfig")
+            sqlx::query_scalar("SELECT proxiima_core.lexical_config() = 'german'::regconfig")
                 .fetch_one(pool)
                 .await?;
         assert!(
@@ -920,7 +920,7 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
 
         let german_is_active: bool = sqlx::query_scalar(
             "SELECT EXISTS (
-                 SELECT 1 FROM proxima_core.lexical_languages
+                 SELECT 1 FROM proxiima_core.lexical_languages
                   WHERE config = 'german'::regconfig
              )",
         )
@@ -932,7 +932,7 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
         );
         let english_is_still_active: bool = sqlx::query_scalar(
             "SELECT EXISTS (
-                 SELECT 1 FROM proxima_core.lexical_languages
+                 SELECT 1 FROM proxiima_core.lexical_languages
                   WHERE config = 'english'::regconfig
              )",
         )
@@ -965,7 +965,7 @@ async fn lexical_default_switch_stamps_only_subsequent_core_rows() {
 
 #[tokio::test]
 async fn semantic_search_respects_until() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -976,7 +976,7 @@ async fn semantic_search_respects_until() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let t = seed_note(pool, owner, "Embedded", "semantic neighbour body").await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings
+            "INSERT INTO proxiima_core.embeddings
                 (entity_id, model_id, dim, embedding_version, vec, owner_id)
              VALUES ($1, 'test-embed', 1024, 1, $2, $3)",
         )
@@ -986,7 +986,7 @@ async fn semantic_search_respects_until() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_heads
+            "INSERT INTO proxiima_core.embedding_heads
                 (entity_id, model_id, dim, embedding_version, owner_id)
              VALUES ($1, 'test-embed', 1024, 1, $2)",
         )
@@ -1047,7 +1047,7 @@ async fn semantic_search_respects_until() {
 /// custom plan ranked.
 #[tokio::test]
 async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1058,7 +1058,7 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
             max_connections: 1,
             ..PgPoolConfig::default()
         };
-        let (runtime_url, platform_url) = proxima_pg_testkit::split_role_urls(&db_name).await?;
+        let (runtime_url, platform_url) = proxiima_pg_testkit::split_role_urls(&db_name).await?;
         let migration = PgMigrationStorage::connect_with_config(
             &platform_url,
             PgPoolConfig::default(),
@@ -1069,7 +1069,7 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
         migration.initialize_store_number(1).await?;
         let scope = PgPlatformScope::new(
             sqlx::PgPool::connect(&platform_url).await?,
-            &["proxima_core"],
+            &["proxiima_core"],
         )
         .await?;
         let pg = PgStorage::connect_with_config(
@@ -1091,7 +1091,7 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
         let mut req = search_req(owner, "unused");
         req.mode = SearchMode::Semantic;
         req.semantic = Some(test_semantic(embed_vector().to_vec()));
-        let ranked = |page: proxima_core::verbs::query::MemorySearchPage| {
+        let ranked = |page: proxiima_core::verbs::query::MemorySearchPage| {
             page.results
                 .iter()
                 .map(|hit| hit.memory_id.into_inner())
@@ -1128,7 +1128,7 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
         let (parameter_types, generic_plans): (Vec<String>, i64) = sqlx::query_as(
             "SELECT parameter_types::text[], generic_plans
                FROM pg_prepared_statements
-              WHERE statement LIKE '%proxima_core.vector_candidates_d1024($1, $2, $3, $4)%'
+              WHERE statement LIKE '%proxiima_core.vector_candidates_d1024($1, $2, $3, $4)%'
                 AND statement NOT LIKE '%pg_prepared_statements%'",
         )
         .fetch_one(&runtime_pool)
@@ -1152,11 +1152,11 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
 /// search must return the tagged one alone, and so must a tagged `Hybrid`
 /// search — the default mode, whose semantic arm used to admit memories
 /// carrying none of the requested tags because only the lexical arm applied
-/// the predicate. And a tagged request no flavor participates in returns
+/// the predicate. And a tagged request no spiice participates in returns
 /// nothing, not the unfiltered scan.
 #[tokio::test]
 async fn tagged_semantic_search_returns_only_tagged_rows() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1177,7 +1177,7 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
         let plain_t = seed_note(pool, owner, "Plain", "semantic neighbour body").await?;
         for t in [tagged_t, plain_t] {
             sqlx::query(
-                "INSERT INTO proxima_core.embeddings
+                "INSERT INTO proxiima_core.embeddings
                     (entity_id, model_id, dim, embedding_version, vec, owner_id)
                  VALUES ($1, 'test-embed', 1024, 1, $2, $3)",
             )
@@ -1187,7 +1187,7 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
             .execute(pool)
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.embedding_heads
+                "INSERT INTO proxiima_core.embedding_heads
                     (entity_id, model_id, dim, embedding_version, owner_id)
                  VALUES ($1, 'test-embed', 1024, 1, $2)",
             )
@@ -1196,7 +1196,7 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
             .execute(pool)
             .await?;
         }
-        let ids = |page: &proxima_core::verbs::query::MemorySearchPage| {
+        let ids = |page: &proxiima_core::verbs::query::MemorySearchPage| {
             let mut ids: Vec<Uuid> = page
                 .results
                 .iter()
@@ -1263,7 +1263,7 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
             .await?;
         assert!(
             page.results.is_empty(),
-            "a tagged request no flavor participates in returns nothing, \
+            "a tagged request no spiice participates in returns nothing, \
              not the unfiltered scan"
         );
         Ok(())
@@ -1274,19 +1274,19 @@ async fn tagged_semantic_search_returns_only_tagged_rows() {
 }
 
 /// Semantic candidates come from one shared embedding table, while the
-/// participating flavor set is the projection contract. A foreign flavor
+/// participating spiice set is the projection contract. A foreign spiice
 /// must not consume an explicitly core-scoped Semantic/Hybrid window, even
 /// when more than that window of foreign rows is closer than the core row.
 /// Without that schema restriction, eligible foreign projections participate;
 /// tags narrow them. Any/All and an empty participating set remain real
 /// candidate-side cases.
 #[tokio::test]
-async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+async fn semantic_and_hybrid_respect_untagged_spiice_scope() {
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
-    split_role_urls_for(&db_name, &["proxima_docs"])
+    split_role_urls_for(&db_name, &["proxiima_docs"])
         .await
         .expect("split docs roles");
     let url = db_url(&db_name);
@@ -1295,7 +1295,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
         .bind(owner.into_inner())
@@ -1330,7 +1330,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
         }
         let docs = docs_projection();
         let projections = [note_projection(), docs.clone()];
-        let ids = |page: &proxima_core::verbs::query::MemorySearchPage| {
+        let ids = |page: &proxiima_core::verbs::query::MemorySearchPage| {
             page.results
                 .iter()
                 .map(|result| result.memory_id.into_inner())
@@ -1513,7 +1513,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
     }
     .await;
     let _ = drop_db(&db_name).await;
-    result.expect("semantic and hybrid flavor scope failed");
+    result.expect("semantic and hybrid spiice scope failed");
 }
 
 /// `since` is a LOWER bound and `until` is an UPPER one — proved by rows,
@@ -1539,7 +1539,7 @@ async fn semantic_and_hybrid_respect_untagged_flavor_scope() {
 ///   defect, and it is what the band assertion below reads.
 #[tokio::test]
 async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1633,7 +1633,7 @@ async fn lexical_search_reads_since_as_a_floor_and_until_as_a_ceiling() {
 
 #[tokio::test]
 async fn lexical_language_forget_refuses_while_rows_reference_it() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1652,7 +1652,7 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
         )
         .await?;
 
-        let err = sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+        let err = sqlx::query("SELECT proxiima_core.lexical_language_forget('german')")
             .execute(pool)
             .await
             .expect_err("forget must refuse while a row is stamped german");
@@ -1662,7 +1662,7 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
         );
         let registered: bool = sqlx::query_scalar(
             "SELECT EXISTS (
-                 SELECT 1 FROM proxima_core.lexical_languages
+                 SELECT 1 FROM proxiima_core.lexical_languages
                   WHERE config = 'german'::regconfig
              )",
         )
@@ -1670,16 +1670,16 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
         .await?;
         assert!(registered, "a refused forget must not deregister");
 
-        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
+        sqlx::query("DELETE FROM proxiima_core.projection WHERE memory_id = $1")
             .bind(t)
             .execute(pool)
             .await?;
-        sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+        sqlx::query("SELECT proxiima_core.lexical_language_forget('german')")
             .execute(pool)
             .await?;
         let gone: bool = sqlx::query_scalar(
             "SELECT NOT EXISTS (
-                 SELECT 1 FROM proxima_core.lexical_languages
+                 SELECT 1 FROM proxiima_core.lexical_languages
                   WHERE config = 'german'::regconfig
              )",
         )
@@ -1688,7 +1688,7 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
         assert!(gone, "forget removes the registration once unreferenced");
 
         // Not registered any more: forgetting again is a clean no-op.
-        sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+        sqlx::query("SELECT proxiima_core.lexical_language_forget('german')")
             .execute(pool)
             .await?;
         Ok(())
@@ -1700,7 +1700,7 @@ async fn lexical_language_forget_refuses_while_rows_reference_it() {
 
 #[tokio::test]
 async fn lexical_language_forget_refuses_null_and_the_default() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1709,13 +1709,13 @@ async fn lexical_language_forget_refuses_null_and_the_default() {
         let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
 
-        let err = sqlx::query("SELECT proxima_core.lexical_language_forget(NULL)")
+        let err = sqlx::query("SELECT proxiima_core.lexical_language_forget(NULL)")
             .execute(pool)
             .await
             .expect_err("NULL is refused");
         assert!(err.to_string().contains("must not be null"), "{err}");
 
-        let err = sqlx::query("SELECT proxima_core.lexical_language_forget('english')")
+        let err = sqlx::query("SELECT proxiima_core.lexical_language_forget('english')")
             .execute(pool)
             .await
             .expect_err("the default configuration is refused");
@@ -1734,7 +1734,7 @@ async fn lexical_language_forget_refuses_null_and_the_default() {
 /// not-yet-registered configuration self-registers it before the FK check.
 #[tokio::test]
 async fn lexical_remember_trigger_registers_before_the_fk_check() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1744,7 +1744,7 @@ async fn lexical_remember_trigger_registers_before_the_fk_check() {
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
         .bind(owner.into_inner())
@@ -1761,7 +1761,7 @@ async fn lexical_remember_trigger_registers_before_the_fk_check() {
         .await?;
         let registered: bool = sqlx::query_scalar(
             "SELECT EXISTS (
-                 SELECT 1 FROM proxima_core.lexical_languages
+                 SELECT 1 FROM proxiima_core.lexical_languages
                   WHERE config = 'french'::regconfig
              )",
         )
@@ -1781,7 +1781,7 @@ async fn lexical_remember_trigger_registers_before_the_fk_check() {
 /// committed row can reference a forgotten language.
 #[tokio::test]
 async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1791,26 +1791,26 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
         .bind(owner.into_inner())
         .execute(pool)
         .await?;
-        sqlx::query("INSERT INTO proxima_core.lexical_languages (config) VALUES ('german')")
+        sqlx::query("INSERT INTO proxiima_core.lexical_languages (config) VALUES ('german')")
             .execute(pool)
             .await?;
 
         // Writer: uncommitted projection row stamped german — its RI check
         // holds KEY SHARE on the registration row until the transaction ends.
         let memory_id = seed_note(pool, owner, "Tiere", "die Katzen schlafen").await?;
-        sqlx::query("DELETE FROM proxima_core.projection WHERE memory_id = $1")
+        sqlx::query("DELETE FROM proxiima_core.projection WHERE memory_id = $1")
             .bind(memory_id)
             .execute(pool)
             .await?;
         let mut writer = pool.begin().await?;
         sqlx::query(
-            "INSERT INTO proxima_core.projection
+            "INSERT INTO proxiima_core.projection
                 (memory_id, schema_id, owner_id, search_tsv, lexical_language)
              VALUES ($1, 'core/agent-note-v1', $2, ''::tsvector, 'german'::regconfig)",
         )
@@ -1823,7 +1823,7 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
         sqlx::query("SET lock_timeout = '500ms'")
             .execute(&mut *forgetter)
             .await?;
-        let blocked = sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+        let blocked = sqlx::query("SELECT proxiima_core.lexical_language_forget('german')")
             .execute(&mut *forgetter)
             .await
             .expect_err("forget must block on the in-flight writer, not slip past it");
@@ -1836,7 +1836,7 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
         sqlx::query("SET lock_timeout = 0")
             .execute(&mut *forgetter)
             .await?;
-        let refused = sqlx::query("SELECT proxima_core.lexical_language_forget('german')")
+        let refused = sqlx::query("SELECT proxiima_core.lexical_language_forget('german')")
             .execute(&mut *forgetter)
             .await
             .expect_err("after the writer commits, forget refuses on the FK");
@@ -1852,7 +1852,7 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
 ///
 /// The substring leg is the arm the collapse gave a head restriction to, and
 /// its restriction has a different shape from the ranked arm's — the leg
-/// already drives `proxima_core.memory m`, so it probes `memory_head`
+/// already drives `proxiima_core.memory m`, so it probes `memory_head`
 /// directly instead of through a second `memory` lookup. That shape was
 /// pinned by a string assertion only, and a string assertion cannot see a join
 /// that is present but wrong.
@@ -1871,7 +1871,7 @@ async fn lexical_language_forget_blocks_on_an_in_flight_writer() {
 /// and the substring leg is the only thing that can answer.
 #[tokio::test]
 async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1882,7 +1882,7 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let owner_id = owner.into_inner();
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
         .bind(owner_id)
@@ -1896,7 +1896,7 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
             let handle = Uuid::now_v7();
             let superseded = Uuid::now_v7();
             sqlx::query(
-                "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
                  VALUES ($1, 'fact', 'core/agent-note-v1', $2, $3)",
             )
             .bind(handle)
@@ -1912,10 +1912,10 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
                 // The stamp and the row it promises land in one transaction.
                 let mut stamped = pool.begin().await?;
                 sqlx::query(
-                    "INSERT INTO proxima_core.memory
+                    "INSERT INTO proxiima_core.memory
                          (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
                      VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
-                             ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+                             ARRAY['proxiima_core.agent_note_v1'], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
                 )
                 .bind(handle)
                 .bind(t)
@@ -1923,7 +1923,7 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
                 .execute(&mut *stamped)
                 .await?;
                 sqlx::query(
-                    "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+                    "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
                      VALUES ($1, $2, $3, $4, '{}')",
                 )
                 .bind(t)
@@ -1935,7 +1935,7 @@ async fn a_superseded_backlog_does_not_starve_the_substring_leg() {
                 stamped.commit().await?;
                 project(pool, t, "core/agent-note-v1", None).await?;
             }
-            sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+            sqlx::query("UPDATE proxiima_core.memory_head SET t = $2 WHERE handle = $1")
                 .bind(handle)
                 .bind(head)
                 .execute(pool)

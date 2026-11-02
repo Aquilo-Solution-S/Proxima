@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
-use proxima_core::{
-    Credentials, Engine, FlavorRegistry, GroupId, OwnerId, OwnerRoles, Relation, Role, UserId,
+use proxiima_core::{
+    Credentials, Engine, GroupId, OwnerId, OwnerRoles, Relation, Role, SpiiceRegistry, UserId,
 };
-use proxima_storage_pg::{
+use proxiima_storage_pg::{
     PgPlatformScope, PgPoolConfig, PgStorage, PgTuning, begin_owner_transaction, group_role,
     roles_for_subject,
 };
@@ -18,21 +18,21 @@ use uuid::Uuid;
 
 /// The runtime role's connection URL: the test database's, with its credentials.
 fn role_url(database: &str, role: &str, password: &str) -> String {
-    let url = proxima_pg_testkit::db_url(database);
+    let url = proxiima_pg_testkit::db_url(database);
     let (scheme, rest) = url.split_once("://").expect("scheme");
     let (_credentials, host) = rest.rsplit_once('@').expect("credentials");
     format!("{scheme}://{role}:{password}@{host}")
 }
 
 async fn seed(admin: &sqlx::PgPool, group: GroupId, member: UserId, relations: &[Relation]) {
-    sqlx::query("INSERT INTO proxima_core.owners(owner_id, kind) VALUES ($1, 'group') ON CONFLICT DO NOTHING")
+    sqlx::query("INSERT INTO proxiima_core.owners(owner_id, kind) VALUES ($1, 'group') ON CONFLICT DO NOTHING")
         .bind(group.into_inner())
         .execute(admin)
         .await
         .unwrap();
     for relation in relations {
         sqlx::query(
-            "INSERT INTO proxima_core.group_memberships(group_id, member_user_id, relation)
+            "INSERT INTO proxiima_core.group_memberships(group_id, member_user_id, relation)
              VALUES ($1, $2, $3)",
         )
         .bind(group.into_inner())
@@ -46,7 +46,7 @@ async fn seed(admin: &sqlx::PgPool, group: GroupId, member: UserId, relations: &
 
 async fn relations(admin: &sqlx::PgPool, group: GroupId, member: UserId) -> Vec<Relation> {
     sqlx::query_scalar(
-        "SELECT relation FROM proxima_core.group_memberships
+        "SELECT relation FROM proxiima_core.group_memberships
           WHERE group_id = $1 AND member_user_id = $2 ORDER BY relation",
     )
     .bind(group.into_inner())
@@ -73,7 +73,7 @@ async fn role_probes_read_what_the_connections_scope_lets_through() {
     .await;
 
     // Platform scope: every group, the join included.
-    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_example"])
+    let scope = PgPlatformScope::new(platform.clone(), &["proxiima_core", "proxiima_example"])
         .await
         .expect("platform scope");
     let mut tx = scope.begin().await.unwrap();
@@ -101,7 +101,7 @@ async fn role_probes_read_what_the_connections_scope_lets_through() {
         )
         .unwrap(),
     };
-    let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("probe".into()))
+    let authz = proxiima_core::authenticate(&verifier, &Credentials::Bearer("probe".into()))
         .await
         .unwrap();
     let narrowed = authz.narrowed_to_owner(OwnerId::from(visible)).unwrap();
@@ -137,7 +137,7 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
     seed(&admin, group, manager, &[Relation::Admin]).await;
     seed(&admin, group, member, &[Relation::Admin, Relation::Ingest]).await;
 
-    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_example"])
+    let scope = PgPlatformScope::new(platform.clone(), &["proxiima_core", "proxiima_example"])
         .await
         .expect("platform scope");
     let pg = PgStorage::connect_with_config(
@@ -149,12 +149,12 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
     )
     .await
     .expect("runtime storage");
-    let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+    let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg).storage_ports());
     let verifier = super::SyntheticVerifier {
         roles: OwnerRoles::for_subject(manager, [(OwnerId::from(group), Role::admin())]).unwrap(),
     };
-    let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("manage".into()))
+    let authz = proxiima_core::authenticate(&verifier, &Credentials::Bearer("manage".into()))
         .await
         .unwrap();
 
@@ -192,7 +192,7 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
         )
         .await
         .expect_err("the member no longer holds Admin");
-    assert_eq!(err.code, proxima_core::ErrorCode::InvalidArgument);
+    assert_eq!(err.code, proxiima_core::ErrorCode::InvalidArgument);
     assert_eq!(
         relations(&admin, group, member).await,
         vec![Relation::Viewer]
@@ -204,22 +204,22 @@ async fn relation_change_commits_under_the_managing_owner_scope() {
 }
 
 /// Serving storage checks its runtime role over every schema the platform
-/// authority was validated over, not only `proxima_core`: a runtime role that
-/// may CREATE in a flavor schema is refused by the constructor itself.
+/// authority was validated over, not only `proxiima_core`: a runtime role that
+/// may CREATE in a spiice schema is refused by the constructor itself.
 #[tokio::test]
-async fn serving_storage_refuses_a_runtime_role_unsafe_on_a_flavor_schema() {
+async fn serving_storage_refuses_a_runtime_role_unsafe_on_a_spiice_schema() {
     let (database, admin, runtime, platform, platform_role, runtime_role, password) =
         super::setup_full_schema().await;
     super::execute(
         &admin,
         &format!(
-            "GRANT CREATE ON SCHEMA proxima_example TO {}",
+            "GRANT CREATE ON SCHEMA proxiima_example TO {}",
             super::quoted_ident(&runtime_role)
         ),
     )
     .await;
 
-    let scope = PgPlatformScope::new(platform.clone(), &["proxima_core", "proxima_example"])
+    let scope = PgPlatformScope::new(platform.clone(), &["proxiima_core", "proxiima_example"])
         .await
         .expect("platform scope");
     let refused = PgStorage::connect_with_config(
@@ -232,7 +232,7 @@ async fn serving_storage_refuses_a_runtime_role_unsafe_on_a_flavor_schema() {
     .await
     .expect_err("a runtime role unsafe on a composed schema is refused");
     assert!(
-        refused.to_string().contains("CREATE in proxima_example"),
+        refused.to_string().contains("CREATE in proxiima_example"),
         "{refused}"
     );
 

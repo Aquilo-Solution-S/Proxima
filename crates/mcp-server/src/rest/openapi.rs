@@ -3,7 +3,7 @@
 //! REST is a rendering of the tool manifest, not a second API (17 §Claim),
 //! so nothing here is authored per tool: every path, operation, and request
 //! schema is derived from `McpToolDescriptor` and `ResourceContract`. A tool
-//! added to a flavor crate appears in this document with no edit here.
+//! added to a spiice crate appears in this document with no edit here.
 //!
 //! Both version floors are forced rather than preferred. Below 3.1 the
 //! schemars-generated draft 2020-12 `args_schema` would need a
@@ -18,9 +18,9 @@
 
 use std::collections::BTreeMap;
 
-use proxima_core::FlavorRegistryFrozen;
-use proxima_core::flavor::ResourceContract;
-use proxima_core::mcp::{McpToolAnnotations, McpToolDescriptor, ToolEffect, all_core_resources};
+use proxiima_core::SpiiceRegistryFrozen;
+use proxiima_core::mcp::{McpToolAnnotations, McpToolDescriptor, ToolEffect, all_core_resources};
+use proxiima_core::spiice::ResourceContract;
 use serde_json::{Map, Value, json};
 
 use crate::McpAuthContext;
@@ -29,7 +29,7 @@ use crate::handler::{
     project_dispatcher_actions_for_auth, resource_allowed_for_auth, tool_allowed_for_auth,
 };
 use crate::rest::context::{MODEL_ID_HEADER, SELF_PERSPECTIVE_HEADER};
-use crate::security::PROXIMA_OWNER_HEADER;
+use crate::security::PROXIIMA_OWNER_HEADER;
 
 /// The `query` Path Item fixed field arrives in 3.2; the 2020-12 dialect is
 /// unchanged from 3.1, so `args_schema` embeds verbatim.
@@ -47,7 +47,7 @@ const BEARER_SCHEME: &str = "bearerAuth";
 /// `(header, required, description)`.
 const CONTEXT_HEADERS: &[(&str, bool, &str)] = &[
     (
-        PROXIMA_OWNER_HEADER,
+        PROXIIMA_OWNER_HEADER,
         true,
         "Selects the owner for this call. REST is stateless: send it on every \
          request rather than relying on a bound session id.",
@@ -104,7 +104,7 @@ const PROBLEM_STATUSES: &[(u16, &str)] = &[
 /// registry and core-resource surface for offline conformance checks.
 #[must_use]
 pub fn document_from_registry(
-    registry: &FlavorRegistryFrozen,
+    registry: &SpiiceRegistryFrozen,
     public_url: Option<&str>,
     auth: Option<&McpAuthContext>,
 ) -> Value {
@@ -114,7 +114,7 @@ pub fn document_from_registry(
 /// [`document_from_registry`] for a caller whose listing request behaviors
 /// may narrow.
 pub(crate) fn document_for_caller(
-    registry: &FlavorRegistryFrozen,
+    registry: &SpiiceRegistryFrozen,
     public_url: Option<&str>,
     caller: Caller<'_>,
 ) -> Value {
@@ -171,8 +171,8 @@ fn document_with(
     root.insert(
         "info".to_string(),
         json!({
-            "title": "Proxima REST surface",
-            "version": proxima_core::RELEASE_VERSION,
+            "title": "Proxiima REST surface",
+            "version": proxiima_core::RELEASE_VERSION,
             "description":
                 "Generated from the frozen tool manifest. Every operation \
                  terminates in the same dispatch seam MCP uses, so this \
@@ -273,14 +273,14 @@ impl Operation<'_> {
         // so read-only is always stated. The other two hints carry no such
         // default, and inventing one would misreport a tool that said nothing.
         operation.insert(
-            "x-proxima-read-only".to_string(),
+            "x-proxiima-read-only".to_string(),
             json!(self.annotations.read_only.unwrap_or(false)),
         );
         if let Some(destructive) = self.annotations.destructive {
-            operation.insert("x-proxima-destructive".to_string(), json!(destructive));
+            operation.insert("x-proxiima-destructive".to_string(), json!(destructive));
         }
         if let Some(idempotent) = self.annotations.idempotent {
-            operation.insert("x-proxima-idempotent".to_string(), json!(idempotent));
+            operation.insert("x-proxiima-idempotent".to_string(), json!(idempotent));
         }
         if !self.parameters.is_empty() {
             operation.insert("parameters".to_string(), json!(self.parameters));
@@ -386,7 +386,7 @@ fn tool_path_item(operation: &Operation<'_>) -> Value {
 }
 
 /// `GET /v1/resources/{path}`, reconstructed from the resource's own
-/// `proxima://` template. The mapping is total and mechanical, and REST adds
+/// `proxiima://` template. The mapping is total and mechanical, and REST adds
 /// no URI parser of its own (17 §Resource path mapping).
 fn collect_resource_path(resource: &ResourceContract, paths: &mut BTreeMap<String, Value>) {
     let Some((path, query_variables)) = resource_route(resource.uri_template) else {
@@ -426,11 +426,11 @@ fn collect_resource_path(resource: &ResourceContract, paths: &mut BTreeMap<Strin
     paths.insert(path, Value::Object(item));
 }
 
-/// Split a `proxima://` URI template into a REST path and its RFC 6570 query
-/// variable names: `proxima://memory/{id}{?expand_neighbors}` becomes
+/// Split a `proxiima://` URI template into a REST path and its RFC 6570 query
+/// variable names: `proxiima://memory/{id}{?expand_neighbors}` becomes
 /// `/v1/resources/memory/{id}` and `["expand_neighbors"]`.
 fn resource_route(uri_template: &str) -> Option<(String, Vec<String>)> {
-    let rest = uri_template.strip_prefix("proxima://")?;
+    let rest = uri_template.strip_prefix("proxiima://")?;
     let (path, query) = match rest.split_once("{?") {
         Some((path, query)) => (path, query.trim_end_matches('}')),
         None => (rest, ""),
@@ -514,7 +514,7 @@ fn success_response(produces_schema_ids: &[&str], output_schema: Option<&Value>)
     };
     if !produces_schema_ids.is_empty() {
         schema.insert(
-            "x-proxima-produces-schema-ids".to_string(),
+            "x-proxiima-produces-schema-ids".to_string(),
             json!(produces_schema_ids),
         );
     }
@@ -614,23 +614,23 @@ fn parameter_component_name(header: &str) -> String {
 mod tests {
     use std::collections::BTreeSet;
 
-    use proxima_core::protocol::tool as protocol_tool;
-    use proxima_core::{FlavorRegistry, FlavorRegistryFrozen};
+    use proxiima_core::protocol::tool as protocol_tool;
+    use proxiima_core::{SpiiceRegistry, SpiiceRegistryFrozen};
 
     use super::{McpToolDescriptor, ResourceContract, Value, all_core_resources, document};
 
-    fn frozen_registry() -> FlavorRegistryFrozen {
-        FlavorRegistry::default()
+    fn frozen_registry() -> SpiiceRegistryFrozen {
+        SpiiceRegistry::default()
             .try_freeze()
             .expect("the built-in core registry freezes")
     }
 
     /// Generated from the real frozen registry, so the tests exercise the
     /// descriptors the server actually serves rather than hand-made ones.
-    fn core_document(registry: &FlavorRegistryFrozen) -> Value {
+    fn core_document(registry: &SpiiceRegistryFrozen) -> Value {
         let tools: Vec<&McpToolDescriptor> = registry.list_mcp_tools().iter().collect();
         let resources: Vec<&ResourceContract> = all_core_resources().collect();
-        document(&tools, &resources, Some("https://proxima.example"), None)
+        document(&tools, &resources, Some("https://proxiima.example"), None)
     }
 
     fn path_item<'a>(document: &'a Value, path: &str) -> &'a Value {
@@ -670,7 +670,7 @@ mod tests {
             "`query` is a 3.2 fixed field, not an additional operation: {item:#}",
         );
         assert_eq!(
-            item.pointer("/post/x-proxima-read-only")
+            item.pointer("/post/x-proxiima-read-only")
                 .and_then(Value::as_bool),
             Some(true),
         );
@@ -695,7 +695,7 @@ mod tests {
             "a write tool must not advertise QUERY: {item:#}",
         );
         assert_eq!(
-            item.pointer("/post/x-proxima-read-only")
+            item.pointer("/post/x-proxiima-read-only")
                 .and_then(Value::as_bool),
             Some(false),
         );
@@ -730,7 +730,7 @@ mod tests {
         );
         assert_eq!(
             read_url
-                .pointer("/query/x-proxima-read-only")
+                .pointer("/query/x-proxiima-read-only")
                 .and_then(Value::as_bool),
             Some(true),
         );

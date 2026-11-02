@@ -11,7 +11,7 @@
 //! [`OidcAuthenticator`] is the default [`Authenticator`] built on top of
 //! it: [`OidcAuthenticator::new`] maps the validated `(iss, sub)` through an
 //! issuer-aware [`OidcSubjectMap`] to a [`UserId`] and resolves ordinary
-//! [`proxima_core::OwnerRoles`] through an `OwnerAccessPort`. A configured
+//! [`proxiima_core::OwnerRoles`] through an `OwnerAccessPort`. A configured
 //! forwarder instead carries its verified owner and writer claims without a
 //! role until request owner agreement is checked at the edge.
 
@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, AlgorithmFamily, Validation, decode, decode_header};
-use proxima_core::{AuthError, Authenticator, AuthzContext, Credentials, OwnerAccessPort};
+use proxiima_core::{AuthError, Authenticator, AuthzContext, Credentials, OwnerAccessPort};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -369,7 +369,7 @@ mod tests {
     use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use jsonwebtoken::DecodingKey;
-    use proxima_core::{AccessError, AuthPath, GroupId, OwnerId, OwnerRoles, Role, UserId};
+    use proxiima_core::{AccessError, AuthPath, GroupId, OwnerId, OwnerRoles, Role, UserId};
     use serde::Serialize;
     use uuid::Uuid;
 
@@ -377,7 +377,7 @@ mod tests {
     use crate::keys::StaticJwksResolver;
 
     const ISSUER: &str = "https://issuer.example";
-    const AUDIENCE: &str = "proxima-api";
+    const AUDIENCE: &str = "proxiima-api";
     const KID: &str = "k1";
 
     struct TestKeys {

@@ -1,7 +1,7 @@
 name: Release
 
 # A release is cut by VERIFYING, not by tagging. A commit that bumps
-# `proxima_core::RELEASE_VERSION` to a version no tag holds yet becomes
+# `proxiima_core::RELEASE_VERSION` to a version no tag holds yet becomes
 # `v${RELEASE_VERSION}` the moment verify.yml advances `verified` onto it; a
 # commit that leaves the constant alone cuts nothing, so ordinary changes
 # accumulate until someone decides the next release is worth naming.

@@ -65,14 +65,14 @@ impl OwnerScope {
     /// The immutable writer captured when authentication sealed this scope.
     ///
     /// ```
-    /// # use proxima_core::{OwnerScope, WriterAttribution};
+    /// # use proxiima_core::{OwnerScope, WriterAttribution};
     /// fn inspect(scope: &OwnerScope) -> WriterAttribution {
     ///     scope.writer()
     /// }
     /// ```
     ///
     /// ```compile_fail
-    /// # use proxima_core::{OwnerScope, WriterAttribution};
+    /// # use proxiima_core::{OwnerScope, WriterAttribution};
     /// # fn replace(scope: &mut OwnerScope, writer: WriterAttribution) {
     /// scope.writer = writer;
     /// # }

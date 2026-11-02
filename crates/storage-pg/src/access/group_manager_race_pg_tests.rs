@@ -3,12 +3,12 @@
 //! each one inside its transaction right before the group-tree lock, so both
 //! reach the lock together and storage alone decides.
 
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     MembershipWritePermit, OwnerMembershipAdminPort, OwnerWritePermit,
 };
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::{AccessKind, GroupId, OwnerId, Relation, UserId};
-use proxima_pg_testkit::{db_url, drop_db};
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::{AccessKind, GroupId, OwnerId, Relation, UserId};
+use proxiima_pg_testkit::{db_url, drop_db};
 use uuid::Uuid;
 
 use crate::PgStorage;
@@ -17,7 +17,7 @@ use crate::test_fixtures::create_core_db;
 
 #[tokio::test]
 async fn managers_removing_each_other_one_refused() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -87,7 +87,7 @@ async fn managers_removing_each_other_one_refused() {
 /// names no caller, may not remove a group's last manager either.
 #[tokio::test]
 async fn host_removal_of_last_manager_refused() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -108,7 +108,7 @@ async fn host_removal_of_last_manager_refused() {
             )
             .await;
         assert!(
-            matches!(refused, Err(proxima_core::StorageError::Conflict(_))),
+            matches!(refused, Err(proxiima_core::StorageError::Conflict(_))),
             "a host write may not remove the last manager: {refused:?}"
         );
         let owner_scope = owner_scope_for_tests(&[group.into()]);

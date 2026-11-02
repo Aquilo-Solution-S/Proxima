@@ -1,18 +1,18 @@
-//! `PROXIMA_TEST_PG_URL` is the admin URL and has no default.
+//! `PROXIIMA_TEST_PG_URL` is the admin URL and has no default.
 //!
 //! The process environment is global and cannot be edited from a test
 //! (`set_var` is unsafe), so each case re-executes this test binary with the
 //! variable set the way it needs and reads the child's exit status and
 //! output. `child` is the re-executed test: without
-//! `PROXIMA_PG_TESTKIT_CHILD` it does nothing.
+//! `PROXIIMA_PG_TESTKIT_CHILD` it does nothing.
 
 use std::process::{Command, Output};
 
-use proxima_pg_testkit::{DbGuard, SplitRoleDb, admin_url, admin_url_or_skip, create_db, db_url};
+use proxiima_pg_testkit::{DbGuard, SplitRoleDb, admin_url, admin_url_or_skip, create_db, db_url};
 use sqlx::{Connection, PgConnection};
 
-const MODE_VAR: &str = "PROXIMA_PG_TESTKIT_CHILD";
-const URL_VAR: &str = "PROXIMA_TEST_PG_URL";
+const MODE_VAR: &str = "PROXIIMA_PG_TESTKIT_CHILD";
+const URL_VAR: &str = "PROXIIMA_TEST_PG_URL";
 
 #[tokio::test]
 async fn child() {
@@ -63,7 +63,7 @@ async fn child() {
     }
 }
 
-/// Run `child` in `mode` with `PROXIMA_TEST_PG_URL` set to `url` (`None`:
+/// Run `child` in `mode` with `PROXIIMA_TEST_PG_URL` set to `url` (`None`:
 /// removed) and `CI` set to `ci` (`None`: removed).
 fn run_child(mode: &str, url: Option<&str>, ci: Option<&str>) -> Output {
     let mut command = Command::new(std::env::current_exe().expect("test binary"));
@@ -196,11 +196,11 @@ fn split_roles_stay_unprivileged_when_the_admin_credentials_are_in_the_query() {
     // authority, both connections would be the admin: a superuser.
     assert_eq!(
         probe_result(&stdout, "runtime"),
-        "proxima_test_runtime:false:false"
+        "proxiima_test_runtime:false:false"
     );
     assert_eq!(
         probe_result(&stdout, "platform"),
-        "proxima_test_platform:false:false"
+        "proxiima_test_platform:false:false"
     );
 }
 

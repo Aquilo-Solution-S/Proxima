@@ -427,7 +427,7 @@ impl EmbeddingClient for ControlledClient {
                 self.validate(vector)
             })
             .instrument(
-                tracing::debug_span!(target: "proxima::stage_timing", "embedding_call",
+                tracing::debug_span!(target: "proxiima::stage_timing", "embedding_call",
                 call = %uuid::Uuid::now_v7(), client = self.control.trace_id, kind = "single"),
             )
             .await
@@ -441,7 +441,7 @@ impl EmbeddingClient for ControlledClient {
                 return Err(LlmError::retryable(format!("embedding batch cardinality mismatch: sent {} texts but received {} vectors", texts.len(), vectors.len())));
             }
             vectors.into_iter().map(|vector| self.validate(vector)).collect()
-        }).instrument(tracing::debug_span!(target: "proxima::stage_timing", "embedding_call",
+        }).instrument(tracing::debug_span!(target: "proxiima::stage_timing", "embedding_call",
             call = %uuid::Uuid::now_v7(), client = self.control.trace_id, kind = "batch")).await
     }
 

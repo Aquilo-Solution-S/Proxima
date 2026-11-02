@@ -4,8 +4,8 @@
 //! a row carries one stable owner id; the host resolves that id into roles
 //! before authorization. A resolved owner is always a group, and a user is the
 //! personal group whose only member is that user, so a user's id is its own
-//! owner id. Whether an id names a group or a user is Proxima's internal
-//! registry (`proxima_core.owners.kind`), never part of this type.
+//! owner id. Whether an id names a group or a user is Proxiima's internal
+//! registry (`proxiima_core.owners.kind`), never part of this type.
 
 use std::fmt;
 use std::str::FromStr;

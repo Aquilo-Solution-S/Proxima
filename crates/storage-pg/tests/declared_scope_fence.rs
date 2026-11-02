@@ -2,9 +2,9 @@
 //! interleavings.
 //!
 //! The fixture owns its schema, its scope registry, its sidecars and its
-//! declaration, so nothing here depends on a product flavor: what is being
+//! declaration, so nothing here depends on a product spiice: what is being
 //! pinned is that DECLARING a scope is enough, and that the Engine — not the
-//! declaring flavor — is what takes the fence and asks the liveness
+//! declaring spiice — is what takes the fence and asks the liveness
 //! question.
 //!
 //! Nothing sleeps as a synchronization step. Each race waits for Postgres to
@@ -12,24 +12,24 @@
 //! and a clock cannot observe one.
 #![allow(clippy::doc_markdown)]
 
-use proxima_core::flavor::{
-    CounterRule, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape,
-    ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
+use proxiima_core::spiice::{
+    CounterRule, EmbeddingRecipe, EraseRule, ExportRule, ForgetRule, KeyShape, ProjectionDecl,
+    Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, SpiiceContract, Surface,
     TransferRule,
 };
-use proxima_core::test_fixtures::authenticated_context;
-use proxima_core::{
-    AuthPath, AuthzContext, FactPayload, FactWrite, FlavorRegistry, OwnerId, PayloadKeyBuilder,
-    ScopeDecl, ScopeKind, UserId,
+use proxiima_core::test_fixtures::authenticated_context;
+use proxiima_core::{
+    AuthPath, AuthzContext, FactPayload, FactWrite, OwnerId, PayloadKeyBuilder, ScopeDecl,
+    ScopeKind, SpiiceRegistry, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::access::owner_columns::lock_scope_fence_exclusive_tx;
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{PgSidecarRegistry, PgStorage, register_core_pg_sidecars};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::access::owner_columns::lock_scope_fence_exclusive_tx;
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{PgSidecarRegistry, PgStorage, register_core_pg_sidecars};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-const TEST_FLAVOR: &str = "test-scope";
+const TEST_SPIICE: &str = "test-scope";
 const SCOPED_TABLE: &str = "test_scope.scoped_fact_v1";
 const UNSCOPED_TABLE: &str = "test_scope.unscoped_fact_v1";
 
@@ -113,7 +113,7 @@ const fn surface(table: &'static str, constraint: &'static str) -> Surface {
         forget: ForgetRule::DumpThenDelete,
         lexical_language_column: None,
         counter: CounterRule::Counted("sidecar_rows"),
-        completeness: Some(proxima_core::flavor::DbConstraint {
+        completeness: Some(proxiima_core::spiice::DbConstraint {
             relation: table,
             name: constraint,
         }),
@@ -129,8 +129,8 @@ const fn schema(
     surface: &'static [Surface],
 ) -> SchemaContract {
     SchemaContract {
-        id: SchemaRef::new(TEST_FLAVOR, name, 1),
-        kind: proxima_core::verbs::schema::PayloadKind::Fact,
+        id: SchemaRef::new(TEST_SPIICE, name, 1),
+        kind: proxiima_core::verbs::schema::PayloadKind::Fact,
         sidecar_table: Some(table),
         search: SearchProjectionDecl::None {
             why: "the fence fixture is read by key, not searched",
@@ -145,8 +145,8 @@ const fn schema(
     }
 }
 
-static TEST_SCOPE_CONTRACT: FlavorContract = FlavorContract {
-    flavor_id: TEST_FLAVOR,
+static TEST_SCOPE_CONTRACT: SpiiceContract = SpiiceContract {
+    spiice_id: TEST_SPIICE,
     ordinal: 78,
     schemas: &[
         schema("scoped-fact", SCOPED_TABLE, &[SCOPED_SURFACE]),
@@ -166,13 +166,13 @@ static TEST_SCOPE_CONTRACT: FlavorContract = FlavorContract {
     bespoke_transfer_legs: &[],
 };
 
-proxima_core::proxima_flavor! {
+proxiima_core::proxiima_spiice! {
     name = "test-scope",
     fact_schemas = [ScopedFactV1, UnscopedFactV1],
     contract = &TEST_SCOPE_CONTRACT,
 }
 
-proxima_storage_pg::pg_sidecar! {
+proxiima_storage_pg::pg_sidecar! {
     payload: ScopedFactV1,
     row: ScopedFactRow,
     kinds: [Fact],
@@ -184,7 +184,7 @@ proxima_storage_pg::pg_sidecar! {
     },
 }
 
-proxima_storage_pg::pg_sidecar! {
+proxiima_storage_pg::pg_sidecar! {
     payload: UnscopedFactV1,
     row: UnscopedFactRow,
     kinds: [Fact],
@@ -211,15 +211,15 @@ fn owner() -> OwnerId {
     OwnerId::from(UserId::new(Uuid::now_v7()))
 }
 
-fn registry() -> proxima_core::FlavorRegistryFrozen {
-    let mut registry = FlavorRegistry::new();
+fn registry() -> proxiima_core::SpiiceRegistryFrozen {
+    let mut registry = SpiiceRegistry::new();
     register(&mut registry).expect("fixture schema registration");
     registry.freeze_or_panic_for_tests()
 }
 
 fn sidecars(
-    registry: &proxima_core::FlavorRegistryFrozen,
-) -> proxima_storage_pg::PgSidecarRegistryFrozen {
+    registry: &proxiima_core::SpiiceRegistryFrozen,
+) -> proxiima_storage_pg::PgSidecarRegistryFrozen {
     let mut sidecars = PgSidecarRegistry::new();
     register_core_pg_sidecars(&mut sidecars);
     sidecars.add_fact::<ScopedFactV1>();
@@ -229,8 +229,8 @@ fn sidecars(
         .expect("fixture sidecar registration")
 }
 
-async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+async fn bootstrap() -> (String, PgStorage, proxiima_core::SpiiceRegistryFrozen) {
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
@@ -245,48 +245,48 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
                  PRIMARY KEY (owner_id, thing_id)
              );
              CREATE TABLE test_scope.scoped_fact_v1 (
-                 t uuid PRIMARY KEY REFERENCES proxima_core.memory(t) ON DELETE CASCADE,
+                 t uuid PRIMARY KEY REFERENCES proxiima_core.memory(t) ON DELETE CASCADE,
                  logical_id text NOT NULL,
                  thing_id uuid NOT NULL
              );
              CREATE TABLE test_scope.unscoped_fact_v1 (
-                 t uuid PRIMARY KEY REFERENCES proxima_core.memory(t) ON DELETE CASCADE,
+                 t uuid PRIMARY KEY REFERENCES proxiima_core.memory(t) ON DELETE CASCADE,
                  logical_id text NOT NULL
              );
-             ALTER SCHEMA test_scope OWNER TO proxima_test_platform;
-             ALTER TABLE test_scope.things OWNER TO proxima_test_platform;
-             ALTER TABLE test_scope.scoped_fact_v1 OWNER TO proxima_test_platform;
-             ALTER TABLE test_scope.unscoped_fact_v1 OWNER TO proxima_test_platform;
-             INSERT INTO proxima_core.flavor_surface (table_name, flavor_id)
+             ALTER SCHEMA test_scope OWNER TO proxiima_test_platform;
+             ALTER TABLE test_scope.things OWNER TO proxiima_test_platform;
+             ALTER TABLE test_scope.scoped_fact_v1 OWNER TO proxiima_test_platform;
+             ALTER TABLE test_scope.unscoped_fact_v1 OWNER TO proxiima_test_platform;
+             INSERT INTO proxiima_core.spiice_surface (table_name, spiice_id)
              VALUES ('test_scope.scoped_fact_v1', 'test-scope'),
                     ('test_scope.unscoped_fact_v1', 'test-scope');
              CREATE TRIGGER scoped_fact_v1_declared_by_memory
              BEFORE INSERT ON test_scope.scoped_fact_v1
              FOR EACH ROW
-             EXECUTE FUNCTION proxima_core.assert_memory_declares_sidecar('t');
+             EXECUTE FUNCTION proxiima_core.assert_memory_declares_sidecar('t');
              CREATE TRIGGER unscoped_fact_v1_declared_by_memory
              BEFORE INSERT ON test_scope.unscoped_fact_v1
              FOR EACH ROW
-             EXECUTE FUNCTION proxima_core.assert_memory_declares_sidecar('t');",
+             EXECUTE FUNCTION proxiima_core.assert_memory_declares_sidecar('t');",
         )
         .execute(pg.pool_for_tests())
         .await?;
         sqlx::raw_sql(
-            "SELECT proxima_core.install_owner_rls(
+            "SELECT proxiima_core.install_owner_rls(
                  'test_scope',
                  ARRAY['things']::text[],
                  ARRAY['scoped_fact_v1', 'unscoped_fact_v1']::text[],
                  ARRAY[]::text[]
              );
-             GRANT USAGE ON SCHEMA test_scope TO proxima_test_runtime;
+             GRANT USAGE ON SCHEMA test_scope TO proxiima_test_runtime;
              REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA test_scope FROM PUBLIC;
-             GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA test_scope TO proxima_test_runtime;",
+             GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA test_scope TO proxiima_test_runtime;",
         )
         .execute(pg.pool_for_tests())
         .await?;
         let pg = pg
             .with_sidecars(sidecars(&registry))
-            .with_flavors(&registry);
+            .with_spiices(&registry);
         Ok::<_, Box<dyn std::error::Error>>((pg, registry))
     }
     .await;
@@ -299,8 +299,8 @@ async fn bootstrap() -> (String, PgStorage, proxima_core::FlavorRegistryFrozen) 
     }
 }
 
-fn engine(pg: &PgStorage, registry: &proxima_core::FlavorRegistryFrozen) -> proxima_core::Engine {
-    proxima_core::Engine::new(registry.clone())
+fn engine(pg: &PgStorage, registry: &proxiima_core::SpiiceRegistryFrozen) -> proxiima_core::Engine {
+    proxiima_core::Engine::new(registry.clone())
         .with_storage_ports(std::sync::Arc::new(pg.clone()).storage_ports())
 }
 
@@ -342,7 +342,7 @@ async fn wait_for_advisory_waiters(pool: &sqlx::PgPool, at_least: i64) -> bool {
 /// it can block.
 fn spawn_scoped_ingest(
     db_name: String,
-    registry: proxima_core::FlavorRegistryFrozen,
+    registry: proxiima_core::SpiiceRegistryFrozen,
     owner: OwnerId,
     payload: ScopedFactV1,
 ) -> tokio::task::JoinHandle<Result<Uuid, String>> {
@@ -353,7 +353,7 @@ fn spawn_scoped_ingest(
                     .await
                     .map_err(|err| err.to_string())?
                     .with_sidecars(sidecars(&registry))
-                    .with_flavors(&registry);
+                    .with_spiices(&registry);
                 let engine = engine(&pg, &registry);
                 let authz =
                     authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
@@ -430,7 +430,7 @@ async fn an_admission_of_a_scoped_payload_waits_on_the_declared_fence() {
 ///
 /// With the SAME fence held exclusively, an unscoped admission must go
 /// through. A substrate that fenced every write would serialize every
-/// writer of every flavor behind one scope's erase, which is a worse
+/// writer of every spiice behind one scope's erase, which is a worse
 /// failure than the one the fence exists to fix.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unscoped_payload_takes_no_scope_fence() {
@@ -453,7 +453,7 @@ async fn an_unscoped_payload_takes_no_scope_fence() {
                         .await
                         .map_err(|err| err.to_string())?
                         .with_sidecars(sidecars(&unscoped_registry))
-                        .with_flavors(&unscoped_registry);
+                        .with_spiices(&unscoped_registry);
                     let engine = engine(&pg, &unscoped_registry);
                     let authz = authenticated_context(AuthzContext::single_owner(
                         &owner,
@@ -513,7 +513,7 @@ async fn an_admission_naming_an_unregistered_scope_is_refused() {
             .ingest_fact(&authz, FactWrite::new(owner, "test/scope-fence", &payload))
             .await
             .expect_err("a write into an unregistered scope must be refused");
-        assert_eq!(error.code, proxima_core::error::ErrorCode::NotFound);
+        assert_eq!(error.code, proxiima_core::error::ErrorCode::NotFound);
         assert!(
             error.message.contains("scope not registered")
                 && error.message.contains(THING.as_str())

@@ -17,29 +17,29 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderName, HeaderValue, Method, Request, StatusCode, header};
-use proxima_core::FlavorServices;
-use proxima_core::mcp::McpAuthorContext;
-use proxima_core::mcp::{Replay, ToolEffect};
-use proxima_core::protocol::{
+use proxiima_core::SpiiceServices;
+use proxiima_core::mcp::McpAuthorContext;
+use proxiima_core::mcp::{Replay, ToolEffect};
+use proxiima_core::protocol::{
     action as protocol_action, resource as protocol_resource, tool as protocol_tool,
 };
-use proxima_core::{
-    AuthPath, AuthzContext, FlavorRegistry, OwnerId, ScopeKey, ServedSurface, ToolScope, UserId,
+use proxiima_core::{
+    AuthPath, AuthzContext, OwnerId, ScopeKey, ServedSurface, SpiiceRegistry, ToolScope, UserId,
 };
-use proxima_core::{GroupId, access::Role};
-use proxima_mcp_server::{McpAuthContext, McpToolHost};
+use proxiima_core::{GroupId, access::Role};
+use proxiima_mcp_server::{McpAuthContext, McpToolHost};
 use tower::ServiceExt;
 
 fn host() -> McpToolHost {
     McpToolHost::from_parts(
-        Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
-        FlavorServices::default(),
+        Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
+        SpiiceServices::default(),
     )
 }
 
-const FLAVOR_DISPATCH: &str = "proxima-stub_dispatch";
-const FLAVOR_ARGV: &str = "proxima-stub_cli";
-const CALLER_CONTEXT_TOOL: &str = "proxima-stub_caller_context";
+const SPIICE_DISPATCH: &str = "proxiima-stub_dispatch";
+const SPIICE_ARGV: &str = "proxiima-stub_cli";
+const CALLER_CONTEXT_TOOL: &str = "proxiima-stub_caller_context";
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct CallerContextArgs {}
@@ -55,7 +55,7 @@ struct CallerContextOutput {
 
 struct CallerContextTool;
 
-impl proxima_core::Tool for CallerContextTool {
+impl proxiima_core::Tool for CallerContextTool {
     const TITLE: &'static str = "Test tool";
     const NAME: &'static str = CALLER_CONTEXT_TOOL;
     const DESCRIPTION: &'static str = "Echo transport-neutral caller context.";
@@ -65,14 +65,14 @@ impl proxima_core::Tool for CallerContextTool {
     type Output = CallerContextOutput;
 
     fn call(
-        ctx: proxima_core::ToolCtx,
+        ctx: proxiima_core::ToolCtx,
         _args: Self::Args,
-    ) -> futures_util::future::BoxFuture<'static, Result<Self::Output, proxima_core::ToolError>>
+    ) -> futures_util::future::BoxFuture<'static, Result<Self::Output, proxiima_core::ToolError>>
     {
         Box::pin(async move {
             let caller = ctx
                 .caller()
-                .ok_or_else(|| proxima_core::ToolError::Other("caller metadata missing".into()))?;
+                .ok_or_else(|| proxiima_core::ToolError::Other("caller metadata missing".into()))?;
             Ok(CallerContextOutput {
                 model_id: caller.model_id.clone(),
                 trusted_model_id: caller.trusted_model_id.clone(),
@@ -105,7 +105,7 @@ enum StubDispatchArgs {
     },
 }
 
-/// A flavor dispatcher: an internally tagged `Args` plus the specs that
+/// A spiice dispatcher: an internally tagged `Args` plus the specs that
 /// enumerate its actions. Before both registration paths filled the specs,
 /// a tool shaped like this was advertised as a dispatcher and served no
 /// action route at all.
@@ -115,25 +115,25 @@ struct StubDispatchTool;
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 struct StubDispatchOutput {}
 
-impl proxima_core::mcp::McpTool for StubDispatchTool {
+impl proxiima_core::mcp::McpTool for StubDispatchTool {
     const TITLE: &'static str = "Test tool";
-    const NAME: &'static str = FLAVOR_DISPATCH;
-    const DESCRIPTION: &'static str = "A flavor dispatcher.";
-    const ACTION_ARG_SPECS: &'static [proxima_core::mcp::McpActionArgSpec] = &[
-        proxima_core::mcp::McpActionArgSpec {
+    const NAME: &'static str = SPIICE_DISPATCH;
+    const DESCRIPTION: &'static str = "A spiice dispatcher.";
+    const ACTION_ARG_SPECS: &'static [proxiima_core::mcp::McpActionArgSpec] = &[
+        proxiima_core::mcp::McpActionArgSpec {
             action: "look",
             allowed_fields: &["id"],
             required_fields: &["id"],
             effect: ToolEffect::ReadOnly,
-            audience: proxima_core::mcp::McpToolAudience::Shared,
+            audience: proxiima_core::mcp::McpToolAudience::Shared,
             title: "Test action",
         },
-        proxima_core::mcp::McpActionArgSpec {
+        proxiima_core::mcp::McpActionArgSpec {
             action: "touch",
             allowed_fields: &["id"],
             required_fields: &["id"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
-            audience: proxima_core::mcp::McpToolAudience::Shared,
+            audience: proxiima_core::mcp::McpToolAudience::Shared,
             title: "Test action",
         },
     ];
@@ -141,11 +141,11 @@ impl proxima_core::mcp::McpTool for StubDispatchTool {
     type Output = StubDispatchOutput;
 
     fn call(
-        _ctx: proxima_core::mcp::McpToolCtx,
+        _ctx: proxiima_core::mcp::McpToolCtx,
         _args: Self::Args,
     ) -> futures_util::future::BoxFuture<
         'static,
-        Result<Self::Output, proxima_core::mcp::McpToolError>,
+        Result<Self::Output, proxiima_core::mcp::McpToolError>,
     > {
         Box::pin(async { Ok(StubDispatchOutput {}) })
     }
@@ -169,23 +169,23 @@ struct StubArgvOutput {
     argv: Vec<String>,
 }
 
-impl proxima_core::mcp::McpTool for StubArgvTool {
+impl proxiima_core::mcp::McpTool for StubArgvTool {
     const TITLE: &'static str = "Test tool";
-    const NAME: &'static str = FLAVOR_ARGV;
-    const DESCRIPTION: &'static str = "An argv-keyed flavor dispatcher.";
-    const ARGV_ACTION_SPECS: &'static [proxima_core::mcp::McpArgvActionSpec] = &[
-        proxima_core::mcp::McpArgvActionSpec {
+    const NAME: &'static str = SPIICE_ARGV;
+    const DESCRIPTION: &'static str = "An argv-keyed spiice dispatcher.";
+    const ARGV_ACTION_SPECS: &'static [proxiima_core::mcp::McpArgvActionSpec] = &[
+        proxiima_core::mcp::McpArgvActionSpec {
             action: "approval",
             argv_prefix: &["approval"],
             effect: ToolEffect::ReadOnly,
-            audience: proxima_core::mcp::McpToolAudience::Shared,
+            audience: proxiima_core::mcp::McpToolAudience::Shared,
             title: "Test action",
         },
-        proxima_core::mcp::McpArgvActionSpec {
+        proxiima_core::mcp::McpArgvActionSpec {
             action: "approval-decide",
             argv_prefix: &["approval", "decide"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
-            audience: proxima_core::mcp::McpToolAudience::Shared,
+            audience: proxiima_core::mcp::McpToolAudience::Shared,
             title: "Test action",
         },
     ];
@@ -193,41 +193,41 @@ impl proxima_core::mcp::McpTool for StubArgvTool {
     type Output = StubArgvOutput;
 
     fn call(
-        _ctx: proxima_core::mcp::McpToolCtx,
+        _ctx: proxiima_core::mcp::McpToolCtx,
         args: Self::Args,
     ) -> futures_util::future::BoxFuture<
         'static,
-        Result<Self::Output, proxima_core::mcp::McpToolError>,
+        Result<Self::Output, proxiima_core::mcp::McpToolError>,
     > {
         Box::pin(async move { Ok(StubArgvOutput { argv: args.argv }) })
     }
 }
 
-/// The same registry-only host, with one flavor dispatcher added.
-fn flavor_host() -> McpToolHost {
-    let mut registry = FlavorRegistry::new();
-    registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxima-stub");
+/// The same registry-only host, with one spiice dispatcher added.
+fn spiice_host() -> McpToolHost {
+    let mut registry = SpiiceRegistry::new();
+    registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxiima-stub");
     McpToolHost::from_parts(
         Arc::new(registry.freeze_or_panic_for_tests()),
-        FlavorServices::default(),
+        SpiiceServices::default(),
     )
 }
 
 fn argv_host() -> McpToolHost {
-    let mut registry = FlavorRegistry::new();
-    registry.add_mcp_tool_or_panic_for_tests::<StubArgvTool>("proxima-stub");
+    let mut registry = SpiiceRegistry::new();
+    registry.add_mcp_tool_or_panic_for_tests::<StubArgvTool>("proxiima-stub");
     McpToolHost::from_parts(
         Arc::new(registry.freeze_or_panic_for_tests()),
-        FlavorServices::default(),
+        SpiiceServices::default(),
     )
 }
 
 fn caller_context_host() -> McpToolHost {
-    let mut registry = FlavorRegistry::new();
-    registry.add_tool_or_panic_for_tests::<CallerContextTool>("proxima-stub");
+    let mut registry = SpiiceRegistry::new();
+    registry.add_tool_or_panic_for_tests::<CallerContextTool>("proxiima-stub");
     McpToolHost::from_parts(
         Arc::new(registry.freeze_or_panic_for_tests()),
-        FlavorServices::default(),
+        SpiiceServices::default(),
     )
 }
 
@@ -235,18 +235,18 @@ fn caller_context_host() -> McpToolHost {
 struct ReplaceOutputBehavior(serde_json::Value);
 
 #[async_trait::async_trait]
-impl proxima_core::RequestBehavior for ReplaceOutputBehavior {
+impl proxiima_core::RequestBehavior for ReplaceOutputBehavior {
     async fn handle(
         &self,
-        call: proxima_core::mcp::ToolCall,
-        next: proxima_core::mcp::Next<'_>,
-    ) -> Result<proxima_core::ToolReply, proxima_core::mcp::McpToolError> {
+        call: proxiima_core::mcp::ToolCall,
+        next: proxiima_core::mcp::Next<'_>,
+    ) -> Result<proxiima_core::ToolReply, proxiima_core::mcp::McpToolError> {
         let output = next.run(call).await?;
         assert!(
-            matches!(&output, proxima_core::ToolReply::Structured(value) if value.is_object()),
+            matches!(&output, proxiima_core::ToolReply::Structured(value) if value.is_object()),
             "the registered tool returns its declared object"
         );
-        Ok(proxima_core::ToolReply::Structured(self.0.clone()))
+        Ok(proxiima_core::ToolReply::Structured(self.0.clone()))
     }
 }
 
@@ -299,7 +299,7 @@ fn author() -> McpAuthorContext {
 }
 
 fn app(host: McpToolHost) -> Router {
-    proxima_mcp_server::rest::router(host, None)
+    proxiima_mcp_server::rest::router(host, None)
 }
 
 struct Answer {
@@ -383,12 +383,12 @@ async fn rest_refuses_nonobject_outputs_introduced_by_request_behaviors() {
         serde_json::json!(true),
         serde_json::json!(["private-output"]),
     ] {
-        let mut registry = FlavorRegistry::new();
-        registry.add_tool_or_panic_for_tests::<CallerContextTool>("proxima-stub");
+        let mut registry = SpiiceRegistry::new();
+        registry.add_tool_or_panic_for_tests::<CallerContextTool>("proxiima-stub");
         registry.add_request_behavior(ReplaceOutputBehavior(output));
         let host = McpToolHost::from_parts(
             Arc::new(registry.freeze_or_panic_for_tests()),
-            FlavorServices::default(),
+            SpiiceServices::default(),
         );
         let answer = call(
             &app(host),
@@ -421,12 +421,12 @@ struct HidesWrites {
 }
 
 #[async_trait::async_trait]
-impl proxima_core::RequestBehavior for HidesWrites {
+impl proxiima_core::RequestBehavior for HidesWrites {
     async fn handle(
         &self,
-        call: proxima_core::mcp::ToolCall,
-        next: proxima_core::mcp::Next<'_>,
-    ) -> Result<proxima_core::ToolReply, proxima_core::mcp::McpToolError> {
+        call: proxiima_core::mcp::ToolCall,
+        next: proxiima_core::mcp::Next<'_>,
+    ) -> Result<proxiima_core::ToolReply, proxiima_core::mcp::McpToolError> {
         self.handled
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         next.run(call).await
@@ -434,8 +434,8 @@ impl proxima_core::RequestBehavior for HidesWrites {
 
     fn visible(
         &self,
-        _ctx: &proxima_core::mcp::McpToolCtx,
-        tool: &proxima_core::ToolDescriptorView<'_>,
+        _ctx: &proxiima_core::mcp::McpToolCtx,
+        tool: &proxiima_core::ToolDescriptorView<'_>,
     ) -> bool {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         tool.name() != protocol_tool::CORE_REMEMBER && tool.action() != Some("touch")
@@ -447,23 +447,23 @@ impl proxima_core::RequestBehavior for HidesWrites {
 struct OpinionlessBehavior;
 
 #[async_trait::async_trait]
-impl proxima_core::RequestBehavior for OpinionlessBehavior {
+impl proxiima_core::RequestBehavior for OpinionlessBehavior {
     async fn handle(
         &self,
-        call: proxima_core::mcp::ToolCall,
-        next: proxima_core::mcp::Next<'_>,
-    ) -> Result<proxima_core::ToolReply, proxima_core::mcp::McpToolError> {
+        call: proxiima_core::mcp::ToolCall,
+        next: proxiima_core::mcp::Next<'_>,
+    ) -> Result<proxiima_core::ToolReply, proxiima_core::mcp::McpToolError> {
         next.run(call).await
     }
 }
 
-fn host_with(behavior: impl proxima_core::RequestBehavior + 'static) -> McpToolHost {
-    let mut registry = FlavorRegistry::new();
-    registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxima-stub");
+fn host_with(behavior: impl proxiima_core::RequestBehavior + 'static) -> McpToolHost {
+    let mut registry = SpiiceRegistry::new();
+    registry.add_mcp_tool_or_panic_for_tests::<StubDispatchTool>("proxiima-stub");
     registry.add_request_behavior(behavior);
     McpToolHost::from_parts(
         Arc::new(registry.freeze_or_panic_for_tests()),
-        FlavorServices::default(),
+        SpiiceServices::default(),
     )
 }
 
@@ -478,7 +478,7 @@ fn catalog_ids(answer: &Answer) -> BTreeSet<String> {
 
 /// A behavior's `visible` narrows every REST projection of the catalog -- the
 /// list, one descriptor, the dispatcher's actions, the `OpenAPI` document, the
-/// how-to -- and `proxima://tools`, which agree with each other; the default
+/// how-to -- and `proxiima://tools`, which agree with each other; the default
 /// changes none of them. The call path never asks, and the behavior still
 /// handles a call to what it hides.
 #[tokio::test]
@@ -497,12 +497,12 @@ async fn a_behavior_that_hides_tools_narrows_every_rest_projection() {
     // The default hides nothing: same catalog, same document, same how-to.
     for uri in ["/v1/tools", "/v1/openapi.json", "/v1/how-to"] {
         let with_default = get(&app(plain.clone()), uri, &ctx).await;
-        let without_behavior = get(&app(flavor_host()), uri, &ctx).await;
+        let without_behavior = get(&app(spiice_host()), uri, &ctx).await;
         assert_eq!(with_default.body, without_behavior.body, "{uri}");
     }
     let everything = catalog_ids(&get(&app(plain.clone()), "/v1/tools", &ctx).await);
     assert!(everything.contains(protocol_tool::CORE_REMEMBER));
-    assert!(everything.contains(FLAVOR_DISPATCH));
+    assert!(everything.contains(SPIICE_DISPATCH));
 
     let router = app(hiding.clone());
     let listed = get(&router, "/v1/tools", &ctx).await;
@@ -519,7 +519,7 @@ async fn a_behavior_that_hides_tools_narrows_every_rest_projection() {
         .as_array()
         .expect("tools")
         .iter()
-        .find(|tool| tool["id"] == FLAVOR_DISPATCH)
+        .find(|tool| tool["id"] == SPIICE_DISPATCH)
         .cloned()
         .expect("the dispatcher keeps its visible action");
     assert_eq!(
@@ -538,8 +538,8 @@ async fn a_behavior_that_hides_tools_narrows_every_rest_projection() {
     let openapi = get(&router, "/v1/openapi.json", &ctx).await.json();
     let paths = openapi["paths"].as_object().expect("paths");
     assert!(!paths.contains_key(&format!("/v1/tools/{}", protocol_tool::CORE_REMEMBER)));
-    assert!(paths.contains_key(&format!("/v1/tools/{FLAVOR_DISPATCH}/look")));
-    assert!(!paths.contains_key(&format!("/v1/tools/{FLAVOR_DISPATCH}/touch")));
+    assert!(paths.contains_key(&format!("/v1/tools/{SPIICE_DISPATCH}/look")));
+    assert!(!paths.contains_key(&format!("/v1/tools/{SPIICE_DISPATCH}/touch")));
 
     let how_to = get(&router, "/v1/how-to", &ctx).await;
     let plain_how_to = get(&app(plain.clone()), "/v1/how-to", &ctx).await;
@@ -548,7 +548,7 @@ async fn a_behavior_that_hides_tools_narrows_every_rest_projection() {
     assert!(!String::from_utf8_lossy(&how_to.body).contains("`core_remember` → Fact"));
 
     let substrate: BTreeSet<String> = hiding
-        .read_resource("proxima://tools", author(), Some(ctx.clone()))
+        .read_resource("proxiima://tools", author(), Some(ctx.clone()))
         .await
         .expect("the catalog resource reads")["tools"]
         .as_array()
@@ -559,7 +559,7 @@ async fn a_behavior_that_hides_tools_narrows_every_rest_projection() {
     assert_eq!(
         substrate,
         catalog_ids(&listed),
-        "REST and proxima://tools agree"
+        "REST and proxiima://tools agree"
     );
 
     // Calls: never asked, and the hidden tool is still handled (and, with no
@@ -626,12 +626,12 @@ async fn rest_projects_headers_into_generic_tool_caller_context() {
         &ctx,
         Some(serde_json::json!({})),
         &[
-            ("X-Proxima-Model-Id", "planner/model"),
+            ("X-Proxiima-Model-Id", "planner/model"),
             (
                 header::USER_AGENT.as_str(),
                 "planner-client/2.4.1 middleware/9",
             ),
-            ("X-Proxima-Self-Perspective", &self_header),
+            ("X-Proxiima-Self-Perspective", &self_header),
         ],
     )
     .await;
@@ -677,7 +677,7 @@ async fn caller_context(ctx: &McpAuthContext, headers: &[(&str, &str)]) -> Answe
     .await
 }
 
-/// The tool — the seam a flavor builds policy on — sees the bound identity,
+/// The tool — the seam a spiice builds policy on — sees the bound identity,
 /// and the label that reaches append-only provenance equals it even though
 /// the caller sent no header at all.
 #[tokio::test]
@@ -692,7 +692,7 @@ async fn a_bound_model_identity_reaches_the_tool_and_becomes_the_label() {
 /// A header that agrees with the token is accepted and changes nothing.
 #[tokio::test]
 async fn a_matching_model_id_header_is_accepted() {
-    let answer = caller_context(&trusted_auth(), &[("X-Proxima-Model-Id", TRUSTED_MODEL)]).await;
+    let answer = caller_context(&trusted_auth(), &[("X-Proxiima-Model-Id", TRUSTED_MODEL)]).await;
 
     assert_eq!(answer.status, StatusCode::OK);
     assert_eq!(answer.json()["trusted_model_id"], TRUSTED_MODEL);
@@ -703,16 +703,16 @@ async fn a_matching_model_id_header_is_accepted() {
 /// overridden: the caller believes it is labelling an append-only write.
 #[tokio::test]
 async fn a_differing_model_id_header_is_a_400_naming_the_header() {
-    let answer = caller_context(&trusted_auth(), &[("X-Proxima-Model-Id", "claimed/model")]).await;
+    let answer = caller_context(&trusted_auth(), &[("X-Proxiima-Model-Id", "claimed/model")]).await;
 
     assert_eq!(answer.status, StatusCode::BAD_REQUEST);
     let problem = answer.json();
     assert_eq!(
         problem["type"],
-        "https://proxima.dev/errors/model-id-conflict"
+        "https://proxiima.dev/errors/model-id-conflict"
     );
     let detail = problem["detail"].as_str().expect("detail");
-    assert!(detail.contains("X-Proxima-Model-Id"), "{detail}");
+    assert!(detail.contains("X-Proxiima-Model-Id"), "{detail}");
     assert!(detail.contains("claimed/model"), "{detail}");
     assert!(detail.contains(TRUSTED_MODEL), "{detail}");
     assert!(
@@ -728,7 +728,7 @@ async fn a_differing_model_id_header_is_a_400_naming_the_header() {
 async fn an_unbound_caller_gains_no_trusted_status_by_naming_the_model() {
     let ctx = auth(ToolScope::All);
 
-    let claiming = caller_context(&ctx, &[("X-Proxima-Model-Id", TRUSTED_MODEL)]).await;
+    let claiming = caller_context(&ctx, &[("X-Proxiima-Model-Id", TRUSTED_MODEL)]).await;
     assert_eq!(claiming.status, StatusCode::OK);
     assert_eq!(claiming.json()["model_id"], TRUSTED_MODEL);
     assert_eq!(
@@ -746,11 +746,11 @@ async fn an_unbound_caller_gains_no_trusted_status_by_naming_the_model() {
 /// now drops it, on MCP either.
 #[tokio::test]
 async fn a_blank_model_id_header_is_absent_end_to_end() {
-    let bound = caller_context(&trusted_auth(), &[("X-Proxima-Model-Id", "   ")]).await;
+    let bound = caller_context(&trusted_auth(), &[("X-Proxiima-Model-Id", "   ")]).await;
     assert_eq!(bound.status, StatusCode::OK);
     assert_eq!(bound.json()["model_id"], TRUSTED_MODEL);
 
-    let unbound = caller_context(&auth(ToolScope::All), &[("X-Proxima-Model-Id", "   ")]).await;
+    let unbound = caller_context(&auth(ToolScope::All), &[("X-Proxiima-Model-Id", "   ")]).await;
     assert_eq!(unbound.status, StatusCode::OK);
     assert_eq!(unbound.json()["model_id"], "unknown");
 }
@@ -779,7 +779,7 @@ async fn get(router: &Router, uri: &str, ctx: &McpAuthContext) -> Answer {
 /// The REST tool list equals the MCP tool catalog id for id, for whatever
 /// `ToolScope` the caller holds.
 ///
-/// `proxima://tools` is the catalog authority for a running server, and it
+/// `proxiima://tools` is the catalog authority for a running server, and it
 /// is reached here through the same [`McpToolHost::read_resource`] seam an
 /// MCP client uses — so this compares two surfaces, not one surface against
 /// a restatement of its own filter.
@@ -801,7 +801,7 @@ async fn rest_tool_list_equals_the_mcp_catalog_for_every_scope() {
     ] {
         let ctx = auth(scope.clone());
         let expected: BTreeSet<String> = host
-            .read_resource("proxima://tools", author(), Some(ctx.clone()))
+            .read_resource("proxiima://tools", author(), Some(ctx.clone()))
             .await
             .expect("the MCP catalog is readable under this scope")["tools"]
             .as_array()
@@ -825,7 +825,7 @@ async fn rest_tool_list_equals_the_mcp_catalog_for_every_scope() {
     // An empty deployment surface still serves reads to a caller with All.
     let empty = served_auth(ServedSurface::Palette(Vec::new()));
     assert!(
-        host.read_resource("proxima://tools", author(), Some(empty.clone()))
+        host.read_resource("proxiima://tools", author(), Some(empty.clone()))
             .await
             .is_ok(),
         "the MCP catalog is a read, admitted under an empty served palette"
@@ -839,9 +839,9 @@ async fn rest_tool_list_equals_the_mcp_catalog_for_every_scope() {
 
     let empty_caller = auth(ToolScope::Palette(Vec::new()));
     assert!(matches!(
-        host.read_resource("proxima://tools", author(), Some(empty_caller.clone()))
+        host.read_resource("proxiima://tools", author(), Some(empty_caller.clone()))
             .await,
-        Err(proxima_mcp_server::ToolInvocationError::NotAuthorized(_))
+        Err(proxiima_mcp_server::ToolInvocationError::NotAuthorized(_))
     ));
     assert!(catalog_ids(&get(&router, "/v1/tools", &empty_caller).await).is_empty());
 }
@@ -936,7 +936,10 @@ async fn a_denied_tool_is_403_on_invocation_and_404_in_the_catalog() {
         Some("application/problem+json")
     );
     let problem = invoked.json();
-    assert_eq!(problem["type"], "https://proxima.dev/errors/not-authorized");
+    assert_eq!(
+        problem["type"],
+        "https://proxiima.dev/errors/not-authorized"
+    );
     assert_eq!(problem["instance"], "/v1/tools/core_remember");
     assert!(
         problem["detail"]
@@ -986,15 +989,15 @@ async fn every_reserved_argument_is_400_naming_its_header() {
     let ctx = auth(ToolScope::All);
 
     for (field, expected_header) in [
-        ("model_id", "X-Proxima-Model-Id"),
-        ("caller_self_perspective", "X-Proxima-Self-Perspective"),
+        ("model_id", "X-Proxiima-Model-Id"),
+        ("caller_self_perspective", "X-Proxiima-Self-Perspective"),
         (
-            "_proxima_caller_self_perspective",
-            "X-Proxima-Self-Perspective",
+            "_proxiima_caller_self_perspective",
+            "X-Proxiima-Self-Perspective",
         ),
         (
             "current_root_perspective_memory_id",
-            "X-Proxima-Self-Perspective",
+            "X-Proxiima-Self-Perspective",
         ),
     ] {
         let answer = call(
@@ -1009,7 +1012,7 @@ async fn every_reserved_argument_is_400_naming_its_header() {
         let problem = answer.json();
         assert_eq!(
             problem["type"],
-            "https://proxima.dev/errors/reserved-argument"
+            "https://proxiima.dev/errors/reserved-argument"
         );
         let detail = problem["detail"].as_str().expect("detail");
         assert!(detail.contains(field), "{detail}");
@@ -1038,7 +1041,7 @@ async fn a_conflicting_body_action_is_400_and_an_unknown_action_is_404() {
         assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{body_action}");
         assert_eq!(
             answer.json()["type"],
-            "https://proxima.dev/errors/action-conflict"
+            "https://proxiima.dev/errors/action-conflict"
         );
     }
 
@@ -1059,23 +1062,23 @@ async fn a_conflicting_body_action_is_400_and_an_unknown_action_is_404() {
     );
 }
 
-// ------------------------------------------------- flavor dispatcher routes
+// ------------------------------------------------- spiice dispatcher routes
 
-/// A flavor dispatcher's action routes are served, not 404'd.
+/// A spiice dispatcher's action routes are served, not 404'd.
 ///
 /// The router enumerates actions from `McpToolDescriptor::action_arg_specs`.
-/// `try_add_tool` — the path `proxima_flavor!` uses — hardcoded an empty
+/// `try_add_tool` — the path `proxiima_spiice!` uses — hardcoded an empty
 /// slice, so this exact request was a `404` while the same tool's flattened
 /// schema advertised the action to every client.
 #[tokio::test]
-async fn a_flavor_dispatcher_serves_its_action_routes() {
-    let router = app(flavor_host());
+async fn a_spiice_dispatcher_serves_its_action_routes() {
+    let router = app(spiice_host());
     let ctx = auth(ToolScope::All);
 
     let answer = call(
         &router,
         Method::POST,
-        &format!("/v1/tools/{FLAVOR_DISPATCH}/look"),
+        &format!("/v1/tools/{SPIICE_DISPATCH}/look"),
         &ctx,
         Some(serde_json::json!({ "id": "x" })),
     )
@@ -1089,14 +1092,14 @@ async fn a_flavor_dispatcher_serves_its_action_routes() {
 }
 
 #[tokio::test]
-async fn an_unknown_flavor_dispatcher_action_is_404() {
-    let router = app(flavor_host());
+async fn an_unknown_spiice_dispatcher_action_is_404() {
+    let router = app(spiice_host());
     let ctx = auth(ToolScope::All);
 
     let answer = call(
         &router,
         Method::POST,
-        &format!("/v1/tools/{FLAVOR_DISPATCH}/vanish"),
+        &format!("/v1/tools/{SPIICE_DISPATCH}/vanish"),
         &ctx,
         Some(serde_json::json!({})),
     )
@@ -1104,20 +1107,20 @@ async fn an_unknown_flavor_dispatcher_action_is_404() {
     assert_eq!(answer.status, StatusCode::NOT_FOUND);
     assert_eq!(
         answer.json()["instance"],
-        format!("/v1/tools/{FLAVOR_DISPATCH}/vanish")
+        format!("/v1/tools/{SPIICE_DISPATCH}/vanish")
     );
 }
 
 #[tokio::test]
-async fn a_conflicting_body_action_on_a_flavor_route_is_400() {
-    let router = app(flavor_host());
+async fn a_conflicting_body_action_on_a_spiice_route_is_400() {
+    let router = app(spiice_host());
     let ctx = auth(ToolScope::All);
 
     for body_action in ["look", "touch"] {
         let answer = call(
             &router,
             Method::POST,
-            &format!("/v1/tools/{FLAVOR_DISPATCH}/look"),
+            &format!("/v1/tools/{SPIICE_DISPATCH}/look"),
             &ctx,
             Some(serde_json::json!({ "action": body_action, "id": "x" })),
         )
@@ -1125,20 +1128,20 @@ async fn a_conflicting_body_action_on_a_flavor_route_is_400() {
         assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{body_action}");
         assert_eq!(
             answer.json()["type"],
-            "https://proxima.dev/errors/action-conflict"
+            "https://proxiima.dev/errors/action-conflict"
         );
     }
 }
 
 #[tokio::test]
-async fn the_openapi_document_advertises_a_flavor_dispatchers_actions() {
-    let host = flavor_host();
+async fn the_openapi_document_advertises_a_spiice_dispatchers_actions() {
+    let host = spiice_host();
     let router = app(host.clone());
     let answer = get(&router, "/v1/openapi.json", &auth(ToolScope::All)).await;
     assert_eq!(answer.status, StatusCode::OK);
 
     let document = answer.json();
-    let path = format!("/v1/tools/{FLAVOR_DISPATCH}/look");
+    let path = format!("/v1/tools/{SPIICE_DISPATCH}/look");
     let item = document["paths"]
         .as_object()
         .expect("paths object")
@@ -1156,14 +1159,14 @@ async fn the_openapi_document_advertises_a_flavor_dispatchers_actions() {
         "`action` is carried by the route, not the body: {schema:#}",
     );
     let catalog = host
-        .read_resource("proxima://tools", author(), Some(auth(ToolScope::All)))
+        .read_resource("proxiima://tools", author(), Some(auth(ToolScope::All)))
         .await
         .expect("tool catalog");
     let catalog_schema = catalog["tools"]
         .as_array()
         .expect("catalog tools")
         .iter()
-        .find(|tool| tool["tool_id"] == FLAVOR_DISPATCH)
+        .find(|tool| tool["tool_id"] == SPIICE_DISPATCH)
         .and_then(|tool| tool["actions"].as_array())
         .and_then(|actions| actions.iter().find(|action| action["action"] == "look"))
         .map(|action| &action["argument_schema"])
@@ -1180,26 +1183,26 @@ async fn the_openapi_document_advertises_a_flavor_dispatchers_actions() {
     );
 }
 
-/// The same narrowing for a flavor: a palette holding one leaf advertises
+/// The same narrowing for a spiice: a palette holding one leaf advertises
 /// one leaf.
 ///
 /// The projection narrows from the descriptor's own actions. Were it keyed
-/// on the substrate tables instead, a flavor dispatcher would give it
+/// on the substrate tables instead, a spiice dispatcher would give it
 /// nothing to narrow with and the whole flattened schema would be
 /// advertised — the assertion below is what proves it is not.
 #[tokio::test]
-async fn a_palette_narrows_a_flavor_dispatchers_advertised_actions() {
-    let router = app(flavor_host());
-    let ctx = auth(palette_of(&[&format!("{FLAVOR_DISPATCH}:look")]));
+async fn a_palette_narrows_a_spiice_dispatchers_advertised_actions() {
+    let router = app(spiice_host());
+    let ctx = auth(palette_of(&[&format!("{SPIICE_DISPATCH}:look")]));
 
     let answer = get(&router, "/v1/tools", &ctx).await;
     let dispatch = answer.json()["tools"]
         .as_array()
         .expect("tools")
         .iter()
-        .find(|tool| tool["id"] == FLAVOR_DISPATCH)
+        .find(|tool| tool["id"] == SPIICE_DISPATCH)
         .cloned()
-        .unwrap_or_else(|| panic!("{FLAVOR_DISPATCH} is advertised: {}", answer.json()));
+        .unwrap_or_else(|| panic!("{SPIICE_DISPATCH} is advertised: {}", answer.json()));
     assert_eq!(
         dispatch["args_schema"]["properties"]["action"]["enum"],
         serde_json::json!(["look"])
@@ -1209,14 +1212,14 @@ async fn a_palette_narrows_a_flavor_dispatchers_advertised_actions() {
 /// And the gate refuses the leaf the palette does not carry — `403` from
 /// `ScopeGateBehavior` below the seam, naming the leaf rather than the tool.
 #[tokio::test]
-async fn a_denied_flavor_dispatcher_action_is_403() {
-    let router = app(flavor_host());
-    let ctx = auth(palette_of(&[&format!("{FLAVOR_DISPATCH}:look")]));
+async fn a_denied_spiice_dispatcher_action_is_403() {
+    let router = app(spiice_host());
+    let ctx = auth(palette_of(&[&format!("{SPIICE_DISPATCH}:look")]));
 
     let answer = call(
         &router,
         Method::POST,
-        &format!("/v1/tools/{FLAVOR_DISPATCH}/touch"),
+        &format!("/v1/tools/{SPIICE_DISPATCH}/touch"),
         &ctx,
         Some(serde_json::json!({ "id": "x" })),
     )
@@ -1231,14 +1234,14 @@ async fn a_denied_flavor_dispatcher_action_is_403() {
         .expect("detail")
         .to_string();
     assert!(
-        detail.contains(&format!("{FLAVOR_DISPATCH}:touch")),
+        detail.contains(&format!("{SPIICE_DISPATCH}:touch")),
         "the denial names the leaf: {detail}",
     );
 
     let granted = call(
         &router,
         Method::POST,
-        &format!("/v1/tools/{FLAVOR_DISPATCH}/look"),
+        &format!("/v1/tools/{SPIICE_DISPATCH}/look"),
         &ctx,
         Some(serde_json::json!({ "id": "x" })),
     )
@@ -1258,8 +1261,8 @@ struct DispatcherCase {
 fn dispatcher_cases() -> [DispatcherCase; 2] {
     [
         DispatcherCase {
-            host: flavor_host(),
-            tool: FLAVOR_DISPATCH,
+            host: spiice_host(),
+            tool: SPIICE_DISPATCH,
             read: "look",
             write: "touch",
             read_args: serde_json::json!({"action": "look", "id": "x"}),
@@ -1267,7 +1270,7 @@ fn dispatcher_cases() -> [DispatcherCase; 2] {
         },
         DispatcherCase {
             host: argv_host(),
-            tool: FLAVOR_ARGV,
+            tool: SPIICE_ARGV,
             read: "approval",
             write: "approval-decide",
             read_args: serde_json::json!({"argv": ["approval"]}),
@@ -1304,7 +1307,7 @@ async fn exact_write_leaf_does_not_advertise_or_admit_a_dispatchers_omitted_read
             descriptor["annotations"]["read_only"], false,
             "{descriptor}"
         );
-        if tool == FLAVOR_DISPATCH {
+        if tool == SPIICE_DISPATCH {
             assert_eq!(
                 descriptor["args_schema"]["properties"]["action"]["enum"],
                 serde_json::json!([write])
@@ -1318,10 +1321,10 @@ async fn exact_write_leaf_does_not_advertise_or_admit_a_dispatchers_omitted_read
             "{document}"
         );
         assert_eq!(
-            document["paths"][format!("/v1/tools/{tool}")]["post"]["x-proxima-read-only"],
+            document["paths"][format!("/v1/tools/{tool}")]["post"]["x-proxiima-read-only"],
             false
         );
-        if tool == FLAVOR_DISPATCH {
+        if tool == SPIICE_DISPATCH {
             assert!(
                 document["paths"]
                     .get(format!("/v1/tools/{tool}/{write}"))
@@ -1330,7 +1333,7 @@ async fn exact_write_leaf_does_not_advertise_or_admit_a_dispatchers_omitted_read
             );
         }
         let catalog = host
-            .read_resource("proxima://tools", author(), Some(ctx.clone()))
+            .read_resource("proxiima://tools", author(), Some(ctx.clone()))
             .await
             .unwrap();
         let described = catalog["tools"]
@@ -1348,7 +1351,7 @@ async fn exact_write_leaf_does_not_advertise_or_admit_a_dispatchers_omitted_read
         assert!(matches!(
             host.call_tool(tool, read_args.clone(), author(), Some(ctx.clone()))
                 .await,
-            Err(proxima_mcp_server::ToolInvocationError::NotAuthorized(_))
+            Err(proxiima_mcp_server::ToolInvocationError::NotAuthorized(_))
         ));
         assert_eq!(
             call(
@@ -1398,7 +1401,7 @@ async fn an_empty_served_surface_retains_both_dispatcher_formats_read_leaves() {
             .find(|descriptor| descriptor["id"] == tool)
             .unwrap();
         assert_eq!(descriptor["annotations"]["read_only"], true, "{descriptor}");
-        if tool == FLAVOR_DISPATCH {
+        if tool == SPIICE_DISPATCH {
             assert_eq!(
                 descriptor["args_schema"]["properties"]["action"]["enum"],
                 serde_json::json!([read])
@@ -1406,10 +1409,10 @@ async fn an_empty_served_surface_retains_both_dispatcher_formats_read_leaves() {
         }
         let document = get(&router, "/v1/openapi.json", &ctx).await.json();
         assert_eq!(
-            document["paths"][format!("/v1/tools/{tool}")]["post"]["x-proxima-read-only"],
+            document["paths"][format!("/v1/tools/{tool}")]["post"]["x-proxiima-read-only"],
             true
         );
-        if tool == FLAVOR_DISPATCH {
+        if tool == SPIICE_DISPATCH {
             assert!(
                 document["paths"]
                     .get(format!("/v1/tools/{tool}/{read}"))
@@ -1440,11 +1443,11 @@ async fn an_empty_served_surface_retains_both_dispatcher_formats_read_leaves() {
 
 #[tokio::test]
 async fn unsupported_whole_dispatcher_method_is_405_before_body_parsing() {
-    let router = app(flavor_host());
+    let router = app(spiice_host());
     let ctx = auth(ToolScope::All);
     let mut request = Request::builder()
         .method(Method::DELETE)
-        .uri(format!("/v1/tools/{FLAVOR_DISPATCH}"))
+        .uri(format!("/v1/tools/{SPIICE_DISPATCH}"))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from("{not-json"))
         .expect("request builds");
@@ -1556,25 +1559,25 @@ async fn a_read_only_action_under_a_write_parent_keeps_query() {
     }
 }
 
-/// A flavor dispatcher may mix reads and writes. Every projection and gate
+/// A spiice dispatcher may mix reads and writes. Every projection and gate
 /// reads the selected descriptor spec: a viewer sees and reaches `look`, never
 /// `touch`; a writer still gets `touch` as POST-only.
 #[tokio::test]
-async fn mixed_flavor_dispatcher_actions_keep_role_and_method_boundaries() {
-    let host = flavor_host();
+async fn mixed_spiice_dispatcher_actions_keep_role_and_method_boundaries() {
+    let host = spiice_host();
     let router = app(host.clone());
     let viewer = viewer_auth(ToolScope::All);
     let writer = auth(ToolScope::All);
 
     let catalog = host
-        .read_resource("proxima://tools", author(), Some(viewer.clone()))
+        .read_resource("proxiima://tools", author(), Some(viewer.clone()))
         .await
         .expect("viewer reads the tool catalog");
     let dispatch = catalog["tools"]
         .as_array()
         .expect("tools")
         .iter()
-        .find(|tool| tool["tool_id"] == FLAVOR_DISPATCH)
+        .find(|tool| tool["tool_id"] == SPIICE_DISPATCH)
         .expect("mixed dispatcher stays visible through its read action");
     let actions = dispatch["actions"].as_array().expect("actions");
     assert_eq!(actions.len(), 1, "viewer catalog: {dispatch:#}");
@@ -1590,7 +1593,7 @@ async fn mixed_flavor_dispatcher_actions_keep_role_and_method_boundaries() {
         .as_array()
         .expect("tools")
         .iter()
-        .find(|tool| tool["id"] == FLAVOR_DISPATCH)
+        .find(|tool| tool["id"] == SPIICE_DISPATCH)
         .expect("REST advertises the mixed dispatcher");
     let action = &rest_dispatch["args_schema"]["properties"]["action"];
     assert_eq!(action["enum"], serde_json::json!(["look"]));
@@ -1603,8 +1606,8 @@ async fn mixed_flavor_dispatcher_actions_keep_role_and_method_boundaries() {
     assert_eq!(rest_dispatch["annotations"]["read_only"], true);
 
     for uri in [
-        format!("/v1/tools/{FLAVOR_DISPATCH}/look"),
-        format!("/v1/tools/{FLAVOR_DISPATCH}"),
+        format!("/v1/tools/{SPIICE_DISPATCH}/look"),
+        format!("/v1/tools/{SPIICE_DISPATCH}"),
     ] {
         let body = if uri.ends_with("/look") {
             serde_json::json!({ "id": "x" })
@@ -1615,7 +1618,7 @@ async fn mixed_flavor_dispatcher_actions_keep_role_and_method_boundaries() {
         assert_eq!(answer.status, StatusCode::OK, "viewer QUERY {uri}");
     }
 
-    let touch = format!("/v1/tools/{FLAVOR_DISPATCH}/touch");
+    let touch = format!("/v1/tools/{SPIICE_DISPATCH}/touch");
     let retryable_write = call(
         &router,
         Method::QUERY,
@@ -1648,16 +1651,16 @@ async fn mixed_flavor_dispatcher_actions_keep_role_and_method_boundaries() {
     assert_eq!(writer_write.status, StatusCode::OK);
 
     let viewer_openapi = get(&router, "/v1/openapi.json", &viewer).await.json();
-    let look_path = format!("/v1/tools/{FLAVOR_DISPATCH}/look");
+    let look_path = format!("/v1/tools/{SPIICE_DISPATCH}/look");
     assert!(viewer_openapi["paths"][&look_path]["query"].is_object());
     assert!(viewer_openapi["paths"].get(&touch).is_none());
-    assert!(viewer_openapi["paths"][&format!("/v1/tools/{FLAVOR_DISPATCH}")]["query"].is_object());
+    assert!(viewer_openapi["paths"][&format!("/v1/tools/{SPIICE_DISPATCH}")]["query"].is_object());
 
     let writer_openapi = get(&router, "/v1/openapi.json", &writer).await.json();
     assert!(writer_openapi["paths"][&touch]["post"].is_object());
     assert!(writer_openapi["paths"][&touch].get("query").is_none());
     assert!(
-        writer_openapi["paths"][&format!("/v1/tools/{FLAVOR_DISPATCH}")]
+        writer_openapi["paths"][&format!("/v1/tools/{SPIICE_DISPATCH}")]
             .get("query")
             .is_none()
     );
@@ -1677,7 +1680,7 @@ async fn an_annotated_argv_read_command_keeps_role_and_query_under_a_write_tool(
     let router = app(host.clone());
     let viewer = viewer_auth(ToolScope::All);
     let writer = auth(ToolScope::All);
-    let uri = format!("/v1/tools/{FLAVOR_ARGV}");
+    let uri = format!("/v1/tools/{SPIICE_ARGV}");
 
     // The tool itself is a write; the annotated command is not.
     let rest_catalog = get(&router, "/v1/tools", &viewer).await.json();
@@ -1686,7 +1689,7 @@ async fn an_annotated_argv_read_command_keeps_role_and_query_under_a_write_tool(
             .as_array()
             .expect("tools")
             .iter()
-            .any(|tool| tool["id"] == FLAVOR_ARGV),
+            .any(|tool| tool["id"] == SPIICE_ARGV),
         "the read command keeps a writable argv dispatcher visible to a viewer: {rest_catalog:#}"
     );
 
@@ -1748,25 +1751,25 @@ async fn an_annotated_argv_read_command_keeps_role_and_query_under_a_write_tool(
 
 #[tokio::test]
 async fn argv_catalog_actions_follow_permissions_and_describe_the_shared_envelope() {
-    use proxima_core::mcp::core_tools::list_substrate_tools::{
+    use proxiima_core::mcp::core_tools::list_substrate_tools::{
         ListSubstrateToolsArgs, list_substrate_tools,
     };
 
     let host = argv_host();
-    let descriptor = host.registry().mcp_tool(FLAVOR_ARGV).unwrap();
+    let descriptor = host.registry().mcp_tool(SPIICE_ARGV).unwrap();
     for (ctx, expected) in [
         (auth(ToolScope::All), vec!["approval", "approval-decide"]),
         (viewer_auth(ToolScope::All), vec!["approval"]),
         (
             auth(palette_of(&[
-                &format!("{FLAVOR_ARGV}:approval-decide"),
+                &format!("{SPIICE_ARGV}:approval-decide"),
                 protocol_resource::TOOLS,
             ])),
             vec!["approval-decide"],
         ),
     ] {
         let catalog = host
-            .read_resource("proxima://tools", author(), Some(ctx.clone()))
+            .read_resource("proxiima://tools", author(), Some(ctx.clone()))
             .await
             .unwrap();
         let direct = list_substrate_tools(
@@ -1780,7 +1783,7 @@ async fn argv_catalog_actions_follow_permissions_and_describe_the_shared_envelop
             .as_array()
             .unwrap()
             .iter()
-            .find(|tool| tool["tool_id"] == FLAVOR_ARGV)
+            .find(|tool| tool["tool_id"] == SPIICE_ARGV)
             .unwrap()["actions"]
             .as_array()
             .unwrap();
@@ -1793,7 +1796,7 @@ async fn argv_catalog_actions_follow_permissions_and_describe_the_shared_envelop
         );
         for row in actions {
             let action = row["action"].as_str().unwrap();
-            assert_eq!(row["scope_key"], format!("{FLAVOR_ARGV}:{action}"));
+            assert_eq!(row["scope_key"], format!("{SPIICE_ARGV}:{action}"));
             assert_eq!(row["description"], descriptor.description);
             assert_eq!(row["argument_schema"], descriptor.args_schema);
             assert_eq!(row["annotations"]["read_only"], action == "approval");
@@ -1850,7 +1853,7 @@ async fn query_and_post_on_a_read_only_tool_are_byte_identical() {
 
 // ---------------------------------------------------- resource passthrough
 
-/// The path and raw query are pasted back onto `proxima://` and handed to
+/// The path and raw query are pasted back onto `proxiima://` and handed to
 /// the same seam MCP uses, so a malformed parameter produces the same error
 /// class — REST adds no parser that could classify it differently.
 #[tokio::test]
@@ -1862,22 +1865,22 @@ async fn resource_reads_match_the_mcp_error_class() {
     for (rest_uri, resource_uri, expected) in [
         (
             "/v1/resources/memory/018f0000-0000-7000-8000-000000000001/lineage?direction=sideways",
-            "proxima://memory/018f0000-0000-7000-8000-000000000001/lineage?direction=sideways",
+            "proxiima://memory/018f0000-0000-7000-8000-000000000001/lineage?direction=sideways",
             StatusCode::BAD_REQUEST,
         ),
         (
             "/v1/resources/no-such-resource",
-            "proxima://no-such-resource",
+            "proxiima://no-such-resource",
             StatusCode::NOT_FOUND,
         ),
         (
             "/v1/resources/goals?state=Active,",
-            "proxima://goals?state=Active,",
+            "proxiima://goals?state=Active,",
             StatusCode::BAD_REQUEST,
         ),
         (
             "/v1/resources/goals?state=Active,,Paused",
-            "proxima://goals?state=Active,,Paused",
+            "proxiima://goals?state=Active,,Paused",
             StatusCode::BAD_REQUEST,
         ),
     ] {
@@ -1899,12 +1902,12 @@ async fn resource_reads_match_the_mcp_error_class() {
             .expect("detail")
             .to_string();
         let expected_detail = match mcp_error {
-            proxima_mcp_server::ToolInvocationError::Tool(inner) => inner.client_message(),
-            proxima_mcp_server::ToolInvocationError::ToolNotFound(name) => {
+            proxiima_mcp_server::ToolInvocationError::Tool(inner) => inner.client_message(),
+            proxiima_mcp_server::ToolInvocationError::ToolNotFound(name) => {
                 format!("tool {name} not found")
             }
-            proxima_mcp_server::ToolInvocationError::NotAuthorized(name) => {
-                proxima_core::McpToolError::NotAuthorized(name).client_message()
+            proxiima_mcp_server::ToolInvocationError::NotAuthorized(name) => {
+                proxiima_core::McpToolError::NotAuthorized(name).client_message()
             }
         };
         assert_eq!(detail, expected_detail, "{rest_uri}");
@@ -1923,7 +1926,7 @@ async fn encoded_resource_paths_reach_the_mcp_parser_verbatim() {
         "memory%2FF:018f0000-0000-7000-8000-000000000001%2Flineage?direction=sideways",
         "%FF",
     ] {
-        let resource_uri = format!("proxima://{suffix}");
+        let resource_uri = format!("proxiima://{suffix}");
         let rest_uri = format!("/v1/resources/{suffix}");
         let mcp_error = host
             .read_resource(&resource_uri, author(), Some(ctx.clone()))
@@ -1931,7 +1934,7 @@ async fn encoded_resource_paths_reach_the_mcp_parser_verbatim() {
             .expect_err("the literal encoded resource path is unknown to the shared parser");
         assert!(matches!(
             mcp_error,
-            proxima_mcp_server::ToolInvocationError::ToolNotFound(_)
+            proxiima_mcp_server::ToolInvocationError::ToolNotFound(_)
         ));
         let answer = get(&router, &rest_uri, &ctx).await;
         observations.push((rest_uri, resource_uri, answer));
@@ -1957,7 +1960,7 @@ async fn encoded_resource_paths_reach_the_mcp_parser_verbatim() {
     }
 }
 
-/// `proxima://how-to` is synthesized per request rather than served through
+/// `proxiima://how-to` is synthesized per request rather than served through
 /// the seam, so it is unreachable through the resource passthrough and has
 /// its own route.
 #[tokio::test]

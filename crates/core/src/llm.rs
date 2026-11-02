@@ -99,12 +99,12 @@ impl LlmError {
     }
 }
 
-pub const PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS: &str = "PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS";
-pub const PROXIMA_EMBED_SEARCH_CONCURRENT: &str = "PROXIMA_EMBED_SEARCH_CONCURRENT";
-pub const PROXIMA_EMBED_BATCH_SIZE: &str = "PROXIMA_EMBED_BATCH_SIZE";
-pub const PROXIMA_EMBED_WORKER_INTERVAL_SECONDS: &str = "PROXIMA_EMBED_WORKER_INTERVAL_SECONDS";
-pub const PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS: &str =
-    "PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS";
+pub const PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS: &str = "PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS";
+pub const PROXIIMA_EMBED_SEARCH_CONCURRENT: &str = "PROXIIMA_EMBED_SEARCH_CONCURRENT";
+pub const PROXIIMA_EMBED_BATCH_SIZE: &str = "PROXIIMA_EMBED_BATCH_SIZE";
+pub const PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS: &str = "PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS";
+pub const PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS: &str =
+    "PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS";
 
 pub const DEFAULT_EMBED_REQUEST_TIMEOUT: Duration = Duration::from_mins(2);
 pub const DEFAULT_EMBED_BATCH_SIZE: usize = 32;
@@ -166,7 +166,7 @@ pub enum EmbeddingRuntimePolicyError {
     #[error("{field} must be an integral number of seconds")]
     NonIntegralSeconds { field: &'static str },
     #[error(
-        "PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS ({stale_seconds}s) must be strictly greater than PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS ({request_seconds}s)"
+        "PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS ({stale_seconds}s) must be strictly greater than PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS ({request_seconds}s)"
     )]
     StaleClaimNotLongerThanRequest {
         stale_seconds: u64,
@@ -187,7 +187,7 @@ impl EmbeddingRuntimePolicy {
         stale_claim_timeout: Duration,
     ) -> Result<Self, EmbeddingRuntimePolicyError> {
         validate_duration(
-            PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
+            PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
             request_timeout,
             MAX_EMBED_REQUEST_TIMEOUT,
         )?;
@@ -198,12 +198,12 @@ impl EmbeddingRuntimePolicy {
             });
         }
         validate_duration(
-            PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
+            PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS,
             worker_interval,
             MAX_EMBED_WORKER_INTERVAL,
         )?;
         validate_duration(
-            PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+            PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
             stale_claim_timeout,
             MAX_EMBED_STALE_CLAIM_TIMEOUT,
         )?;
@@ -224,7 +224,7 @@ impl EmbeddingRuntimePolicy {
         })
     }
 
-    /// Parse the canonical `PROXIMA_EMBED_*` policy block through an injected
+    /// Parse the canonical `PROXIIMA_EMBED_*` policy block through an injected
     /// lookup. Unset fields retain finite defaults; empty values are unset.
     ///
     /// # Errors
@@ -236,14 +236,14 @@ impl EmbeddingRuntimePolicy {
         let defaults = Self::default();
         let request_timeout = parse_duration_setting(
             lookup,
-            PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
+            PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
             defaults.request_timeout,
         )?;
-        let batch_size = match crate::env_value(lookup, PROXIMA_EMBED_BATCH_SIZE) {
+        let batch_size = match crate::env_value(lookup, PROXIIMA_EMBED_BATCH_SIZE) {
             Some(raw) => {
                 raw.parse::<usize>()
                     .map_err(|_| EmbeddingRuntimePolicyError::MalformedBatch {
-                        key: PROXIMA_EMBED_BATCH_SIZE,
+                        key: PROXIIMA_EMBED_BATCH_SIZE,
                         value: raw,
                     })?
             }
@@ -251,20 +251,20 @@ impl EmbeddingRuntimePolicy {
         };
         let worker_interval = parse_duration_setting(
             lookup,
-            PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
+            PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS,
             defaults.worker_interval,
         )?;
         let stale_claim_timeout = parse_duration_setting(
             lookup,
-            PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+            PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
             defaults.stale_claim_timeout,
         )?;
-        let search_concurrent = crate::env_value(lookup, PROXIMA_EMBED_SEARCH_CONCURRENT)
+        let search_concurrent = crate::env_value(lookup, PROXIIMA_EMBED_SEARCH_CONCURRENT)
             .map(|raw| match raw.as_str() {
                 "true" => Ok(true),
                 "false" => Ok(false),
                 _ => Err(EmbeddingRuntimePolicyError::MalformedBoolean {
-                    key: PROXIMA_EMBED_SEARCH_CONCURRENT,
+                    key: PROXIIMA_EMBED_SEARCH_CONCURRENT,
                     value: raw,
                 }),
             })
@@ -357,7 +357,7 @@ fn parse_duration_setting(
 }
 
 /// Header by which an embedding adapter identifies an explicit query-purpose request.
-pub const EMBEDDING_PURPOSE_HEADER: &str = "x-proxima-embedding-purpose";
+pub const EMBEDDING_PURPOSE_HEADER: &str = "x-proxiima-embedding-purpose";
 /// Query-purpose value of [`EMBEDDING_PURPOSE_HEADER`].
 pub const EMBEDDING_SEARCH_PURPOSE: &str = "search";
 
@@ -491,7 +491,7 @@ pub async fn embed_in_chunks_with_timeout(
 /// A retryable failure cannot authorize input splitting.
 ///
 /// ```compile_fail
-/// # use proxima_core::llm::{EmbeddingClient, LlmError, embed_in_chunks_after_failure};
+/// # use proxiima_core::llm::{EmbeddingClient, LlmError, embed_in_chunks_after_failure};
 /// # fn rescue(client: &dyn EmbeddingClient) {
 /// let _ = embed_in_chunks_after_failure(client, "text", LlmError::retryable("busy"));
 /// # }
@@ -591,10 +591,11 @@ mod tests {
         DEFAULT_EMBED_REQUEST_TIMEOUT, DEFAULT_EMBED_STALE_CLAIM_TIMEOUT,
         DEFAULT_EMBED_WORKER_INTERVAL, EmbeddingClient, EmbeddingConfigurationFault,
         EmbeddingInputRefusal, EmbeddingRuntimePolicy, EmbeddingRuntimePolicyError, LlmError,
-        MIN_EMBED_INPUT_CAP_CHARS, PROXIMA_EMBED_BATCH_SIZE, PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
-        PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
-        embed_in_chunks, embed_in_chunks_after_failure, embed_in_chunks_after_failure_with_timeout,
-        embed_in_chunks_with_timeout, embed_many_with_timeout, embed_with_timeout,
+        MIN_EMBED_INPUT_CAP_CHARS, PROXIIMA_EMBED_BATCH_SIZE,
+        PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS, PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+        PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS, embed_in_chunks, embed_in_chunks_after_failure,
+        embed_in_chunks_after_failure_with_timeout, embed_in_chunks_with_timeout,
+        embed_many_with_timeout, embed_with_timeout,
     };
     use crate::env_from_pairs as lookup;
     use async_trait::async_trait;
@@ -617,10 +618,10 @@ mod tests {
     #[test]
     fn embedding_runtime_policy_parses_canonical_env_block() {
         let policy = EmbeddingRuntimePolicy::from_lookup(&lookup(&[
-            (PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "30"),
-            (PROXIMA_EMBED_BATCH_SIZE, "17"),
-            (PROXIMA_EMBED_WORKER_INTERVAL_SECONDS, "9"),
-            (PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, "91"),
+            (PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "30"),
+            (PROXIIMA_EMBED_BATCH_SIZE, "17"),
+            (PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS, "9"),
+            (PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, "91"),
         ]))
         .expect("valid policy");
         assert_eq!(policy.request_timeout(), Duration::from_secs(30));
@@ -631,7 +632,7 @@ mod tests {
 
     #[test]
     fn concurrent_search_policy_is_an_explicit_boolean_opt_in() {
-        use super::PROXIMA_EMBED_SEARCH_CONCURRENT;
+        use super::PROXIIMA_EMBED_SEARCH_CONCURRENT;
         assert!(!EmbeddingRuntimePolicy::default().search_concurrent());
         assert!(
             !EmbeddingRuntimePolicy::from_lookup(&lookup(&[]))
@@ -640,7 +641,7 @@ mod tests {
         );
         for (raw, expected) in [("true", true), ("false", false)] {
             let policy = EmbeddingRuntimePolicy::from_lookup(&lookup(&[(
-                PROXIMA_EMBED_SEARCH_CONCURRENT,
+                PROXIIMA_EMBED_SEARCH_CONCURRENT,
                 raw,
             )]))
             .unwrap();
@@ -648,7 +649,7 @@ mod tests {
         }
         assert!(matches!(
             EmbeddingRuntimePolicy::from_lookup(&lookup(&[(
-                PROXIMA_EMBED_SEARCH_CONCURRENT,
+                PROXIIMA_EMBED_SEARCH_CONCURRENT,
                 "yes"
             )])),
             Err(EmbeddingRuntimePolicyError::MalformedBoolean { .. })
@@ -658,12 +659,12 @@ mod tests {
     #[test]
     fn embedding_runtime_policy_rejects_bad_values_and_unsafe_relation() {
         for (key, value) in [
-            (PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "0"),
-            (PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "3601"),
-            (PROXIMA_EMBED_BATCH_SIZE, "0"),
-            (PROXIMA_EMBED_BATCH_SIZE, "1025"),
-            (PROXIMA_EMBED_WORKER_INTERVAL_SECONDS, "nope"),
-            (PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, "86401"),
+            (PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "0"),
+            (PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "3601"),
+            (PROXIIMA_EMBED_BATCH_SIZE, "0"),
+            (PROXIIMA_EMBED_BATCH_SIZE, "1025"),
+            (PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS, "nope"),
+            (PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, "86401"),
         ] {
             let err = EmbeddingRuntimePolicy::from_lookup(&lookup(&[(key, value)]))
                 .expect_err("invalid setting must fail");
@@ -671,8 +672,8 @@ mod tests {
         }
 
         let err = EmbeddingRuntimePolicy::from_lookup(&lookup(&[
-            (PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "120"),
-            (PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, "120"),
+            (PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "120"),
+            (PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, "120"),
         ]))
         .expect_err("stale claim must outlive one request");
         assert!(err.to_string().contains("strictly greater"));
@@ -682,7 +683,7 @@ mod tests {
     fn embedding_runtime_policy_rejects_fractional_programmatic_durations() {
         for (field, result) in [
             (
-                PROXIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
+                PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
                 EmbeddingRuntimePolicy::new(
                     Duration::from_millis(1_500),
                     2,
@@ -691,7 +692,7 @@ mod tests {
                 ),
             ),
             (
-                PROXIMA_EMBED_WORKER_INTERVAL_SECONDS,
+                PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS,
                 EmbeddingRuntimePolicy::new(
                     Duration::from_secs(1),
                     2,
@@ -700,7 +701,7 @@ mod tests {
                 ),
             ),
             (
-                PROXIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
+                PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
                 EmbeddingRuntimePolicy::new(
                     Duration::from_secs(1),
                     2,

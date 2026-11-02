@@ -9,9 +9,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::verbs::fact_ingest::FactIngestOutcome;
-use proxima_core::{
+use proxiima_core::storage_ports::OwnerWritePermit;
+use proxiima_core::verbs::fact_ingest::FactIngestOutcome;
+use proxiima_core::{
     EdgeEndpoint, EdgeKind, EntityKind, MemoryId, MemoryOperatorKind, OwnerId, ReplayDrift,
     SchemaId, SchemaVersion, SidecarPayload, StorageError,
 };
@@ -39,20 +39,20 @@ pub(crate) struct DerivedDraft<'a> {
     /// edge is written. `None` mints a new series.
     pub supersedes: Option<MemoryId>,
     /// Resolved text-search configuration name. The deployment-default
-    /// sentinel resolves to `proxima_core.lexical_config()`; `None` is no
+    /// sentinel resolves to `proxiima_core.lexical_config()`; `None` is no
     /// language at all, which a `LanguagePolicy::PerRow` schema refuses
     /// (see `PgSidecarWriter::insert_memory_sidecar`).
     pub lexical_language: Option<&'a str>,
     /// Spaces selected by the schema and write route. Jobs are queued in
     /// this memory transaction; an empty slice requests no work.
-    pub queued_spaces: &'a [proxima_core::EmbeddingSpace],
+    pub queued_spaces: &'a [proxiima_core::EmbeddingSpace],
     /// Tool `idempotency_key` ledger entry, when the caller supplied one.
-    pub request: Option<proxima_core::verbs::idempotency::RequestKey>,
+    pub request: Option<proxiima_core::verbs::idempotency::RequestKey>,
 }
 
 impl<'a> DerivedDraft<'a> {
     pub(crate) fn from_request(
-        req: &proxima_core::AuthorDerivedRequest<'a>,
+        req: &proxiima_core::AuthorDerivedRequest<'a>,
         store_number: u16,
     ) -> Self {
         Self {
@@ -102,7 +102,7 @@ pub(crate) struct DerivedAdmissionInput<'a> {
     pub(crate) origins: &'a [EdgeEndpoint],
     pub(crate) references: &'a [EdgeEndpoint],
     pub(crate) sidecar_tables: &'a [String],
-    /// The flavor-declared lifecycle scopes this derived payload belongs to,
+    /// The spiice-declared lifecycle scopes this derived payload belongs to,
     /// already sorted and deduplicated. A derived Abstraction or Perspective
     /// is as much an admission into its scope as a Fact is, so it takes the
     /// same fence in the same place.
@@ -113,7 +113,7 @@ pub(crate) struct DerivedAdmissionInput<'a> {
 async fn append_derived_timeseries(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
-    writer: proxima_core::WriterAttribution,
+    writer: proxiima_core::WriterAttribution,
     input: DerivedAdmissionInput<'_>,
     sidecar: impl for<'t> FnOnce(
         &'t mut Transaction<'_, Postgres>,
@@ -154,13 +154,13 @@ fn derived_kind(draft: &DerivedDraft<'_>) -> Result<PgMemoryKind, StorageError> 
 async fn admit_derived(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
-    writer: proxima_core::WriterAttribution,
+    writer: proxiima_core::WriterAttribution,
     input: DerivedAdmissionInput<'_>,
 ) -> Result<DerivedOutcome, StorageError> {
     let kind = derived_kind(draft)?;
     let handle = if let Some(prior) = draft.supersedes {
         let prior_handle: Option<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: live-only (a write never builds on a forgotten memory; owner RLS hides it too) */
+            "SELECT handle FROM proxiima_core.memory /* FORGET-POLICY: live-only (a write never builds on a forgotten memory; owner RLS hides it too) */
               WHERE t = $1 AND owner_id = $2 AND forgotten_at IS NULL",
         )
         .bind(prior.into_inner())
@@ -178,14 +178,14 @@ async fn admit_derived(
     };
     if let Some(request) = draft.request.as_ref() {
         match super::request_keys::judge_request(tx, &draft.owner, request).await? {
-            proxima_core::verbs::idempotency::KeyVerdict::Replay(replay) => {
+            proxiima_core::verbs::idempotency::KeyVerdict::Replay(replay) => {
                 return Ok(DerivedOutcome {
-                    memory_id: proxima_core::MemoryId::new(replay.memory_id),
+                    memory_id: proxiima_core::MemoryId::new(replay.memory_id),
                     idempotent_replay: true,
                     forgotten: replay.forgotten,
                 });
             }
-            proxima_core::verbs::idempotency::KeyVerdict::Fresh => {}
+            proxiima_core::verbs::idempotency::KeyVerdict::Fresh => {}
         }
     } else if let Some(replay) =
         try_derived_replay(tx, handle, draft, kind, input.origins, input.references).await?
@@ -302,9 +302,9 @@ async fn derived_replay_in_lifecycle(
     // before #488.
     let incoming_origins = pin_memory_ids(origins);
     let forgotten_version: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a replay answers for a forgotten version) */
+        "SELECT t FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (a replay answers for a forgotten version) */
           WHERE handle = $1 AND owner_id = $2
-            AND kind = $3::proxima_core.memory_kind AND schema_id = $4
+            AND kind = $3::proxiima_core.memory_kind AND schema_id = $4
             AND forgotten_at IS NOT NULL AND origins = $5::uuid[]
           ORDER BY t DESC
           LIMIT 1",
@@ -341,10 +341,10 @@ async fn load_derived_replay_head(
 ) -> Result<Option<(uuid::Uuid, bool)>, StorageError> {
     sqlx::query_as(
         "SELECT h.t, m.forgotten_at IS NOT NULL
-           FROM proxima_core.memory_head h
-           JOIN proxima_core.memory m /* FORGET-POLICY: includes-forgotten (a replay answers for a forgotten head) */ ON m.t = h.t
+           FROM proxiima_core.memory_head h
+           JOIN proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (a replay answers for a forgotten head) */ ON m.t = h.t
           WHERE h.handle = $1 AND h.owner_id = $2
-            AND h.kind = $3::proxima_core.memory_kind AND h.schema_id = $4",
+            AND h.kind = $3::proxiima_core.memory_kind AND h.schema_id = $4",
     )
     .bind(handle)
     .bind(draft.owner.into_inner())
@@ -359,8 +359,8 @@ fn derived_memory_command(
     draft: &DerivedDraft<'_>,
     handle: uuid::Uuid,
     kind: PgMemoryKind,
-) -> proxima_core::verbs::fact_ingest::FactWriteCommand {
-    proxima_core::verbs::fact_ingest::FactWriteCommand {
+) -> proxiima_core::verbs::fact_ingest::FactWriteCommand {
+    proxiima_core::verbs::fact_ingest::FactWriteCommand {
         schema_id: draft.schema_id.clone(),
         schema_version: draft.schema_version,
         handle: Some(handle),
@@ -459,7 +459,7 @@ pub(crate) async fn append_derived_with_content_payloads_in_tx(
 /// Count declared pins; on replay, re-read stored `origins`/`refs` and
 /// refuse a different set.
 ///
-/// Shared by the flavor-SDK tier and the engine port. The replay
+/// Shared by the spiice-SDK tier and the engine port. The replay
 /// decision (same handle, same origins) lives in
 /// [`append_derived_timeseries`]; this re-checks so a caller that got
 /// `idempotent_replay` cannot report a pin set the row does not have.
@@ -545,7 +545,7 @@ pub(crate) async fn record_external_edges(
             None
         };
         let stored: Result<Vec<(uuid::Uuid, String)>, StorageError> = sqlx::query_as(
-            "SELECT memory, edge_kind FROM proxima_core.memory_external_origin WHERE t = $1",
+            "SELECT memory, edge_kind FROM proxiima_core.memory_external_origin WHERE t = $1",
         )
         .bind(t)
         .fetch_all(&mut **tx)
@@ -568,7 +568,7 @@ pub(crate) async fn record_external_edges(
     }
     let (memories, kinds): (Vec<uuid::Uuid>, Vec<String>) = declared.iter().cloned().unzip();
     sqlx::query(
-        "INSERT INTO proxima_core.memory_external_origin (t, memory, edge_kind)
+        "INSERT INTO proxiima_core.memory_external_origin (t, memory, edge_kind)
          SELECT $1, edge.memory, edge.kind
            FROM unnest($2::uuid[], $3::text[]) AS edge(memory, kind)
          ON CONFLICT DO NOTHING",
@@ -611,13 +611,13 @@ async fn load_pin_ids(
 ) -> Result<Vec<uuid::Uuid>, StorageError> {
     let sql = match column {
         PinColumn::Origins => {
-            "SELECT unnest(origins) FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a replay compares a forgotten head's pins in the lifecycle scope) */ WHERE t = $1"
+            "SELECT unnest(origins) FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (a replay compares a forgotten head's pins in the lifecycle scope) */ WHERE t = $1"
         }
         PinColumn::Refs => {
-            "SELECT unnest(refs) FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a replay compares a forgotten head's pins in the lifecycle scope) */ WHERE t = $1"
+            "SELECT unnest(refs) FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (a replay compares a forgotten head's pins in the lifecycle scope) */ WHERE t = $1"
         }
         PinColumn::GoalRefs => {
-            "SELECT unnest(goal_refs) FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a replay compares a forgotten head's pins in the lifecycle scope) */ WHERE t = $1"
+            "SELECT unnest(goal_refs) FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (a replay compares a forgotten head's pins in the lifecycle scope) */ WHERE t = $1"
         }
     };
     // SQL-POLICY: fixed-fragment
@@ -640,7 +640,7 @@ fn validate_permit_owner(permit: &OwnerWritePermit, owner: &OwnerId) -> Result<(
 
 /// Shared origin validation for the storage and write-session authoring paths.
 ///
-/// Each origin must name a unique memory row present in `proxima_core.memory`.
+/// Each origin must name a unique memory row present in `proxiima_core.memory`.
 /// Its declared kind must match the stored kind and the operator phase's input
 /// kind.
 ///
@@ -677,7 +677,7 @@ pub(crate) async fn validate_derived_origins_in_tx(
         rows.into_iter().map(|(id, kind, ..)| (id, kind)).collect();
     assert_declared_kinds_match_stored(origins, &stored_kind)?;
     // Phase contract is on the stored row. Declared kind == phase is the
-    // engine manifest; flavor-SDK has no manifest, so this is its gate.
+    // engine manifest; spiice-SDK has no manifest, so this is its gate.
     for origin in origins {
         let Some(memory_id) = origin.memory_id() else {
             continue;
@@ -788,7 +788,7 @@ async fn replays_an_existing_version(
     if let Some(request) = draft.request.as_ref() {
         return Ok(matches!(
             super::request_keys::judge_request(tx, &draft.owner, request).await?,
-            proxima_core::verbs::idempotency::KeyVerdict::Replay(_)
+            proxiima_core::verbs::idempotency::KeyVerdict::Replay(_)
         ));
     }
     let kind = derived_kind(draft)?;
@@ -806,7 +806,7 @@ async fn load_replay_input_proof_rows_in_tx(
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
     let rows: Result<Vec<(uuid::Uuid, PgMemoryKind)>, StorageError> = sqlx::query_as(
         "SELECT m.t, m.kind
-           FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (a replay's inputs may have been forgotten since) */
+           FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (a replay's inputs may have been forgotten since) */
           WHERE m.t = ANY($1::uuid[])",
     )
     .bind(input_ids)
@@ -840,7 +840,7 @@ async fn load_stored_memory_kinds_in_tx(
     }
     let rows: Vec<(uuid::Uuid, PgMemoryKind)> = sqlx::query_as(
         "SELECT m.t, m.kind
-           FROM proxima_core.memory m /* FORGET-POLICY: live-only (a write never builds on a forgotten memory; owner RLS hides it too) */
+           FROM proxiima_core.memory m /* FORGET-POLICY: live-only (a write never builds on a forgotten memory; owner RLS hides it too) */
           WHERE m.t = ANY($1::uuid[]) AND m.forgotten_at IS NULL",
     )
     .bind(ids)

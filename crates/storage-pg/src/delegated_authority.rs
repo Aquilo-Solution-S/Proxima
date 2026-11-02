@@ -3,11 +3,11 @@
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     DelegationGrant, DelegationGrantStorage, DelegationId, DelegationMutationPermit,
     DelegationStorePort,
 };
-use proxima_core::{ActionName, OwnerId, Role, StorageError, UserId};
+use proxiima_core::{ActionName, OwnerId, Role, StorageError, UserId};
 use sqlx::Row as _;
 use time::OffsetDateTime;
 
@@ -50,7 +50,7 @@ impl DelegationStorePort for PgDelegationStore {
         })?;
         let mut tx = self.platform.begin().await?;
         sqlx::query(
-            "INSERT INTO proxima_core.delegated_authority_grants
+            "INSERT INTO proxiima_core.delegated_authority_grants
                 (delegation_id, subject_user_id, owner_id,
                  tool_name, action_name, read_ceiling, write_ceiling,
                  expires_at, auth_epoch, issued_at, \"by\", via)
@@ -88,7 +88,7 @@ impl DelegationStorePort for PgDelegationStore {
                     tool_name, action_name, read_ceiling, write_ceiling,
                     expires_at, auth_epoch, issued_at, revoked_at,
                     revoked_by_user_id, \"by\", via
-               FROM proxima_core.delegated_authority_grants
+               FROM proxiima_core.delegated_authority_grants
               WHERE delegation_id = $1
                 AND owner_id IS NOT DISTINCT FROM $2",
         )
@@ -116,7 +116,7 @@ impl DelegationStorePort for PgDelegationStore {
         let owner_id = expected_owner.into_inner();
         let mut tx = self.platform.begin().await?;
         let result = sqlx::query(
-            "UPDATE proxima_core.delegated_authority_grants
+            "UPDATE proxiima_core.delegated_authority_grants
                 SET revoked_at = $2,
                     revoked_by_user_id = $3
               WHERE delegation_id = $1
@@ -153,7 +153,7 @@ fn decode_grant(
             delegation_id: DelegationId::from_uuid(row.try_get("delegation_id").map_err(internal)?),
             subject: UserId::new(row.try_get("subject_user_id").map_err(internal)?),
             owner,
-            writer: proxima_core::WriterAttribution {
+            writer: proxiima_core::WriterAttribution {
                 by: row.try_get("by").map_err(internal)?,
                 via: row.try_get("via").map_err(internal)?,
             },

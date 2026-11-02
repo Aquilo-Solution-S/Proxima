@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use async_trait::async_trait;
-use proxima_core::llm::{EmbeddingClient, EmbeddingDim, LlmError};
-use proxima_core::{AuthPath, AuthzContext, OwnerId, OwnerScope, Role, UserId};
+use proxiima_core::llm::{EmbeddingClient, EmbeddingDim, LlmError};
+use proxiima_core::{AuthPath, AuthzContext, OwnerId, OwnerScope, Role, UserId};
 
 /// Fixture embeddings sit on the default 1024-wide lane.
 const EMBEDDING_DIM: usize = EmbeddingDim::D1024.width();
@@ -30,21 +30,21 @@ pub fn owner_scope_for_tests(owners: &[OwnerId]) -> OwnerScope {
 /// The supplied fixture must already contain server-resolved owner roles.
 #[must_use]
 pub fn authenticated_context(context: AuthzContext) -> AuthzContext {
-    struct FixtureVerifier(proxima_core::AuthzContext);
+    struct FixtureVerifier(proxiima_core::AuthzContext);
     #[async_trait]
-    impl proxima_core::Authenticator for FixtureVerifier {
+    impl proxiima_core::Authenticator for FixtureVerifier {
         async fn authenticate(
             &self,
-            _: &proxima_core::Credentials,
-        ) -> Result<proxima_core::AuthzContext, proxima_core::AuthError> {
+            _: &proxiima_core::Credentials,
+        ) -> Result<proxiima_core::AuthzContext, proxiima_core::AuthError> {
             Ok(self.0.clone())
         }
     }
     // This verifier does no I/O: exercise the public authentication seam
     // without creating or blocking a Tokio runtime in synchronous fixtures.
     let verifier = FixtureVerifier(context);
-    let credentials = proxima_core::Credentials::Bearer("synthetic-fixture".into());
-    let mut future = std::pin::pin!(proxima_core::authenticate(&verifier, &credentials));
+    let credentials = proxiima_core::Credentials::Bearer("synthetic-fixture".into());
+    let mut future = std::pin::pin!(proxiima_core::authenticate(&verifier, &credentials));
     let mut task = std::task::Context::from_waker(std::task::Waker::noop());
     match std::future::Future::poll(future.as_mut(), &mut task) {
         std::task::Poll::Ready(result) => result.expect("fixture owner roles"),
@@ -103,9 +103,9 @@ impl EmbeddingClient for ConstantEmbedding {
 /// every owner, overridden per Owner by a route or a refusal.
 #[derive(Debug, Default)]
 pub struct TestEmbeddingRouter {
-    default: std::sync::RwLock<Option<proxima_core::llm::BoundEmbeddingClient>>,
+    default: std::sync::RwLock<Option<proxiima_core::llm::BoundEmbeddingClient>>,
     owners: std::sync::RwLock<
-        std::collections::HashMap<OwnerId, Result<proxima_core::llm::EmbeddingRoute, String>>,
+        std::collections::HashMap<OwnerId, Result<proxiima_core::llm::EmbeddingRoute, String>>,
     >,
 }
 
@@ -114,7 +114,7 @@ impl TestEmbeddingRouter {
     ///
     /// # Panics
     /// On a poisoned lock.
-    pub fn set_default(&self, client: proxima_core::llm::BoundEmbeddingClient) {
+    pub fn set_default(&self, client: proxiima_core::llm::BoundEmbeddingClient) {
         *self.default.write().expect("router lock") = Some(client);
     }
 
@@ -125,13 +125,13 @@ impl TestEmbeddingRouter {
     pub fn set_owner(
         &self,
         owner: OwnerId,
-        client: Option<proxima_core::llm::BoundEmbeddingClient>,
+        client: Option<proxiima_core::llm::BoundEmbeddingClient>,
     ) {
         self.set_route(
             owner,
             client.map_or_else(
-                proxima_core::llm::EmbeddingRoute::none,
-                proxima_core::llm::EmbeddingRoute::current,
+                proxiima_core::llm::EmbeddingRoute::none,
+                proxiima_core::llm::EmbeddingRoute::current,
             ),
         );
     }
@@ -140,7 +140,7 @@ impl TestEmbeddingRouter {
     ///
     /// # Panics
     /// On a poisoned lock.
-    pub fn set_route(&self, owner: OwnerId, route: proxima_core::llm::EmbeddingRoute) {
+    pub fn set_route(&self, owner: OwnerId, route: proxiima_core::llm::EmbeddingRoute) {
         self.owners
             .write()
             .expect("router lock")
@@ -160,22 +160,24 @@ impl TestEmbeddingRouter {
 }
 
 #[async_trait]
-impl proxima_core::llm::EmbeddingRouter for TestEmbeddingRouter {
+impl proxiima_core::llm::EmbeddingRouter for TestEmbeddingRouter {
     async fn route(
         &self,
         owner: &OwnerId,
-    ) -> Result<proxima_core::llm::EmbeddingRoute, proxima_core::llm::EmbeddingRouteError> {
+    ) -> Result<proxiima_core::llm::EmbeddingRoute, proxiima_core::llm::EmbeddingRouteError> {
         match self.owners.read().expect("router lock").get(owner) {
             Some(Ok(route)) => Ok(route.clone()),
-            Some(Err(message)) => Err(proxima_core::llm::EmbeddingRouteError::new(message.clone())),
+            Some(Err(message)) => Err(proxiima_core::llm::EmbeddingRouteError::new(
+                message.clone(),
+            )),
             None => Ok(self
                 .default
                 .read()
                 .expect("router lock")
                 .clone()
                 .map_or_else(
-                    proxima_core::llm::EmbeddingRoute::none,
-                    proxima_core::llm::EmbeddingRoute::current,
+                    proxiima_core::llm::EmbeddingRoute::none,
+                    proxiima_core::llm::EmbeddingRoute::current,
                 )),
         }
     }
@@ -197,7 +199,7 @@ pub struct ListenableProbeV1 {
     pub note: String,
 }
 
-impl proxima_core::FactPayload for ListenableProbeV1 {
+impl proxiima_core::FactPayload for ListenableProbeV1 {
     const SCHEMA_ID: &'static str = "probe/listenable-v1";
     const SCHEMA_VERSION: u32 = 1;
     const LISTENABLE: bool = true;
@@ -231,7 +233,7 @@ pub struct UnlistenableProbeV1 {
     pub note: String,
 }
 
-impl proxima_core::FactPayload for UnlistenableProbeV1 {
+impl proxiima_core::FactPayload for UnlistenableProbeV1 {
     const SCHEMA_ID: &'static str = "probe/unlistenable-v1";
     const SCHEMA_VERSION: u32 = 1;
 
@@ -255,7 +257,7 @@ pub struct SchemalessListenableProbeV1 {
     pub probe_id: uuid::Uuid,
 }
 
-impl proxima_core::FactPayload for SchemalessListenableProbeV1 {
+impl proxiima_core::FactPayload for SchemalessListenableProbeV1 {
     const SCHEMA_ID: &'static str = "probe/schemaless-v1";
     const SCHEMA_VERSION: u32 = 1;
     const LISTENABLE: bool = true;
@@ -269,24 +271,24 @@ impl proxima_core::FactPayload for SchemalessListenableProbeV1 {
     }
 }
 
-/// The fixture flavor the publication probes belong to.
+/// The fixture spiice the publication probes belong to.
 ///
-/// A flavor of their own rather than three more `core/` schemas: freeze
+/// A spiice of their own rather than three more `core/` schemas: freeze
 /// cross-checks registrations against contracts, and a probe wearing the
-/// kernel's prefix would have to be declared in flavor #0's contract —
+/// kernel's prefix would have to be declared in spiice #0's contract —
 /// which would ship a test fixture in the shipped catalog.
-pub const PROBE_FLAVOR_ID: &str = "probe";
+pub const PROBE_SPIICE_ID: &str = "probe";
 
 const fn probe_schema(
     name: &'static str,
     listenable_note: &'static str,
-) -> proxima_core::flavor::contract::SchemaContract {
-    use proxima_core::flavor::contract::{
+) -> proxiima_core::spiice::contract::SchemaContract {
+    use proxiima_core::spiice::contract::{
         EmbeddingRecipe, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, TransferRule,
     };
     SchemaContract {
-        id: SchemaRef::new(PROBE_FLAVOR_ID, name, 1),
-        kind: proxima_core::verbs::schema::PayloadKind::Fact,
+        id: SchemaRef::new(PROBE_SPIICE_ID, name, 1),
+        kind: proxiima_core::verbs::schema::PayloadKind::Fact,
         sidecar_table: None,
         search: SearchProjectionDecl::None {
             why: "a publication probe is not a retrievable surface",
@@ -303,19 +305,19 @@ const fn probe_schema(
     }
 }
 
-const PROBE_SCHEMAS: &[proxima_core::flavor::contract::SchemaContract] = &[
+const PROBE_SCHEMAS: &[proxiima_core::spiice::contract::SchemaContract] = &[
     probe_schema("listenable", "a probe owns no rows to move"),
     probe_schema("unlistenable", "a probe owns no rows to move"),
 ];
 
-const SCHEMALESS_PROBE_SCHEMAS: &[proxima_core::flavor::contract::SchemaContract] =
+const SCHEMALESS_PROBE_SCHEMAS: &[proxiima_core::spiice::contract::SchemaContract] =
     &[probe_schema("schemaless", "a probe owns no rows to move")];
 
-/// The probe flavor's contract. Ordinal 90 keeps it clear of flavor #0 and
-/// of any shipped flavor.
-pub static PROBE_FLAVOR: proxima_core::flavor::contract::FlavorContract =
-    proxima_core::flavor::contract::FlavorContract {
-        flavor_id: PROBE_FLAVOR_ID,
+/// The probe spiice's contract. Ordinal 90 keeps it clear of spiice #0 and
+/// of any shipped spiice.
+pub static PROBE_SPIICE: proxiima_core::spiice::contract::SpiiceContract =
+    proxiima_core::spiice::contract::SpiiceContract {
+        spiice_id: PROBE_SPIICE_ID,
         ordinal: 90,
         schemas: PROBE_SCHEMAS,
         state_surfaces: &[],
@@ -325,16 +327,16 @@ pub static PROBE_FLAVOR: proxima_core::flavor::contract::FlavorContract =
         resources: &[],
         bespoke_erase_legs: &[],
         bespoke_transfer_legs: &[],
-        projection: proxima_core::flavor::contract::ProjectionDecl::None {
-            why: "the probe flavor declares no search surface",
+        projection: proxiima_core::spiice::contract::ProjectionDecl::None {
+            why: "the probe spiice declares no search surface",
         },
     };
 
 /// The contract for the malformed probe: listenable, but with no
 /// `json_schema()`. Registering it must fail freeze.
-pub static SCHEMALESS_PROBE_FLAVOR: proxima_core::flavor::contract::FlavorContract =
-    proxima_core::flavor::contract::FlavorContract {
-        flavor_id: PROBE_FLAVOR_ID,
+pub static SCHEMALESS_PROBE_SPIICE: proxiima_core::spiice::contract::SpiiceContract =
+    proxiima_core::spiice::contract::SpiiceContract {
+        spiice_id: PROBE_SPIICE_ID,
         ordinal: 91,
         schemas: SCHEMALESS_PROBE_SCHEMAS,
         state_surfaces: &[],
@@ -344,12 +346,12 @@ pub static SCHEMALESS_PROBE_FLAVOR: proxima_core::flavor::contract::FlavorContra
         resources: &[],
         bespoke_erase_legs: &[],
         bespoke_transfer_legs: &[],
-        projection: proxima_core::flavor::contract::ProjectionDecl::None {
-            why: "the probe flavor declares no search surface",
+        projection: proxiima_core::spiice::contract::ProjectionDecl::None {
+            why: "the probe spiice declares no search surface",
         },
     };
 
-/// A registry carrying flavor #0 plus the listenable/non-listenable probe
+/// A registry carrying spiice #0 plus the listenable/non-listenable probe
 /// pair, frozen.
 ///
 /// # Panics
@@ -357,9 +359,9 @@ pub static SCHEMALESS_PROBE_FLAVOR: proxima_core::flavor::contract::FlavorContra
 /// Panics if the fixture registry does not freeze, which would mean the
 /// fixture itself is malformed.
 #[must_use]
-pub fn probe_registry() -> proxima_core::FlavorRegistryFrozen {
-    let mut registry = proxima_core::FlavorRegistry::new();
-    registry.add_contract_or_panic_for_tests(&PROBE_FLAVOR);
+pub fn probe_registry() -> proxiima_core::SpiiceRegistryFrozen {
+    let mut registry = proxiima_core::SpiiceRegistry::new();
+    registry.add_contract_or_panic_for_tests(&PROBE_SPIICE);
     registry.add_fact_schema_or_panic_for_tests::<ListenableProbeV1>();
     registry.add_fact_schema_or_panic_for_tests::<UnlistenableProbeV1>();
     registry.freeze_or_panic_for_tests()

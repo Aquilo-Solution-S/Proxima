@@ -1,6 +1,6 @@
 //! Smoke tests for core type serialization.
 
-use proxima_core::{GroupId, OwnerId, UserId};
+use proxiima_core::{GroupId, OwnerId, UserId};
 use uuid::Uuid;
 
 #[test]

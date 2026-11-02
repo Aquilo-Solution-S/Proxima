@@ -1,15 +1,15 @@
-//! Host-wired cited-blob upload/read port for MCP tools and flavor
+//! Host-wired cited-blob upload/read port for MCP tools and spiice
 //! background workers.
 //!
 //! Core stays blob/storage-agnostic (docs/concepts.md): the S3-backed cited-blob
-//! lane (`proxima-blob-s3`) is reachable as a Rust library, but MCP tools
+//! lane (`proxiima-blob-s3`) is reachable as a Rust library, but MCP tools
 //! live in core and cannot name the concrete store. This port is the
-//! seam: the host inserts a [`CitedBlobService`] into the composed flavor
+//! seam: the host inserts a [`CitedBlobService`] into the composed spiice
 //! services when S3 is configured, and `core_upload` resolves it via
 //! `ctx.service::<CitedBlobService>()`. When absent, the tool
 //! fails typed with a configuration hint — exactly like the embedding
 //! client's degraded mode. The serving runtime publishes the same
-//! service to flavor workers, which need it for the half of artefact
+//! service to spiice workers, which need it for the half of artefact
 //! work that outlives a tool call.
 //!
 //! Transfer is by presigned URL only (docs/configuration.md): the
@@ -132,7 +132,7 @@ pub struct CitedBlobHeld {
 pub const MAX_HELD_BLOB_DIGESTS: usize = 1000;
 
 /// Cited-blob upload/read capability implemented by the blob backend
-/// (`CitedBlobStore` in `proxima-blob-s3`). Each method re-authorizes
+/// (`CitedBlobStore` in `proxiima-blob-s3`). Each method re-authorizes
 /// against `owner` with the caller's `authz`; the port never trusts a
 /// client-supplied owner without that gate. That re-check is defense in
 /// depth, not the caller-facing authz surface: the tool layer gates the

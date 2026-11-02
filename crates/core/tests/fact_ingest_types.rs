@@ -1,9 +1,9 @@
 //! Unit smoke for Fact ingest types.
 
-use proxima_core::verbs::fact_ingest::{
+use proxiima_core::verbs::fact_ingest::{
     Citation, CitedObjectHint, FactReceiptDraft, FactWriteCommand,
 };
-use proxima_core::{OwnerId, SchemaId, SchemaVersion, SourceId, UserId};
+use proxiima_core::{OwnerId, SchemaId, SchemaVersion, SourceId, UserId};
 use uuid::Uuid;
 
 fn fresh_command() -> FactWriteCommand {
@@ -30,7 +30,7 @@ fn fresh_command() -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }

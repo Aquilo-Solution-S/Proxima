@@ -312,7 +312,7 @@ impl DerivationIdentity {
 /// Payload kind, schema, and provenance cannot be overwritten by consumers.
 ///
 /// ```compile_fail
-/// fn tamper(request: &mut proxima_core::DerivedMemory) {
+/// fn tamper(request: &mut proxiima_core::DerivedMemory) {
 ///     request.origins.clear();
 ///     let _ = &mut request.sidecar_payload;
 /// }
@@ -591,7 +591,7 @@ impl Engine {
     /// One-shot command-port: generic [`EngineAuthority`], including
     /// delegated workers. Multi-write forget lives on
     /// [`crate::UnitOfWork::forget`] (`AuthzContext` only). Both are
-    /// legal; this is not a second flavor `Transaction`.
+    /// legal; this is not a second spiice `Transaction`.
     ///
     /// # Errors
     ///
@@ -1056,7 +1056,7 @@ mod tests {
     use crate::authz::AuthzContext;
     use crate::error::ErrorCode;
     use crate::{
-        AbstractionPayload, AgentDerivationV1, EntityKind, FlavorRegistry, OwnerId, UserId,
+        AbstractionPayload, AgentDerivationV1, EntityKind, OwnerId, SpiiceRegistry, UserId,
     };
 
     use super::*;
@@ -1066,7 +1066,7 @@ mod tests {
     }
 
     fn engine() -> Engine {
-        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
     }
 
     fn derivation_sidecar() -> SidecarPayload {
@@ -1306,7 +1306,7 @@ mod tests {
     #[tokio::test]
     async fn a_node_write_hands_storage_its_origins_and_references() {
         let recorder = Arc::new(RecordingAuthoring::default());
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(crate::StoragePorts::rejecting_with_memory_authoring(
                 recorder.clone(),
             ));

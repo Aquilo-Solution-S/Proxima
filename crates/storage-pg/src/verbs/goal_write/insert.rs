@@ -8,8 +8,8 @@ use crate::verbs::goal_timeseries::{
     attach_goal_close_fact_reservation, load_goal_by_request_id, persist_goal_change_fact,
     reserve_fact_identity,
 };
-use proxima_core::publication::PublicationStamp;
-use proxima_core::{FactPayload, GoalChange, GoalChangeV1, SchemaVersion};
+use proxiima_core::publication::PublicationStamp;
+use proxiima_core::{FactPayload, GoalChange, GoalChangeV1, SchemaVersion};
 use sqlx::Acquire;
 
 pub(super) struct PreparedGoalInsert<'a> {
@@ -95,17 +95,17 @@ pub(super) async fn insert_or_replay_goal(
 }
 
 /// Serialize goal writes that carry the same owner and request id for the
-/// rest of the transaction. The `proxima-goal-request:` prefix keeps the key
+/// rest of the transaction. The `proxiima-goal-request:` prefix keeps the key
 /// apart from the owner fence, series handles and lifecycle keys; the key is
 /// hashed in the server and neither id is logged.
 async fn lock_goal_request(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &proxima_core::OwnerId,
+    owner: &proxiima_core::OwnerId,
     request_id: &str,
 ) -> Result<(), StorageError> {
     sqlx::query(
         "SELECT pg_advisory_xact_lock(
-                    hashtextextended('proxima-goal-request:' || $1::text || ':' || $2, 0))",
+                    hashtextextended('proxiima-goal-request:' || $1::text || ':' || $2, 0))",
     )
     .bind(owner.into_inner())
     .bind(request_id)
@@ -120,13 +120,13 @@ async fn lock_goal_request(
 /// one place that sets it.
 async fn resolve_series_edge(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &proxima_core::OwnerId,
+    owner: &proxiima_core::OwnerId,
     expected_prior: Option<GoalId>,
     change: GoalChange,
 ) -> Result<(Option<uuid::Uuid>, Option<uuid::Uuid>), StorageError> {
     if let Some(prior) = expected_prior {
         let row: Option<(uuid::Uuid, Option<uuid::Uuid>)> = sqlx::query_as(
-            "SELECT handle, parent_handle FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
+            "SELECT handle, parent_handle FROM proxiima_core.goal WHERE t = $1 AND owner_id = $2",
         )
         .bind(prior.into_inner())
         .bind(owner.into_inner())
@@ -137,7 +137,7 @@ async fn resolve_series_edge(
         Ok((Some(handle), parent_handle))
     } else if let GoalChange::DecomposeChild { parent } = change {
         let parent_handle: Option<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT handle FROM proxima_core.goal WHERE t = $1 AND owner_id = $2",
+            "SELECT handle FROM proxiima_core.goal WHERE t = $1 AND owner_id = $2",
         )
         .bind(parent.into_inner())
         .bind(owner.into_inner())

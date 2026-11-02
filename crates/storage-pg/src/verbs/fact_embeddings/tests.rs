@@ -5,33 +5,33 @@
 mod pg_tests {
     use std::sync::Arc;
 
-    use proxima_core::llm::{
+    use proxiima_core::llm::{
         EmbeddingClient, EmbeddingInputRefusal, EmbeddingRuntimePolicy, LlmError,
     };
-    use proxima_core::storage_ports::{
+    use proxiima_core::storage_ports::{
         EmbeddingWrite, EmbeddingWritePort, EmbeddingWriteProof, OwnerTransferPort,
         OwnerWritePermit,
     };
-    use proxima_core::test_fixtures::authenticated_context;
-    use proxima_core::test_fixtures::owner_fixture;
-    use proxima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
-    use proxima_core::verbs::schema::MemoryEmbedUnit;
-    use proxima_core::{
-        AccessKind, AuthPath, AuthzContext, Engine, EntityId, EntityKind, FactIngestPort,
-        FlavorRegistry, GroupId, InputContractId, MemoryTarget, OwnerId, ProtocolError, SchemaId,
-        SchemaVersion, SourceId, StorageError,
+    use proxiima_core::test_fixtures::authenticated_context;
+    use proxiima_core::test_fixtures::owner_fixture;
+    use proxiima_core::verbs::fact_ingest::{FactReceiptDraft, FactWriteCommand};
+    use proxiima_core::verbs::schema::MemoryEmbedUnit;
+    use proxiima_core::{
+        AccessKind, AuthPath, AuthzContext, Engine, EntityId, EntityKind, FactIngestPort, GroupId,
+        InputContractId, MemoryTarget, OwnerId, ProtocolError, SchemaId, SchemaVersion, SourceId,
+        SpiiceRegistry, StorageError,
     };
-    use proxima_pg_testkit::drop_db;
+    use proxiima_pg_testkit::drop_db;
     use uuid::Uuid;
 
-    use proxima_core::EmbeddableEntityRef;
-    use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
-    use proxima_core::llm::{CHUNKED_EMBED_MIN_BYTES, MIN_EMBED_INPUT_CAP_CHARS};
-    use proxima_core::llm::{EmbeddingDim, SingleClientRouter};
-    use proxima_core::{
+    use proxiima_core::EmbeddableEntityRef;
+    use proxiima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
+    use proxiima_core::llm::{CHUNKED_EMBED_MIN_BYTES, MIN_EMBED_INPUT_CAP_CHARS};
+    use proxiima_core::llm::{EmbeddingDim, SingleClientRouter};
+    use proxiima_core::{
         AgentDerivationV1, DerivationIdentity, DerivedMemory, MemoryId, OperatorId, SeriesHandle,
     };
-    use proxima_core::{EmbeddingSpace, SpaceVector};
+    use proxiima_core::{EmbeddingSpace, SpaceVector};
 
     use super::super::{
         EmbeddingReconcileOptions, EmbeddingReconcileScope, claim_pending_embedding_jobs,
@@ -51,7 +51,7 @@ mod pg_tests {
         entity_kind: EntityKind,
         memory_id: MemoryId,
         vectors: &[SpaceVector],
-    ) -> Result<proxima_core::EmbeddingWriteOutcome, StorageError> {
+    ) -> Result<proxiima_core::EmbeddingWriteOutcome, StorageError> {
         insert_embedding(
             tx,
             owner,
@@ -65,7 +65,7 @@ mod pg_tests {
     }
 
     fn core_embed_units() -> Vec<MemoryEmbedUnit> {
-        FlavorRegistry::new()
+        SpiiceRegistry::new()
             .freeze_or_panic_for_tests()
             .embed_units()
             .to_vec()
@@ -94,7 +94,7 @@ mod pg_tests {
     async fn local_observability(
         pool: &sqlx::PgPool,
         platform: &crate::PgPlatformScope,
-    ) -> Result<proxima_core::EmbeddingAnnObservability, proxima_core::StorageError> {
+    ) -> Result<proxiima_core::EmbeddingAnnObservability, proxiima_core::StorageError> {
         embedding_ann_observability(pool, platform, stale_claim_seconds(), VectorStorage::Local)
             .await
     }
@@ -138,7 +138,7 @@ mod pg_tests {
 
     fn fact_draft(label: &str) -> FactWriteCommand {
         FactWriteCommand {
-            schema_id: SchemaId::new("proxima-test/fact-embedding-v1".into()),
+            schema_id: SchemaId::new("proxiima-test/fact-embedding-v1".into()),
             schema_version: SchemaVersion::new(1),
             handle: None,
             source_id: None,
@@ -147,21 +147,21 @@ mod pg_tests {
             rendered_text: Some(label.to_string()),
             lexical_language: None,
             receipt: Some(FactReceiptDraft {
-                source_id: SourceId::new("proxima-test/fact-embedding"),
+                source_id: SourceId::new("proxiima-test/fact-embedding"),
             }),
             occurred_at: None,
             citation: None,
             additional_references: Vec::new(),
             refs: Vec::new(),
             blob_id: None,
-            kind: proxima_core::MemoryKind::Fact,
+            kind: proxiima_core::MemoryKind::Fact,
             request: None,
         }
     }
 
     async fn owner_fact_write_permit(owner: &OwnerId) -> Result<OwnerWritePermit, StorageError> {
         let user_id = owner.as_user();
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests());
         let authz = authenticated_context(AuthzContext::for_subject(user_id, AuthPath::HostBearer));
         engine
             .authorize_owner_write(&authz, owner, AccessKind::Fact)
@@ -169,7 +169,7 @@ mod pg_tests {
             .map_err(|err| StorageError::Internal(err.to_string()))
     }
 
-    const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
+    const AGENT_NOTE: &str = "proxiima_core.agent_note_v1";
 
     /// A note Fact and its sidecar row, in one admission that DECLARES the
     /// table. `ingest_fact_atomic` declares none, so a note row hung off one
@@ -182,8 +182,8 @@ mod pg_tests {
         embedding_spaces: &[EmbeddingSpace],
         title: &str,
         body: &str,
-    ) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
-        let authorized = proxima_core::verbs::fact_ingest::AuthorizedFactWrite::new_for_tests(
+    ) -> Result<proxiima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
+        let authorized = proxiima_core::verbs::fact_ingest::AuthorizedFactWrite::new_for_tests(
             OwnerWritePermit::new_for_tests(*owner, AccessKind::Fact),
             draft.clone(),
             Some(AGENT_NOTE.to_owned()),
@@ -215,7 +215,7 @@ mod pg_tests {
             move |tx, outcome| {
                 Box::pin(async move {
                     sqlx::query(
-                        "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body)
+                        "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body)
                          VALUES ($1, $2, $3, $4)",
                     )
                     .bind(outcome.memory_id.into_inner())
@@ -243,7 +243,7 @@ mod pg_tests {
         let _ = entity_kind;
         sqlx::query_scalar(
             "SELECT embedding_version
-               FROM proxima_core.embedding_heads
+               FROM proxiima_core.embedding_heads
               WHERE entity_id = $1
                 AND model_id = $2",
         )
@@ -255,11 +255,11 @@ mod pg_tests {
 
     async fn count_fact_embeddings(
         pool: &sqlx::PgPool,
-        memory_id: proxima_core::MemoryId,
+        memory_id: proxiima_core::MemoryId,
     ) -> Result<i64, sqlx::Error> {
         sqlx::query_scalar(
             "SELECT count(*)::bigint
-               FROM proxima_core.embeddings
+               FROM proxiima_core.embeddings
               WHERE entity_id = $1
                 AND model_id = 'stub-fact-embed'",
         )
@@ -274,7 +274,7 @@ mod pg_tests {
         count: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let ordinals: Vec<i32> = sqlx::query_scalar(
-            "SELECT chunk_ordinal FROM proxima_core.embeddings
+            "SELECT chunk_ordinal FROM proxiima_core.embeddings
               WHERE entity_id = $1 ORDER BY chunk_ordinal",
         )
         .bind(memory_id.into_inner())
@@ -287,7 +287,7 @@ mod pg_tests {
     #[tokio::test]
     async fn embedding_chunks_publish_atomically_in_text_order()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_chunks").await;
         let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -325,7 +325,7 @@ mod pg_tests {
             tx.commit().await?;
             assert_chunk_ordinals(pool, memory.memory_id, vectors.len()).await?;
             let stored: Vec<Vec<f32>> = sqlx::query_scalar(
-                "SELECT vec::real[] FROM proxima_core.embeddings
+                "SELECT vec::real[] FROM proxiima_core.embeddings
                   WHERE entity_id = $1 ORDER BY chunk_ordinal",
             )
             .bind(memory.memory_id.into_inner())
@@ -387,7 +387,7 @@ mod pg_tests {
     #[tokio::test]
     async fn invalid_later_embedding_chunk_preserves_the_complete_head()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_chunks").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -455,7 +455,7 @@ mod pg_tests {
     #[tokio::test]
     async fn later_chunk_sql_failure_rolls_back_the_version()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_chunks").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -478,7 +478,7 @@ mod pg_tests {
             .await?;
             first.commit().await?;
             sqlx::query(
-                "ALTER TABLE proxima_core.embeddings
+                "ALTER TABLE proxiima_core.embeddings
                  ADD CONSTRAINT fail_later_chunk
                  CHECK (embedding_version = 1 OR chunk_ordinal <> 1)",
             )
@@ -516,7 +516,7 @@ mod pg_tests {
                 "processing",
                 "the claim is completed with the version or not at all"
             );
-            sqlx::query("ALTER TABLE proxima_core.embeddings DROP CONSTRAINT fail_later_chunk")
+            sqlx::query("ALTER TABLE proxiima_core.embeddings DROP CONSTRAINT fail_later_chunk")
                 .execute(pool)
                 .await?;
             let retried = pg
@@ -545,7 +545,7 @@ mod pg_tests {
 
     #[tokio::test]
     async fn embedding_space_purge_limits_chunk_rows() -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_chunks").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_chunks").await;
         let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -586,9 +586,9 @@ mod pg_tests {
 
     async fn insert_claimed_fact_embedding(
         pg: &crate::PgStorage,
-        claim: &proxima_core::EmbeddingJobClaim,
+        claim: &proxiima_core::EmbeddingJobClaim,
         prefix: [f32; 3],
-    ) -> Result<proxima_core::EmbeddingWriteOutcome, StorageError> {
+    ) -> Result<proxiima_core::EmbeddingWriteOutcome, StorageError> {
         pg.insert_embedding(
             &claim.owner,
             EmbeddableEntityRef::Memory {
@@ -611,7 +611,7 @@ mod pg_tests {
     ) -> Result<(String, Option<String>, bool), sqlx::Error> {
         sqlx::query_as(
             "SELECT status::text, last_error, claimed_at IS NULL
-               FROM proxima_core.embedding_jobs
+               FROM proxiima_core.embedding_jobs
               WHERE entity_id = $1",
         )
         .bind(entity_id)
@@ -625,7 +625,7 @@ mod pg_tests {
     ) -> Result<Option<Uuid>, sqlx::Error> {
         sqlx::query_scalar(
             "SELECT claim_token
-               FROM proxima_core.embedding_jobs
+               FROM proxiima_core.embedding_jobs
               WHERE entity_id = $1",
         )
         .bind(entity_id)
@@ -652,19 +652,19 @@ mod pg_tests {
     ) -> Result<(), sqlx::Error> {
         let mut tx = pool.begin().await?;
         sqlx::query(
-            "LOCK TABLE proxima_core.memory, proxima_core.goal IN SHARE ROW EXCLUSIVE MODE",
+            "LOCK TABLE proxiima_core.memory, proxiima_core.goal IN SHARE ROW EXCLUSIVE MODE",
         )
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
              VALUES ($1, 'group') ON CONFLICT DO NOTHING",
         )
         .bind(owner.into_inner())
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              SELECT uuidv7(), 'fact', 'core/agent-note-v1', $1, uuidv7()
                FROM generate_series(1, $2)",
         )
@@ -673,24 +673,24 @@ mod pg_tests {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                  (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
              SELECT h.handle, h.t, 'fact', $1, h.schema_id,
-                    ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp(h.t),
+                    ARRAY['proxiima_core.agent_note_v1'], uuid_extract_timestamp(h.t),
                     '00000000-0000-0000-0000-000000000509'::uuid, NULL
-               FROM proxima_core.memory_head h
+               FROM proxiima_core.memory_head h
               WHERE h.owner_id = $1
-                AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)",
+                AND NOT EXISTS (SELECT 1 FROM proxiima_core.memory m WHERE m.t = h.t)",
         )
         .bind(owner.into_inner())
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+            "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
              SELECT m.t, uuidv7(), 'note', 'body', '{}'
-               FROM proxima_core.memory m
+               FROM proxiima_core.memory m
               WHERE m.owner_id = $1
-                AND NOT EXISTS (SELECT 1 FROM proxima_core.agent_note_v1 s WHERE s.t = m.t)",
+                AND NOT EXISTS (SELECT 1 FROM proxiima_core.agent_note_v1 s WHERE s.t = m.t)",
         )
         .bind(owner.into_inner())
         .execute(&mut *tx)
@@ -705,7 +705,7 @@ mod pg_tests {
     #[tokio::test]
     async fn reconcile_pages_across_the_heads_without_losing_any()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pool = pg.pool_for_tests();
@@ -726,7 +726,7 @@ mod pg_tests {
             );
             let (jobs, entities): (i64, i64) = sqlx::query_as(
                 "SELECT count(*), count(DISTINCT entity_id)
-                   FROM proxima_core.embedding_jobs",
+                   FROM proxiima_core.embedding_jobs",
             )
             .fetch_one(pool)
             .await?;
@@ -744,20 +744,20 @@ mod pg_tests {
     /// reads about a page of `memory` rows and scans none of the table.
     #[tokio::test]
     async fn a_reconcile_step_reads_one_page_of_heads() -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pool = pg.pool_for_tests();
             let owner = owner_fixture();
             seed_uncovered_heads(pool, &owner, 20_000).await?;
-            sqlx::query("VACUUM (ANALYZE) proxima_core.memory")
+            sqlx::query("VACUUM (ANALYZE) proxiima_core.memory")
                 .execute(pool)
                 .await?;
-            sqlx::query("VACUUM (ANALYZE) proxima_core.memory_head")
+            sqlx::query("VACUUM (ANALYZE) proxiima_core.memory_head")
                 .execute(pool)
                 .await?;
             let cursor: Uuid = sqlx::query_scalar(
-                "SELECT t FROM proxima_core.memory ORDER BY t OFFSET 10000 LIMIT 1",
+                "SELECT t FROM proxiima_core.memory ORDER BY t OFFSET 10000 LIMIT 1",
             )
             .fetch_one(pool)
             .await?;
@@ -837,7 +837,7 @@ mod pg_tests {
     #[tokio::test]
     async fn insert_memory_embedding_noops_after_source_memory_deleted()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -866,13 +866,13 @@ mod pg_tests {
             );
 
             sqlx::query(
-                "DELETE FROM proxima_core.embedding_jobs
+                "DELETE FROM proxiima_core.embedding_jobs
                   WHERE entity_id = $1",
             )
             .bind(outcome.memory_id.into_inner())
             .execute(pg.pool_for_tests())
             .await?;
-            sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+            sqlx::query("DELETE FROM proxiima_core.memory WHERE t = $1")
                 .bind(outcome.memory_id.into_inner())
                 .execute(pg.pool_for_tests())
                 .await?;
@@ -914,7 +914,7 @@ mod pg_tests {
     }
 
     async fn forget_by_hand(pool: &sqlx::PgPool, memory_id: MemoryId) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE proxima_core.memory SET forgotten_at = now() WHERE t = $1")
+        sqlx::query("UPDATE proxiima_core.memory SET forgotten_at = now() WHERE t = $1")
             .bind(memory_id.into_inner())
             .execute(pool)
             .await
@@ -927,7 +927,7 @@ mod pg_tests {
     #[tokio::test]
     async fn a_claimed_job_writes_no_vector_once_its_memory_is_forgotten()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -969,7 +969,7 @@ mod pg_tests {
     }
 
     fn claimed_writes<'a>(
-        claims: &'a [proxima_core::EmbeddingJobClaim],
+        claims: &'a [proxiima_core::EmbeddingJobClaim],
         vectors: &'a [SpaceVector],
     ) -> Vec<EmbeddingWrite<'a>> {
         claims
@@ -992,7 +992,7 @@ mod pg_tests {
     #[tokio::test]
     async fn a_batch_write_lands_with_its_claims_or_not_at_all()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -1016,12 +1016,12 @@ mod pg_tests {
                 "a stale claim stops the batch: {refused:?}"
             );
             let vectors_written: i64 =
-                sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.embeddings")
+                sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.embeddings")
                     .fetch_one(pool)
                     .await?;
             assert_eq!(vectors_written, 0, "nothing of the batch was written");
             let processing: i64 = sqlx::query_scalar(
-                "SELECT count(*)::bigint FROM proxima_core.embedding_jobs
+                "SELECT count(*)::bigint FROM proxiima_core.embedding_jobs
                   WHERE status = 'processing'",
             )
             .fetch_one(pool)
@@ -1039,8 +1039,8 @@ mod pg_tests {
                 [1, 1, 1]
             );
             let (vectors_written, jobs_left): (i64, i64) = sqlx::query_as(
-                "SELECT (SELECT count(*) FROM proxima_core.embeddings),
-                        (SELECT count(*) FROM proxima_core.embedding_jobs)",
+                "SELECT (SELECT count(*) FROM proxiima_core.embeddings),
+                        (SELECT count(*) FROM proxiima_core.embedding_jobs)",
             )
             .fetch_one(pool)
             .await?;
@@ -1062,7 +1062,7 @@ mod pg_tests {
     #[tokio::test]
     async fn claims_come_back_in_queue_order_whatever_the_plan()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -1073,7 +1073,7 @@ mod pg_tests {
             }
             let pool = pg.pool_for_tests();
             let queued: Vec<Uuid> = sqlx::query_scalar(
-                "SELECT job_id FROM proxima_core.embedding_jobs ORDER BY job_id",
+                "SELECT job_id FROM proxiima_core.embedding_jobs ORDER BY job_id",
             )
             .fetch_all(pool)
             .await?;
@@ -1081,17 +1081,17 @@ mod pg_tests {
             // Re-insert the oldest job: same job_id, last in the heap.
             sqlx::query(
                 "WITH moved AS (
-                     DELETE FROM proxima_core.embedding_jobs WHERE job_id = $1
+                     DELETE FROM proxiima_core.embedding_jobs WHERE job_id = $1
                      RETURNING job_id, entity_id, model_id, owner_id, dim
                  )
-                 INSERT INTO proxima_core.embedding_jobs
+                 INSERT INTO proxiima_core.embedding_jobs
                      (job_id, entity_id, model_id, owner_id, dim)
                  SELECT job_id, entity_id, model_id, owner_id, dim FROM moved",
             )
             .bind(queued[0])
             .execute(pool)
             .await?;
-            sqlx::raw_sql("ANALYZE proxima_core.embedding_jobs")
+            sqlx::raw_sql("ANALYZE proxiima_core.embedding_jobs")
                 .execute(pool)
                 .await?;
             let mut connection = pool.acquire().await?;
@@ -1116,7 +1116,7 @@ mod pg_tests {
     #[tokio::test]
     async fn the_drain_does_not_claim_a_forgotten_memorys_job()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -1147,7 +1147,7 @@ mod pg_tests {
     /// causes need separate statuses.
     #[tokio::test]
     async fn permanently_failed_job_is_never_requeued() -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -1202,7 +1202,7 @@ mod pg_tests {
     #[tokio::test]
     async fn permanently_failed_earlier_candidate_does_not_starve_later_missing_one()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -1284,7 +1284,7 @@ mod pg_tests {
     #[tokio::test]
     async fn owner_backfill_skips_permanently_failed_jobs_before_its_limit()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let observed = observe_owner_backfill_progress(&pg).await;
         drop(pg);
@@ -1309,7 +1309,7 @@ mod pg_tests {
         pg: &crate::PgStorage,
     ) -> Result<BackfillProgress, Box<dyn std::error::Error>> {
         let owner = owner_fixture();
-        let foreign_owner = OwnerId::from(proxima_core::UserId::new(Uuid::now_v7()));
+        let foreign_owner = OwnerId::from(proxiima_core::UserId::new(Uuid::now_v7()));
         let foreign = backfill_note(pg, &foreign_owner, "foreign earlier Fact", None).await?;
         let earlier = backfill_note(
             pg,
@@ -1341,8 +1341,8 @@ mod pg_tests {
             .await?;
         let permanent_before = backfill_job_snapshot(pool, earlier, "stub-fact-embed").await?;
         let other_model_before = backfill_job_snapshot(pool, later, "other-model").await?;
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-        let configured_pg = pg.clone().with_flavors(&registry);
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
+        let configured_pg = pg.clone().with_spiices(&registry);
         let engine = Engine::new(registry)
             .with_storage_ports(Arc::new(configured_pg).storage_ports())
             .with_embedding_router(routed(RecordingBatchEmbedding {
@@ -1365,7 +1365,7 @@ mod pg_tests {
             other_model_before,
             other_model_after: backfill_job_snapshot(pool, later, "other-model").await?,
             later_target_jobs: sqlx::query_scalar(
-                "SELECT count(*) FROM proxima_core.embedding_jobs
+                "SELECT count(*) FROM proxiima_core.embedding_jobs
                   WHERE owner_id = $1 AND entity_id = $2 AND model_id = 'stub-fact-embed'",
             )
             .bind(owner.into_inner())
@@ -1413,7 +1413,7 @@ mod pg_tests {
     ) -> Result<BackfillJobSnapshot, sqlx::Error> {
         sqlx::query_as(
             "SELECT job_id, status::text, last_error, claim_token, claimed_at IS NULL AS unclaimed
-               FROM proxima_core.embedding_jobs WHERE entity_id = $1 AND model_id = $2",
+               FROM proxiima_core.embedding_jobs WHERE entity_id = $1 AND model_id = $2",
         )
         .bind(memory_id.into_inner())
         .bind(model)
@@ -1424,7 +1424,7 @@ mod pg_tests {
     #[tokio::test]
     async fn reconcile_cannot_recreate_job_after_concurrent_forget()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -1436,7 +1436,7 @@ mod pg_tests {
             let t = written.memory_id.into_inner();
 
             let mut forget_tx = pool.begin().await?;
-            sqlx::query("SELECT t FROM proxima_core.memory WHERE t = $1 FOR UPDATE")
+            sqlx::query("SELECT t FROM proxiima_core.memory WHERE t = $1 FOR UPDATE")
                 .bind(t)
                 .fetch_one(forget_tx.as_mut())
                 .await?;
@@ -1469,8 +1469,8 @@ mod pg_tests {
             forget_memory(
                 &mut forget_tx,
                 &crate::core_pg_sidecars(),
-                &proxima_core::owner_inverse::OwnerSurfaces::for_registry(
-                    &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+                &proxiima_core::owner_inverse::OwnerSurfaces::for_registry(
+                    &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
                 ),
                 t,
                 owner.into_inner(),
@@ -1482,7 +1482,7 @@ mod pg_tests {
             assert_eq!(reconciled.enqueued, 0);
             let jobs: i64 = sqlx::query_scalar(
                 "SELECT count(*)::bigint
-                   FROM proxima_core.embedding_jobs
+                   FROM proxiima_core.embedding_jobs
                   WHERE entity_id = $1",
             )
             .bind(t)
@@ -1500,7 +1500,7 @@ mod pg_tests {
     #[tokio::test]
     async fn claim_renewal_prevents_reclaim_without_changing_fence()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -1517,7 +1517,7 @@ mod pg_tests {
             let claim = &claims[0];
 
             sqlx::query(
-                "UPDATE proxima_core.embedding_jobs
+                "UPDATE proxiima_core.embedding_jobs
                     SET claimed_at = now() - make_interval(secs => $2::double precision)
                   WHERE entity_id = $1",
             )
@@ -1555,7 +1555,7 @@ mod pg_tests {
     #[tokio::test]
     async fn reclaimed_claim_cannot_mutate_successor_job() -> Result<(), Box<dyn std::error::Error>>
     {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -1572,7 +1572,7 @@ mod pg_tests {
             let old_claim = old_claims[0].clone();
 
             sqlx::query(
-                "UPDATE proxima_core.embedding_jobs
+                "UPDATE proxiima_core.embedding_jobs
                     SET claimed_at = now() - make_interval(secs => $2::double precision)
                   WHERE entity_id = $1",
             )
@@ -1639,7 +1639,7 @@ mod pg_tests {
                 Some(1)
             );
             let remaining: i64 = sqlx::query_scalar(
-                "SELECT count(*)::bigint FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+                "SELECT count(*)::bigint FROM proxiima_core.embedding_jobs WHERE entity_id = $1",
             )
             .bind(outcome.memory_id.into_inner())
             .fetch_one(pool)
@@ -1656,7 +1656,7 @@ mod pg_tests {
     #[tokio::test]
     async fn source_claim_cannot_finalize_a_job_after_owner_transfer()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let source = owner_fixture();
@@ -1674,9 +1674,9 @@ mod pg_tests {
             let destination = OwnerId::from(GroupId::new(Uuid::now_v7()));
             let transfer_permit =
                 OwnerWritePermit::transfer_for_tests(source, AccessKind::Fact, destination);
-            let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-            let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
-            let mut wake = proxima_core::write_wake::WriteWake::subscribe();
+            let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
+            let surfaces = proxiima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
+            let mut wake = proxiima_core::write_wake::WriteWake::subscribe();
 
             assert!(
                 pg.transfer_to_owner(
@@ -1696,7 +1696,7 @@ mod pg_tests {
                 .map_err(|_| "a committed transfer wakes the drains")?;
             let (job_owner, job_token): (Uuid, Option<Uuid>) = sqlx::query_as(
                 "SELECT owner_id, claim_token
-                   FROM proxima_core.embedding_jobs
+                   FROM proxiima_core.embedding_jobs
                   WHERE job_id = $1",
             )
             .bind(stale.job_id)
@@ -1723,7 +1723,7 @@ mod pg_tests {
             }
 
             sqlx::query(
-                "UPDATE proxima_core.embedding_jobs
+                "UPDATE proxiima_core.embedding_jobs
                     SET claimed_at = now() - make_interval(secs => $2::double precision)
                   WHERE job_id = $1",
             )
@@ -1753,7 +1753,7 @@ mod pg_tests {
     /// the reclaim: nothing else runs on the `maintain-embeddings` path.
     #[tokio::test]
     async fn reconcile_reclaims_an_abandoned_claim() -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -1769,7 +1769,7 @@ mod pg_tests {
             let entity_id = outcome.memory_id.into_inner();
             claim_pending_embedding_jobs(pool, 1, &[], &[]).await?;
             sqlx::query(
-                "UPDATE proxima_core.embedding_jobs
+                "UPDATE proxiima_core.embedding_jobs
                     SET claimed_at = now() - make_interval(secs => $2::double precision)
                   WHERE entity_id = $1",
             )
@@ -1795,7 +1795,7 @@ mod pg_tests {
     /// driven by `EmbeddingRecipe::resolve`, which binds a unit to its
     /// sidecar TABLE and never sees a `Surface`, so before
     /// `MemoryEmbedUnit::key_column` existed both statements here spelled
-    /// the memory column `t`: a flavor that keyed its sidecar on anything
+    /// the memory column `t`: a spiice that keyed its sidecar on anything
     /// else got no text, its job completed with nothing embedded, and the
     /// memory was semantically invisible with no error anywhere.
     ///
@@ -1807,10 +1807,10 @@ mod pg_tests {
     #[tokio::test]
     async fn the_drain_reads_text_through_the_declared_memory_key_column()
     -> Result<(), Box<dyn std::error::Error>> {
-        const RENAMED_TABLE: &str = "proxima_core.renamed_embed_note_v1";
+        const RENAMED_TABLE: &str = "proxiima_core.renamed_embed_note_v1";
         const RENAMED_KEY: &str = "note_memory_id";
 
-        let (pg, db_name) = fresh_pg("proxima_spg_embed_key").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed_key").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -1821,16 +1821,16 @@ mod pg_tests {
             let pool = pg.pool_for_tests();
 
             sqlx::query(
-                "CREATE TABLE proxima_core.renamed_embed_note_v1 (
+                "CREATE TABLE proxiima_core.renamed_embed_note_v1 (
                      note_memory_id uuid PRIMARY KEY
-                                    REFERENCES proxima_core.memory (t) ON DELETE CASCADE,
+                                    REFERENCES proxiima_core.memory (t) ON DELETE CASCADE,
                      embed_text     text NOT NULL
                  )",
             )
             .execute(pool)
             .await?;
             sqlx::query(
-                "INSERT INTO proxima_core.renamed_embed_note_v1 (note_memory_id, embed_text)
+                "INSERT INTO proxiima_core.renamed_embed_note_v1 (note_memory_id, embed_text)
                  VALUES ($1, 'the pilings under the north quay are sound')",
             )
             .bind(outcome.memory_id.into_inner())
@@ -1838,9 +1838,9 @@ mod pg_tests {
             .await?;
 
             let unit = |key_column: &str| MemoryEmbedUnit {
-                schema_id: SchemaId::new("proxima-test/fact-embedding-v1".into()),
+                schema_id: SchemaId::new("proxiima-test/fact-embedding-v1".into()),
                 schema_version: SchemaVersion::new(1),
-                kind: proxima_core::verbs::schema::PayloadKind::Fact,
+                kind: proxiima_core::verbs::schema::PayloadKind::Fact,
                 sidecar_table: RENAMED_TABLE.to_owned(),
                 column: "embed_text".to_owned(),
                 key_column: key_column.to_owned(),
@@ -2003,8 +2003,8 @@ mod pg_tests {
         draft.schema_id = SchemaId::new("core/agent-note-v1".into());
         let origin = ingest_note_fact(pg, owner, &draft, &[], "origin", "origin").await?;
         let provider = Arc::new(AdmissionProvider::default());
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-        let configured_pg = pg.clone().with_flavors(&registry);
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
+        let configured_pg = pg.clone().with_spiices(&registry);
         let engine = Engine::new(registry)
             .with_storage_ports(Arc::new(configured_pg).storage_ports())
             .with_embedding_router(routed(CappedEmbedding {
@@ -2019,7 +2019,7 @@ mod pg_tests {
     async fn count_jobs(pool: &sqlx::PgPool, entity_id: Uuid) -> Result<i64, sqlx::Error> {
         sqlx::query_scalar(
             "SELECT count(*)::bigint
-               FROM proxima_core.embedding_jobs
+               FROM proxiima_core.embedding_jobs
               WHERE entity_id = $1",
         )
         .bind(entity_id)
@@ -2032,7 +2032,7 @@ mod pg_tests {
     #[tokio::test]
     async fn author_derived_queues_before_the_provider_then_drains_all_chunks()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -2103,7 +2103,7 @@ mod pg_tests {
     #[tokio::test]
     async fn author_derived_queues_the_vector_without_a_mode_choice()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -2168,7 +2168,7 @@ mod pg_tests {
     #[tokio::test]
     async fn author_derived_defers_text_refused_at_every_length()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_embed").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_embed").await;
         let _platform = pg.platform_scope_for_host();
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
@@ -2225,11 +2225,11 @@ mod pg_tests {
             MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
             owner,
             "a grounded claim",
-            proxima_core::InterpretationV1 {
+            proxiima_core::InterpretationV1 {
                 claim: "a grounded claim".into(),
                 confidence: 80,
                 subject_memory_ids: vec![subject.into_inner()],
-                subject_kinds: vec![proxima_core::InterpretationSubjectKind::Abstraction],
+                subject_kinds: vec![proxiima_core::InterpretationSubjectKind::Abstraction],
                 model_id: "test".into(),
                 client_name: "test".into(),
                 client_version: "1".into(),
@@ -2238,14 +2238,14 @@ mod pg_tests {
     }
 
     async fn memory_count(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
-        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.memory")
             .fetch_one(pool)
             .await
     }
 
     async fn assert_pending_admissions(
         pool: &sqlx::PgPool,
-        outcomes: &[proxima_core::DerivedMemoryOutcome],
+        outcomes: &[proxiima_core::DerivedMemoryOutcome],
     ) -> Result<(), Box<dyn std::error::Error>> {
         for outcome in outcomes {
             assert!(outcome.embedding_deferred);
@@ -2262,7 +2262,7 @@ mod pg_tests {
     #[tokio::test]
     async fn author_derived_batch_revision_and_open_units_never_call_provider()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_admission").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_admission").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let (engine, authz, origin, provider) =
@@ -2323,7 +2323,7 @@ mod pg_tests {
             assert!(abandoned.embedding_deferred);
             drop(rollback);
             let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = $1)",
+                "SELECT EXISTS (SELECT 1 FROM proxiima_core.memory WHERE t = $1)",
             )
             .bind(abandoned.memory_id.into_inner())
             .fetch_one(pool)
@@ -2349,19 +2349,19 @@ mod pg_tests {
     fn moving_admission_router(
         owner: OwnerId,
         provider: &Arc<AdmissionProvider>,
-    ) -> Result<Arc<proxima_core::test_fixtures::TestEmbeddingRouter>, Box<dyn std::error::Error>>
+    ) -> Result<Arc<proxiima_core::test_fixtures::TestEmbeddingRouter>, Box<dyn std::error::Error>>
     {
         let client = |model_id| {
-            proxima_core::BoundEmbeddingClient::bind(Arc::new(CappedEmbedding {
+            proxiima_core::BoundEmbeddingClient::bind(Arc::new(CappedEmbedding {
                 max_chars: MIN_EMBED_INPUT_CAP_CHARS,
                 model_id,
                 provider: provider.clone(),
             }))
         };
-        let router = Arc::new(proxima_core::test_fixtures::TestEmbeddingRouter::default());
+        let router = Arc::new(proxiima_core::test_fixtures::TestEmbeddingRouter::default());
         router.set_route(
             owner,
-            proxima_core::EmbeddingRoute::moving(
+            proxiima_core::EmbeddingRoute::moving(
                 Some(client("stub-fact-embed")?),
                 client("next-fact-embed")?,
             )?,
@@ -2372,14 +2372,14 @@ mod pg_tests {
     #[tokio::test]
     async fn author_derived_and_fact_queue_both_spaces_but_schema_and_no_route_queue_none()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_admission").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_admission").await;
         let result: Result<(), Box<dyn std::error::Error>> =
             async {
                 let owner = owner_fixture();
                 let (engine, authz, origin, provider) =
                     capped_authoring_fixture(&pg, &owner, MIN_EMBED_INPUT_CAP_CHARS).await?;
                 let router = moving_admission_router(owner, &provider)?;
-                let moving = proxima_core::EmbeddingRouter::route(router.as_ref(), &owner).await?;
+                let moving = proxiima_core::EmbeddingRouter::route(router.as_ref(), &owner).await?;
                 let engine = engine.with_embedding_router(router.clone());
                 let derived = engine
                     .derive_memory(
@@ -2388,7 +2388,7 @@ mod pg_tests {
                     )
                     .await?;
                 assert!(derived.embedding_deferred);
-                let payload = proxima_core::AgentNoteV1 {
+                let payload = proxiima_core::AgentNoteV1 {
                     note_id: Uuid::now_v7(),
                     title: "moving fact".into(),
                     body: "a fact".into(),
@@ -2398,13 +2398,13 @@ mod pg_tests {
                 let fact = engine
                     .ingest_fact(
                         &authz,
-                        proxima_core::FactWrite::new(owner, "admission", &payload),
+                        proxiima_core::FactWrite::new(owner, "admission", &payload),
                     )
                     .await?;
                 let pool = pg.pool_for_tests();
                 for memory_id in [derived.memory_id, fact.memory_id] {
                     let jobs: Vec<(String, i64, String)> = sqlx::query_as(
-                    "SELECT model_id, dim::bigint, status::text FROM proxima_core.embedding_jobs
+                    "SELECT model_id, dim::bigint, status::text FROM proxiima_core.embedding_jobs
                      WHERE entity_id = $1 ORDER BY model_id",
                 ).bind(memory_id.into_inner()).fetch_all(pool).await?;
                     assert_eq!(
@@ -2415,13 +2415,13 @@ mod pg_tests {
                         ]
                     );
                 }
-                let episode = proxima_core::WriteActV1 {
+                let episode = proxiima_core::WriteActV1 {
                     episode_id: Uuid::now_v7(),
                 };
                 let no_embed = engine
                     .ingest_fact(
                         &authz,
-                        proxima_core::FactWrite::new(owner, "admission", &episode),
+                        proxiima_core::FactWrite::new(owner, "admission", &episode),
                     )
                     .await?;
                 assert_eq!(count_jobs(pool, no_embed.memory_id.into_inner()).await?, 0);
@@ -2456,7 +2456,7 @@ mod pg_tests {
     #[tokio::test]
     async fn author_derived_job_failure_rolls_back_memory_provenance_and_sidecar()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (pg, db_name) = fresh_pg("proxima_spg_admission").await;
+        let (pg, db_name) = fresh_pg("proxiima_spg_admission").await;
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let owner = owner_fixture();
             let (engine, authz, origin, provider) =
@@ -2466,14 +2466,14 @@ mod pg_tests {
                          LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'job insertion refused'; END $$")
                 .execute(pool).await?;
             sqlx::query("CREATE TRIGGER refuse_admission_job BEFORE INSERT
-                         ON proxima_core.embedding_jobs FOR EACH ROW
+                         ON proxiima_core.embedding_jobs FOR EACH ROW
                          EXECUTE FUNCTION public.refuse_admission_job()")
                 .execute(pool).await?;
             let before: (i64, i64, i64, i64) = sqlx::query_as(
-                "SELECT (SELECT count(*) FROM proxima_core.memory),
-                        (SELECT count(*) FROM proxima_core.agent_derivation_v1),
-                        (SELECT count(*) FROM proxima_core.content),
-                        (SELECT count(*) FROM proxima_core.embedding_jobs)",
+                "SELECT (SELECT count(*) FROM proxiima_core.memory),
+                        (SELECT count(*) FROM proxiima_core.agent_derivation_v1),
+                        (SELECT count(*) FROM proxiima_core.content),
+                        (SELECT count(*) FROM proxiima_core.embedding_jobs)",
             ).fetch_one(pool).await?;
             let refused = engine.derive_memory(&authz,
                 derived_request(owner, &[origin], "atomic conclusion".into())?,
@@ -2481,10 +2481,10 @@ mod pg_tests {
             let error = refused.expect_err("the job trigger must refuse this admission");
             assert!(error.message.contains("job insertion refused"), "{error}");
             let after: (i64, i64, i64, i64) = sqlx::query_as(
-                "SELECT (SELECT count(*) FROM proxima_core.memory),
-                        (SELECT count(*) FROM proxima_core.agent_derivation_v1),
-                        (SELECT count(*) FROM proxima_core.content),
-                        (SELECT count(*) FROM proxima_core.embedding_jobs)",
+                "SELECT (SELECT count(*) FROM proxiima_core.memory),
+                        (SELECT count(*) FROM proxiima_core.agent_derivation_v1),
+                        (SELECT count(*) FROM proxiima_core.content),
+                        (SELECT count(*) FROM proxiima_core.embedding_jobs)",
             ).fetch_one(pool).await?;
             assert_eq!(after, before, "job failure rolls back the entire admission");
             assert!(provider.offered().is_empty());

@@ -1,6 +1,6 @@
-use proxima_core::StorageError;
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::verbs::fact_ingest::{
+use proxiima_core::StorageError;
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::verbs::fact_ingest::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite,
     FactIngestOutcome,
 };
@@ -13,7 +13,7 @@ impl FactIngestPort for PgStorage {
     async fn ingest_authorized_fact_atomic(
         &self,
         authorized: &AuthorizedFactWrite,
-        embedding_spaces: &[proxima_core::EmbeddingSpace],
+        embedding_spaces: &[proxiima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         if !authorized.sidecar_payloads().is_empty() {
             return Err(StorageError::ConstraintViolation(
@@ -32,7 +32,7 @@ impl FactIngestPort for PgStorage {
     async fn ingest_fact_with_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWrite,
-        embedding_spaces: &[proxima_core::EmbeddingSpace],
+        embedding_spaces: &[proxiima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         let sidecar_payloads = authorized.sidecar_payloads();
         let natural_key = verbs::fact_ingest::fact_natural_key(
@@ -101,7 +101,7 @@ impl FactIngestPort for PgStorage {
     async fn ingest_fact_with_citation_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitation,
-        embedding_spaces: &[proxima_core::EmbeddingSpace],
+        embedding_spaces: &[proxiima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         let sidecar_payloads = authorized.sidecar_payloads();
         let natural_key = verbs::fact_ingest::fact_natural_key(
@@ -134,7 +134,7 @@ impl FactIngestPort for PgStorage {
                     let owner = authorized.owner_write_permit().owner();
                     crate::access::owner_columns::lock_owner_fence_shared_tx(&mut tx, owner)
                         .await?;
-                    let key = proxima_core::citations::uploaded_blob_object_key(upload_id);
+                    let key = proxiima_core::citations::uploaded_blob_object_key(upload_id);
                     crate::access::owner_columns::lock_object_keys_tx(
                         &mut tx,
                         std::slice::from_ref(&key),
@@ -196,7 +196,7 @@ impl FactIngestPort for PgStorage {
     async fn ingest_fact_with_citation_ref_and_typed_sidecar(
         &self,
         authorized: &AuthorizedFactWithCitationRef,
-        embedding_spaces: &[proxima_core::EmbeddingSpace],
+        embedding_spaces: &[proxiima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         let sidecar_payloads = authorized.sidecar_payloads();
         let natural_key = verbs::fact_ingest::fact_natural_key(

@@ -1,19 +1,19 @@
 //! Receipt lookup and per-job embedding diagnostics against Postgres.
 
-use proxima_core::storage_ports::{EmbeddingJobPort, FactIngestPort, OwnerWritePermit};
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{AccessKind, EmbeddingJobState, MemoryId, OwnerId, StorageError, UserId};
-use proxima_pg_testkit::drop_db;
-use proxima_storage_pg::ingest_receipt;
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{PgStorage, begin_owner_transaction};
+use proxiima_core::storage_ports::{EmbeddingJobPort, FactIngestPort, OwnerWritePermit};
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::{AccessKind, EmbeddingJobState, MemoryId, OwnerId, StorageError, UserId};
+use proxiima_pg_testkit::drop_db;
+use proxiima_storage_pg::ingest_receipt;
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{PgStorage, begin_owner_transaction};
 use uuid::Uuid;
 
 fn sourced(source: &str, key: &str) -> FactWriteCommand {
     FactWriteCommand {
-        schema_id: proxima_core::SchemaId::new("core/test-fact-v1".to_string()),
-        schema_version: proxima_core::SchemaVersion::new(1),
+        schema_id: proxiima_core::SchemaId::new("core/test-fact-v1".to_string()),
+        schema_version: proxiima_core::SchemaVersion::new(1),
         handle: None,
         source_id: Some(source.to_owned()),
         ingest_key: Some(key.to_owned()),
@@ -26,18 +26,18 @@ fn sourced(source: &str, key: &str) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
 
 #[tokio::test]
 async fn the_receipt_read_uses_the_caller_transaction_under_row_security() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
-    let url = proxima_pg_testkit::db_url(&db_name);
+    let url = proxiima_pg_testkit::db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect_for_tests(url).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -83,11 +83,11 @@ async fn the_receipt_read_uses_the_caller_transaction_under_row_security() {
 
 #[tokio::test]
 async fn embedding_job_diagnostics_report_each_job_and_its_claim_age() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
-    let url = proxima_pg_testkit::db_url(&db_name);
+    let url = proxiima_pg_testkit::db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect_for_tests(url).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -101,9 +101,9 @@ async fn embedding_job_diagnostics_report_each_job_and_its_claim_age() {
         let elsewhere = Uuid::now_v7();
         let admin = pg.pool_for_tests();
         let mut setup = admin.begin().await?;
-        proxima_storage_pg::access::owner_columns::ensure_owner_row(setup.as_mut(), &other).await?;
+        proxiima_storage_pg::access::owner_columns::ensure_owner_row(setup.as_mut(), &other).await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_jobs
+            "INSERT INTO proxiima_core.embedding_jobs
                 (entity_id, model_id, owner_id, status, claimed_at, claim_token, dim, last_error)
              VALUES
                 ($1, 'diag', $2, 'processing', timestamptz '2020-01-01 00:00:00+00', $3, 384, NULL),

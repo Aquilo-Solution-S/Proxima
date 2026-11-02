@@ -1,11 +1,11 @@
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 use std::sync::Arc;
 
-use proxima_storage_pg::{
+use proxiima_storage_pg::{
     PgPlatformScope, PgPoolConfig, PgStorage, PgTuning, VectorStorage, core_migrator_for,
 };
 
-use proxima_pg_testkit::{
+use proxiima_pg_testkit::{
     DbGuard, FNV_OFFSET_BASIS, TemplateFamily, create_db_from_template,
     create_named_db_from_template, db_url, drop_db, ensure_template, ensure_template_in,
     fnv1a64_extend, split_role_urls, split_role_urls_without_pgvector,
@@ -28,7 +28,7 @@ async fn roles_for(
 /// build drops the idle templates of its family, and the two kinds must not
 /// evict each other's.
 fn host_index_family() -> TemplateFamily {
-    TemplateFamily::new("proxima_tmpl_corehi_").expect("a valid template family")
+    TemplateFamily::new("proxiima_tmpl_corehi_").expect("a valid template family")
 }
 
 /// What the template of this store kind is a function of: its migrations, its
@@ -41,16 +41,16 @@ fn core_template_hash(vectors: VectorStorage) -> u64 {
     }
     hash = fnv1a64_extend(
         hash,
-        proxima_storage_pg::definitions::checksum_hex(vectors).as_bytes(),
+        proxiima_storage_pg::definitions::checksum_hex(vectors).as_bytes(),
     );
-    fnv1a64_extend(hash, proxima_core::RELEASE_VERSION.as_bytes())
+    fnv1a64_extend(hash, proxiima_core::RELEASE_VERSION.as_bytes())
 }
 
 #[must_use]
 pub fn core_template_name(vectors: VectorStorage) -> String {
     let hash = core_template_hash(vectors);
     match vectors {
-        VectorStorage::Local => format!("proxima_tmpl_core_{hash:016x}"),
+        VectorStorage::Local => format!("proxiima_tmpl_core_{hash:016x}"),
         VectorStorage::HostIndex => host_index_family().template_name(hash),
     }
 }
@@ -69,12 +69,12 @@ pub async fn ensure_core_template(vectors: VectorStorage) -> Result<String, sqlx
         let (_runtime_url, platform_url) = roles_for(&database, vectors).await?;
         pool.close().await;
         let mut connection = sqlx::PgConnection::connect(&platform_url).await?;
-        let mut transaction = proxima_storage_pg::begin_migration_transaction(&mut connection)
+        let mut transaction = proxiima_storage_pg::begin_migration_transaction(&mut connection)
             .await
             .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
-        proxima_storage_pg::run_core_schema(
+        proxiima_storage_pg::run_core_schema(
             &mut transaction,
-            proxima_storage_pg::MissingMigrationPolicy::Reject,
+            proxiima_storage_pg::MissingMigrationPolicy::Reject,
             vectors,
         )
         .await
@@ -126,14 +126,14 @@ pub async fn fresh_pg(prefix: &str) -> (PgStorage, DbGuard) {
 /// As [`fresh_pg`].
 pub async fn fresh_pg_host_index(
     prefix: &str,
-    index: Arc<dyn proxima_core::storage_ports::VectorIndex>,
+    index: Arc<dyn proxiima_core::storage_ports::VectorIndex>,
 ) -> (PgStorage, DbGuard) {
     fresh_pg_with(prefix, Some(index)).await
 }
 
 async fn fresh_pg_with(
     prefix: &str,
-    index: Option<Arc<dyn proxima_core::storage_ports::VectorIndex>>,
+    index: Option<Arc<dyn proxiima_core::storage_ports::VectorIndex>>,
 ) -> (PgStorage, DbGuard) {
     let vectors = match index {
         Some(_) => VectorStorage::HostIndex,
@@ -149,7 +149,7 @@ async fn fresh_pg_with(
     let (runtime_url, platform_url) = roles_for(&db_name, vectors)
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but role provisioning failed: {e}"));
-    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+    let migration = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
         &platform_url,
         PgPoolConfig::default(),
         PgTuning::default(),
@@ -168,10 +168,10 @@ async fn fresh_pg_with(
     let platform_pool = serving_platform_pool(&platform_url)
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but platform connect failed: {e}"));
-    let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core"])
+    let platform_scope = PgPlatformScope::new(platform_pool, &["proxiima_core"])
         .await
         .unwrap_or_else(|e| panic!("PG required for tests but platform validation failed: {e}"));
-    let runtime_url = proxima_pg_testkit::through_test_pooler(&runtime_url);
+    let runtime_url = proxiima_pg_testkit::through_test_pooler(&runtime_url);
     let connected = match index {
         Some(index) => {
             PgStorage::connect_with_vector_index(
@@ -212,12 +212,12 @@ async fn fresh_pg_with(
 }
 
 /// The fixture's platform pool: direct, or through the transaction-mode
-/// pooler named by `PROXIMA_TEST_PGBOUNCER_URL` with the serving pool policy
+/// pooler named by `PROXIIMA_TEST_PGBOUNCER_URL` with the serving pool policy
 /// (a pooler refuses the startup parameters a bare `sqlx` connect sends).
 async fn serving_platform_pool(platform_url: &str) -> Result<sqlx::PgPool, StorageError> {
-    if proxima_pg_testkit::test_pooler_url().is_some() {
+    if proxiima_pg_testkit::test_pooler_url().is_some() {
         return PgPoolConfig::default()
-            .connect_lazy(&proxima_pg_testkit::through_test_pooler(platform_url));
+            .connect_lazy(&proxiima_pg_testkit::through_test_pooler(platform_url));
     }
     sqlx::PgPool::connect(platform_url)
         .await
@@ -248,7 +248,7 @@ pub async fn connect_for_tests(url: String) -> Result<PgStorage, StorageError> {
     let (runtime_url, platform_url) = split_role_urls(database)
         .await
         .map_err(|error| StorageError::Unavailable(error.to_string()))?;
-    let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+    let migration = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
         &platform_url,
         PgPoolConfig::default(),
         PgTuning::default(),
@@ -257,9 +257,9 @@ pub async fn connect_for_tests(url: String) -> Result<PgStorage, StorageError> {
     migration.run_migrations().await?;
     migration.initialize_store_number(1).await?;
     let platform_pool = serving_platform_pool(&platform_url).await?;
-    let platform_scope = PgPlatformScope::new(platform_pool, &["proxima_core"]).await?;
+    let platform_scope = PgPlatformScope::new(platform_pool, &["proxiima_core"]).await?;
     let storage = PgStorage::connect_with_config(
-        &proxima_pg_testkit::through_test_pooler(&runtime_url),
+        &proxiima_pg_testkit::through_test_pooler(&runtime_url),
         PgPoolConfig::default(),
         PgTuning::default(),
         platform_scope,
@@ -285,7 +285,7 @@ impl PgStorage {
     }
 }
 
-/// Register `group` as a group in `proxima_core.owners`, the way a host
+/// Register `group` as a group in `proxiima_core.owners`, the way a host
 /// creates one before writing under it. Idempotent; an id already
 /// registered as a user is a `Conflict`.
 ///
@@ -294,19 +294,19 @@ impl PgStorage {
 /// Storage errors from the registration.
 pub async fn register_group_for_tests(
     pool: &sqlx::PgPool,
-    group: proxima_core::GroupId,
-) -> Result<(), proxima_core::StorageError> {
+    group: proxiima_core::GroupId,
+) -> Result<(), proxiima_core::StorageError> {
     let mut conn = pool
         .acquire()
         .await
-        .map_err(|err| proxima_core::StorageError::Unavailable(err.to_string()))?;
+        .map_err(|err| proxiima_core::StorageError::Unavailable(err.to_string()))?;
     crate::access::owner_columns::register_group(&mut conn, group).await
 }
 
 /// Stable writer for synthetic storage rows with no authenticated request.
 #[must_use]
-pub const fn writer() -> proxima_core::WriterAttribution {
-    proxima_core::WriterAttribution {
+pub const fn writer() -> proxiima_core::WriterAttribution {
+    proxiima_core::WriterAttribution {
         by: uuid::Uuid::from_u128(0x509),
         via: None,
     }

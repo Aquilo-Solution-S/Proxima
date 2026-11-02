@@ -48,18 +48,18 @@ pub(crate) const MAX_PAGE_LIMIT: u32 = 200;
 
 /// Resolve an optional wire `limit` to `1..=`[`MAX_PAGE_LIMIT`],
 /// defaulting to [`DEFAULT_PAGE_LIMIT`] when omitted and rejecting zero
-/// per [`crate::reject_zero_limit`], which is shared with the flavor tool
+/// per [`crate::reject_zero_limit`], which is shared with the spiice tool
 /// trait so both surfaces cannot drift on the same rule.
 pub(crate) fn resolve_page_limit(limit: Option<u32>) -> Result<u32, crate::mcp::McpToolError> {
     crate::reject_zero_limit(limit)?;
     Ok(limit.unwrap_or(DEFAULT_PAGE_LIMIT).min(MAX_PAGE_LIMIT))
 }
 
-/// Register every substrate-shipped MCP tool into the `FlavorRegistry`.
-/// Called from `FlavorRegistry::default()`.
+/// Register every substrate-shipped MCP tool into the `SpiiceRegistry`.
+/// Called from `SpiiceRegistry::default()`.
 pub(crate) fn register_all(
-    registry: &mut crate::FlavorRegistry,
-) -> Result<(), crate::FlavorRegistryError> {
+    registry: &mut crate::SpiiceRegistry,
+) -> Result<(), crate::SpiiceRegistryError> {
     registry.try_add_mcp_tool::<SearchMemoriesTool>("core")?;
     registry.try_add_mcp_tool::<RecallTool>("core")?;
     registry.try_add_mcp_tool::<ThinkTool>("core")?;

@@ -1,6 +1,6 @@
 //! Operator maintenance verb for the object-purge drain.
 //!
-//! This is an operator surface for the `proxima-mcp maintain-storage` CLI and
+//! This is an operator surface for the `proxiima-mcp maintain-storage` CLI and
 //! the runtime's object-maintenance pass (holding the database credentials is
 //! the authority, like the embedding maintenance verbs). It is not a promise
 //! to a user: the drain finishes destruction a committed erase already owes
@@ -12,11 +12,11 @@
 //! delete each key, then clear the debt or record the failed attempt. Nothing
 //! in it is specific to S3, so another kind of target can share the queue.
 
-use proxima_core::count_u64;
+use proxiima_core::count_u64;
 use std::time::Duration;
 
 use crate::platform_scope::PgPlatformScope;
-use proxima_core::{ColdObjectStore, ObjectStoreId, OwnerId, StorageError};
+use proxiima_core::{ColdObjectStore, ObjectStoreId, OwnerId, StorageError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -332,7 +332,7 @@ pub(crate) async fn retry_cold_object_purges(
     let mut tx = platform.begin().await?;
     let keys: Vec<String> = sqlx::query_scalar(
         "SELECT object_key
-           FROM proxima_core.cold_purge_pending
+           FROM proxiima_core.cold_purge_pending
           WHERE object_store = $2 AND next_attempt_at <= now()
           ORDER BY next_attempt_at, enqueued_at, object_key
           LIMIT $1",
@@ -412,7 +412,7 @@ pub(crate) async fn purge_queue_census(
                 count(*) FILTER (WHERE object_store = $1 AND next_attempt_at > now()),
                 count(*) FILTER (WHERE object_store <> $1),
                 count(*) FILTER (WHERE object_store = $1 AND attempts >= $2)
-           FROM proxima_core.cold_purge_pending",
+           FROM proxiima_core.cold_purge_pending",
     )
     .bind(target.as_str())
     .bind(stuck_after)
@@ -422,7 +422,7 @@ pub(crate) async fn purge_queue_census(
     let stuck: Vec<StuckRow> = if stuck_count > 0 {
         sqlx::query_as(
             "SELECT object_key, owner_id, attempts, last_error, next_attempt_at
-               FROM proxima_core.cold_purge_pending
+               FROM proxiima_core.cold_purge_pending
               WHERE object_store = $1 AND attempts >= $2
               ORDER BY attempts DESC, object_key
               LIMIT $3",
@@ -439,7 +439,7 @@ pub(crate) async fn purge_queue_census(
     let foreign_stores: Vec<(String, i64)> = if foreign > 0 {
         sqlx::query_as(
             "SELECT object_store, count(*)::bigint
-               FROM proxima_core.cold_purge_pending
+               FROM proxiima_core.cold_purge_pending
               WHERE object_store <> $1
               GROUP BY object_store
               ORDER BY count(*) DESC, object_store

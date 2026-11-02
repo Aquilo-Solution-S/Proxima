@@ -63,7 +63,7 @@ pub trait ColdObjectStore: Send + Sync {
 /// Longest stored object-store identity, in bytes.
 pub const MAX_OBJECT_STORE_ID_BYTES: usize = 512;
 
-/// Longest operator-chosen identity (`PROXIMA_S3_STORE_ID`), in bytes.
+/// Longest operator-chosen identity (`PROXIIMA_S3_STORE_ID`), in bytes.
 pub const MAX_OPERATOR_STORE_ID_BYTES: usize = 64;
 
 /// Which object store holds a purge debt's bytes, or a staged upload's.

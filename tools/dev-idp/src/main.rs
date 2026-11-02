@@ -1,6 +1,6 @@
-//! `dev-idp` — a real OIDC issuer, on loopback, for self-hosted Proxima.
+//! `dev-idp` — a real OIDC issuer, on loopback, for self-hosted Proxiima.
 //!
-//! Proxima authenticates MCP callers one way: a signed bearer (`RS256`,
+//! Proxiima authenticates MCP callers one way: a signed bearer (`RS256`,
 //! `RS384`, `RS512`, `ES256` or `EdDSA`; this issuer signs `RS256`), verified
 //! against a JWKS discovered from the configured issuer, with `(iss, sub)`
 //! mapped to a user through an explicit subject map. That is the only auth
@@ -24,7 +24,7 @@
 //! agent's MCP config. Use `--ephemeral` to keep it in memory instead.
 //!
 //! ```text
-//! cargo run -p proxima-dev-idp
+//! cargo run -p proxiima-dev-idp
 //! ```
 //!
 //! Never deploy this. It mints tokens for anyone who can run it.
@@ -43,8 +43,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use uuid::Uuid;
 
 const DEFAULT_BIND: &str = "127.0.0.1:31416";
-const DEFAULT_AUDIENCE: &str = "proxima-mcp";
-const DEFAULT_SUBJECT: &str = "proxima-dev";
+const DEFAULT_AUDIENCE: &str = "proxiima-mcp";
+const DEFAULT_SUBJECT: &str = "proxiima-dev";
 const DEFAULT_TTL_DAYS: u64 = 30;
 /// A token lives at least a day, and at most ten years: far below what overflows seconds.
 const MAX_TTL_DAYS: u64 = 3650;
@@ -52,7 +52,7 @@ const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:31415";
 const KID: &str = "dev-idp";
 
 /// Namespace for deriving a stable user id from a subject name. Fixed so a
-/// given `--subject` always maps to the same Proxima user across restarts and
+/// given `--subject` always maps to the same Proxiima user across restarts and
 /// across machines — otherwise a restart would strand every memory you wrote
 /// under the previous id.
 const USER_ID_NAMESPACE: Uuid = Uuid::from_bytes([
@@ -62,18 +62,18 @@ const USER_ID_NAMESPACE: Uuid = Uuid::from_bytes([
 const USAGE: &str = "\
 Usage: dev-idp [OPTIONS]
 
-A loopback OIDC issuer for running Proxima locally. Serves JWKS discovery and
-prints a ready-to-paste bearer plus the exact env Proxima needs.
+A loopback OIDC issuer for running Proxiima locally. Serves JWKS discovery and
+prints a ready-to-paste bearer plus the exact env Proxiima needs.
 
 Options:
   --bind <ADDR:PORT>    Issuer bind address (loopback only) [default: 127.0.0.1:31416]
-  --audience <AUD>      Token audience, must match PROXIMA_OIDC_AUDIENCE [default: proxima-mcp]
-  --subject <SUB>       Token subject [default: proxima-dev]
-  --user-id <UUID>      Proxima user id for that subject [default: derived from --subject]
+  --audience <AUD>      Token audience, must match PROXIIMA_OIDC_AUDIENCE [default: proxiima-mcp]
+  --subject <SUB>       Token subject [default: proxiima-dev]
+  --user-id <UUID>      Proxiima user id for that subject [default: derived from --subject]
   --ttl-days <N>        Token lifetime in days, 1..=3650 [default: 30]
-  --server-url <URL>    Proxima MCP base URL, for the printed client config
+  --server-url <URL>    Proxiima MCP base URL, for the printed client config
                         [default: http://127.0.0.1:31415]
-  --key-file <PATH>     Signing key location [default: $HOME/.proxima/dev-idp.pkcs8]
+  --key-file <PATH>     Signing key location [default: $HOME/.proxiima/dev-idp.pkcs8]
   --ephemeral           Keep the signing key in memory; tokens die with this process
   -h, --help            Print this message
 
@@ -107,7 +107,7 @@ impl std::fmt::Display for ArgError {
 }
 
 fn default_key_file() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".proxima/dev-idp.pkcs8"))
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".proxiima/dev-idp.pkcs8"))
 }
 
 fn parse_args(argv: impl IntoIterator<Item = String>) -> Result<Config, ArgError> {
@@ -336,7 +336,7 @@ fn print_instructions(config: &Config, issuer: &str, token: &str, key_file: Opti
         ttl_days,
         ..
     } = config;
-    println!("dev-idp — loopback OIDC issuer for Proxima. Do not deploy.\n");
+    println!("dev-idp — loopback OIDC issuer for Proxiima. Do not deploy.\n");
     println!("  issuer    {issuer}");
     println!("  audience  {audience}");
     println!("  subject   {subject} -> user {user_id}");
@@ -346,15 +346,15 @@ fn print_instructions(config: &Config, issuer: &str, token: &str, key_file: Opti
         None => println!("  key       in memory — this token dies with this process"),
     }
     println!(
-        "\n1. Point Proxima at this issuer, in the shell holding the database URLs\n\
+        "\n1. Point Proxiima at this issuer, in the shell holding the database URLs\n\
          \x20  (docs/get-started.md step 1):\n\
          \n\
-         export PROXIMA_OIDC_ISSUER={issuer}\n\
-         export PROXIMA_OIDC_AUDIENCE={audience}\n\
-         export PROXIMA_OIDC_SUBJECT_MAP_JSON={subject_map}\n\
-         export PROXIMA_PUBLIC_URL={server_url}\n\
-         export PROXIMA_TOOL_PROFILE=full\n\
-         cargo run -p proxima-mcp\n",
+         export PROXIIMA_OIDC_ISSUER={issuer}\n\
+         export PROXIIMA_OIDC_AUDIENCE={audience}\n\
+         export PROXIIMA_OIDC_SUBJECT_MAP_JSON={subject_map}\n\
+         export PROXIIMA_PUBLIC_URL={server_url}\n\
+         export PROXIIMA_TOOL_PROFILE=full\n\
+         cargo run -p proxiima-mcp\n",
         subject_map = shell_single_quote(
             &serde_json::json!([{
                 "iss": issuer,
@@ -367,9 +367,9 @@ fn print_instructions(config: &Config, issuer: &str, token: &str, key_file: Opti
     println!(
         "2. Connect your coding agent:\n\
          \n\
-         claude mcp add --transport http proxima {server_url}/mcp \\\n\
+         claude mcp add --transport http proxiima {server_url}/mcp \\\n\
          \x20 --header \"Authorization: Bearer {token}\" \\\n\
-         \x20 --header \"X-Proxima-Owner: <the user UUID printed after -> user above>\"\n"
+         \x20 --header \"X-Proxiima-Owner: <the user UUID printed after -> user above>\"\n"
     );
     println!("Serving. Ctrl-C to stop.");
 }
@@ -457,7 +457,7 @@ mod tests {
     }
 
     /// A token-minting issuer on a routable interface would hand anyone who
-    /// can reach it a valid Proxima identity.
+    /// can reach it a valid Proxiima identity.
     #[test]
     fn refuses_a_non_loopback_bind() {
         let err = args(&["--bind", "0.0.0.0:31416"]).expect_err("must refuse");
@@ -512,8 +512,8 @@ mod tests {
         for blank in ["", "  "] {
             assert!(args(&["--audience", blank]).is_err(), "{blank:?}");
         }
-        let config = args(&["--audience", " proxima-test "]).expect("parse");
-        assert_eq!(config.audience, "proxima-test");
+        let config = args(&["--audience", " proxiima-test "]).expect("parse");
+        assert_eq!(config.audience, "proxiima-test");
     }
 
     #[test]
@@ -533,7 +533,7 @@ mod tests {
         assert!(args(&["--bind"]).is_err());
     }
 
-    /// The published JWKS must be exactly what Proxima's resolver
+    /// The published JWKS must be exactly what Proxiima's resolver
     /// materializes: `kty: RSA` with base64url `n`/`e`.
     #[test]
     fn jwks_carries_base64url_rsa_components() {
@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn minted_token_carries_the_validated_claims() {
         let key = RsaKeyPair::generate(KeySize::Rsa2048).expect("generate");
-        let config = args(&["--subject", "alice", "--audience", "proxima-test"]).expect("parse");
+        let config = args(&["--subject", "alice", "--audience", "proxiima-test"]).expect("parse");
         let token = mint(&key, "http://127.0.0.1:31416", &config, 1_800_000_000).expect("mint");
 
         let parts: Vec<&str> = token.split('.').collect();
@@ -570,7 +570,7 @@ mod tests {
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).expect("claims"))
                 .expect("json");
         assert_eq!(claims["iss"], "http://127.0.0.1:31416");
-        assert_eq!(claims["aud"], "proxima-test");
+        assert_eq!(claims["aud"], "proxiima-test");
         assert_eq!(claims["sub"], "alice");
         assert_eq!(claims["iat"], 1_800_000_000_u64);
         assert_eq!(claims["nbf"], 1_800_000_000_u64);

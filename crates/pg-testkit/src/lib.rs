@@ -2,21 +2,21 @@
 //!
 //! Matches the `#[sqlx::test]` shape without a proc-macro crate:
 //!
-//! - each clone is recorded in `_proxima_test.databases` on the admin DB
+//! - each clone is recorded in `_proxiima_test.databases` on the admin DB
 //! - a successful [`DbGuard`] drop runs `DROP DATABASE … WITH (FORCE)`
 //! - a panicking test **keeps** the database and prints a redacted `psql` URL
 //! - the first admin operation in a process sweeps clones older than
 //!   five minutes with no live backend (`pg_stat_activity`)
-//! - [`ensure_template`] drops other hashes in the same family (`proxima_tmpl_core_*`
-//!   / `proxima_tmpl_split_*`), keeping only the current fingerprint
+//! - [`ensure_template`] drops other hashes in the same family (`proxiima_tmpl_core_*`
+//!   / `proxiima_tmpl_split_*`), keeping only the current fingerprint
 //! - a host owns a [`TemplateFamily`] of its own: [`ensure_template_in`] builds
 //!   `<prefix><hash>` and collects only idle templates of that family
-//! - the admin URL is `PROXIMA_TEST_PG_URL` and nothing else: unset is a
+//! - the admin URL is `PROXIIMA_TEST_PG_URL` and nothing else: unset is a
 //!   configuration error ([`admin_url_or_skip`] for a visible skip), never a
 //!   guess at a local server
 //! - every lock (builds, leases, the sweep) and the catalog live in the
 //!   database the admin URL names, so processes coordinate only when their
-//!   `PROXIMA_TEST_PG_URL` names the same database
+//!   `PROXIIMA_TEST_PG_URL` names the same database
 //!
 //! Failed tests stay until that grace elapses with no live session, so a
 //! later nextest binary cannot drop an in-flight clone in the create-then-connect
@@ -34,12 +34,12 @@ use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-const ADMIN_URL_VAR: &str = "PROXIMA_TEST_PG_URL";
+const ADMIN_URL_VAR: &str = "PROXIIMA_TEST_PG_URL";
 /// The one message for an unconfigured admin URL: the panic of [`admin_url`]
 /// and the `sqlx::Error::Configuration` of every async entry point. It names
 /// the variable and never a URL, so it cannot carry a credential.
 const ADMIN_URL_UNSET: &str = concat!(
-    "PROXIMA_TEST_PG_URL is not set (or is empty): point it at the admin URL of a disposable ",
+    "PROXIIMA_TEST_PG_URL is not set (or is empty): point it at the admin URL of a disposable ",
     "Postgres, postgres://USER:PASSWORD@HOST:PORT/DATABASE; there is no default server",
 );
 const DROP_RETRIES: usize = 25;
@@ -48,16 +48,16 @@ const SQLSTATE_DATABASE_ACCESSED: &str = "55006";
 const SQLSTATE_UNDEFINED_DATABASE: &str = "3D000";
 /// Untracked leftovers (pre-harness leaks) older than this are swept at boot.
 const UNTRACKED_GRACE: time::Duration = time::Duration::minutes(5);
-const SPLIT_PLATFORM_ROLE: &str = "proxima_test_platform";
-const SPLIT_RUNTIME_ROLE: &str = "proxima_test_runtime";
-const SPLIT_ROLE_PASSWORD: &str = "proxima_test_fixture_password";
+const SPLIT_PLATFORM_ROLE: &str = "proxiima_test_platform";
+const SPLIT_RUNTIME_ROLE: &str = "proxiima_test_runtime";
+const SPLIT_ROLE_PASSWORD: &str = "proxiima_test_fixture_password";
 /// The SCRAM-SHA-256 verifier of [`SPLIT_ROLE_PASSWORD`] with a fixed salt
-/// (`proxima-fixture!`, 4096 iterations). Fixture provisioning sets the
+/// (`proxiima-fixture!`, 4096 iterations). Fixture provisioning sets the
 /// roles' password to this exact verifier on every run: a plaintext
 /// `PASSWORD` would be re-salted each time, and a pooler that cached the
 /// previous verifier's SCRAM keys (`PgBouncer` with `auth_query`) would then
 /// fail the next server login with "password authentication failed".
-const SPLIT_ROLE_SCRAM_VERIFIER: &str = "SCRAM-SHA-256$4096:cHJveGltYS1maXh0dXJlIQ==$KkHJiBZCT4yCgl53VpmtLPotR/SKsNM46MGUaurVMxA=:900L6wrNsK7qb8uGyn/tR71et8wN2/mx8DJHBUsaj4A=";
+const SPLIT_ROLE_SCRAM_VERIFIER: &str = "SCRAM-SHA-256$4096:cHJveGlpbWEtZml4dHVyZSE=$5GgD4bG97/TD4E8Rqin26RxBqAcJb1mDe8s9pLOr9M8=:P1SQ61g2MGGjKCBbb3vsDwaAX8KrlGyk435ssw8E4Wc=";
 /// The query parameters `sqlx` lets override the authority's credentials.
 const QUERY_USER: &str = "user";
 const QUERY_PASSWORD: &str = "password";
@@ -67,13 +67,13 @@ const TEMPLATE_HASH_DIGITS: usize = 16;
 const MAX_FAMILY_PREFIX_BYTES: usize = 63 - TEMPLATE_HASH_DIGITS;
 /// The built-in template families, collected by [`ensure_template`] and
 /// [`drop_stale_templates`].
-const BUILTIN_FAMILIES: [&str; 2] = ["proxima_tmpl_core_", "proxima_tmpl_split_"];
+const BUILTIN_FAMILIES: [&str; 2] = ["proxiima_tmpl_core_", "proxiima_tmpl_split_"];
 /// Every prefix a [`TemplateFamily`] must keep clear of: the built-in
 /// families and the staging databases of a template build.
 const RESERVED_PREFIXES: [&str; 3] = [
     BUILTIN_FAMILIES[0],
     BUILTIN_FAMILIES[1],
-    "proxima_tmpl_build_",
+    "proxiima_tmpl_build_",
 ];
 /// The starting state of a 64-bit FNV-1a hash: the `hash` to begin
 /// [`fnv1a64_extend`] with.
@@ -84,12 +84,12 @@ static PROCESS_START: OnceLock<OffsetDateTime> = OnceLock::new();
 static SWEEP_DONE: AtomicBool = AtomicBool::new(false);
 static CATALOG_READY: AtomicBool = AtomicBool::new(false);
 
-/// `PROXIMA_TEST_PG_URL`, trimmed; `None` when it is unset, empty or
-/// whitespace-only — the rule `proxima_core::env_value` states for every
+/// `PROXIIMA_TEST_PG_URL`, trimmed; `None` when it is unset, empty or
+/// whitespace-only — the rule `proxiima_core::env_value` states for every
 /// configuration variable in the workspace. Applied by hand rather than by
 /// calling it, because this is a deliberately minimal test-support crate
 /// (sqlx/tokio/tracing/url/uuid) and one env var does not justify a
-/// dependency on `proxima-core`.
+/// dependency on `proxiima-core`.
 ///
 /// The one place the variable is read: every other spelling of "no admin URL"
 /// derives from this answer.
@@ -102,10 +102,10 @@ fn trimmed_url(raw: Option<String>) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
-const POOLER_URL_VAR: &str = "PROXIMA_TEST_PGBOUNCER_URL";
+const POOLER_URL_VAR: &str = "PROXIIMA_TEST_PGBOUNCER_URL";
 
-/// `PROXIMA_TEST_PGBOUNCER_URL`, trimmed: a transaction-mode pooler in front
-/// of the `PROXIMA_TEST_PG_URL` server. `None` when unset or empty. When set,
+/// `PROXIIMA_TEST_PGBOUNCER_URL`, trimmed: a transaction-mode pooler in front
+/// of the `PROXIIMA_TEST_PG_URL` server. `None` when unset or empty. When set,
 /// the storage fixtures connect their serving pools through it; migrations
 /// and the admin pool stay direct, as they must in production.
 #[must_use]
@@ -146,7 +146,7 @@ fn try_admin_url() -> Result<String, sqlx::Error> {
     configured_admin_url().ok_or_else(|| sqlx::Error::Configuration(ADMIN_URL_UNSET.into()))
 }
 
-/// The admin connection URL from `PROXIMA_TEST_PG_URL`.
+/// The admin connection URL from `PROXIIMA_TEST_PG_URL`.
 ///
 /// Trims, and treats an empty or whitespace-only value as unset. There is no
 /// default server: the sweep and the template GC act on every database
@@ -164,7 +164,7 @@ pub fn admin_url() -> String {
 }
 
 /// [`admin_url`] for a test that may skip: `None` after one line on stderr
-/// when `PROXIMA_TEST_PG_URL` is unset, empty or whitespace-only.
+/// when `PROXIIMA_TEST_PG_URL` is unset, empty or whitespace-only.
 ///
 /// # Panics
 ///
@@ -178,7 +178,7 @@ pub fn admin_url_or_skip() -> Option<String> {
             std::env::var("CI").as_deref() != Ok("true"),
             "{ADMIN_URL_UNSET}; a CI run does not skip its Postgres tests"
         );
-        eprintln!("proxima-pg-testkit: skipping this Postgres test, {ADMIN_URL_VAR} is unset");
+        eprintln!("proxiima-pg-testkit: skipping this Postgres test, {ADMIN_URL_VAR} is unset");
     }
     url
 }
@@ -187,12 +187,12 @@ pub fn admin_url_or_skip() -> Option<String> {
 ///
 /// # Panics
 ///
-/// Panics if `PROXIMA_TEST_PG_URL` is unset ([`admin_url`]) or not a valid
+/// Panics if `PROXIIMA_TEST_PG_URL` is unset ([`admin_url`]) or not a valid
 /// URL. The diagnostic does not include the URL or its credentials.
 #[must_use]
 pub fn db_url(name: &str) -> String {
     db_url_from_admin(&admin_url(), name)
-        .expect("PROXIMA_TEST_PG_URL must be a valid database URL")
+        .expect("PROXIIMA_TEST_PG_URL must be a valid database URL")
         .into()
 }
 
@@ -281,7 +281,7 @@ impl Drop for DbGuard {
         }
         if std::thread::panicking() {
             eprintln!(
-                "proxima-pg-testkit: keeping test database `{}` after panic\n  psql '{}'",
+                "proxiima-pg-testkit: keeping test database `{}` after panic\n  psql '{}'",
                 self.name,
                 redacted_db_url(&self.name)
             );
@@ -289,12 +289,12 @@ impl Drop for DbGuard {
         }
         let name = self.name.clone();
         match std::thread::Builder::new()
-            .name("proxima-pg-testkit-drop".into())
+            .name("proxiima-pg-testkit-drop".into())
             .spawn(move || drop_db_blocking(&name))
         {
             Ok(handle) => {
                 if handle.join().is_err() {
-                    tracing::warn!("proxima-pg-testkit drop thread panicked");
+                    tracing::warn!("proxiima-pg-testkit drop thread panicked");
                 }
             }
             Err(error) => {
@@ -407,13 +407,13 @@ pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::E
     split_role_urls_for(database, &[]).await
 }
 
-/// [`split_role_urls`] for a database that also holds out-of-tree flavor
-/// schemas: objects already in `flavor_schemas` move to the platform role
-/// and the runtime role gets the same grants it gets on `proxima_core`.
-/// Each passed flavor schema also gets its migration ledger pre-created as
-/// `public._sqlx_migrations_<schema>`: the ledger a flavor's
-/// `NamedMigrator::flavor` records into when the flavor id's `-` maps to
-/// the schema's `_` (`proxima-notes` → `proxima_notes`). Existing
+/// [`split_role_urls`] for a database that also holds out-of-tree spiice
+/// schemas: objects already in `spiice_schemas` move to the platform role
+/// and the runtime role gets the same grants it gets on `proxiima_core`.
+/// Each passed spiice schema also gets its migration ledger pre-created as
+/// `public._sqlx_migrations_<schema>`: the ledger a spiice's
+/// `NamedMigrator::spiice` records into when the spiice id's `-` maps to
+/// the schema's `_` (`proxiima-notes` → `proxiima_notes`). Existing
 /// public tables whose names start with `_sqlx_migrations` also move to the
 /// platform role, with read-only access for the runtime role.
 ///
@@ -427,11 +427,11 @@ pub async fn split_role_urls(database: &str) -> Result<(String, String), sqlx::E
 /// identifier.
 pub async fn split_role_urls_for(
     database: &str,
-    flavor_schemas: &[&str],
+    spiice_schemas: &[&str],
 ) -> Result<(String, String), sqlx::Error> {
     split_roles(
         database,
-        flavor_schemas,
+        spiice_schemas,
         &["vector", "btree_gin", "pg_trgm"],
     )
     .await
@@ -455,14 +455,14 @@ pub async fn split_role_urls_without_pgvector(
 )]
 async fn split_roles(
     database: &str,
-    flavor_schemas: &[&str],
+    spiice_schemas: &[&str],
     extensions: &[&str],
 ) -> Result<(String, String), sqlx::Error> {
     let database = database.trim();
     if database.is_empty() {
         return Err(sqlx::Error::Protocol("database name is empty".into()));
     }
-    if let Some(schema) = flavor_schemas.iter().find(|schema| {
+    if let Some(schema) = spiice_schemas.iter().find(|schema| {
         schema.is_empty()
             || !schema.as_bytes()[0].is_ascii_lowercase()
             || !schema
@@ -470,11 +470,11 @@ async fn split_roles(
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
     }) {
         return Err(sqlx::Error::Protocol(format!(
-            "flavor schema {schema:?} is not a plain lowercase identifier"
+            "spiice schema {schema:?} is not a plain lowercase identifier"
         )));
     }
-    let mut schemas: Vec<&str> = vec!["proxima_core"];
-    for schema in flavor_schemas {
+    let mut schemas: Vec<&str> = vec!["proxiima_core"];
+    for schema in spiice_schemas {
         if !schemas.contains(schema) {
             schemas.push(schema);
         }
@@ -484,13 +484,13 @@ async fn split_roles(
         .map(|schema| sql_literal(schema))
         .collect::<Vec<_>>()
         .join(", ");
-    let flavor_ledger_list = schemas[1..]
+    let spiice_ledger_list = schemas[1..]
         .iter()
         .map(|schema| sql_literal(schema))
         .collect::<Vec<_>>()
         .join(", ");
     let mut control = connect_admin().await?;
-    let lock_key = advisory_lock_key("_proxima_test.split_roles");
+    let lock_key = advisory_lock_key("_proxiima_test.split_roles");
     sqlx::query("SELECT pg_advisory_lock($1)")
         .bind(lock_key)
         .execute(&mut control)
@@ -517,8 +517,8 @@ async fn split_roles(
                 .await?;
         }
         let search_membership = format!(
-            "GRANT proxima_search TO {platform} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-             REVOKE proxima_search FROM {runtime}",
+            "GRANT proxiima_search TO {platform} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+             REVOKE proxiima_search FROM {runtime}",
             platform = quoted_ident(SPLIT_PLATFORM_ROLE),
             runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
         );
@@ -553,7 +553,7 @@ async fn split_roles(
         // grants/defaults are prepared, never repeat ownership DDL alongside
         // a host's migration transaction (SQLx's ledger lock has another order).
         let prepared: bool = sqlx::query_scalar(
-            "SELECT to_regclass('_proxima_test.split_roles_ready') IS NOT NULL",
+            "SELECT to_regclass('_proxiima_test.split_roles_ready') IS NOT NULL",
         )
         .fetch_one(&mut target)
         .await?;
@@ -572,7 +572,7 @@ async fn split_roles(
                 .await?;
         }
         let public_grants = format!(
-            "GRANT USAGE ON SCHEMA public TO {runtime}, {platform}, proxima_search;
+            "GRANT USAGE ON SCHEMA public TO {runtime}, {platform}, proxiima_search;
              GRANT CREATE ON SCHEMA public TO {platform}",
             runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
             platform = quoted_ident(SPLIT_PLATFORM_ROLE),
@@ -590,7 +590,7 @@ async fn split_roles(
                GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {runtime};
              ALTER DEFAULT PRIVILEGES FOR ROLE {platform}
                GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {runtime};
-             ALTER DEFAULT PRIVILEGES FOR ROLE proxima_search
+             ALTER DEFAULT PRIVILEGES FOR ROLE proxiima_search
                GRANT EXECUTE ON FUNCTIONS TO {runtime}",
             runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
             platform = quoted_ident(SPLIT_PLATFORM_ROLE),
@@ -613,7 +613,7 @@ async fn split_roles(
         .await?;
         let transfer = format!(
             "DO $$ DECLARE r record; s text; BEGIN
-               FOREACH s IN ARRAY ARRAY[{flavor_ledger_list}]::text[] LOOP
+               FOREACH s IN ARRAY ARRAY[{spiice_ledger_list}]::text[] LOOP
                  EXECUTE format('CREATE TABLE IF NOT EXISTS public.%I (
                      version bigint PRIMARY KEY,
                      description text NOT NULL,
@@ -649,7 +649,7 @@ async fn split_roles(
                    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                    JOIN pg_roles owner_role ON owner_role.oid = p.proowner
                   WHERE n.nspname IN ({schema_list})
-                    AND owner_role.rolname <> 'proxima_search' LOOP
+                    AND owner_role.rolname <> 'proxiima_search' LOOP
                  EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO %I',
                                 r.nspname, r.proname, r.args, '{SPLIT_PLATFORM_ROLE}');
                END LOOP;
@@ -658,7 +658,7 @@ async fn split_roles(
                    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                    JOIN pg_roles owner_role ON owner_role.oid = p.proowner
                   WHERE n.nspname IN ({schema_list})
-                    AND owner_role.rolname = 'proxima_search' AND p.prosecdef LOOP
+                    AND owner_role.rolname = 'proxiima_search' AND p.prosecdef LOOP
                  EXECUTE format('GRANT EXECUTE ON FUNCTION %I.%I(%s) TO %I',
                                 r.nspname, r.proname, r.args, '{SPLIT_RUNTIME_ROLE}');
                END LOOP;
@@ -715,9 +715,9 @@ async fn split_roles(
             }
         }
         sqlx::raw_sql(AssertSqlSafe(
-            "CREATE SCHEMA IF NOT EXISTS _proxima_test;
-             CREATE TABLE _proxima_test.split_roles_ready (singleton boolean PRIMARY KEY);
-             INSERT INTO _proxima_test.split_roles_ready VALUES (true)".to_owned(),
+            "CREATE SCHEMA IF NOT EXISTS _proxiima_test;
+             CREATE TABLE _proxiima_test.split_roles_ready (singleton boolean PRIMARY KEY);
+             INSERT INTO _proxiima_test.split_roles_ready VALUES (true)".to_owned(),
         ))
         .execute(&mut target)
         .await?;
@@ -780,16 +780,16 @@ pub struct SplitRoleDb {
 
 impl SplitRoleDb {
     /// Create `<prefix>_<uuid>` and provision the split roles on it
-    /// ([`split_role_urls_for`] with `flavor_schemas`).
+    /// ([`split_role_urls_for`] with `spiice_schemas`).
     ///
     /// # Errors
     /// Returns database creation or role provisioning errors; a database
     /// created before the failure is dropped.
-    pub async fn create(prefix: &str, flavor_schemas: &[&str]) -> Result<Self, sqlx::Error> {
+    pub async fn create(prefix: &str, spiice_schemas: &[&str]) -> Result<Self, sqlx::Error> {
         let name = unique_db_name(prefix);
         create_db(&name).await?;
         let guard = DbGuard::adopt(name);
-        let (runtime_url, platform_url) = split_role_urls_for(guard.name(), flavor_schemas).await?;
+        let (runtime_url, platform_url) = split_role_urls_for(guard.name(), spiice_schemas).await?;
         Ok(Self {
             guard,
             runtime_url,
@@ -798,7 +798,7 @@ impl SplitRoleDb {
     }
 
     /// Clone `<prefix>_<uuid>` from the leased `template` and assert the split
-    /// roles on the clone ([`split_role_urls_for`] with `flavor_schemas`).
+    /// roles on the clone ([`split_role_urls_for`] with `spiice_schemas`).
     ///
     /// The clone half of a migrated, split-role template: build the template
     /// with the roles provisioned on its staging database
@@ -813,7 +813,7 @@ impl SplitRoleDb {
     /// ```compile_fail,E0308
     /// // A template name is not a lease.
     /// async fn clone() -> Result<(), sqlx::Error> {
-    ///     let _ = proxima_pg_testkit::SplitRoleDb::from_template("p", "a_template", &[]).await?;
+    ///     let _ = proxiima_pg_testkit::SplitRoleDb::from_template("p", "a_template", &[]).await?;
     ///     Ok(())
     /// }
     /// ```
@@ -824,10 +824,10 @@ impl SplitRoleDb {
     pub async fn from_template(
         prefix: &str,
         template: &TemplateLease,
-        flavor_schemas: &[&str],
+        spiice_schemas: &[&str],
     ) -> Result<Self, sqlx::Error> {
         let guard = DbGuard::adopt(create_db_from_template(prefix, template.name()).await?);
-        let (runtime_url, platform_url) = split_role_urls_for(guard.name(), flavor_schemas).await?;
+        let (runtime_url, platform_url) = split_role_urls_for(guard.name(), spiice_schemas).await?;
         Ok(Self {
             guard,
             runtime_url,
@@ -871,7 +871,7 @@ impl SplitRoleDb {
 /// and [`drop_stale_templates_in`] drop idle templates of this family only,
 /// so a host's stale templates are collected and nobody else's are touched.
 /// [`ensure_template`] and [`drop_stale_templates`] keep their two built-in
-/// families (`proxima_tmpl_{core,split}_`); [`Self::new`] refuses any
+/// families (`proxiima_tmpl_{core,split}_`); [`Self::new`] refuses any
 /// prefix that could reach one, so the two collectors never meet.
 ///
 /// The family is passed to the call that builds the template. There is no
@@ -879,7 +879,7 @@ impl SplitRoleDb {
 ///
 /// ```compile_fail,E0451
 /// // `new` is the only way in: a family is validated or it does not exist.
-/// let _ = proxima_pg_testkit::TemplateFamily { prefix: "proxima_tmpl_core_".to_owned() };
+/// let _ = proxiima_pg_testkit::TemplateFamily { prefix: "proxiima_tmpl_core_".to_owned() };
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateFamily {
@@ -891,7 +891,7 @@ impl TemplateFamily {
     /// letters, digits and `_`, starting with a letter, ending with `_`, at
     /// most 47 bytes (so `prefix` plus 16 hex digits fits the 63-byte
     /// database name limit), and neither equal to, prefixed by, nor a prefix
-    /// of a built-in family or of the `proxima_tmpl_build_` staging prefix.
+    /// of a built-in family or of the `proxiima_tmpl_build_` staging prefix.
     ///
     /// # Errors
     ///
@@ -1014,7 +1014,7 @@ impl std::error::Error for TemplateFamilyError {}
 /// cannot be reused as complete templates.
 ///
 /// A success then drops the idle templates of `template`'s built-in family
-/// (`proxima_tmpl_{core,split}_`) other than `template`; a name in no
+/// (`proxiima_tmpl_{core,split}_`) other than `template`; a name in no
 /// built-in family collects nothing. A host names its templates with
 /// [`ensure_template_in`] instead, so that they are collected too.
 ///
@@ -1042,7 +1042,7 @@ where
 /// cloned it ([`SplitRoleDb::from_template`]) and released the lease.
 ///
 /// A template is a function of what built it, so the host derives `hash` from
-/// everything `build` consumes (`proxima::testkit::HostTemplate` does this
+/// everything `build` consumes (`proxiima::testkit::HostTemplate` does this
 /// for migrators) and a changed input is a new template. The old one is
 /// dropped once nothing is connected to it; two checkouts with different
 /// hashes in one family evict each other's idle template, and the loser
@@ -1050,7 +1050,7 @@ where
 ///
 /// ```compile_fail,E0308
 /// // The family is a validated type, never a raw prefix.
-/// let _ = proxima_pg_testkit::ensure_template_in("proxima_tmpl_core_", 1, |_| async { Ok(()) });
+/// let _ = proxiima_pg_testkit::ensure_template_in("proxiima_tmpl_core_", 1, |_| async { Ok(()) });
 /// ```
 ///
 /// # Errors
@@ -1089,7 +1089,7 @@ where
 ///
 /// ```compile_fail,E0451
 /// // A lease exists only because a template was ensured: none is forged.
-/// let _ = proxima_pg_testkit::TemplateLease { name: String::new(), conn: todo!() };
+/// let _ = proxiima_pg_testkit::TemplateLease { name: String::new(), conn: todo!() };
 /// ```
 #[derive(Debug)]
 #[must_use = "the template may be collected as soon as the lease is gone"]
@@ -1124,7 +1124,7 @@ impl TemplateLease {
 /// The advisory-lock key of a template's lease: distinct from the build lock
 /// (`advisory_lock_key(template)`), which only serializes builds.
 fn lease_key(template: &str) -> i64 {
-    advisory_lock_key(&format!("_proxima_test.lease:{template}"))
+    advisory_lock_key(&format!("_proxiima_test.lease:{template}"))
 }
 
 /// Drop the idle templates of `family` other than the one `keep` names,
@@ -1179,7 +1179,7 @@ where
             return Ok(());
         }
 
-        let staging = unique_db_name("proxima_tmpl_build");
+        let staging = unique_db_name("proxiima_tmpl_build");
         sqlx::raw_sql(AssertSqlSafe(format!(
             "CREATE DATABASE {}",
             quoted_ident(&staging)
@@ -1245,7 +1245,7 @@ where
     }
 }
 
-/// Drop idle `proxima_tmpl_{core,split}_*` databases of `keep`'s
+/// Drop idle `proxiima_tmpl_{core,split}_*` databases of `keep`'s
 /// family other than `keep`.
 ///
 /// No-op when `keep` is not a core/split template name. Called from
@@ -1440,18 +1440,18 @@ async fn ensure_catalog(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
     if CATALOG_READY.load(Ordering::Acquire) {
         return Ok(());
     }
-    let lock_key = advisory_lock_key("_proxima_test.catalog");
+    let lock_key = advisory_lock_key("_proxiima_test.catalog");
     sqlx::query("SELECT pg_advisory_lock($1)")
         .bind(lock_key)
         .execute(&mut *conn)
         .await?;
     let result: Result<(), sqlx::Error> = async {
         ensure_search_role(conn).await?;
-        sqlx::query("CREATE SCHEMA IF NOT EXISTS _proxima_test")
+        sqlx::query("CREATE SCHEMA IF NOT EXISTS _proxiima_test")
             .execute(&mut *conn)
             .await?;
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS _proxima_test.databases (
+            "CREATE TABLE IF NOT EXISTS _proxiima_test.databases (
                 db_name text PRIMARY KEY,
                 created_at timestamptz NOT NULL DEFAULT now()
             )",
@@ -1474,11 +1474,11 @@ async fn ensure_catalog(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
 async fn ensure_search_role(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(
         "DO $$ BEGIN
-           IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'proxima_search') THEN
-             CREATE ROLE proxima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
+           IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'proxiima_search') THEN
+             CREATE ROLE proxiima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
                NOCREATEDB NOCREATEROLE NOINHERIT;
            ELSE
-             ALTER ROLE proxima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
+             ALTER ROLE proxiima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
                NOCREATEDB NOCREATEROLE NOINHERIT;
            END IF;
          END $$",
@@ -1491,14 +1491,14 @@ async fn ensure_search_role(conn: &mut PgConnection) -> Result<(), sqlx::Error> 
 async fn record_db(conn: &mut PgConnection, name: &str) -> Result<(), sqlx::Error> {
     ensure_catalog(conn).await?;
     sqlx::query(
-        "INSERT INTO _proxima_test.databases (db_name) VALUES ($1)
+        "INSERT INTO _proxiima_test.databases (db_name) VALUES ($1)
          ON CONFLICT (db_name) DO NOTHING",
     )
     .bind(name)
     .execute(&mut *conn)
     .await?;
     let mut target = PgConnection::connect(&db_url(name)).await?;
-    sqlx::query("GRANT USAGE ON SCHEMA public TO proxima_search")
+    sqlx::query("GRANT USAGE ON SCHEMA public TO proxiima_search")
         .execute(&mut target)
         .await?;
     target.close().await?;
@@ -1518,7 +1518,7 @@ async fn record_new_db(conn: &mut PgConnection, name: &str) -> Result<(), sqlx::
 
 async fn unrecord_db(conn: &mut PgConnection, name: &str) -> Result<(), sqlx::Error> {
     ensure_catalog(conn).await?;
-    sqlx::query("DELETE FROM _proxima_test.databases WHERE db_name = $1")
+    sqlx::query("DELETE FROM _proxiima_test.databases WHERE db_name = $1")
         .bind(name)
         .execute(&mut *conn)
         .await?;
@@ -1550,7 +1550,7 @@ async fn sweep_stale_on(conn: &mut PgConnection) -> Result<usize, sqlx::Error> {
     let tracked_cutoff = now - UNTRACKED_GRACE;
     let cutoff = start - UNTRACKED_GRACE;
     let tracked: Vec<String> = sqlx::query_scalar(
-        "SELECT d.db_name FROM _proxima_test.databases d
+        "SELECT d.db_name FROM _proxiima_test.databases d
          WHERE d.created_at < $1
            AND NOT EXISTS (
              SELECT 1 FROM pg_stat_activity a WHERE a.datname = d.db_name
@@ -1564,7 +1564,7 @@ async fn sweep_stale_on(conn: &mut PgConnection) -> Result<usize, sqlx::Error> {
          WHERE datistemplate = false
            AND datname <> current_database()
            AND (
-             datname LIKE 'proxima\\_%' ESCAPE '\\'
+             datname LIKE 'proxiima\\_%' ESCAPE '\\'
              OR datname LIKE 'pub\\_%' ESCAPE '\\'
            )
            AND NOT EXISTS (
@@ -1855,12 +1855,12 @@ mod tests {
             "runtime connection: Unavailable(\"pool timed out while waiting for an open connection\")",
             "error returned from database: sorry, too many clients already",
             "remaining connection slots are reserved for roles with the SUPERUSER attribute",
-            "too many connections for database \"proxima_test_x\"",
+            "too many connections for database \"proxiima_test_x\"",
         ] {
             assert!(super::is_connection_exhaustion(message), "{message}");
         }
         for message in [
-            "RLS catalog guard refused pool: runtime role proxima_test_runtime is a superuser",
+            "RLS catalog guard refused pool: runtime role proxiima_test_runtime is a superuser",
             "scope not registered",
         ] {
             assert!(!super::is_connection_exhaustion(message), "{message}");
@@ -1890,7 +1890,7 @@ mod tests {
         let verifier = async {
             let mut admin = connect_admin().await.expect("admin");
             sqlx::query_scalar::<_, String>(
-                "SELECT rolpassword FROM pg_authid WHERE rolname = 'proxima_test_runtime'",
+                "SELECT rolpassword FROM pg_authid WHERE rolname = 'proxiima_test_runtime'",
             )
             .fetch_one(&mut admin)
             .await
@@ -1901,7 +1901,7 @@ mod tests {
         let verifier = async {
             let mut admin = connect_admin().await.expect("admin");
             sqlx::query_scalar::<_, String>(
-                "SELECT rolpassword FROM pg_authid WHERE rolname = 'proxima_test_runtime'",
+                "SELECT rolpassword FROM pg_authid WHERE rolname = 'proxiima_test_runtime'",
             )
             .fetch_one(&mut admin)
             .await
@@ -1971,8 +1971,8 @@ mod tests {
     fn a_role_url_drops_the_admin_credentials_wherever_they_are() {
         let admin = "postgres://admin:authority-secret@localhost:5433/postgres\
                      ?sslmode=disable&user=query-admin&password=private-secret&dbname=other";
-        let url = role_url_from_admin(admin, "target", "proxima_test_runtime").expect("role URL");
-        assert_eq!(url.username(), "proxima_test_runtime");
+        let url = role_url_from_admin(admin, "target", "proxiima_test_runtime").expect("role URL");
+        assert_eq!(url.username(), "proxiima_test_runtime");
         assert_eq!(url.password(), Some(SPLIT_ROLE_PASSWORD));
         assert_eq!(
             (url.host_str(), url.port()),
@@ -2060,7 +2060,7 @@ mod tests {
         let Some(_) = super::admin_url_or_skip() else {
             return;
         };
-        let name = unique_db_name("proxima_search_role");
+        let name = unique_db_name("proxiima_search_role");
         create_db(&name).await.expect("create");
         let guard = super::DbGuard::adopt(name);
         let (runtime_url, _) = super::split_role_urls(guard.name()).await.expect("roles");
@@ -2068,20 +2068,20 @@ mod tests {
             .await
             .expect("admin");
         sqlx::raw_sql(
-            "CREATE SCHEMA proxima_core;
-             GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
-             SET ROLE proxima_search;
-             CREATE FUNCTION proxima_core.candidate_probe() RETURNS integer
+            "CREATE SCHEMA proxiima_core;
+             GRANT USAGE, CREATE ON SCHEMA proxiima_core TO proxiima_search;
+             SET ROLE proxiima_search;
+             CREATE FUNCTION proxiima_core.candidate_probe() RETURNS integer
                LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT 7';
-             REVOKE ALL ON FUNCTION proxima_core.candidate_probe() FROM PUBLIC;
+             REVOKE ALL ON FUNCTION proxiima_core.candidate_probe() FROM PUBLIC;
              RESET ROLE;
-             REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search",
+             REVOKE CREATE ON SCHEMA proxiima_core FROM proxiima_search",
         )
         .execute(&mut admin)
         .await
         .expect("candidate creation");
         let default_execute: bool = sqlx::query_scalar(
-            "SELECT has_function_privilege($1, 'proxima_core.candidate_probe()', 'EXECUTE')",
+            "SELECT has_function_privilege($1, 'proxiima_core.candidate_probe()', 'EXECUTE')",
         )
         .bind(super::SPLIT_RUNTIME_ROLE)
         .fetch_one(&mut admin)
@@ -2089,8 +2089,8 @@ mod tests {
         .expect("default execution grant");
         assert!(default_execute);
         sqlx::raw_sql(
-            "REVOKE EXECUTE ON FUNCTION proxima_core.candidate_probe() FROM proxima_test_runtime;
-             DROP TABLE _proxima_test.split_roles_ready",
+            "REVOKE EXECUTE ON FUNCTION proxiima_core.candidate_probe() FROM proxiima_test_runtime;
+             DROP TABLE _proxiima_test.split_roles_ready",
         )
         .execute(&mut admin)
         .await
@@ -2099,15 +2099,15 @@ mod tests {
         let owner: String = sqlx::query_scalar(
             "SELECT owner_role.rolname FROM pg_proc p
                JOIN pg_roles owner_role ON owner_role.oid = p.proowner
-              WHERE p.oid = 'proxima_core.candidate_probe()'::regprocedure",
+              WHERE p.oid = 'proxiima_core.candidate_probe()'::regprocedure",
         )
         .fetch_one(&mut admin)
         .await
         .expect("owner");
-        assert_eq!(owner, "proxima_search");
+        assert_eq!(owner, "proxiima_search");
         let attributes: (bool, bool, bool, bool, bool, bool) = sqlx::query_as(
             "SELECT rolcanlogin, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolinherit
-               FROM pg_roles WHERE rolname = 'proxima_search'",
+               FROM pg_roles WHERE rolname = 'proxiima_search'",
         )
         .fetch_one(&mut admin)
         .await
@@ -2117,7 +2117,7 @@ mod tests {
             "SELECT m.admin_option, m.inherit_option, m.set_option
                FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid
                JOIN pg_roles member_role ON member_role.oid = m.member
-              WHERE r.rolname = 'proxima_search' AND member_role.rolname = $1",
+              WHERE r.rolname = 'proxiima_search' AND member_role.rolname = $1",
         )
         .bind(super::SPLIT_PLATFORM_ROLE)
         .fetch_one(&mut admin)
@@ -2125,7 +2125,7 @@ mod tests {
         .expect("platform membership");
         assert_eq!(membership, (false, false, true));
         let runtime_member: bool =
-            sqlx::query_scalar("SELECT pg_has_role($1, 'proxima_search', 'MEMBER')")
+            sqlx::query_scalar("SELECT pg_has_role($1, 'proxiima_search', 'MEMBER')")
                 .bind(super::SPLIT_RUNTIME_ROLE)
                 .fetch_one(&mut admin)
                 .await
@@ -2134,7 +2134,7 @@ mod tests {
         let mut runtime = sqlx::PgConnection::connect(&runtime_url)
             .await
             .expect("runtime");
-        let result: i32 = sqlx::query_scalar("SELECT proxima_core.candidate_probe()")
+        let result: i32 = sqlx::query_scalar("SELECT proxiima_core.candidate_probe()")
             .fetch_one(&mut runtime)
             .await
             .expect("explicit execution grant");
@@ -2153,16 +2153,19 @@ mod tests {
     #[test]
     fn template_family_only_core_and_split() {
         assert_eq!(
-            template_family("proxima_tmpl_core_3f94e256ef4f396f"),
-            Some("proxima_tmpl_core_")
+            template_family("proxiima_tmpl_core_3f94e256ef4f396f"),
+            Some("proxiima_tmpl_core_")
         );
-        assert_eq!(template_family("proxima_tmpl_other_2d01c98992e2f0a0"), None);
         assert_eq!(
-            template_family("proxima_tmpl_split_9a41c0d2e6b37f58"),
-            Some("proxima_tmpl_split_")
+            template_family("proxiima_tmpl_other_2d01c98992e2f0a0"),
+            None
         );
-        assert_eq!(template_family("proxima_tmpl_build_abc"), None);
-        assert_eq!(template_family("proxima_test_abc"), None);
+        assert_eq!(
+            template_family("proxiima_tmpl_split_9a41c0d2e6b37f58"),
+            Some("proxiima_tmpl_split_")
+        );
+        assert_eq!(template_family("proxiima_tmpl_build_abc"), None);
+        assert_eq!(template_family("proxiima_test_abc"), None);
     }
 
     #[test]
@@ -2188,7 +2191,7 @@ mod tests {
 
     #[test]
     fn a_family_prefix_is_validated_at_construction() {
-        for accepted in ["host_", "a_", "my_host2_tmpl_", "proxima_split_core_"] {
+        for accepted in ["host_", "a_", "my_host2_tmpl_", "proxiima_split_core_"] {
             let family = TemplateFamily::new(accepted).expect(accepted);
             assert_eq!(family.prefix(), accepted);
         }
@@ -2243,7 +2246,11 @@ mod tests {
             }
         }
         // Near misses are other people's families.
-        for prefix in ["proxima_tmpl_cor_", "proxima_tmplx_", "proxima_tmpl_coree_"] {
+        for prefix in [
+            "proxiima_tmpl_cor_",
+            "proxiima_tmplx_",
+            "proxiima_tmpl_coree_",
+        ] {
             TemplateFamily::new(prefix).expect(prefix);
         }
     }
@@ -2278,12 +2285,12 @@ mod tests {
 
     #[test]
     fn a_template_name_never_parses_as_a_clone_name() {
-        // The sweep drops any `proxima_*` database whose last segment is a
+        // The sweep drops any `proxiima_*` database whose last segment is a
         // UUID v7 older than its grace. A template's last segment is 16 hex
         // digits, whatever the hash.
         let far_future = OffsetDateTime::now_utc() + time::Duration::days(3650);
         let hashes = [0, 1, 0xdead_beef_dead_beef, u64::MAX, 0x0192_8f5a_0000_0000];
-        let host_families = ["host_", "proxima_split_core_", "a_b_"]
+        let host_families = ["host_", "proxiima_split_core_", "a_b_"]
             .map(|prefix| TemplateFamily::new(prefix).expect("family"));
         let names = host_families
             .iter()

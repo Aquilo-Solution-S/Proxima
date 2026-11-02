@@ -2,7 +2,7 @@
 
 ## Our Pledge
 
-We pledge to make participation in the Proxima community respectful,
+We pledge to make participation in the Proxiima community respectful,
 welcoming, and harassment-free for everyone, regardless of age, body size,
 disability, ethnicity, sex characteristics, gender identity and expression,
 level of experience, education, socio-economic status, nationality, personal

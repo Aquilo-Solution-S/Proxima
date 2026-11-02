@@ -2,7 +2,7 @@
 //!
 //! Two processes that reach the same bucket through different endpoints, or
 //! two stores that share an endpoint and bucket, are different stores unless
-//! the operator says otherwise with `PROXIMA_S3_STORE_ID`. A drain wired to
+//! the operator says otherwise with `PROXIIMA_S3_STORE_ID`. A drain wired to
 //! the wrong one must never delete through it or clear the debt.
 
 use super::*;
@@ -10,7 +10,7 @@ use lifecycle::lifecycle_store;
 
 async fn owe(pool: &sqlx::PgPool, store: &str, key: &str) {
     sqlx::query(
-        "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+        "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
          VALUES ($1, NULL, $2)",
     )
     .bind(key)
@@ -22,7 +22,7 @@ async fn owe(pool: &sqlx::PgPool, store: &str, key: &str) {
 
 async fn debts(pool: &sqlx::PgPool, key: &str) -> Vec<(String, time::OffsetDateTime)> {
     sqlx::query_as(
-        "SELECT object_store, enqueued_at FROM proxima_core.cold_purge_pending
+        "SELECT object_store, enqueued_at FROM proxiima_core.cold_purge_pending
           WHERE object_key = $1 ORDER BY object_store",
     )
     .bind(key)
@@ -50,11 +50,11 @@ fn alias_endpoint(config: &S3RuntimeConfig) -> Option<S3RuntimeConfig> {
 async fn drain(
     pg: &PgStorage,
     store: &CitedBlobStore,
-) -> Result<proxima_storage_pg::ColdPurgeRetryOutcome, StorageError> {
+) -> Result<proxiima_storage_pg::ColdPurgeRetryOutcome, StorageError> {
     pg.clone()
         .with_cold(Arc::new(store.cold_store()))
         .retry_cold_object_purges(
-            proxima_storage_pg::ColdPurgeRetryOptions::default().batch_size(10),
+            proxiima_storage_pg::ColdPurgeRetryOptions::default().batch_size(10),
         )
         .await
 }
@@ -66,7 +66,7 @@ async fn drain(
 #[tokio::test]
 async fn a_drain_wired_to_another_store_leaves_the_debt_and_the_bytes() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let (pg, db_name) = fresh_storage().await;
@@ -128,7 +128,7 @@ async fn a_drain_wired_to_another_store_leaves_the_debt_and_the_bytes() {
 #[tokio::test]
 async fn the_same_key_owed_in_two_stores_is_two_debts() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let (pg, db_name) = fresh_storage().await;
@@ -159,7 +159,7 @@ async fn the_same_key_owed_in_two_stores_is_two_debts() {
 
     // Re-enqueueing under one store renews that store's debt only.
     let renewed = sqlx::query(
-        "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+        "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
          VALUES ($1, NULL, $2)
          ON CONFLICT (object_store, object_key) DO UPDATE SET enqueued_at = now(), next_attempt_at = now()",
     )

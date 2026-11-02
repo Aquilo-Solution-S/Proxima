@@ -1,5 +1,5 @@
-use proxima_core::storage_ports::EmbeddingWriteProof;
-use proxima_core::{
+use proxiima_core::storage_ports::EmbeddingWriteProof;
+use proxiima_core::{
     EmbeddableEntityRef, EmbeddingSpace, EmbeddingWriteOutcome, OwnerId, SpaceVector, StorageError,
 };
 use sqlx::{Postgres, Transaction};
@@ -25,7 +25,7 @@ pub(crate) async fn complete_embedding_job_claim(
     };
     let completed = super::jobs::bind_claim_fence(
         sqlx::query(concat!(
-            "DELETE FROM proxima_core.embedding_jobs WHERE ",
+            "DELETE FROM proxiima_core.embedding_jobs WHERE ",
             super::jobs::claim_fence!()
         )),
         super::jobs::ClaimFence {
@@ -52,7 +52,7 @@ pub(crate) async fn complete_embedding_job_claim(
 ///
 /// Crate-private: this is a raw-owner write below the proof gate. External
 /// writers go through `EmbeddingWritePort`, which requires an
-/// `EmbeddingWriteProof` only `proxima-core` can construct.
+/// `EmbeddingWriteProof` only `proxiima-core` can construct.
 ///
 /// Returns version `0` when the entity is not eligible for embedding: a
 /// deleted or textless entity is a best-effort no-op, not an error.
@@ -82,7 +82,7 @@ pub(crate) async fn insert_embedding(
 
     let embedding_version: i32 = sqlx::query_scalar(
         "SELECT COALESCE(max(embedding_version), 0) + 1
-           FROM proxima_core.embeddings
+           FROM proxiima_core.embeddings
           WHERE entity_id = $1
             AND model_id = $2
             AND dim = $3",
@@ -99,7 +99,7 @@ pub(crate) async fn insert_embedding(
             StorageError::ConstraintViolation("embedding has too many chunks".into())
         })?;
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings
+            "INSERT INTO proxiima_core.embeddings
                 (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
@@ -116,7 +116,7 @@ pub(crate) async fn insert_embedding(
     }
 
     sqlx::query(
-        "INSERT INTO proxima_core.embedding_heads
+        "INSERT INTO proxiima_core.embedding_heads
             (entity_id, model_id, dim, embedding_version, owner_id)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (entity_id, model_id, dim)
@@ -135,7 +135,7 @@ pub(crate) async fn insert_embedding(
 }
 
 fn embedding_lock_key(entity_id: uuid::Uuid, model_id: &str, dim: i16) -> String {
-    format!("proxima-embedding:{entity_id}:{model_id}:{dim}")
+    format!("proxiima-embedding:{entity_id}:{model_id}:{dim}")
 }
 
 /// Hold one entity's head in one space until the transaction ends: every
@@ -182,7 +182,7 @@ pub(crate) async fn try_lock_embedding_key(
 /// error; either leaves the transaction to roll back.
 pub(crate) async fn insert_embedding_head(
     tx: &mut Transaction<'_, Postgres>,
-    index: &dyn proxima_core::storage_ports::VectorIndex,
+    index: &dyn proxiima_core::storage_ports::VectorIndex,
     owner: &OwnerId,
     entity: EmbeddableEntityRef,
     vectors: &[SpaceVector],
@@ -198,11 +198,11 @@ pub(crate) async fn insert_embedding_head(
         });
     }
     let embedding_version: i32 = sqlx::query_scalar(
-        "INSERT INTO proxima_core.embedding_heads
+        "INSERT INTO proxiima_core.embedding_heads
             (entity_id, model_id, dim, embedding_version, owner_id)
          VALUES ($1, $2, $3, 1, $4)
          ON CONFLICT (entity_id, model_id, dim)
-         DO UPDATE SET embedding_version = proxima_core.embedding_heads.embedding_version + 1
+         DO UPDATE SET embedding_version = proxiima_core.embedding_heads.embedding_version + 1
          RETURNING embedding_version",
     )
     .bind(entity_id)
@@ -213,7 +213,7 @@ pub(crate) async fn insert_embedding_head(
     .await
     .map_err(map_err)?;
     sqlx::query(
-        "DELETE FROM proxima_core.vector_index_debt
+        "DELETE FROM proxiima_core.vector_index_debt
           WHERE entity_id = $1 AND model_id = $2 AND dim = $3",
     )
     .bind(entity_id)
@@ -268,9 +268,9 @@ async fn embedding_entity_is_eligible(
     };
     sqlx::query_scalar(
         "SELECT EXISTS (
-            SELECT 1 FROM proxima_core.memory WHERE t = $1 AND owner_id = $2 AND forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+            SELECT 1 FROM proxiima_core.memory WHERE t = $1 AND owner_id = $2 AND forgotten_at IS NULL /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
             UNION ALL
-            SELECT 1 FROM proxima_core.goal WHERE t = $1 AND owner_id = $2
+            SELECT 1 FROM proxiima_core.goal WHERE t = $1 AND owner_id = $2
         )",
     )
     .bind(entity_id)

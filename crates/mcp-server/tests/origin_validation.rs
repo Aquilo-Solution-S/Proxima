@@ -1,5 +1,5 @@
 use http::header::{HeaderMap, HeaderValue, ORIGIN};
-use proxima_mcp_server::security::{assert_loopback, default_allowlist};
+use proxiima_mcp_server::security::{assert_loopback, default_allowlist};
 
 fn header_with(origin: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();

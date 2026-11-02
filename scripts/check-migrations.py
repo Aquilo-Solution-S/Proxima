@@ -27,21 +27,21 @@ RELEASE_VERSION_CONST = re.compile(
 )
 RELEASE_TAG = re.compile(r"^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$")
 MIGRATION_FILE = re.compile(r"^(?P<version>\d+)_[A-Za-z0-9][A-Za-z0-9_-]*\.sql$")
-MIGRATION_ROOT = re.compile(r"^(?:crates/storage-pg/migrations|flavors/[^/]+/migrations)/")
-FLAVOR_MIGRATION_DIR = re.compile(r"^flavors/[^/]+/migrations$")
+MIGRATION_ROOT = re.compile(r"^(?:crates/storage-pg/migrations|spiices/[^/]+/migrations)/")
+SPIICE_MIGRATION_DIR = re.compile(r"^spiices/[^/]+/migrations$")
 
 
 def retired_lanes(root: Path, paths: set[str]) -> dict[str, int]:
-    """Flavor migration directories with no .sql file left at HEAD, with their released file count.
+    """Spiice migration directories with no .sql file left at HEAD, with their released file count.
 
     Git history keeps a retired lane's released files and nothing at HEAD can
-    apply them. The core directory never retires, and a flavor directory that
+    apply them. The core directory never retires, and a spiice directory that
     still holds any migration keeps every released file unchanged.
     """
     by_dir: dict[str, int] = {}
     for path in paths:
         directory = str(Path(path).parent)
-        if FLAVOR_MIGRATION_DIR.fullmatch(directory):
+        if SPIICE_MIGRATION_DIR.fullmatch(directory):
             by_dir[directory] = by_dir.get(directory, 0) + 1
     return {
         directory: count
@@ -160,7 +160,7 @@ def check_released_migrations(
 
 def migration_files(root: Path) -> dict[str, tuple[str, int]]:
     files: dict[str, tuple[str, int]] = {}
-    bases = [root / "crates/storage-pg/migrations", *sorted((root / "flavors").glob("*/migrations"))]
+    bases = [root / "crates/storage-pg/migrations", *sorted((root / "spiices").glob("*/migrations"))]
     for base in bases:
         if not base.is_dir():
             continue
@@ -251,9 +251,9 @@ class FixtureRepo:
 
 
 def retired_lane_self_test() -> list[str]:
-    """A wholly removed flavor migration directory is a retired lane; nothing else is."""
+    """A wholly removed spiice migration directory is a retired lane; nothing else is."""
     failures: list[str] = []
-    lane = "flavors/example/migrations"
+    lane = "spiices/example/migrations"
 
     def released(files: list[str]) -> tuple[tempfile.TemporaryDirectory, FixtureRepo]:
         tmp = tempfile.TemporaryDirectory()
@@ -266,19 +266,19 @@ def retired_lane_self_test() -> list[str]:
     def check(repo: FixtureRepo) -> tuple[list[str], str]:
         return check_released_migrations(repo.root, epoch="v0.0.36", env=repo.env)
 
-    # retired_flavor_lane_passes
+    # retired_spiice_lane_passes
     tmp, repo = released([f"{lane}/20261001000011_a.sql"])
     with tmp:
         repo.git("rm", "-q", "-r", lane)
         diagnostics, summary = check(repo)
         if diagnostics or "retired lanes" not in summary:
-            failures.append(f"a wholly removed flavor lane should pass as retired: {diagnostics}")
-    # partial_flavor_deletion_fails
+            failures.append(f"a wholly removed spiice lane should pass as retired: {diagnostics}")
+    # partial_spiice_deletion_fails
     tmp, repo = released([f"{lane}/20261001000011_a.sql", f"{lane}/20261001000012_b.sql"])
     with tmp:
         repo.git("rm", "-q", f"{lane}/20261001000012_b.sql")
         if not check(repo)[0]:
-            failures.append("removing one released file of a live flavor lane should fail")
+            failures.append("removing one released file of a live spiice lane should fail")
     # core_lane_never_retires
     tmp, repo = released(["crates/storage-pg/migrations/0001_x.sql"])
     with tmp:
@@ -300,7 +300,7 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         repo = FixtureRepo(Path(tmp))
         repo.write("crates/storage-pg/migrations/0032_previous.sql", "-- old\n")
-        repo.write("flavors/example/migrations/20261001000020_old.sql", "-- old\n")
+        repo.write("spiices/example/migrations/20261001000020_old.sql", "-- old\n")
         repo.release("v0.0.35")
         repo.write("crates/storage-pg/migrations/0033_baseline.sql", "-- baseline\n")
         repo.write("crates/storage-pg/definitions/functions.sql", "-- definitions\n")
@@ -329,7 +329,7 @@ def self_test() -> int:
         repo.write("crates/storage-pg/migrations/0034_second.sql", "-- another agent\n")
         if not check_unique_versions(repo.root):
             failures.append("two new migrations with one version should fail")
-        repo.write("flavors/example/migrations/0034_flavor.sql", "-- other directory\n")
+        repo.write("spiices/example/migrations/0034_spiice.sql", "-- other directory\n")
         if len(check_unique_versions(repo.root)) != 1:
             failures.append("versions are unique per directory, not across directories")
         repo.write("crates/storage-pg/definitions/functions.sql", "-- changed definitions\n")

@@ -21,8 +21,8 @@ pub(super) async fn load_prior_goal(
     let owner_id = owner.into_inner();
     let row: Option<PriorRow> = sqlx::query_as(
         "SELECT h.schema_id, g.title, g.text, g.state, g.assignment_t, g.dependency_t
-               FROM proxima_core.goal g
-               JOIN proxima_core.goal_head h ON h.handle = g.handle
+               FROM proxiima_core.goal g
+               JOIN proxiima_core.goal_head h ON h.handle = g.handle
               WHERE g.t = $1 AND g.owner_id = $2",
     )
     .bind(goal_id.into_inner())
@@ -60,8 +60,8 @@ pub(super) async fn validate_active_head(
     let is_head: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
-               FROM proxima_core.goal g
-               JOIN proxima_core.goal_head h ON h.handle = g.handle AND h.t = g.t
+               FROM proxiima_core.goal g
+               JOIN proxiima_core.goal_head h ON h.handle = g.handle AND h.t = g.t
               WHERE g.t = $1 AND g.owner_id = $2
          )",
     )
@@ -112,10 +112,10 @@ pub(super) fn validate_goal_achievement(prior: GoalState) -> Result<(), StorageE
 /// The evidence column is the statement and the reference rows are its
 /// consequence, so a successor that omits it from the column would leave rows
 /// nothing could rebuild.
-fn evidence_refs(evidence: &[EvidenceTarget]) -> Vec<proxima_core::GoalEvidenceRef> {
+fn evidence_refs(evidence: &[EvidenceTarget]) -> Vec<proxiima_core::GoalEvidenceRef> {
     evidence
         .iter()
-        .map(|target| proxima_core::GoalEvidenceRef::new(target.memory_id))
+        .map(|target| proxiima_core::GoalEvidenceRef::new(target.memory_id))
         .collect()
 }
 
@@ -140,15 +140,15 @@ pub(super) fn draft_from_stored(
         payload: stored.payload.clone(),
         sidecar_payload: None,
         state,
-        topology: proxima_core::GoalTopologyWrite::new(
+        topology: proxiima_core::GoalTopologyWrite::new(
             stored
                 .assignment
-                .map(proxima_core::GoalAssignmentTarget::perspective),
+                .map(proxiima_core::GoalAssignmentTarget::perspective),
             stored
                 .dependencies
                 .iter()
                 .copied()
-                .map(proxima_core::GoalDependencyRef::new)
+                .map(proxiima_core::GoalDependencyRef::new)
                 .collect(),
             evidence_refs(evidence),
         )
@@ -181,14 +181,14 @@ pub(super) fn draft_from_payload(input: DraftFromPayload<'_>) -> GoalDraft {
         payload: input.payload.payload.clone(),
         sidecar_payload: input.payload.sidecar_payload.clone(),
         state: input.state,
-        topology: proxima_core::GoalTopologyWrite::new(
+        topology: proxiima_core::GoalTopologyWrite::new(
             input
                 .assignment
-                .map(proxima_core::GoalAssignmentTarget::perspective),
+                .map(proxiima_core::GoalAssignmentTarget::perspective),
             input
                 .dependencies
                 .into_iter()
-                .map(proxima_core::GoalDependencyRef::new)
+                .map(proxiima_core::GoalDependencyRef::new)
                 .collect(),
             evidence_refs(input.evidence),
         )
@@ -202,13 +202,13 @@ pub(super) fn draft_from_payload(input: DraftFromPayload<'_>) -> GoalDraft {
 pub(super) fn child_draft(
     owner: &OwnerId,
     parent_goal_id: GoalId,
-    topology: &proxima_core::GoalTopologyWrite,
+    topology: &proxiima_core::GoalTopologyWrite,
     authorship: &GoalAuthorship,
     child: &ChildGoalDraft,
 ) -> Result<GoalDraft, StorageError> {
     let mut dependencies = topology.dependencies().to_vec();
-    dependencies.push(proxima_core::GoalDependencyRef::new(parent_goal_id));
-    let child_topology = proxima_core::GoalTopologyWrite::new(
+    dependencies.push(proxiima_core::GoalDependencyRef::new(parent_goal_id));
+    let child_topology = proxiima_core::GoalTopologyWrite::new(
         topology.assignment(),
         dependencies,
         child.evidence.clone(),

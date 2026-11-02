@@ -4,21 +4,21 @@ use std::time::Duration;
 
 use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
-use proxima_blob_s3::{
+use proxiima_blob_s3::{
     BlobError, CitedBlobStore, CitedBlobUploadAbortTs, CitedBlobUploadCompleteTs,
     CitedBlobUploadPrepareTs, S3RuntimeConfig,
 };
-use proxima_core::owner_inverse::{
+use proxiima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerSurfaces,
 };
-use proxima_core::storage_ports::OwnerInversePort;
-use proxima_core::test_fixtures::owner_fixture;
-use proxima_core::{
-    AuthPath, AuthzContext, ColdObjectStore, FlavorRegistry, OwnerId, StorageError,
+use proxiima_core::storage_ports::OwnerInversePort;
+use proxiima_core::test_fixtures::owner_fixture;
+use proxiima_core::{
+    AuthPath, AuthzContext, ColdObjectStore, OwnerId, SpiiceRegistry, StorageError,
 };
-use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{ColdPurgeRetryOptions, PgStorage};
+use proxiima_pg_testkit::{db_url, drop_db, unique_db_name};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{ColdPurgeRetryOptions, PgStorage};
 
 type TestResult<T> = Result<T, Box<dyn Error>>;
 const BODY: &[u8] = b"terminal repair must not lose canonical erase debt";
@@ -29,13 +29,13 @@ struct DeferPurge(Arc<dyn ColdObjectStore>);
 
 #[async_trait::async_trait]
 impl ColdObjectStore for DeferPurge {
-    async fn delete(&self, _key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
+    async fn delete(&self, _key: &str) -> Result<proxiima_core::PurgeDeleted, StorageError> {
         Err(StorageError::Unavailable(
             "test defers post-commit deletion".into(),
         ))
     }
 
-    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+    fn store_id(&self) -> &proxiima_core::ObjectStoreId {
         self.0.store_id()
     }
 }
@@ -70,10 +70,10 @@ struct Observation {
 #[tokio::test]
 async fn terminal_locator_repair_preserves_owner_erase_debt() -> TestResult<()> {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return Ok(());
     }
-    let database = unique_db_name("proxima_terminal_repair");
+    let database = unique_db_name("proxiima_terminal_repair");
     create_core_db(&database).await?;
     let result = tokio::time::timeout(Duration::from_secs(40), run_race(&database)).await;
     // Final contract assertions happen after cleanup, including on the red
@@ -118,7 +118,7 @@ async fn run_race(database: &str) -> TestResult<Observation> {
         pg.platform_scope_for_host(),
     )?;
     let owner = owner_fixture();
-    let ctx = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
+    let ctx = proxiima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
         &owner,
         AuthPath::HostBearer,
     ));
@@ -153,7 +153,7 @@ async fn run_race(database: &str) -> TestResult<Observation> {
              PERFORM pg_advisory_xact_lock(hashtextextended(current_database() || ':abort', 0));
              RETURN NEW;
          END $$;
-         CREATE TRIGGER block_abort BEFORE UPDATE OF status ON proxima_core.blob_uploads
+         CREATE TRIGGER block_abort BEFORE UPDATE OF status ON proxiima_core.blob_uploads
              FOR EACH ROW WHEN (OLD.status = 'pending' AND NEW.status = 'aborted')
              EXECUTE FUNCTION block_abort();
          CREATE FUNCTION block_terminal_locator() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -164,7 +164,7 @@ async fn run_race(database: &str) -> TestResult<Observation> {
              RETURN NULL;
          END $$;
          CREATE TRIGGER block_terminal_locator BEFORE UPDATE OF object_key
-             ON proxima_core.blob_uploads FOR EACH STATEMENT
+             ON proxiima_core.blob_uploads FOR EACH STATEMENT
              EXECUTE FUNCTION block_terminal_locator();",
     )
     .execute(pool)
@@ -242,7 +242,7 @@ async fn run_race(database: &str) -> TestResult<Observation> {
             drop_event_id: "terminal-repair-race".into(),
         });
         let surfaces =
-            OwnerSurfaces::for_registry(&FlavorRegistry::new().freeze_or_panic_for_tests());
+            OwnerSurfaces::for_registry(&SpiiceRegistry::new().freeze_or_panic_for_tests());
         OwnerInversePort::erase_personal_owner(&erase_pg, &auth, user_id, &surfaces).await
     });
     tasks.0.push(erase_task.abort_handle());
@@ -276,15 +276,15 @@ async fn run_race(database: &str) -> TestResult<Observation> {
         "a terminal/erased upload is not a successful stage: {stage:?}",
     );
     let rows: (i64, i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM proxima_core.blob_uploads),
-                (SELECT count(*) FROM proxima_core.blob),
-                (SELECT count(*) FROM proxima_core.memory)",
+        "SELECT (SELECT count(*) FROM proxiima_core.blob_uploads),
+                (SELECT count(*) FROM proxiima_core.blob),
+                (SELECT count(*) FROM proxiima_core.memory)",
     )
     .fetch_one(pool)
     .await?;
     assert_eq!(rows, (0, 0, 0));
     let canonical_debt: Option<String> = sqlx::query_scalar(
-        "SELECT object_store FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+        "SELECT object_store FROM proxiima_core.cold_purge_pending WHERE object_key = $1",
     )
     .bind(&canonical)
     .fetch_optional(pool)
@@ -300,7 +300,7 @@ async fn run_race(database: &str) -> TestResult<Observation> {
         .is_ok();
     // A deferred post-commit attempt backed the debt off; a later drain
     // finds it due.
-    sqlx::query("UPDATE proxima_core.cold_purge_pending SET next_attempt_at = now()")
+    sqlx::query("UPDATE proxiima_core.cold_purge_pending SET next_attempt_at = now()")
         .execute(pool)
         .await?;
     let drained = pg
@@ -361,10 +361,10 @@ async fn owner_fence_waiting(pool: &sqlx::PgPool, owner: OwnerId) -> TestResult<
              SELECT 1 FROM pg_locks
               WHERE locktype = 'advisory' AND NOT granted AND mode = 'ExclusiveLock'
                 AND classid::bigint = ((hashtextextended(
-                    'proxima-owner-fence:' || $1::text, 0
+                    'proxiima-owner-fence:' || $1::text, 0
                 ) >> 32) & 4294967295)
                 AND objid::bigint = (hashtextextended(
-                    'proxima-owner-fence:' || $1::text, 0
+                    'proxiima-owner-fence:' || $1::text, 0
                 ) & 4294967295)
          )",
     )

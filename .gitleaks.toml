@@ -1,4 +1,4 @@
-# Gitleaks config for Proxima.
+# Gitleaks config for Proxiima.
 #
 # Rationale: `gitleaks detect --no-git` walks the filesystem and does NOT honour
 # .gitignore. Without these excludes it descends into target/ (64 GB of Rust

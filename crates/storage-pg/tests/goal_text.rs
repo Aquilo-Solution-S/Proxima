@@ -8,31 +8,31 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_core::MemoryKind;
-use proxima_core::owner_inverse::{
+use proxiima_core::MemoryKind;
+use proxiima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget,
     OwnerExportTarget, OwnerSurfaces,
 };
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     FactIngestPort, GoalWritePort, MemoryReadPort, OwnerInversePort, OwnerWritePermit,
 };
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::verbs::goal_write::{
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef,
     GoalPayloadWrite, GoalReplayRequest, GoalState, GoalTopologyWrite, GoalTransitionKind,
     GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
-use proxima_core::verbs::query::{EntityKind, GoalRow, QueryRequest};
-use proxima_core::{
-    AccessKind, EdgeEndpoint, FlavorRegistry, FlavorRegistryFrozen, GoalId, GoalPayload, MemoryId,
-    OwnerId, PendingWork, SchemaId, SchemaVersion, SimpleTextGoalV1, StorageError, UserId,
+use proxiima_core::verbs::query::{EntityKind, GoalRow, QueryRequest};
+use proxiima_core::{
+    AccessKind, EdgeEndpoint, GoalId, GoalPayload, MemoryId, OwnerId, PendingWork, SchemaId,
+    SchemaVersion, SimpleTextGoalV1, SpiiceRegistry, SpiiceRegistryFrozen, StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::forget::MemoryColdStore;
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::verbs::forget::MemoryColdStore;
 use uuid::Uuid;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -64,7 +64,7 @@ fn memory_draft(kind: MemoryKind) -> FactWriteCommand {
 }
 
 async fn fresh_pg() -> (String, PgStorage) {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -77,7 +77,7 @@ async fn fresh_pg() -> (String, PgStorage) {
 
 /// Decode the minted time independently of the SQL query under test.
 fn minted_at(id: GoalId) -> time::OffsetDateTime {
-    proxima_core::MemoryId::new(id.into_inner()).created_at()
+    proxiima_core::MemoryId::new(id.into_inner()).created_at()
 }
 
 /// One owner with an assigned Perspective, and the verbs that write Goals.
@@ -85,7 +85,7 @@ struct Harness {
     pg: PgStorage,
     owner: OwnerId,
     permit: OwnerWritePermit,
-    registry: FlavorRegistryFrozen,
+    registry: SpiiceRegistryFrozen,
     assignment: MemoryId,
 }
 
@@ -110,7 +110,7 @@ impl Harness {
             pg,
             owner,
             permit,
-            registry: FlavorRegistry::new().freeze_or_panic_for_tests(),
+            registry: SpiiceRegistry::new().freeze_or_panic_for_tests(),
             assignment: perspective.memory_id,
         })
     }
@@ -336,7 +336,7 @@ impl Harness {
         let handle = Uuid::now_v7();
         let t = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
              VALUES ($1, $2, $3, $4)",
         )
         .bind(handle)
@@ -346,9 +346,9 @@ impl Harness {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.goal
+            "INSERT INTO proxiima_core.goal
                  (handle, t, owner_id, title, state, request_id, assignment_t, \"by\", via)
-             VALUES ($1, $2, $3, 'written before v0.0.13', $4::proxima_core.goal_state, $5, $6, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+             VALUES ($1, $2, $3, 'written before v0.0.13', $4::proxiima_core.goal_state, $5, $6, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(handle)
         .bind(t)
@@ -365,7 +365,7 @@ impl Harness {
     /// clock or generator. Its saturated counter makes a successor advance
     /// logical milliseconds as well as UUID order.
     async fn insert_future_goal(&self, request_id: &str, state: GoalState) -> TestResult<GoalId> {
-        let handle = proxima_core::new_memory_uuid(self.pg.store_number());
+        let handle = proxiima_core::new_memory_uuid(self.pg.store_number());
         let future_millis =
             u64::try_from(MemoryId::new(handle).created_at().unix_timestamp_nanos() / 1_000_000)?
                 + 3_600_000;
@@ -376,7 +376,7 @@ impl Harness {
         assert!(MemoryId::new(t).created_at() > time::OffsetDateTime::now_utc());
         let mut tx = self.pg.pool_for_tests().begin().await?;
         sqlx::query(
-            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
              VALUES ($1, $2, $3, $4)",
         )
         .bind(handle)
@@ -386,7 +386,7 @@ impl Harness {
         .execute(tx.as_mut())
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.goal
+            "INSERT INTO proxiima_core.goal
                  (handle, t, owner_id, title, text, state, request_id, assignment_t, \"by\", via)
              VALUES ($1, $2, $3, 'another writer', 'the original prompt', $4, $5, $6, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -562,7 +562,7 @@ goal_test!(
             assert!(successor.goal_id.into_inner() > prior.into_inner());
             assert_eq!(successor.goal_id.into_inner().get_version_num(), 8);
             assert_eq!(
-                proxima_core::memory_store_number(successor.goal_id.into_inner()),
+                proxiima_core::memory_store_number(successor.goal_id.into_inner()),
                 h.pg.store_number()
             );
             for row in [h.read(prior).await?, h.read(successor.goal_id).await?] {
@@ -698,7 +698,7 @@ goal_test!(
 /// envelope the backfill reads (`replay.rs` `command_declaration`).
 async fn declaration_of(pg: &PgStorage, id: GoalId) -> TestResult<serde_json::Value> {
     Ok(sqlx::query_scalar(
-        "SELECT declaration FROM proxima_core.goal_replay_declaration WHERE goal_t = $1",
+        "SELECT declaration FROM proxiima_core.goal_replay_declaration WHERE goal_t = $1",
     )
     .bind(id.into_inner())
     .fetch_one(pg.pool_for_tests())
@@ -707,7 +707,7 @@ async fn declaration_of(pg: &PgStorage, id: GoalId) -> TestResult<serde_json::Va
 
 async fn stored_text(pg: &PgStorage, id: GoalId) -> TestResult<Option<String>> {
     Ok(
-        sqlx::query_scalar("SELECT text FROM proxima_core.goal WHERE t = $1")
+        sqlx::query_scalar("SELECT text FROM proxiima_core.goal WHERE t = $1")
             .bind(id.into_inner())
             .fetch_one(pg.pool_for_tests())
             .await?,
@@ -762,7 +762,7 @@ goal_test!(
         );
         let achieved = h.achieve(resumed.goal_id, "replay-live-achieve").await?;
         let evidence: Vec<MemoryId> = sqlx::query_scalar::<_, Vec<Uuid>>(
-            "SELECT evidence_t FROM proxima_core.goal WHERE t = $1",
+            "SELECT evidence_t FROM proxiima_core.goal WHERE t = $1",
         )
         .bind(achieved.goal_id.into_inner())
         .fetch_one(h.pg.pool_for_tests())
@@ -793,25 +793,25 @@ goal_test!(
             .await?;
         let recorded = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.goal
+            "INSERT INTO proxiima_core.goal
              (handle, t, owner_id, title, state, request_id, assignment_t, \"by\", via)
          SELECT handle, $1, owner_id, title, 'Active', 'recorded-before', assignment_t, '00000000-0000-0000-0000-000000000509'::uuid, NULL
-           FROM proxima_core.goal WHERE t = $2",
+           FROM proxiima_core.goal WHERE t = $2",
         )
         .bind(recorded)
         .bind(source_two.goal_id.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
-            "UPDATE proxima_core.goal_head SET t = $1
-          WHERE handle = (SELECT handle FROM proxima_core.goal WHERE t = $2)",
+            "UPDATE proxiima_core.goal_head SET t = $1
+          WHERE handle = (SELECT handle FROM proxiima_core.goal WHERE t = $2)",
         )
         .bind(recorded)
         .bind(source_two.goal_id.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
          VALUES ($1, $2, 1)",
         )
         .bind(recorded)
@@ -824,7 +824,7 @@ goal_test!(
         }))
         .execute(pool)
         .await?;
-        let before: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.goal")
+        let before: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.goal")
             .fetch_one(pool)
             .await?;
 
@@ -837,7 +837,7 @@ goal_test!(
         );
         assert_eq!(retry.goal_id, GoalId::new(recorded));
         assert_eq!(retry.edge_count, 1);
-        let after: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.goal")
+        let after: i64 = sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.goal")
             .fetch_one(pool)
             .await?;
         assert_eq!(after, before, "a replay writes no second version");
@@ -880,17 +880,17 @@ goal_test!(
         // so).
         let legacy = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.goal
+            "INSERT INTO proxiima_core.goal
              (handle, t, owner_id, title, state, request_id, assignment_t, \"by\", via)
          SELECT handle, $1, owner_id, title, 'Paused', 'recorded-pause', assignment_t, '00000000-0000-0000-0000-000000000509'::uuid, NULL
-           FROM proxima_core.goal WHERE t = $2",
+           FROM proxiima_core.goal WHERE t = $2",
         )
         .bind(legacy)
         .bind(source_two.goal_id.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.goal_replay_declaration (goal_t, declaration, edge_count)
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
          VALUES ($1, $2, 1)",
         )
         .bind(legacy)
@@ -919,7 +919,7 @@ goal_test!(
 
 async fn goal_count(pg: &PgStorage) -> TestResult<i64> {
     Ok(
-        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.goal")
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.goal")
             .fetch_one(pg.pool_for_tests())
             .await?,
     )
@@ -961,7 +961,7 @@ goal_test!(
         });
         let bundle = h.pg.export_owner_bundle(&auth, &surfaces).await?;
         let exported: BTreeMap<String, serde_json::Value> = bundle
-            .table("proxima_core.goal")
+            .table("proxiima_core.goal")
             .iter()
             .map(|row| {
                 (
@@ -998,7 +998,7 @@ goal_test!(
             "{outcome:?}"
         );
         let left: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.goal
+            "SELECT count(*)::bigint FROM proxiima_core.goal
           WHERE owner_id = $1 OR text = 'an exportable prompt'",
         )
         .bind(h.owner.into_inner())

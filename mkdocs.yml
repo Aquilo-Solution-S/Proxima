@@ -1,6 +1,6 @@
-site_name: Proxima
+site_name: Proxiima
 site_description: Typed durable memory substrate for agentic systems
-repo_url: https://github.com/Aquilo-Solution-S/Proxima
+repo_url: https://github.com/Aquilo-Solution-S/proxiima
 edit_uri: edit/main/docs/
 docs_dir: docs
 site_dir: site
@@ -32,7 +32,7 @@ nav:
   - Decisions: decisions.md
   - Get started: get-started.md
   - Agents: agents.md
-  - Build a flavor: build-a-flavor.md
+  - Build a spiice: build-a-spiice.md
   - Host integration: host-integration.md
   - Protocol: protocol.md
   - Operate: operate.md

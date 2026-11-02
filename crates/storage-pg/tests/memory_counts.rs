@@ -4,22 +4,22 @@
 
 use std::sync::Arc;
 
-use proxima_core::MemoryKind;
-use proxima_core::error::ErrorCode;
-use proxima_core::read_models::MemoryCounts;
-use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
-use proxima_core::test_fixtures::authenticated_context;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{
-    AccessKind, AuthPath, AuthzContext, EdgeEndpoint, Engine, EntityKind, FlavorRegistry, GroupId,
-    MemoryId, OwnerId, Role, SchemaId, SchemaVersion, UserId,
+use proxiima_core::MemoryKind;
+use proxiima_core::error::ErrorCode;
+use proxiima_core::read_models::MemoryCounts;
+use proxiima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
+use proxiima_core::test_fixtures::authenticated_context;
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::verbs::goal_write::GoalState;
+use proxiima_core::{
+    AccessKind, AuthPath, AuthzContext, EdgeEndpoint, Engine, EntityKind, GroupId, MemoryId,
+    OwnerId, Role, SchemaId, SchemaVersion, SpiiceRegistry, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::forget::MemoryColdStore;
-use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::verbs::forget::MemoryColdStore;
+use proxiima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use uuid::Uuid;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -112,7 +112,7 @@ async fn seed(pg: &PgStorage, owner: OwnerId, extra_facts: u64) -> TestResult<Se
     let first = write_goal(
         &mut tx,
         &owner,
-        proxima_storage_pg::test_fixtures::writer(),
+        proxiima_storage_pg::test_fixtures::writer(),
         &goal(None, GoalState::Active, "first"),
         1,
     )
@@ -120,7 +120,7 @@ async fn seed(pg: &PgStorage, owner: OwnerId, extra_facts: u64) -> TestResult<Se
     write_goal(
         &mut tx,
         &owner,
-        proxima_storage_pg::test_fixtures::writer(),
+        proxiima_storage_pg::test_fixtures::writer(),
         &goal(Some(first.handle), GoalState::Achieved, "first-achieved"),
         1,
     )
@@ -128,7 +128,7 @@ async fn seed(pg: &PgStorage, owner: OwnerId, extra_facts: u64) -> TestResult<Se
     write_goal(
         &mut tx,
         &owner,
-        proxima_storage_pg::test_fixtures::writer(),
+        proxiima_storage_pg::test_fixtures::writer(),
         &goal(None, GoalState::Paused, "second"),
         1,
     )
@@ -140,12 +140,12 @@ async fn seed(pg: &PgStorage, owner: OwnerId, extra_facts: u64) -> TestResult<Se
     })
 }
 
-/// Rows of `proxima_core.memory` for one owner and kind: what counting the
+/// Rows of `proxiima_core.memory` for one owner and kind: what counting the
 /// versions instead of the heads would report.
 async fn memory_rows(pg: &PgStorage, owner: OwnerId, kind: &str) -> TestResult<u64> {
     let rows: i64 = sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.memory
-          WHERE owner_id = $1 AND kind = $2::proxima_core.memory_kind",
+        "SELECT count(*)::bigint FROM proxiima_core.memory
+          WHERE owner_id = $1 AND kind = $2::proxiima_core.memory_kind",
     )
     .bind(owner.into_inner())
     .bind(kind)
@@ -155,7 +155,7 @@ async fn memory_rows(pg: &PgStorage, owner: OwnerId, kind: &str) -> TestResult<u
 }
 
 fn engine(pg: &PgStorage) -> Engine {
-    Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+    Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
         .with_storage_ports(Arc::new(pg.clone()).storage_ports())
 }
 
@@ -179,7 +179,7 @@ fn sum(a: MemoryCounts, b: MemoryCounts) -> MemoryCounts {
 
 /// A migrated database and a storage onto it; the caller drops the database.
 async fn fixture() -> TestResult<(String, PgStorage)> {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(error) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {error}");
     }
@@ -196,12 +196,11 @@ async fn counts_are_heads_by_kind_and_follow_forget() {
         let (_, owner) = personal();
         let seeded = seed(&pg, owner, 0).await?;
         let engine = engine(&pg);
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
 
-        // Counting `proxima_core.memory` instead would report the versions.
+        // Counting `proxiima_core.memory` instead would report the versions.
         assert_eq!(memory_rows(&pg, owner, "fact").await?, 3);
         assert_eq!(engine.memory_counts(&authz).await?, seeded_counts(0));
 
@@ -218,7 +217,7 @@ async fn counts_are_heads_by_kind_and_follow_forget() {
 
         // A caller who owns nothing sees every kind, all zero.
         let (_, empty) = personal();
-        let nobody = proxima_core::test_fixtures::authenticated_context(
+        let nobody = proxiima_core::test_fixtures::authenticated_context(
             AuthzContext::single_owner(&empty, AuthPath::HostBearer),
         );
         assert_eq!(

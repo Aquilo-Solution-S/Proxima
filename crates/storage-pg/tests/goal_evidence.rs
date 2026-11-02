@@ -4,26 +4,26 @@
 
 use std::sync::Arc;
 
-use proxima_core::MemoryKind;
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::MemoryAuthoringPort;
-use proxima_core::storage_ports::{GoalReadPort, GoalWritePort, OwnerWritePermit};
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::verbs::goal_write::{
+use proxiima_core::MemoryKind;
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::storage_ports::MemoryAuthoringPort;
+use proxiima_core::storage_ports::{GoalReadPort, GoalWritePort, OwnerWritePermit};
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef,
     GoalPayloadWrite, GoalState, GoalTopologyWrite, IdempotencyKey, ModifyGoalAtomicRequest,
     OperatorKind, SystemOrigin,
 };
-use proxima_core::{
-    AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, InputContractId, ModelId, OperatorId,
-    OwnerId, PromptVersion, SchemaId, SchemaVersion, StorageError, UserId,
+use proxiima_core::{
+    AccessKind, EdgeEndpoint, EntityKind, InputContractId, ModelId, OperatorId, OwnerId,
+    PromptVersion, SchemaId, SchemaVersion, SpiiceRegistry, StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::forget::MemoryColdStore;
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::verbs::forget::MemoryColdStore;
 use uuid::Uuid;
 
 fn draft(kind: MemoryKind) -> FactWriteCommand {
@@ -49,7 +49,7 @@ fn draft(kind: MemoryKind) -> FactWriteCommand {
 
 #[tokio::test]
 async fn perspective_evidence_is_rejected_in_tx() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -69,7 +69,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
         perspective.additional_references =
             vec![EdgeEndpoint::memory(EntityKind::Abstraction, abs.memory_id)];
         let perspective = pg.ingest_fact_atomic(&permit, &perspective, None).await?;
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
         let topology = GoalTopologyWrite::new(
             Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
             Vec::new(),
@@ -487,7 +487,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
         );
         for request_id in ["d7-child-valid", "d7-child-invalid"] {
             let inserted: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*)::bigint FROM proxima_core.goal WHERE request_id = $1",
+                "SELECT COUNT(*)::bigint FROM proxiima_core.goal WHERE request_id = $1",
             )
             .bind(request_id)
             .fetch_one(pg.pool_for_tests())
@@ -506,13 +506,13 @@ struct Fixture {
     pg: PgStorage,
     owner: OwnerId,
     permit: OwnerWritePermit,
-    fact: proxima_core::MemoryId,
-    abs: proxima_core::MemoryId,
-    perspective: proxima_core::MemoryId,
+    fact: proxiima_core::MemoryId,
+    abs: proxiima_core::MemoryId,
+    perspective: proxiima_core::MemoryId,
 }
 
 async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -563,7 +563,7 @@ fn payload(title: &str) -> GoalPayloadWrite {
     }
 }
 
-fn context(registry: &proxima_core::FlavorRegistryFrozen) -> GoalAtomicContext<'_> {
+fn context(registry: &proxiima_core::SpiiceRegistryFrozen) -> GoalAtomicContext<'_> {
     GoalAtomicContext {
         registry,
         author_self_perspective_id: None,
@@ -574,11 +574,11 @@ fn context(registry: &proxima_core::FlavorRegistryFrozen) -> GoalAtomicContext<'
 impl Fixture {
     async fn create(
         &self,
-        registry: &proxima_core::FlavorRegistryFrozen,
+        registry: &proxiima_core::SpiiceRegistryFrozen,
         key: &str,
         authorship: GoalAuthorship,
-        evidence: &[proxima_core::MemoryId],
-    ) -> Result<proxima_core::verbs::goal_write::GoalWriteOutcome, StorageError> {
+        evidence: &[proxiima_core::MemoryId],
+    ) -> Result<proxiima_core::verbs::goal_write::GoalWriteOutcome, StorageError> {
         let topology = GoalTopologyWrite::new(
             Some(GoalAssignmentTarget::perspective(self.perspective)),
             Vec::new(),
@@ -612,12 +612,12 @@ impl Fixture {
 
     async fn modify(
         &self,
-        registry: &proxima_core::FlavorRegistryFrozen,
+        registry: &proxiima_core::SpiiceRegistryFrozen,
         key: &str,
-        prior: proxima_core::GoalId,
+        prior: proxiima_core::GoalId,
         authorship: GoalAuthorship,
-        evidence: Option<&[proxima_core::MemoryId]>,
-    ) -> Result<proxima_core::verbs::goal_write::GoalWriteOutcome, StorageError> {
+        evidence: Option<&[proxiima_core::MemoryId]>,
+    ) -> Result<proxiima_core::verbs::goal_write::GoalWriteOutcome, StorageError> {
         self.pg
             .modify_goal_atomic(
                 &ModifyGoalAtomicRequest {
@@ -638,8 +638,8 @@ impl Fixture {
 
     async fn evidence_of(
         &self,
-        goal: proxima_core::GoalId,
-    ) -> Result<Option<Vec<proxima_core::MemoryId>>, StorageError> {
+        goal: proxiima_core::GoalId,
+    ) -> Result<Option<Vec<proxiima_core::MemoryId>>, StorageError> {
         self.pg
             .load_goal_evidence(
                 Some(&owner_scope_for_tests(&[self.owner])),
@@ -656,7 +656,7 @@ impl Fixture {
 async fn operator_modify_and_decompose_accept_fact_evidence() {
     let fx = fixture().await.expect("fixture");
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
         let (fact, abs) = (fx.fact, fx.abs);
 
         // (a) explicit replacement [fact] over an operator head with [abs].
@@ -713,7 +713,7 @@ async fn operator_modify_and_decompose_accept_fact_evidence() {
             .create(&registry, "f2-parent", GoalAuthorship::User, &[fact])
             .await?;
         let child = |key: &str,
-                     evidence: Vec<proxima_core::MemoryId>|
+                     evidence: Vec<proxiima_core::MemoryId>|
          -> Result<ChildGoalDraft, Box<dyn std::error::Error>> {
             Ok(ChildGoalDraft {
                 payload: payload(key),
@@ -767,7 +767,7 @@ async fn operator_modify_and_decompose_accept_fact_evidence() {
 async fn operator_perspective_evidence_is_refused() {
     let fx = fixture().await.expect("fixture");
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
         let constraint = |result: Result<_, StorageError>, what: &str| -> String {
             match result {
                 Err(StorageError::ConstraintViolation(message)) => message,
@@ -804,7 +804,7 @@ async fn operator_perspective_evidence_is_refused() {
 async fn unassigned_operator_goals_allow_empty_evidence_through_successors() {
     let fx = fixture().await.expect("fixture");
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
         let create = CreateGoalAtomicRequest {
             draft: GoalDraft::active_from_payload_write(
                 fx.owner,
@@ -871,7 +871,7 @@ async fn unassigned_operator_goals_allow_empty_evidence_through_successors() {
         }
         let ids: Vec<_> = versions.iter().map(|id| id.into_inner()).collect();
         let valid_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.goal
+            "SELECT count(*) FROM proxiima_core.goal
               WHERE t = ANY($1) AND assignment_t IS NULL AND evidence_t = '{}'::uuid[]",
         )
         .bind(&ids)
@@ -896,15 +896,15 @@ async fn unassigned_operator_goals_allow_empty_evidence_through_successors() {
 async fn evidence_of_another_store_without_a_read_is_refused() {
     let fx = fixture().await.expect("fixture");
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
-        let foreign = proxima_core::MemoryId::new(proxima_core::new_memory_uuid(7));
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
+        let foreign = proxiima_core::MemoryId::new(proxiima_core::new_memory_uuid(7));
         let refused = fx
             .create(&registry, "g526-foreign", operator_authorship(), &[foreign])
             .await;
         match refused {
             Err(StorageError::ConstraintViolation(message)) => assert_eq!(
                 message,
-                proxima_core::verbs::goal_write::EVIDENCE_DOES_NOT_EXIST
+                proxiima_core::verbs::goal_write::EVIDENCE_DOES_NOT_EXIST
             ),
             other => panic!("expected ConstraintViolation, got {other:?}"),
         }

@@ -5,7 +5,7 @@
 //!
 //! Cursor persistence lives in the owner-scoped `source_cursors` table
 //! for restart recovery. The persistence layer stores and returns the
-//! same bytes verbatim; Proxima never interprets, validates, decodes,
+//! same bytes verbatim; Proxiima never interprets, validates, decodes,
 //! normalizes, or derives ordering from them.
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

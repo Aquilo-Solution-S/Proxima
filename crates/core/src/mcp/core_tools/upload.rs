@@ -6,7 +6,7 @@
 //! canonical `cited_object_id`, and `read_url` mints a presigned `GET`
 //! later. The tool talks to the host-wired
 //! [`CitedBlobService`] service; a host without S3 configured fails
-//! typed at call time with a `PROXIMA_S3_*` hint.
+//! typed at call time with a `PROXIIMA_S3_*` hint.
 
 use crate::mcp::{Replay, ToolEffect};
 use std::sync::Arc;
@@ -287,7 +287,7 @@ impl McpTool for CoreUploadTool {
                     let engine = ctx.require_engine()?;
                     // No extension sidecars from the MCP surface: a tool
                     // caller has no registered schema of its own to add.
-                    // Flavors reach the same verb in-process and pass theirs.
+                    // Spiices reach the same verb in-process and pass theirs.
                     let completed = engine
                         .complete_upload_as_fact(
                             service.as_ref(),
@@ -370,9 +370,9 @@ fn narrowed_space(
 fn blob_service(ctx: &McpToolCtx) -> Result<Arc<CitedBlobService>, McpToolError> {
     ctx.service::<CitedBlobService>().ok_or_else(|| {
         McpToolError::Unavailable(
-            "blob storage is not configured for this host: set PROXIMA_S3_BUCKET / \
-             PROXIMA_S3_REGION / PROXIMA_S3_ACCESS_KEY_ID / PROXIMA_S3_SECRET_ACCESS_KEY \
-             (see PROXIMA_S3_* in docs/configuration.md) to enable \
+            "blob storage is not configured for this host: set PROXIIMA_S3_BUCKET / \
+             PROXIIMA_S3_REGION / PROXIIMA_S3_ACCESS_KEY_ID / PROXIIMA_S3_SECRET_ACCESS_KEY \
+             (see PROXIIMA_S3_* in docs/configuration.md) to enable \
              the cited-blob upload lane"
                 .into(),
         )
@@ -389,7 +389,7 @@ mod tests {
         CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobService, CitedBlobStaged,
         CitedBlobUploadAborted, CitedBlobUploadPrepared,
     };
-    use crate::{AuthzContext, FlavorServices, GroupId, OwnerId, StorageError, UserId};
+    use crate::{AuthzContext, GroupId, OwnerId, SpiiceServices, StorageError, UserId};
 
     use super::super::memory_spaces::test_ctx::ctx_for;
     use super::*;
@@ -512,7 +512,7 @@ mod tests {
         let mut ctx = ctx_for(subject, group_roles);
         let port = Arc::new(RecordingBlobPort::default());
         ctx.services =
-            FlavorServices::with(CitedBlobService::new(port.clone() as Arc<dyn CitedBlobPort>));
+            SpiiceServices::with(CitedBlobService::new(port.clone() as Arc<dyn CitedBlobPort>));
         (ctx, port)
     }
 
@@ -537,7 +537,7 @@ mod tests {
         // reach the caller verbatim and name the enabling configuration.
         assert_eq!(err.kind(), McpToolErrorKind::InvalidRequest);
         assert!(
-            err.client_message().contains("PROXIMA_S3_"),
+            err.client_message().contains("PROXIIMA_S3_"),
             "message must name the enabling env: {err}"
         );
     }

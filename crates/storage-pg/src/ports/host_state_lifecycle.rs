@@ -1,7 +1,7 @@
 //! Transaction-bound inverse and snapshot callbacks for host-owned state.
 
-use proxima_core::StorageError;
-use proxima_core::storage_ports::{
+use proxiima_core::StorageError;
+use proxiima_core::storage_ports::{
     HostStateEraseReceipt, HostStateEraseRequest, HostStateExportReceipt, HostStateExportRequest,
     HostStateParticipantId, StateSurfaceName,
 };
@@ -11,7 +11,7 @@ use sqlx::{Postgres, Transaction};
 /// surfaces. Both methods are required: a participant cannot declare a
 /// managed surface while leaving one inverse unimplemented.
 ///
-/// Callbacks run inside Proxima's existing transaction/snapshot. They may
+/// Callbacks run inside Proxiima's existing transaction/snapshot. They may
 /// execute transaction-local SQL only; they must not perform external
 /// effects or wait for external operations. This boundary is not a SQL
 /// sandbox: a trusted implementation can still use temporary tables,
@@ -23,7 +23,7 @@ pub trait PgHostStateLifecyclePort: Send + Sync {
     fn participant_id(&self) -> HostStateParticipantId;
 
     /// Exact host-owned lifecycle tables; boot checks the full set against
-    /// the frozen flavor contracts before constructing an engine.
+    /// the frozen spiice contracts before constructing an engine.
     fn declared_tables(&self) -> &'static [StateSurfaceName];
 
     /// Remove or scrub exactly the requested scope on the core erase

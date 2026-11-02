@@ -1,7 +1,7 @@
 # Data and erasure
 > Status: current.
 
-Proxima supplies inverse operations for its declared storage. The host supplies
+Proxiima supplies inverse operations for its declared storage. The host supplies
 authorization policy, retention schedules, obligations, downstream cleanup, and
 any record of an operation. The substrate makes no legal-compliance promise.
 
@@ -18,7 +18,7 @@ owner, never a global content hash.
 | Forget | Mark an admission forgotten; keep its rows, identity and declared pins |
 | Owner erase | Destroy the selected owner's declared storage |
 | Source-scope erase | Destroy rows attributable to the selected source within one owner |
-| Flavor-scoped erase | Destroy whole series of the flavor's own schemas in one owner |
+| Spiice-scoped erase | Destroy whole series of the spiice's own schemas in one owner |
 | Owner export | Return the declared exportable surfaces under host authority |
 
 Forget is not hard deletion. The memory row, its sidecar rows and its sketch
@@ -39,7 +39,7 @@ head of its series again unless a newer live version is. Restoring a live
 memory changes nothing. Neither forget nor restore touches an object store.
 
 The kernel states `wipeable` and owner-scope principles in
-[`Compliance.lean`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/docs/lean/Causa/Compliance.lean).
+[`Compliance.lean`](https://github.com/Aquilo-Solution-S/proxiima/blob/main/docs/lean/Causa/Compliance.lean).
 Rust operations and integration tests define the executable lifecycle behavior.
 
 ## Host authority
@@ -111,12 +111,12 @@ internal attribution index is an additional exported memory.
 A host intake or broker may already hold bytes. Core cannot retract those bytes;
 the host must route deletion and export obligations to those systems itself.
 
-## Flavor-scoped erase and retention
+## Spiice-scoped erase and retention
 
-`UnitOfWork::erase_own_series` accepts only the caller flavor's schemas, one
+`UnitOfWork::erase_own_series` accepts only the caller spiice's schemas, one
 owner, and a typed `SeriesSelection`. Admin or host system authority is required.
 From a tool, the dispatched action must declare a destructive effect and belong
-to the flavor contract.
+to the spiice contract.
 
 Selections can name explicit admissions, admission-time cutoffs, typed sidecar
 predicates, or a declared timestamp column. A cutoff selects a whole series only

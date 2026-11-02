@@ -466,7 +466,7 @@ mod tests {
     };
     use crate::error::ErrorCode;
     use crate::error::ProtocolError;
-    use crate::{FlavorRegistry, GroupId, MemoryId, OwnerId, UserId};
+    use crate::{GroupId, MemoryId, OwnerId, SpiiceRegistry, UserId};
 
     use super::super::MembershipStorage;
     use super::Engine;
@@ -474,10 +474,10 @@ mod tests {
     type ResolvedAuthz = AuthzContext;
 
     fn engine() -> Engine {
-        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
     }
 
-    fn engine_from_registry(registry: FlavorRegistry) -> Engine {
+    fn engine_from_registry(registry: SpiiceRegistry) -> Engine {
         Engine::new(registry.freeze_or_panic_for_tests())
     }
 
@@ -486,7 +486,7 @@ mod tests {
     }
 
     fn engine_from_registry_and_storage(
-        registry: FlavorRegistry,
+        registry: SpiiceRegistry,
         storage: MembershipStorage,
     ) -> Engine {
         Engine::new(registry.freeze_or_panic_for_tests())
@@ -770,7 +770,7 @@ mod tests {
     async fn authorize_write_veto_denies() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(VetoHook));
         let engine = engine_from_registry_and_storage(registry, storage(p, g1));
         let authz = granted_context(&p);
@@ -860,7 +860,7 @@ mod tests {
         let g1 = GroupId::new(uuid::Uuid::now_v7());
         let g1_owner = OwnerId::from(g1);
         let events = Arc::new(Mutex::new(Vec::new()));
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(VetoOwner(g1_owner)));
         registry.add_authorization_hook(Arc::new(RecordingOwnerHook {
             events: events.clone(),
@@ -890,7 +890,7 @@ mod tests {
     async fn authorize_read_all_vetoed_is_empty_not_forbidden() {
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(VetoHook));
         let engine = engine_from_registry_and_storage(registry, storage(p, g1));
         let authz = member_context(&p, g1, Relation::Viewer);
@@ -915,7 +915,7 @@ mod tests {
         };
         let p = owner();
         let g1 = GroupId::new(uuid::Uuid::now_v7());
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(VetoHook));
         let engine = engine_from_registry_and_storage(registry, storage(p, g1));
         let authz = member_context(&p, g1, Relation::Viewer);
@@ -1030,7 +1030,7 @@ mod tests {
         let authz = member_context(&p, g1, Relation::Viewer);
         let entity = EntityId::Memory(MemoryId::new(uuid::Uuid::now_v7()));
         let events = Arc::new(Mutex::new(Vec::new()));
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(VetoOwner(g1_owner)));
         registry.add_authorization_hook(Arc::new(RecordingOwnerHook {
             events: events.clone(),
@@ -1076,7 +1076,7 @@ mod tests {
             EntityId::Memory(MemoryId::new(uuid::Uuid::now_v7())),
             EntityId::Memory(MemoryId::new(uuid::Uuid::now_v7())),
         ];
-        let decisions = |registry: FlavorRegistry| {
+        let decisions = |registry: SpiiceRegistry| {
             engine_from_registry_and_storage(
                 registry,
                 storage_with_entity(p, g1, Some(g1_owner), true),
@@ -1084,7 +1084,7 @@ mod tests {
         };
 
         let allowed_events = Arc::new(Mutex::new(Vec::new()));
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(RecordingOwnerHook {
             events: allowed_events.clone(),
         }));
@@ -1096,7 +1096,7 @@ mod tests {
         assert_eq!(allowed_events.lock().expect("recorder lock").len(), 3);
 
         let vetoed_events = Arc::new(Mutex::new(Vec::new()));
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(VetoOwner(g1_owner)));
         registry.add_authorization_hook(Arc::new(RecordingOwnerHook {
             events: vetoed_events.clone(),
@@ -1204,7 +1204,7 @@ mod tests {
     async fn denied_context_notifies_observers() {
         let owner = owner();
         let outcomes = Arc::new(Mutex::new(Vec::new()));
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(RecordingAnyHook {
             outcomes: outcomes.clone(),
         }));
@@ -1227,7 +1227,7 @@ mod tests {
     async fn resolver_remap_still_gates_resolved_owner() {
         let requested = owner();
         let hidden = owner();
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry
             .set_owner_resolver_or_panic_for_tests(Arc::new(StaticResolver { resolved: hidden }));
         let engine = engine_from_registry(registry);
@@ -1244,7 +1244,7 @@ mod tests {
     #[tokio::test]
     async fn veto_hook_denies_otherwise_allowed_request() {
         let owner = owner();
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(VetoHook));
         let engine = engine_from_registry(registry);
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
@@ -1263,7 +1263,7 @@ mod tests {
         let owner = owner();
         let denied_owner = group_owner();
         let outcomes = Arc::new(Mutex::new(Vec::new()));
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(RecordingHook {
             outcomes: outcomes.clone(),
         }));

@@ -31,11 +31,11 @@ pub struct InterpretationV1 {
 /// Perspective, not the subject, is the source.
 ///
 /// Closed here and closed in the database: the discriminators match the
-/// SQL enum `proxima_core.interpretation_subject_kind`, so the column
+/// SQL enum `proxiima_core.interpretation_subject_kind`, so the column
 /// cannot hold a value this type is unable to represent. It is
 /// deliberately not [`EntityKind`], which carries `Goal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.interpretation_subject_kind")]
+#[sqlx(type_name = "proxiima_core.interpretation_subject_kind")]
 pub enum InterpretationSubjectKind {
     Fact,
     Abstraction,
@@ -71,7 +71,7 @@ impl PerspectivePayload for InterpretationV1 {
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_core.interpretation_v1"
+        "proxiima_core.interpretation_v1"
     }
 
     /// The subjects, as schema-declared reference fields. A subject

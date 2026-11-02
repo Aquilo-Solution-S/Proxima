@@ -1,5 +1,5 @@
 use super::{Harness, TestResult, scope};
-use proxima_core::GroupId;
+use proxiima_core::GroupId;
 use uuid::Uuid;
 
 async fn insert_edge(
@@ -8,7 +8,7 @@ async fn insert_edge(
     child: GroupId,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO proxima_core.group_edges (parent_group_id, child_group_id, relation)
+        "INSERT INTO proxiima_core.group_edges (parent_group_id, child_group_id, relation)
          VALUES ($1, $2, 'viewer')",
     )
     .bind(parent.into_inner())
@@ -36,7 +36,7 @@ async fn assert_unmanaged_edge_refused(parent_managed: bool) -> TestResult {
         "the runtime role must be refused by RLS: {error}"
     );
     tx.rollback().await?;
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.group_edges")
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.group_edges")
         .fetch_one(&h.pool)
         .await?;
     assert_eq!(count, 0, "refused writes leave no group edge");
@@ -62,7 +62,7 @@ async fn group_edge_insert_accepts_both_managed_groups() -> TestResult {
     insert_edge(&mut tx, groups[0], groups[1]).await?;
     tx.commit().await?;
     let edge: (Uuid, Uuid) =
-        sqlx::query_as("SELECT parent_group_id, child_group_id FROM proxima_core.group_edges")
+        sqlx::query_as("SELECT parent_group_id, child_group_id FROM proxiima_core.group_edges")
             .fetch_one(&h.pool)
             .await?;
     assert_eq!(edge, (groups[0].into_inner(), groups[1].into_inner()));
@@ -73,13 +73,13 @@ async fn group_edge_insert_accepts_both_managed_groups() -> TestResult {
 async fn group_edge_update_requires_both_managed_groups() -> TestResult {
     let h = Harness::new().await?;
     let groups = h.groups(2).await?;
-    h.add(groups[0], groups[1].into(), proxima_core::Relation::Viewer)
+    h.add(groups[0], groups[1].into(), proxiima_core::Relation::Viewer)
         .await?;
     for managed in &groups {
         let mut tx = h.runtime.begin().await?;
         scope(&mut tx, &[*managed]).await?;
         let error = sqlx::query(
-            "UPDATE proxima_core.group_edges SET relation = 'admin' WHERE child_group_id = $1",
+            "UPDATE proxiima_core.group_edges SET relation = 'admin' WHERE child_group_id = $1",
         )
         .bind(groups[1].into_inner())
         .execute(&mut *tx)
@@ -98,7 +98,7 @@ async fn group_edge_update_requires_both_managed_groups() -> TestResult {
     let mut tx = h.runtime.begin().await?;
     scope(&mut tx, &groups).await?;
     let updated = sqlx::query(
-        "UPDATE proxima_core.group_edges SET relation = 'editor' WHERE child_group_id = $1",
+        "UPDATE proxiima_core.group_edges SET relation = 'editor' WHERE child_group_id = $1",
     )
     .bind(groups[1].into_inner())
     .execute(&mut *tx)
@@ -115,7 +115,7 @@ async fn group_lock_insert_accepts_managed_member() -> TestResult {
     let mut tx = h.runtime.begin().await?;
     scope(&mut tx, &[groups[1]]).await?;
     let (member_is_group,): (bool,) = sqlx::query_as(
-        "INSERT INTO proxima_core.group_lock_request
+        "INSERT INTO proxiima_core.group_lock_request
             (request_id, left_group_id, right_group_id)
          VALUES ($1, $2, $3)
          RETURNING member_is_group",
@@ -137,7 +137,7 @@ async fn group_lock_insert_accepts_person_without_member_manage() -> TestResult 
     let mut tx = h.runtime.begin().await?;
     scope(&mut tx, &groups).await?;
     sqlx::query(
-        "INSERT INTO proxima_core.group_lock_request
+        "INSERT INTO proxiima_core.group_lock_request
             (request_id, left_group_id, right_group_id)
          VALUES ($1, $2, $3)",
     )
@@ -159,15 +159,15 @@ async fn group_lock_read_hides_unmanaged_endpoints() -> TestResult {
     let neither_managed = Uuid::now_v7();
     let mut tx = h.pool.begin().await?;
     sqlx::raw_sql(
-        "ALTER TABLE proxima_core.group_lock_request
+        "ALTER TABLE proxiima_core.group_lock_request
          DISABLE TRIGGER group_lock_request_trigger;
-         ALTER TABLE proxima_core.group_lock_request
+         ALTER TABLE proxiima_core.group_lock_request
          DISABLE TRIGGER group_lock_request_cleanup;",
     )
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.group_lock_request
+        "INSERT INTO proxiima_core.group_lock_request
              (request_id, left_group_id, right_group_id)
          VALUES ($1, $2, $3), ($4, $5, $6), ($7, $8, $9)",
     )
@@ -183,9 +183,9 @@ async fn group_lock_read_hides_unmanaged_endpoints() -> TestResult {
     .execute(&mut *tx)
     .await?;
     sqlx::raw_sql(
-        "ALTER TABLE proxima_core.group_lock_request
+        "ALTER TABLE proxiima_core.group_lock_request
          ENABLE TRIGGER group_lock_request_trigger;
-         ALTER TABLE proxima_core.group_lock_request
+         ALTER TABLE proxiima_core.group_lock_request
          ENABLE TRIGGER group_lock_request_cleanup;",
     )
     .execute(&mut *tx)
@@ -195,7 +195,7 @@ async fn group_lock_read_hides_unmanaged_endpoints() -> TestResult {
     let mut runtime = h.runtime.begin().await?;
     scope(&mut runtime, &[groups[0]]).await?;
     let visible: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT request_id FROM proxima_core.group_lock_request ORDER BY request_id",
+        "SELECT request_id FROM proxiima_core.group_lock_request ORDER BY request_id",
     )
     .fetch_all(&mut *runtime)
     .await?;

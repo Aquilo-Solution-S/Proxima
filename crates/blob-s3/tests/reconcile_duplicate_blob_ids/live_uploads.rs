@@ -1,7 +1,7 @@
 use super::*;
 
-use proxima_blob_s3::CitedBlobReadUrlTs;
-use proxima_core::storage_ports::MAX_RECONCILE_SAMPLE;
+use proxiima_blob_s3::CitedBlobReadUrlTs;
+use proxiima_core::storage_ports::MAX_RECONCILE_SAMPLE;
 
 const STALE_ROWS: usize = MAX_RECONCILE_SAMPLE + 1;
 const DISTINCT_LOSSES: usize = 1001;
@@ -88,14 +88,13 @@ async fn observe_recovery(
             config.clone(),
             pg.platform_scope_for_host(),
         )?;
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let service = CitedBlobService::new(Arc::new(store.clone()));
         let owner = owner_fixture();
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let first = upload(&engine, &service, &store, &authz, owner, SHARED_BODY).await?;
         let stale_ids: Vec<_> = (0..STALE_ROWS).map(|_| Uuid::now_v7()).collect();
         // These rows model old lost objects, with valid canonical identities.
@@ -122,7 +121,7 @@ async fn observe_recovery(
             .delete(&canonical(repaired_upload.0))
             .await?;
         sqlx::query(
-            "UPDATE proxima_core.blob_uploads
+            "UPDATE proxiima_core.blob_uploads
                 SET object_key = $1, mounted_from_upload_id = $2
               WHERE upload_id = $3",
         )
@@ -164,7 +163,7 @@ async fn observe_recovery(
 
 async fn reports(
     store: &CitedBlobStore,
-    authority: &proxima_core::authz::SystemAuthority,
+    authority: &proxiima_core::authz::SystemAuthority,
     authz: &AuthzContext,
     owner: OwnerId,
 ) -> TestResult<Reports> {
@@ -248,14 +247,13 @@ async fn observe_live_pages(database: &str, config: &S3RuntimeConfig) -> TestRes
             config.clone(),
             pg.platform_scope_for_host(),
         )?;
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let service = CitedBlobService::new(Arc::new(store.clone()));
         let owner = owner_fixture();
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let source = upload(&engine, &service, &store, &authz, owner, SHARED_BODY).await?;
         let mut ids: Vec<_> = (0..DISTINCT_LOSSES).map(|_| Uuid::now_v7()).collect();
         ids.sort_unstable();
@@ -296,11 +294,11 @@ async fn insert_distinct_lost_uploads(
     // absent artefact has a distinct valid blob hash and canonical key.
     // Its source's real Engine completion exercises admission separately.
     sqlx::query(
-        "INSERT INTO proxima_core.blob (blob_id, owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.blob (blob_id, owner_id, schema_id, content_hash)
          SELECT extra.id, b.owner_id, b.schema_id,
                 decode(md5(extra.id::text) || md5(extra.id::text), 'hex')
-           FROM proxima_core.blob_uploads u
-           JOIN proxima_core.blob b ON b.blob_id = u.blob_id
+           FROM proxiima_core.blob_uploads u
+           JOIN proxiima_core.blob b ON b.blob_id = u.blob_id
            CROSS JOIN UNNEST($1::uuid[]) AS extra(id)
           WHERE u.upload_id = $2",
     )
@@ -309,7 +307,7 @@ async fn insert_distinct_lost_uploads(
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.blob_uploads
+        "INSERT INTO proxiima_core.blob_uploads
             (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
              expected_byte_len, status, blob_id, sha256, etag, expires_at,
              completed_at, content_hash)
@@ -320,9 +318,9 @@ async fn insert_distinct_lost_uploads(
                      ELSE u.completed_at -
                           (((extra.ordinal - 1) / 10 + 1) * INTERVAL '1 second') END,
                 b.content_hash
-           FROM proxima_core.blob_uploads u
+           FROM proxiima_core.blob_uploads u
            CROSS JOIN UNNEST($1::uuid[]) WITH ORDINALITY AS extra(id, ordinal)
-           JOIN proxima_core.blob b ON b.blob_id = extra.id
+           JOIN proxiima_core.blob b ON b.blob_id = extra.id
           WHERE u.upload_id = $2 AND u.status = 'completed'",
     )
     .bind(ids)
@@ -384,14 +382,13 @@ async fn observe_resolution_order(
             config.clone(),
             pg.platform_scope_for_host(),
         )?;
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let service = CitedBlobService::new(Arc::new(store.clone()));
         let owner = owner_fixture();
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         let first = upload(&engine, &service, &store, &authz, owner, SHARED_BODY).await?;
         let second = upload(&engine, &service, &store, &authz, owner, SHARED_BODY).await?;
         if first.0 >= second.0 || first.1 != second.1 {
@@ -403,7 +400,7 @@ async fn observe_resolution_order(
         }
         amplify_rows(pg.pool_for_tests(), first.0, &[null_id]).await?;
         sqlx::query(
-            "UPDATE proxima_core.blob_uploads
+            "UPDATE proxiima_core.blob_uploads
                 SET completed_at = CASE WHEN upload_id = $1 THEN NULL
                                         ELSE TIMESTAMPTZ '2020-01-01 00:00:00+00' END,
                     filename = CASE WHEN upload_id = $2 THEN 'higher-upload-id.bin'
@@ -424,7 +421,7 @@ async fn observe_resolution_order(
         put_one(client, &config.bucket, &canonical(first.0), SHARED_BODY).await?;
         store.cold_store().delete(&canonical(second.0)).await?;
         sqlx::query(
-            "UPDATE proxima_core.blob_uploads
+            "UPDATE proxiima_core.blob_uploads
                 SET completed_at = TIMESTAMPTZ '2020-01-02 00:00:00+00'
               WHERE upload_id = $1",
         )
@@ -452,7 +449,7 @@ async fn selected_read(
     blob_id: Uuid,
     expected_upload: Uuid,
 ) -> TestResult<SelectedRead> {
-    use proxima_core::storage_ports::CitedBlobReadPort;
+    use proxiima_core::storage_ports::CitedBlobReadPort;
     use std::num::NonZeroU64;
 
     let url = store

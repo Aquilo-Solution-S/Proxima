@@ -4,29 +4,29 @@
 //! has to pick the shipped index. Not a cost/latency bench.
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
-use proxima_core::EmbeddingDim;
-use proxima_core::storage_ports::PinTargetKind;
-use proxima_core::verbs::query::SidecarAtom;
-use proxima_core::verbs::query::{
+use proxiima_core::EmbeddingDim;
+use proxiima_core::storage_ports::PinTargetKind;
+use proxiima_core::verbs::query::SidecarAtom;
+use proxiima_core::verbs::query::{
     EntityKind, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder, SupersessionStatus,
     TagMatch,
 };
-use proxima_core::verbs::schema::MemorySearchProjection;
-use proxima_core::{EdgeKind, OwnerId, SchemaId, UserId};
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::export_statement_sql_for_tests;
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::fact_embeddings::{
+use proxiima_core::verbs::schema::MemorySearchProjection;
+use proxiima_core::{EdgeKind, OwnerId, SchemaId, UserId};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::export_statement_sql_for_tests;
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::verbs::fact_embeddings::{
     claim_embedding_jobs_sql_for_tests, reclaim_stale_embedding_jobs_sql_for_tests,
 };
-use proxima_storage_pg::verbs::query::{
+use proxiima_storage_pg::verbs::query::{
     ancestor_hop_sql_for_tests, descendant_hop_sql_for_tests, inbound_pin_sql_for_tests,
     memory_page_sql_for_tests, owned_head_handle_sql_for_tests, ranked_projection_sql_for_tests,
     search_admit_sql_for_tests, semantic_candidate_admission_sql_for_tests,
     set_hnsw_search_sql_for_tests, substring_sql_for_tests,
 };
-use proxima_storage_pg::verbs::{
+use proxiima_storage_pg::verbs::{
     fresh_backlog_estimate_sql_for_tests, prune_published_sql_for_tests,
 };
 use uuid::Uuid;
@@ -34,7 +34,7 @@ use uuid::Uuid;
 fn note_projection() -> MemorySearchProjection {
     // The shipped declaration, not a second copy of it: a hand-restated column
     // list agrees with the contract only by coincidence.
-    proxima_core::FlavorRegistry::new()
+    proxiima_core::SpiiceRegistry::new()
         .freeze_or_panic_for_tests()
         .search_projections()
         .iter()
@@ -79,7 +79,7 @@ async fn seed_note(
 ) -> Result<Uuid, sqlx::Error> {
     let owner_id = owner.into_inner();
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
          VALUES ($1, 'personal')
          ON CONFLICT DO NOTHING",
     )
@@ -89,7 +89,7 @@ async fn seed_note(
     let handle = Uuid::now_v7();
     let t = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
          VALUES ($1, 'fact', 'core/agent-note-v1', $2, $3)",
     )
     .bind(handle)
@@ -101,10 +101,10 @@ async fn seed_note(
     // that names a sidecar table it has no row in is refused at COMMIT.
     let mut stamped = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
              (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
          VALUES ($1, $2, 'fact', $3, 'core/agent-note-v1',
-                 ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+                 ARRAY['proxiima_core.agent_note_v1'], uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -112,7 +112,7 @@ async fn seed_note(
     .execute(&mut *stamped)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+        "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
          VALUES ($1, $2, $3, $4, '{}')",
     )
     .bind(t)
@@ -122,13 +122,13 @@ async fn seed_note(
     .execute(&mut *stamped)
     .await?;
     stamped.commit().await?;
-    let schema = proxima_core::FLAVOR_0
+    let schema = proxiima_core::SPIICE_0
         .schemas
         .iter()
         .find(|schema| schema.schema_id().as_str() == "core/agent-note-v1")
         .expect("core note schema");
     let projection =
-        proxima_storage_pg::projection::projection_insert_sql(&proxima_core::FLAVOR_0, schema)
+        proxiima_storage_pg::projection::projection_insert_sql(&proxiima_core::SPIICE_0, schema)
             .expect("core note projection");
     // SQL-POLICY: generated — the production projection renderer over the core contract.
     sqlx::query(sqlx::AssertSqlSafe(projection))
@@ -149,7 +149,7 @@ async fn seed_derived(
     let handle = Uuid::now_v7();
     let t = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
          VALUES ($1, 'abstraction', 'core/agent-note-v1', $2, $3)",
     )
     .bind(handle)
@@ -161,7 +161,7 @@ async fn seed_derived(
     hash[..16].copy_from_slice(t.as_bytes());
     hash[16..].copy_from_slice(t.as_bytes());
     let content_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/agent-note-v1', $2)
          RETURNING content_id",
     )
@@ -170,7 +170,7 @@ async fn seed_derived(
     .fetch_one(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
             (handle, t, kind, owner_id, schema_id, origins, content_id, \"by\", via)
          VALUES ($1, $2, 'abstraction', $3, 'core/agent-note-v1', ARRAY[$4]::uuid[], $5, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
@@ -205,14 +205,14 @@ async fn seed_projection_corpus(
 ) -> Result<(), sqlx::Error> {
     let owner_id = owner.into_inner();
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
          VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
     )
     .bind(owner_id)
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
          SELECT uuidv7(), 'fact', 'core/agent-note-v1', $1, uuidv7()
            FROM generate_series(1, $2)",
     )
@@ -223,13 +223,13 @@ async fn seed_projection_corpus(
     // The stamp and the rows it promises land in one transaction.
     let mut stamped = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
              (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
          SELECT h.handle, h.t, 'fact', $1, 'core/agent-note-v1',
-                ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp(h.t), '00000000-0000-0000-0000-000000000509'::uuid, NULL
-           FROM proxima_core.memory_head h
+                ARRAY['proxiima_core.agent_note_v1'], uuid_extract_timestamp(h.t), '00000000-0000-0000-0000-000000000509'::uuid, NULL
+           FROM proxiima_core.memory_head h
           WHERE h.owner_id = $1
-            AND NOT EXISTS (SELECT 1 FROM proxima_core.memory m WHERE m.t = h.t)",
+            AND NOT EXISTS (SELECT 1 FROM proxiima_core.memory m WHERE m.t = h.t)",
     )
     .bind(owner_id)
     .execute(&mut *stamped)
@@ -237,17 +237,17 @@ async fn seed_projection_corpus(
     sqlx::query(
         "WITH ids AS MATERIALIZED (
              SELECT m.t, row_number() OVER (ORDER BY m.t) AS n
-               FROM proxima_core.memory m
+               FROM proxiima_core.memory m
               WHERE m.owner_id = $1
-                AND m.sidecar_tables @> ARRAY['proxima_core.agent_note_v1']
+                AND m.sidecar_tables @> ARRAY['proxiima_core.agent_note_v1']
                 AND NOT EXISTS (
-                        SELECT 1 FROM proxima_core.agent_note_v1 s WHERE s.t = m.t)
+                        SELECT 1 FROM proxiima_core.agent_note_v1 s WHERE s.t = m.t)
          ), notes AS (
-             INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+             INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
              SELECT t, uuidv7(), $2 || ' ' || n, $2 || ' body ' || n, '{}' FROM ids
              RETURNING t
          )
-         INSERT INTO proxima_core.projection (memory_id, schema_id, owner_id, search_tsv)
+         INSERT INTO proxiima_core.projection (memory_id, schema_id, owner_id, search_tsv)
          SELECT t, 'core/agent-note-v1', $1,
                 to_tsvector('english', $2 || ' title ' || $2 || ' body ' || n)
            FROM ids",
@@ -346,7 +346,7 @@ fn assert_origin_overlap_index(plan: &serde_json::Value, label: &str) {
 
 #[tokio::test]
 async fn hot_path_plans_use_expected_indexes() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -358,7 +358,7 @@ async fn hot_path_plans_use_expected_indexes() {
         let leaf = seed_note(pool, owner, "Needle title", "needle body").await?;
         let child = seed_derived(pool, owner, leaf).await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings
+            "INSERT INTO proxiima_core.embeddings
                 (entity_id, model_id, dim, embedding_version, vec, owner_id)
              VALUES ($1, 'test-embed', 1024, 1, $2, $3)",
         )
@@ -368,7 +368,7 @@ async fn hot_path_plans_use_expected_indexes() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_heads
+            "INSERT INTO proxiima_core.embedding_heads
                 (entity_id, model_id, dim, embedding_version, owner_id)
              VALUES ($1, 'test-embed', 1024, 1, $2)",
         )
@@ -377,7 +377,7 @@ async fn hot_path_plans_use_expected_indexes() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id, status)
+            "INSERT INTO proxiima_core.embedding_jobs (entity_id, model_id, dim, owner_id, status)
              VALUES ($1, 'test-embed', 1024, $2, 'pending')",
         )
         .bind(leaf)
@@ -391,24 +391,24 @@ async fn hot_path_plans_use_expected_indexes() {
         let neighbour = OwnerId::from(UserId::new(Uuid::now_v7()));
         seed_projection_corpus(pool, neighbour, "needle").await?;
         // Flush GIN pending lists before comparing settled read paths.
-        sqlx::query("VACUUM (ANALYZE) proxima_core.projection")
+        sqlx::query("VACUUM (ANALYZE) proxiima_core.projection")
             .execute(pool)
             .await?;
         // SQL-POLICY: fixed-fragment
         sqlx::raw_sql(sqlx::AssertSqlSafe(
-            "ANALYZE proxima_core.agent_note_v1;
-             ANALYZE proxima_core.projection;
-             ANALYZE proxima_core.memory;
-             ANALYZE proxima_core.memory_head;
-             ANALYZE proxima_core.embeddings;
-             ANALYZE proxima_core.embedding_jobs",
+            "ANALYZE proxiima_core.agent_note_v1;
+             ANALYZE proxiima_core.projection;
+             ANALYZE proxiima_core.memory;
+             ANALYZE proxiima_core.memory_head;
+             ANALYZE proxiima_core.embeddings;
+             ANALYZE proxiima_core.embedding_jobs",
         ))
         .execute(pool)
         .await?;
 
         let owner_ids = vec![owner.into_inner()];
         let req = search_req(owner);
-        let like = proxima_core::verbs::query::like_pattern(&req.query);
+        let like = proxiima_core::verbs::query::like_pattern(&req.query);
         let projection = note_projection();
         let schema_ids = vec![projection.schema_id.as_str()];
 
@@ -420,7 +420,7 @@ async fn hot_path_plans_use_expected_indexes() {
             .execute(&mut *tx)
             .await?;
 
-        // ONE statement for the flavor. `schema_id` is a row predicate now
+        // ONE statement for the spiice. `schema_id` is a row predicate now
         // (`= ANY($8)`), and the LIKE pattern is not bound at all — which
         // renumbered every placeholder that followed it.
         let lexical = ranked_projection_sql_for_tests(&[&projection], &req, true)?;
@@ -519,7 +519,7 @@ async fn hot_path_plans_use_expected_indexes() {
         // The substring arm plans as the nested loop it DECLARES.
         //
         // `MemoryFirstNestedLoop` is a claim about a plan: drive
-        // `proxima_core.memory` on the owner index, probe the sidecar by
+        // `proxiima_core.memory` on the owner index, probe the sidecar by
         // `t`, filter `LIKE` on an already-fetched row. The alternative — a
         // sidecar-first scan — is what the declaration's `why` records as a
         // probe-measured regression, and it is what a missing owner
@@ -572,7 +572,7 @@ async fn hot_path_plans_use_expected_indexes() {
 
         // SQL-POLICY: fixed-fragment
         sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql_for_tests(
-            &proxima_storage_pg::PgTuning::default(),
+            &proxiima_storage_pg::PgTuning::default(),
         )))
         .execute(&mut *tx)
         .await?;
@@ -580,7 +580,7 @@ async fn hot_path_plans_use_expected_indexes() {
         // statement spells the lane's expression and a literal `dim = N`,
         // so the planner proves the index predicate under any plan.
         for dim in EmbeddingDim::ALL {
-            let semantic = proxima_storage_pg::vector_index::candidate_scan_sql_for_tests(dim);
+            let semantic = proxiima_storage_pg::vector_index::candidate_scan_sql_for_tests(dim);
             let semantic_explain = format!("EXPLAIN (FORMAT JSON, COSTS OFF) {semantic}");
             // SQL-POLICY: PgIdent — production semantic builder
             let lane_plan: serde_json::Value =
@@ -731,7 +731,7 @@ async fn hot_path_plans_use_expected_indexes() {
         let nk_sql = owned_head_handle_sql_for_tests(
             owner,
             &projection.schema_id,
-            "proxima_core.agent_note_v1",
+            "proxiima_core.agent_note_v1",
             "t",
             &[("note_id", SidecarAtom::Uuid(note_key))],
         )?;
@@ -801,7 +801,7 @@ async fn primary_key(
 /// `memory` (`agent_note_v1`).
 #[tokio::test]
 async fn owner_export_reaches_its_owner_through_an_index() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -815,17 +815,17 @@ async fn owner_export_reaches_its_owner_through_an_index() {
         seed_projection_corpus(pool, neighbour, "neighbour").await?;
         // SQL-POLICY: fixed-fragment
         sqlx::raw_sql(sqlx::AssertSqlSafe(
-            "ANALYZE proxima_core.memory; ANALYZE proxima_core.agent_note_v1",
+            "ANALYZE proxiima_core.memory; ANALYZE proxiima_core.agent_note_v1",
         ))
         .execute(pool)
         .await?;
 
         let mut tx = pg.platform_scope_for_host().begin().await?;
-        for table in ["proxima_core.memory", "proxima_core.agent_note_v1"] {
-            let surface = proxima_core::FLAVOR_0
+        for table in ["proxiima_core.memory", "proxiima_core.agent_note_v1"] {
+            let surface = proxiima_core::SPIICE_0
                 .all_surfaces()
                 .find(|surface| surface.table == table)
-                .unwrap_or_else(|| panic!("flavor #0 declares {table}"));
+                .unwrap_or_else(|| panic!("spiice #0 declares {table}"));
             let primary_key = primary_key(&mut tx, table).await?;
             let sql = export_statement_sql_for_tests(&surface, &primary_key)?
                 .unwrap_or_else(|| panic!("{table} is exported"));
@@ -857,7 +857,7 @@ async fn owner_export_reaches_its_owner_through_an_index() {
         // `=` and `IS NOT DISTINCT FROM` agree only because neither side is
         // ever NULL: `$1` is an `OwnerId`, and every column the filter reads
         // must be NOT NULL in the catalog.
-        for surface in proxima_core::FLAVOR_0.all_surfaces() {
+        for surface in proxiima_core::SPIICE_0.all_surfaces() {
             if !surface.export.carries_rows() {
                 continue;
             }
@@ -897,7 +897,7 @@ async fn owner_export_reaches_its_owner_through_an_index() {
 /// of old delivered ones.
 #[tokio::test]
 async fn retention_prune_reads_the_published_index() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -907,18 +907,18 @@ async fn retention_prune_reads_the_published_index() {
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')",
+            "INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')",
         )
         .bind(owner.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.publication_outbox
+            "INSERT INTO proxiima_core.publication_outbox
                  (t, owner_id, schema_id, schema_version, event_type, event_id,
                   envelope, envelope_digest, state, published_at)
              SELECT uuidv7(), $1, 'core/agent-note-v1', 1, 'type', 'event-' || n,
                     '\\x00'::bytea, decode(repeat('00', 32), 'hex'),
-                    CASE WHEN n % 4 = 0 THEN 'pending' ELSE 'published' END::proxima_core.publication_record_state,
+                    CASE WHEN n % 4 = 0 THEN 'pending' ELSE 'published' END::proxiima_core.publication_record_state,
                     CASE WHEN n % 4 = 0 THEN NULL ELSE now() - make_interval(secs => 100000 - n) END
                FROM generate_series(1, 40000) AS n",
         )
@@ -926,7 +926,7 @@ async fn retention_prune_reads_the_published_index() {
         .execute(pool)
         .await?;
         // SQL-POLICY: fixed-fragment
-        sqlx::raw_sql(sqlx::AssertSqlSafe("ANALYZE proxima_core.publication_outbox"))
+        sqlx::raw_sql(sqlx::AssertSqlSafe("ANALYZE proxiima_core.publication_outbox"))
             .execute(pool)
             .await?;
 
@@ -965,7 +965,7 @@ async fn retention_prune_reads_the_published_index() {
 /// `enable_seqscan` left on.
 #[tokio::test]
 async fn the_stale_claim_reclaim_reads_the_processing_index() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -974,16 +974,16 @@ async fn the_stale_claim_reclaim_reads_the_processing_index() {
         let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner.into_inner())
             .execute(pool)
             .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_jobs
+            "INSERT INTO proxiima_core.embedding_jobs
                  (entity_id, model_id, owner_id, status, claimed_at, claim_token, dim)
              SELECT uuidv7(), 'model', $1,
                     CASE WHEN n % 200 = 0 THEN 'processing' ELSE 'pending' END
-                        ::proxima_core.embedding_job_status,
+                        ::proxiima_core.embedding_job_status,
                     CASE WHEN n % 200 = 0 THEN now() - interval '1 hour' END,
                     CASE WHEN n % 200 = 0 THEN uuidv7() END,
                     384
@@ -993,7 +993,7 @@ async fn the_stale_claim_reclaim_reads_the_processing_index() {
         .execute(pool)
         .await?;
         // SQL-POLICY: fixed-fragment
-        sqlx::raw_sql(sqlx::AssertSqlSafe("ANALYZE proxima_core.embedding_jobs"))
+        sqlx::raw_sql(sqlx::AssertSqlSafe("ANALYZE proxiima_core.embedding_jobs"))
             .execute(pool)
             .await?;
 
@@ -1032,7 +1032,7 @@ async fn the_stale_claim_reclaim_reads_the_processing_index() {
 /// `max_pending` index entries of it.
 #[tokio::test]
 async fn a_capacity_check_reads_one_row_whatever_the_backlog() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1041,12 +1041,12 @@ async fn a_capacity_check_reads_one_row_whatever_the_backlog() {
         let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner.into_inner())
             .execute(pool)
             .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.publication_outbox
+            "INSERT INTO proxiima_core.publication_outbox
                  (t, owner_id, schema_id, schema_version, event_type, event_id,
                   envelope, envelope_digest)
              SELECT uuidv7(), $1, 'core/agent-note-v1', 1, 'type', 'event-' || n,
@@ -1057,13 +1057,13 @@ async fn a_capacity_check_reads_one_row_whatever_the_backlog() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "UPDATE proxima_core.publication_backlog SET pending = 50000, measured_at = now()",
+            "UPDATE proxiima_core.publication_backlog SET pending = 50000, measured_at = now()",
         )
         .execute(pool)
         .await?;
         // SQL-POLICY: fixed-fragment
         sqlx::raw_sql(sqlx::AssertSqlSafe(
-            "ANALYZE proxima_core.publication_outbox; ANALYZE proxima_core.publication_backlog",
+            "ANALYZE proxiima_core.publication_outbox; ANALYZE proxiima_core.publication_backlog",
         ))
         .execute(pool)
         .await?;
@@ -1104,7 +1104,7 @@ async fn a_capacity_check_reads_one_row_whatever_the_backlog() {
 /// leaves with its foreign-key check answered by the same index.
 #[tokio::test]
 async fn a_blob_erase_reads_its_uploads_through_the_blob_index() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1113,18 +1113,18 @@ async fn a_blob_erase_reads_its_uploads_through_the_blob_index() {
         let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let pool = pg.pool_for_tests();
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner.into_inner())
             .execute(pool)
             .await?;
         sqlx::query(
             "WITH b AS (
-                 INSERT INTO proxima_core.blob (blob_id, owner_id, schema_id, content_hash)
+                 INSERT INTO proxiima_core.blob (blob_id, owner_id, schema_id, content_hash)
                  SELECT uuidv7(), $1, 'blob/x', sha256(convert_to(n::text, 'UTF8'))
                    FROM generate_series(1, 30000) AS n
                  RETURNING blob_id, owner_id
              )
-             INSERT INTO proxima_core.blob_uploads
+             INSERT INTO proxiima_core.blob_uploads
                  (upload_id, owner_id, bucket, object_key, filename, mime, expected_byte_len,
                   status, blob_id, expires_at, object_store)
              SELECT u, owner_id, 'b', 'objects/' || u::text, 'f', 'text/plain', 10,
@@ -1136,18 +1136,18 @@ async fn a_blob_erase_reads_its_uploads_through_the_blob_index() {
         .await?;
         // SQL-POLICY: fixed-fragment
         sqlx::raw_sql(sqlx::AssertSqlSafe(
-            "ANALYZE proxima_core.blob; ANALYZE proxima_core.blob_uploads",
+            "ANALYZE proxiima_core.blob; ANALYZE proxiima_core.blob_uploads",
         ))
         .execute(pool)
         .await?;
-        let blob: Uuid = sqlx::query_scalar("SELECT blob_id FROM proxima_core.blob LIMIT 1")
+        let blob: Uuid = sqlx::query_scalar("SELECT blob_id FROM proxiima_core.blob LIMIT 1")
             .fetch_one(pool)
             .await?;
 
         let mut tx = pg.platform_scope_for_host().begin().await?;
         let fence = format!(
             "EXPLAIN (FORMAT JSON, COSTS OFF) {}",
-            proxima_storage_pg::access::owner_columns::upload_fence_keys_sql_for_tests()
+            proxiima_storage_pg::access::owner_columns::upload_fence_keys_sql_for_tests()
         );
         // SQL-POLICY: fixed-fragment — the production fence-keys read.
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(fence))
@@ -1161,7 +1161,7 @@ async fn a_blob_erase_reads_its_uploads_through_the_blob_index() {
         );
         let sweep = format!(
             "EXPLAIN (FORMAT JSON, COSTS OFF) {}",
-            proxima_storage_pg::verbs::forget::gc_unreferenced_blobs_sql_for_tests()
+            proxiima_storage_pg::verbs::forget::gc_unreferenced_blobs_sql_for_tests()
         );
         // SQL-POLICY: fixed-fragment — the production unreferenced-blob sweep.
         let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(sweep))
@@ -1176,7 +1176,7 @@ async fn a_blob_erase_reads_its_uploads_through_the_blob_index() {
         // The foreign-key check of a blob delete asks `blob_uploads` for the blob.
         let plan: serde_json::Value = sqlx::query_scalar(
             "EXPLAIN (FORMAT JSON, COSTS OFF)
-             SELECT 1 FROM ONLY proxima_core.blob_uploads x WHERE x.blob_id = $1 FOR KEY SHARE OF x",
+             SELECT 1 FROM ONLY proxiima_core.blob_uploads x WHERE x.blob_id = $1 FOR KEY SHARE OF x",
         )
         .bind(blob)
         .fetch_one(&mut *tx)
@@ -1202,7 +1202,7 @@ async fn erase_counts(
         .await?;
     let rows: Vec<(String, i64, i64)> = sqlx::query_as(
         "SELECT relname::text, seq_scan, n_tup_del FROM pg_stat_user_tables
-          WHERE schemaname = 'proxima_core'
+          WHERE schemaname = 'proxiima_core'
             AND relname IN ('sketch', 'embedding_heads', 'embeddings',
                             'publication_outbox', 'publication_origin')",
     )
@@ -1220,14 +1220,14 @@ async fn erase_counts(
 /// say how many scans the erase started.
 #[tokio::test]
 async fn an_owner_erase_does_not_scan_other_owners_tables() {
-    use proxima_core::GroupId;
-    use proxima_core::owner_inverse::{
+    use proxiima_core::GroupId;
+    use proxiima_core::owner_inverse::{
         EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerSurfaces,
     };
-    use proxima_core::storage_ports::OwnerInversePort;
-    use proxima_storage_pg::test_fixtures::register_group_for_tests;
+    use proxiima_core::storage_ports::OwnerInversePort;
+    use proxiima_storage_pg::test_fixtures::register_group_for_tests;
 
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1243,27 +1243,27 @@ async fn an_owner_erase_does_not_scan_other_owners_tables() {
             sqlx::query(
                 "WITH s AS (SELECT uuidv7() AS handle, uuidv7() AS t FROM generate_series(1, $2::int)),
                  memory AS (
-                     INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\")
+                     INSERT INTO proxiima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\")
                      SELECT handle, t, 'fact', $1, 'erase/x', now(), '00000000-0000-0000-0000-000000000509'::uuid FROM s),
                  head AS (
-                     INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                     INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
                      SELECT handle, 'fact', 'erase/x', $1, t FROM s),
                  sketch AS (
-                     INSERT INTO proxima_core.sketch (t, owner_id, kind, text)
+                     INSERT INTO proxiima_core.sketch (t, owner_id, kind, text)
                      SELECT t, $1, 'fact', 'sketch' FROM s),
                  origin AS (
-                     INSERT INTO proxima_core.publication_origin (t, original_owner_id, source_id)
+                     INSERT INTO proxiima_core.publication_origin (t, original_owner_id, source_id)
                      SELECT t, $1, NULL FROM s),
                  outbox AS (
-                     INSERT INTO proxima_core.publication_outbox
+                     INSERT INTO proxiima_core.publication_outbox
                          (t, owner_id, schema_id, schema_version, event_type, event_id,
                           envelope, envelope_digest, state, published_at)
                      SELECT t, $1, 'core/x', 1, 'type', 'e-' || t, '\\x00'::bytea,
                             decode(repeat('00', 32), 'hex'), 'published', now() FROM s),
                  heads AS (
-                     INSERT INTO proxima_core.embedding_heads (entity_id, model_id, embedding_version, owner_id, dim)
+                     INSERT INTO proxiima_core.embedding_heads (entity_id, model_id, embedding_version, owner_id, dim)
                      SELECT t, 'm', 1, $1, 384 FROM s)
-                 INSERT INTO proxima_core.embeddings (entity_id, model_id, dim, embedding_version, vec, owner_id)
+                 INSERT INTO proxiima_core.embeddings (entity_id, model_id, dim, embedding_version, vec, owner_id)
                  SELECT t, 'm', 384, 1, array_fill(0.5::real, ARRAY[384])::vector, $1 FROM s",
             )
             .bind(owner.into_inner())
@@ -1273,9 +1273,9 @@ async fn an_owner_erase_does_not_scan_other_owners_tables() {
         }
         // SQL-POLICY: fixed-fragment
         sqlx::raw_sql(sqlx::AssertSqlSafe(
-            "ANALYZE proxima_core.memory; ANALYZE proxima_core.sketch;
-             ANALYZE proxima_core.publication_origin; ANALYZE proxima_core.publication_outbox;
-             ANALYZE proxima_core.embedding_heads; ANALYZE proxima_core.embeddings",
+            "ANALYZE proxiima_core.memory; ANALYZE proxiima_core.sketch;
+             ANALYZE proxiima_core.publication_origin; ANALYZE proxiima_core.publication_outbox;
+             ANALYZE proxiima_core.embedding_heads; ANALYZE proxiima_core.embeddings",
         ))
         .execute(pool)
         .await?;
@@ -1292,7 +1292,7 @@ async fn an_owner_erase_does_not_scan_other_owners_tables() {
                 &auth,
                 target,
                 &OwnerSurfaces::for_registry(
-                    &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+                    &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
                 ),
             )
             .await?;
@@ -1330,8 +1330,8 @@ async fn an_owner_erase_does_not_scan_other_owners_tables() {
 /// the column, the planner reads the whole index.
 #[tokio::test]
 async fn every_forget_leg_has_an_index_led_by_its_key() {
-    use proxima_core::owner_inverse::OwnerSurfaces;
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    use proxiima_core::owner_inverse::OwnerSurfaces;
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1339,10 +1339,10 @@ async fn every_forget_leg_has_an_index_led_by_its_key() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect_for_tests(url.clone()).await?;
         let surfaces = OwnerSurfaces::for_registry(
-            &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+            &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
         );
         let legs = surfaces.generated_forget_legs();
-        assert!(!legs.is_empty(), "the shipped flavor declares forget legs");
+        assert!(!legs.is_empty(), "the shipped spiice declares forget legs");
         for (table, key_column) in legs {
             let led: bool = sqlx::query_scalar(
                 "SELECT EXISTS (

@@ -6,14 +6,14 @@ build-time manifest, authorization, typed inputs, and engine operations.
 
 | Discover | Authority |
 |---|---|
-| Tools and per-action input schemas | MCP `tools/list`, `proxima://tools` |
+| Tools and per-action input schemas | MCP `tools/list`, `proxiima://tools` |
 | Resources and parameterized reads | MCP `resources/list`, `resources/templates/list` |
 | Payload schemas | Live schema resources listed by that server |
 | HTTP operations and schemas | `/v1/openapi.json` on a REST-enabled host |
-| Agent usage instructions | MCP `proxima://how-to` |
+| Agent usage instructions | MCP `proxiima://how-to` |
 
 Catalogs are caller-scoped. Discover them on the running deployment; linked
-flavors, deployment profiles, and effective tool scope determine the result.
+spiices, deployment profiles, and effective tool scope determine the result.
 Types, defaults, and limits belong to rustdoc and the generated schemas.
 
 Catalog action rows include caller-visible commands from tagged and argv
@@ -24,7 +24,7 @@ CLI grammar.
 ## Owner scope
 
 The host authenticates the bearer and resolves a user through `OwnerAccessPort`
-into `OwnerRoles`. `X-Proxima-Owner` selects one raw owner UUID; it grants no
+into `OwnerRoles`. `X-Proxiima-Owner` selects one raw owner UUID; it grants no
 authority. Reads use the resolved readable owner set. A write selects one owner
 and checks its required role at the command boundary. Kind restrictions remain
 part of the effective scope.
@@ -49,7 +49,7 @@ role reaches that one registered personal or group owner, while the
 authenticated subject and session principal remain the forwarder. Ordinary
 subjects gain no selection or authority from this claim.
 
-Enforcers: [`AuthzContext`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/authz.rs),
+Enforcers: [`AuthzContext`](https://github.com/Aquilo-Solution-S/proxiima/blob/main/crates/core/src/authz.rs),
 the engine command ports, and PostgreSQL owner RLS. See [concepts](concepts.md)
 and [host integration](host-integration.md).
 
@@ -130,8 +130,8 @@ each open child's current handle, or when every child is Abandoned, with
 same way, as `InvalidArgument` on `goal` with the prefix
 `goal has open children: `; a goal whose children are all closed abandons.
 Pause's `pending: keep|discard` is an instruction for the host's queue. The
-host decides how to execute that instruction; Proxima persists intent and
-state. Hard deletion uses the explicit host or flavor-scoped inverse paths in
+host decides how to execute that instruction; Proxiima persists intent and
+state. Hard deletion uses the explicit host or spiice-scoped inverse paths in
 [data and erasure](data-and-erasure.md).
 
 Caller scope names exact command/action and resource keys. A deployment's
@@ -157,8 +157,8 @@ serves MCP; build a REST-capable host explicitly when needed.
 | `GET /v1/openapi.json` | Generated OpenAPI contract |
 | `GET /v1/how-to` | Caller-scoped guide |
 
-Resource URIs map from `proxima://x` to `/v1/resources/x`; template arguments
-become path or query parameters. The instructional `proxima://how-to` resource
+Resource URIs map from `proxiima://x` to `/v1/resources/x`; template arguments
+become path or query parameters. The instructional `proxiima://how-to` resource
 also answers at `/v1/how-to` when its caller key is admitted. Tool and action `ToolEffect` declarations choose allowed methods;
 write actions reject `QUERY` with `405` and an `Allow` header.
 
@@ -168,7 +168,7 @@ generated action schema supplies the request shape; REST does not maintain a
 second schema registry. Responses carry `Cache-Control: private, no-store`.
 
 REST call context is header-borne: bearer, selected owner, optional
-`X-Proxima-Model-Id` and `X-Proxima-Self-Perspective`, and `User-Agent`. A trusted
+`X-Proxiima-Model-Id` and `X-Proxiima-Self-Perspective`, and `User-Agent`. A trusted
 model identity bound by the host outranks a caller label; a conflicting label
 is refused. Forwarded authority is available only through the host's explicit
 forwarder policy.
@@ -183,14 +183,14 @@ error-code compatibility. Internal errors redact source chains and credentials.
 A tool that ran and failed answers MCP's tool-execution error, not a JSON-RPC
 error: a result with `isError: true` whose content is the tool's own text. A
 typed tool returns `ToolError::Failure(text)`; a host tool answers
-`ToolReply::Failure` or `ToolReply::StructuredFailure`. Proxima neither
+`ToolReply::Failure` or `ToolReply::StructuredFailure`. Proxiima neither
 redacts nor rewords that text. Every other `ToolError` stays a JSON-RPC error.
 REST answers a tool failure as `422` with type `tool-failure` and the text as
 `detail`.
 
 REST returns `application/problem+json`: machine-readable `type`, `title`,
 `status`, safe `detail`, and request `instance`. Its exhaustive variant map is
-[`rest/error.rs`](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/mcp-server/src/rest/error.rs).
+[`rest/error.rs`](https://github.com/Aquilo-Solution-S/proxiima/blob/main/crates/mcp-server/src/rest/error.rs).
 
 | Failure class | HTTP status |
 |---|---|
@@ -210,7 +210,7 @@ out, or answered for a different memory) is never reported as missing: nothing
 is known about whether it exists. A single read (`core_get_memory`, derive
 sources, interpret subjects) fails with JSON-RPC `-32000` and `error.data`
 `{"code": "store_unavailable", "store": N}` (REST `503`, type
-`store-unavailable`); retry it. The batch read `proxima://memories` lists such
+`store-unavailable`); retry it. The batch read `proxiima://memories` lists such
 ids in `unanswered`, beside `missing` (an answered not-found, erased, or
 unknown store). Lineage keeps such an origin as a node with status
 `unavailable` and an `unavailable_reason`: `not readable`, `store
@@ -228,8 +228,8 @@ Goal evidence (`core_goal` set, modify, decompose children, `mark_achieved`)
 may name a memory on another store. The write reads it there as the caller
 first, so an unreadable memory is `not_found` and an unanswering store is
 `store_unavailable`, both before any write; nothing of the memory is copied.
-A modify that omits evidence keeps a remote id as written. `proxima://goals`
-lists each version's `evidence`. `proxima://memory/{id}` reads the version
+A modify that omits evidence keeps a remote id as written. `proxiima://goals`
+lists each version's `evidence`. `proxiima://memory/{id}` reads the version
 named (`version=exact`, the default); `?version=head` returns the newest
 version of its series the caller may read, from this store or from the store
 that issued the UUID, and the output's `handle` and `series` say which version

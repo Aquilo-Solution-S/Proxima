@@ -4,18 +4,18 @@
 //! boot-built one:
 //!
 //! - [`RequestHeaders`]: the inbound headers a host allowlists
-//!   ([`RequestHeaderAllowlist`], `PROXIMA_REQUEST_HEADERS`), as opaque values.
-//! - A [`FlavorServices`] a host middleware placed in the request's
+//!   ([`RequestHeaderAllowlist`], `PROXIIMA_REQUEST_HEADERS`), as opaque values.
+//! - A [`SpiiceServices`] a host middleware placed in the request's
 //!   extensions, merged onto the boot set with
-//!   [`FlavorServices::try_extend`] — the served-path twin of
-//!   `BuiltProxima::core_mcp_tools_with_request_services`.
+//!   [`SpiiceServices::try_extend`] — the served-path twin of
+//!   `BuiltProxiima::core_mcp_tools_with_request_services`.
 
 use http::{HeaderMap, HeaderName};
-use proxima_core::{FlavorServices, McpToolError, RequestHeaders};
+use proxiima_core::{McpToolError, RequestHeaders, SpiiceServices};
 
 use crate::McpServerError;
 
-/// Headers that carry the caller's own credentials. Forwarding one to flavor
+/// Headers that carry the caller's own credentials. Forwarding one to spiice
 /// code would hand a tool the bearer the edge just consumed, so no allowlist
 /// may name one, directly or through a prefix.
 const CREDENTIAL_HEADERS: [&str; 3] = ["authorization", "proxy-authorization", "cookie"];
@@ -23,8 +23,8 @@ const CREDENTIAL_HEADERS: [&str; 3] = ["authorization", "proxy-authorization", "
 /// Which inbound request headers the served path copies into
 /// [`RequestHeaders`].
 ///
-/// Each entry is a header name (`x-flavor-ticket`) or a prefix ending in `*`
-/// (`x-flavor-env-*`). Matching is case-insensitive. Empty — the default —
+/// Each entry is a header name (`x-spiice-ticket`) or a prefix ending in `*`
+/// (`x-spiice-env-*`). Matching is case-insensitive. Empty — the default —
 /// copies nothing and publishes no [`RequestHeaders`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RequestHeaderAllowlist {
@@ -141,9 +141,9 @@ pub(crate) fn request_services(
     allowlist: &RequestHeaderAllowlist,
     headers: &HeaderMap,
     extensions: &http::Extensions,
-) -> Result<FlavorServices, McpToolError> {
+) -> Result<SpiiceServices, McpToolError> {
     let mut services = extensions
-        .get::<FlavorServices>()
+        .get::<SpiiceServices>()
         .cloned()
         .unwrap_or_default();
     let forged = || {
@@ -179,21 +179,21 @@ mod tests {
 
     #[test]
     fn copies_exact_and_prefixed_names_only() {
-        let allowlist = RequestHeaderAllowlist::parse(["X-Flavor-Ticket", "x-flavor-env-*", " "])
+        let allowlist = RequestHeaderAllowlist::parse(["X-Spiice-Ticket", "x-spiice-env-*", " "])
             .expect("valid entries");
         let copied = allowlist
             .extract(&headers(&[
-                ("x-flavor-ticket", "t1"),
-                ("x-flavor-env-forgejo-base-url", "https://git.test"),
+                ("x-spiice-ticket", "t1"),
+                ("x-spiice-env-forgejo-base-url", "https://git.test"),
                 ("x-other", "no"),
                 ("authorization", "Bearer secret"),
             ]))
             .expect("well-formed")
             .expect("allowlist is non-empty");
 
-        assert_eq!(copied.get("X-FLAVOR-TICKET"), Some("t1"));
+        assert_eq!(copied.get("X-SPIICE-TICKET"), Some("t1"));
         assert_eq!(
-            copied.get("x-flavor-env-forgejo-base-url"),
+            copied.get("x-spiice-env-forgejo-base-url"),
             Some("https://git.test")
         );
         assert_eq!(copied.len(), 2);
@@ -204,7 +204,7 @@ mod tests {
     fn an_empty_allowlist_publishes_nothing() {
         assert!(
             RequestHeaderAllowlist::default()
-                .extract(&headers(&[("x-flavor-ticket", "t1")]))
+                .extract(&headers(&[("x-spiice-ticket", "t1")]))
                 .unwrap()
                 .is_none()
         );
@@ -229,18 +229,18 @@ mod tests {
 
     #[test]
     fn a_repeated_or_non_ascii_header_is_refused() {
-        let allowlist = RequestHeaderAllowlist::parse(["x-flavor-ticket"]).unwrap();
+        let allowlist = RequestHeaderAllowlist::parse(["x-spiice-ticket"]).unwrap();
         let err = allowlist
             .extract(&headers(&[
-                ("x-flavor-ticket", "a"),
-                ("x-flavor-ticket", "b"),
+                ("x-spiice-ticket", "a"),
+                ("x-spiice-ticket", "b"),
             ]))
             .unwrap_err();
         assert!(err.to_string().contains("at most once"), "{err}");
 
         let mut map = HeaderMap::new();
         map.insert(
-            "x-flavor-ticket",
+            "x-spiice-ticket",
             HeaderValue::from_bytes(b"caf\xc3\xa9").unwrap(),
         );
         assert!(allowlist.extract(&map).is_err());
@@ -250,13 +250,13 @@ mod tests {
     fn request_services_merges_the_extension_bag_and_the_headers() {
         #[derive(Debug)]
         struct Budget;
-        let allowlist = RequestHeaderAllowlist::parse(["x-flavor-ticket"]).unwrap();
+        let allowlist = RequestHeaderAllowlist::parse(["x-spiice-ticket"]).unwrap();
         let mut extensions = http::Extensions::new();
-        extensions.insert(FlavorServices::with(Budget));
+        extensions.insert(SpiiceServices::with(Budget));
 
         let services = request_services(
             &allowlist,
-            &headers(&[("x-flavor-ticket", "t1")]),
+            &headers(&[("x-spiice-ticket", "t1")]),
             &extensions,
         )
         .expect("merge");
@@ -265,17 +265,17 @@ mod tests {
             services
                 .get::<RequestHeaders>()
                 .unwrap()
-                .get("x-flavor-ticket"),
+                .get("x-spiice-ticket"),
             Some("t1")
         );
 
         let mut forged = http::Extensions::new();
-        forged.insert(FlavorServices::with(RequestHeaders::from_pairs([(
-            "x-flavor-ticket",
+        forged.insert(SpiiceServices::with(RequestHeaders::from_pairs([(
+            "x-spiice-ticket",
             "forged",
         )])));
         assert!(
-            request_services(&allowlist, &headers(&[("x-flavor-ticket", "t1")]), &forged).is_err()
+            request_services(&allowlist, &headers(&[("x-spiice-ticket", "t1")]), &forged).is_err()
         );
         assert!(
             request_services(

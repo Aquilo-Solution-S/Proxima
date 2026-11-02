@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use aws_sdk_s3::presigning::PresigningConfig;
-use proxima_core::{AccessKind, AuthzContext, OwnerId};
+use proxiima_core::{AccessKind, AuthzContext, OwnerId};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
@@ -26,10 +26,10 @@ impl CitedBlobStore {
     /// before any query; a database failure keeps the class the storage layer gave it.
     pub(super) async fn begin_owner_tx(
         &self,
-        scope: Option<&proxima_core::OwnerScope>,
+        scope: Option<&proxiima_core::OwnerScope>,
     ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, BlobError> {
         let scope = scope.ok_or_else(|| BlobError::State("owner scope required".into()))?;
-        Ok(proxima_storage_pg::begin_owner_transaction(&self.pool, scope).await?)
+        Ok(proxiima_storage_pg::begin_owner_transaction(&self.pool, scope).await?)
     }
 }
 
@@ -39,7 +39,7 @@ pub(super) async fn lock_owner_fence(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     owner: &OwnerId,
 ) -> Result<(), BlobError> {
-    proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(tx, owner)
+    proxiima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(tx, owner)
         .await
         .map_err(|err| BlobError::State(format!("lock upload owner fence: {err}")))
 }
@@ -52,7 +52,7 @@ pub(super) async fn lock_fence_and_keys(
     keys: &[String],
 ) -> Result<(), BlobError> {
     lock_owner_fence(tx, owner).await?;
-    proxima_storage_pg::access::owner_columns::lock_object_keys_tx(tx, keys)
+    proxiima_storage_pg::access::owner_columns::lock_object_keys_tx(tx, keys)
         .await
         .map_err(|err| BlobError::State(format!("lock upload object key: {err}")))
 }
@@ -131,7 +131,7 @@ pub(super) fn format_time(value: OffsetDateTime) -> Result<String, BlobError> {
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::{OwnerId, UserId};
+    use proxiima_core::{OwnerId, UserId};
 
     use super::super::testkit::prepare_req;
     use super::*;
@@ -173,14 +173,14 @@ mod tests {
     #[test]
     fn owner_access_gate_allows_accessible_owner() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-        let ctx = AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+        let ctx = AuthzContext::single_owner(&owner, proxiima_core::AuthPath::System);
         ensure_owner_access(&ctx, &owner).expect("accessible owner passes");
     }
 
     #[test]
     fn owner_access_gate_denies_foreign_owner() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-        let ctx = AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+        let ctx = AuthzContext::single_owner(&owner, proxiima_core::AuthPath::System);
         let foreign = OwnerId::from(UserId::new(Uuid::now_v7()));
         let err = ensure_owner_access(&ctx, &foreign).expect_err("foreign owner denied");
         assert!(matches!(err, BlobError::Denied(_)));
@@ -191,13 +191,13 @@ mod tests {
     // to create cited blobs in it (owner_write gate denies).
     #[test]
     fn owner_write_gate_denies_read_only_group_viewer() {
-        use proxima_core::{GroupId, Role};
+        use proxiima_core::{GroupId, Role};
         let subject = UserId::new(Uuid::now_v7());
         let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let ctx = AuthzContext::for_subject_with_role(
             subject,
             [(group, Role::viewer())],
-            proxima_core::AuthPath::HostBearer,
+            proxiima_core::AuthPath::HostBearer,
         );
         // Read gate passes (the viewer can see the group)…
         ensure_owner_access(&ctx, &group).expect("viewer can read the group");
@@ -208,13 +208,13 @@ mod tests {
 
     #[test]
     fn owner_write_gate_allows_editor_group_and_self() {
-        use proxima_core::{GroupId, Role};
+        use proxiima_core::{GroupId, Role};
         let subject = UserId::new(Uuid::now_v7());
         let group = OwnerId::from(GroupId::new(Uuid::now_v7()));
         let ctx = AuthzContext::for_subject_with_role(
             subject,
             [(group, Role::editor())],
-            proxima_core::AuthPath::HostBearer,
+            proxiima_core::AuthPath::HostBearer,
         );
         ensure_owner_write_access(&ctx, &group).expect("editor can write the group");
         ensure_owner_write_access(&ctx, &OwnerId::from(subject)).expect("self is writable");

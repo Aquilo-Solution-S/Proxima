@@ -14,36 +14,36 @@ use crate::verbs::forget::{
 };
 use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
 use crate::verbs::memory_timeseries::ingest_fact_timeseries;
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::{MemoryAuthoringPort, OwnerTransferPort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::storage_ports::{MemoryAuthoringPort, OwnerTransferPort, OwnerWritePermit};
+use proxiima_core::verbs::fact_ingest::{CitationSpec, FactWriteCommand};
+use proxiima_core::verbs::goal_write::GoalState;
+use proxiima_core::{
     AccessKind, ColdObjectStore, EdgeEndpoint, EntityId, EntityKind, GroupId, OwnerId, SchemaId,
     SchemaVersion, StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
+use proxiima_pg_testkit::{db_url, drop_db};
 use uuid::Uuid;
 
 /// The forget's registry-resolved legs, exactly as `PgStorage` assembles
 /// them. An alias for [`transfer_surfaces`]: both verbs read the same set,
 /// and calling it by the verb under test is what keeps a reader from
 /// wondering whether they differ.
-fn surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
+fn surfaces() -> proxiima_core::owner_inverse::OwnerSurfaces {
     transfer_surfaces()
 }
 
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.
-fn transfer_surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
-    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
-        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+fn transfer_surfaces() -> proxiima_core::owner_inverse::OwnerSurfaces {
+    proxiima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
     )
 }
 
 fn erase_context(
-    surfaces: proxima_core::owner_inverse::OwnerSurfaces,
+    surfaces: proxiima_core::owner_inverse::OwnerSurfaces,
 ) -> crate::PgHostStateEraseContext {
     crate::PgHostStateEraseContext::for_surfaces_for_tests(surfaces)
         .expect("these fixtures declare no host lifecycle tables")
@@ -63,7 +63,7 @@ async fn erased_pin_target_kind(
     pool: &sqlx::PgPool,
     t: Uuid,
 ) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar("SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1")
+    sqlx::query_scalar("SELECT kind::text FROM proxiima_core.erased_pin_target WHERE t = $1")
         .bind(t)
         .fetch_optional(pool)
         .await
@@ -90,7 +90,7 @@ async fn wait_for_advisory_waiters(
     Err(format!("expected {expected} advisory waiters").into())
 }
 
-const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
+const AGENT_NOTE: &str = "proxiima_core.agent_note_v1";
 /// Ingest a Fact under an explicit `sidecar_tables` stamp, and write the rows
 /// that stamp promises, in the one transaction.
 ///
@@ -105,13 +105,13 @@ pub(crate) async fn ingest_stamped(
     draft: &FactWriteCommand,
     tables: &[String],
     sidecar_rows: &[&str],
-) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
+) -> Result<proxiima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
     let mut tx = pool
         .begin()
         .await
         .map_err(|err| StorageError::Internal(err.to_string()))?;
     let goal_ids: Vec<Uuid> =
-        sqlx::query_scalar("SELECT t FROM proxima_core.goal WHERE t = ANY($1::uuid[])")
+        sqlx::query_scalar("SELECT t FROM proxiima_core.goal WHERE t = ANY($1::uuid[])")
             .bind(&draft.refs)
             .fetch_all(&mut *tx)
             .await
@@ -122,9 +122,9 @@ pub(crate) async fn ingest_stamped(
         .copied()
         .map(|id| {
             if goal_ids.contains(&id) {
-                EdgeEndpoint::goal(proxima_core::GoalId::new(id))
+                EdgeEndpoint::goal(proxiima_core::GoalId::new(id))
             } else {
-                EdgeEndpoint::memory(EntityKind::Fact, proxima_core::MemoryId::new(id))
+                EdgeEndpoint::memory(EntityKind::Fact, proxiima_core::MemoryId::new(id))
             }
         })
         .collect::<Vec<_>>();
@@ -163,7 +163,7 @@ async fn append_in_own_transaction(
     pool: &sqlx::PgPool,
     owner: OwnerId,
     draft: FactWriteCommand,
-) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
+) -> Result<proxiima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let mut tx = pool
         .begin()
@@ -235,14 +235,14 @@ pub(crate) fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
 
 #[tokio::test]
 async fn forget_non_last_t_rewinds_memory_head() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -271,7 +271,7 @@ async fn forget_non_last_t_rewinds_memory_head() {
         tx.commit().await?;
 
         let head_t: Uuid =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(first.handle)
                 .fetch_one(pool)
                 .await?;
@@ -288,7 +288,7 @@ async fn forget_non_last_t_rewinds_memory_head() {
 /// success, and an id the owner does not have is `NotFound`.
 #[tokio::test]
 async fn restore_moves_the_head_back_and_a_live_restore_changes_nothing() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -304,7 +304,7 @@ async fn restore_moves_the_head_back_and_a_live_restore_changes_nothing() {
         let second = pg.ingest_fact_atomic(&permit, &later, None).await?;
         let head = || async {
             sqlx::query_scalar::<_, Uuid>(
-                "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
+                "SELECT t FROM proxiima_core.memory_head WHERE handle = $1",
             )
             .bind(first.handle)
             .fetch_one(pool)
@@ -313,8 +313,8 @@ async fn restore_moves_the_head_back_and_a_live_restore_changes_nothing() {
         let state = |t: Uuid| async move {
             sqlx::query_as::<_, (bool, i64)>(
                 "SELECT m.forgotten_at IS NOT NULL,
-                        (SELECT count(*) FROM proxima_core.sketch s WHERE s.t = m.t)
-                   FROM proxima_core.memory m WHERE m.t = $1",
+                        (SELECT count(*) FROM proxiima_core.sketch s WHERE s.t = m.t)
+                   FROM proxiima_core.memory m WHERE m.t = $1",
             )
             .bind(t)
             .fetch_one(pool)
@@ -348,7 +348,7 @@ async fn restore_moves_the_head_back_and_a_live_restore_changes_nothing() {
             Err(StorageError::NotFound)
         ));
         assert!(matches!(
-            pg.restore_memory(&permit, proxima_core::MemoryId::new(Uuid::now_v7()), &[])
+            pg.restore_memory(&permit, proxiima_core::MemoryId::new(Uuid::now_v7()), &[])
                 .await,
             Err(StorageError::NotFound)
         ));
@@ -362,7 +362,7 @@ async fn restore_moves_the_head_back_and_a_live_restore_changes_nothing() {
 
 #[tokio::test]
 async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -436,7 +436,7 @@ async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
         );
 
         let rows: i64 = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*)::bigint FROM proxima_core.memory
+            "SELECT count(*)::bigint FROM proxiima_core.memory
               WHERE handle = $1",
         )
         .bind(first.handle)
@@ -446,7 +446,7 @@ async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
         .sum();
         assert_eq!(rows, 0);
         let heads: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.memory_head WHERE handle = $1",
         )
         .bind(first.handle)
         .fetch_one(pool)
@@ -462,7 +462,7 @@ async fn series_erase_includes_hot_append_that_wins_the_handle_lock_first() {
 
 #[tokio::test]
 async fn series_erase_wins_hot_handle_and_append_retries_then_survives() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -509,13 +509,13 @@ async fn series_erase_wins_hot_handle_and_append_retries_then_survives() {
         retry_draft.handle = Some(first.handle);
         let survivor = pg.ingest_fact_atomic(&permit, &retry_draft, None).await?;
         let head_t: Uuid =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(first.handle)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(head_t, survivor.memory_id.into_inner());
         let rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory WHERE handle = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.memory WHERE handle = $1",
         )
         .bind(first.handle)
         .fetch_one(pool)
@@ -533,7 +533,7 @@ async fn series_erase_wins_hot_handle_and_append_retries_then_survives() {
 /// them, and none outlives the memory it described.
 #[tokio::test]
 async fn a_hard_erase_deletes_the_memorys_other_store_origins() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -554,7 +554,7 @@ async fn a_hard_erase_deletes_the_memorys_other_store_origins() {
             .memory_id
             .into_inner();
         sqlx::query(
-            "INSERT INTO proxima_core.memory_external_origin (t, memory, edge_kind)
+            "INSERT INTO proxiima_core.memory_external_origin (t, memory, edge_kind)
              VALUES ($1, '00000000-0000-8000-8000-000500000001', 'origin'), ($1, '00000000-0000-8000-8000-000600000001', 'origin'), ($2, '00000000-0000-8000-8000-000500000002', 'origin')",
         )
         .bind(erased_t)
@@ -575,7 +575,7 @@ async fn a_hard_erase_deletes_the_memorys_other_store_origins() {
         assert_eq!(erased, 1);
 
         let remaining: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            "SELECT t, memory FROM proxima_core.memory_external_origin ORDER BY memory",
+            "SELECT t, memory FROM proxiima_core.memory_external_origin ORDER BY memory",
         )
         .fetch_all(pool)
         .await?;
@@ -589,7 +589,7 @@ async fn a_hard_erase_deletes_the_memorys_other_store_origins() {
 
 #[tokio::test]
 async fn series_erase_linearizes_with_fully_forgotten_series() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -609,7 +609,7 @@ async fn series_erase_linearizes_with_fully_forgotten_series() {
         forget_one(pool, &owner, second_t).await?;
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*)::bigint FROM proxima_core.memory_head WHERE handle = $1",
+                "SELECT count(*)::bigint FROM proxiima_core.memory_head WHERE handle = $1",
             )
             .bind(first.handle)
             .fetch_one(pool)
@@ -712,14 +712,14 @@ async fn series_erase_linearizes_with_fully_forgotten_series() {
                 other => other?,
             };
         let head_t: Uuid =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(first.handle)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(head_t, survivor.memory_id.into_inner());
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*)::bigint FROM proxima_core.memory WHERE handle = $1",
+                "SELECT count(*)::bigint FROM proxiima_core.memory WHERE handle = $1",
             )
             .bind(first.handle)
             .fetch_one(pool)
@@ -735,7 +735,7 @@ async fn series_erase_linearizes_with_fully_forgotten_series() {
 
 #[tokio::test]
 async fn series_erase_does_not_cross_one_reused_handle_in_a_batch() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -800,14 +800,14 @@ async fn series_erase_does_not_cross_one_reused_handle_in_a_batch() {
         waiting.rollback().await?;
 
         let head_t: Uuid =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(reused.handle)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(head_t, replacement.memory_id.into_inner());
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*)::bigint FROM proxima_core.memory WHERE handle = $1",
+                "SELECT count(*)::bigint FROM proxiima_core.memory WHERE handle = $1",
             )
             .bind(reused.handle)
             .fetch_one(pool)
@@ -815,7 +815,7 @@ async fn series_erase_does_not_cross_one_reused_handle_in_a_batch() {
             1
         );
         let untouched_head: Uuid =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(untouched.handle)
                 .fetch_one(pool)
                 .await?;
@@ -829,7 +829,7 @@ async fn series_erase_does_not_cross_one_reused_handle_in_a_batch() {
 
 #[tokio::test]
 async fn non_head_erase_racing_append_preserves_the_greatest_head() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -895,7 +895,7 @@ async fn non_head_erase_racing_append_preserves_the_greatest_head() {
         assert!(plan.is_empty());
         let appended = append;
         let head_t: Uuid =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(first.handle)
                 .fetch_one(pool)
                 .await?;
@@ -903,7 +903,7 @@ async fn non_head_erase_racing_append_preserves_the_greatest_head() {
         assert_ne!(head_t, first.memory_id.into_inner());
         assert_ne!(head_t, second.memory_id.into_inner());
         let remaining: Vec<Uuid> =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE handle = $1 ORDER BY t")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.memory WHERE handle = $1 ORDER BY t")
                 .bind(first.handle)
                 .fetch_all(pool)
                 .await?;
@@ -917,27 +917,27 @@ async fn non_head_erase_racing_append_preserves_the_greatest_head() {
 
 fn derived_abstraction(origin_kind: EntityKind, origin: Uuid) -> FactWriteCommand {
     let mut cmd = draft(None);
-    cmd.kind = proxima_core::MemoryKind::Abstraction;
+    cmd.kind = proxiima_core::MemoryKind::Abstraction;
     cmd.additional_references = vec![EdgeEndpoint::memory(
         origin_kind,
-        proxima_core::MemoryId::new(origin),
+        proxiima_core::MemoryId::new(origin),
     )];
     cmd
 }
 
 fn derived_perspective(origin: Uuid) -> FactWriteCommand {
     let mut cmd = draft(None);
-    cmd.kind = proxima_core::MemoryKind::Perspective;
+    cmd.kind = proxiima_core::MemoryKind::Perspective;
     cmd.additional_references = vec![EdgeEndpoint::memory(
         EntityKind::Abstraction,
-        proxima_core::MemoryId::new(origin),
+        proxiima_core::MemoryId::new(origin),
     )];
     cmd
 }
 
 #[tokio::test]
 async fn hard_erase_witnesses_each_hot_memory_kind() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1047,7 +1047,7 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
         .await?;
         tx.commit().await?;
         assert_eq!(erased_pin_target_kind(pool, goal.t).await?, None);
-        sqlx::query("DELETE FROM proxima_core.goal WHERE t = $1")
+        sqlx::query("DELETE FROM proxiima_core.goal WHERE t = $1")
             .bind(goal.t)
             .execute(pool)
             .await?;
@@ -1064,7 +1064,7 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
 
 #[tokio::test]
 async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1092,11 +1092,11 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
         );
 
         let before_memory: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.memory")
                 .fetch_one(pool)
                 .await?;
         let before_heads: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory_head")
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.memory_head")
                 .fetch_one(pool)
                 .await?;
         let mut source = draft(None);
@@ -1112,11 +1112,11 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
             "got: {err}"
         );
         let after_memory: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory")
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.memory")
                 .fetch_one(pool)
                 .await?;
         let after_heads: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory_head")
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.memory_head")
                 .fetch_one(pool)
                 .await?;
         assert_eq!(
@@ -1133,11 +1133,11 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
         // than the unrelated head-shape backstop.
         let holder = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let err = sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                 (handle, t, kind, owner_id, schema_id, source_id, ingest_key,
                  blob_id, content_id, origins, refs, sidecar_tables, occurred_at, \"by\", via)
              VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', NULL, NULL,
-                     NULL, NULL, '{}', '{}', '{}', proxima_core.memory_created_at($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+                     NULL, NULL, '{}', '{}', '{}', proxiima_core.memory_created_at($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(holder.handle)
         .bind(target_t)
@@ -1150,7 +1150,7 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
             "got: {err}"
         );
         let reused: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.memory WHERE t = $1")
                 .bind(target_t)
                 .fetch_one(pool)
                 .await?;
@@ -1168,7 +1168,7 @@ async fn witnessed_targets_cannot_be_reused_or_newly_pinned() {
 
 #[tokio::test]
 async fn forgetting_every_source_keeps_what_rests_on_them_live() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1223,7 +1223,7 @@ async fn forgetting_every_source_keeps_what_rests_on_them_live() {
         tx.commit().await?;
 
         let states: Vec<(Uuid, bool)> = sqlx::query_as(
-            "SELECT t, forgotten_at IS NOT NULL FROM proxima_core.memory
+            "SELECT t, forgotten_at IS NOT NULL FROM proxiima_core.memory
               WHERE t = ANY($1) ORDER BY t",
         )
         .bind(vec![
@@ -1254,7 +1254,7 @@ async fn forgetting_every_source_keeps_what_rests_on_them_live() {
 /// idempotent replay carrying the original handle and citation.
 #[tokio::test]
 async fn redelivering_a_forgotten_ingest_key_is_an_idempotent_replay() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1284,7 +1284,7 @@ async fn redelivering_a_forgotten_ingest_key_is_an_idempotent_replay() {
         tx.commit().await?;
 
         let kept_blob: Option<Uuid> = sqlx::query_scalar(
-            "SELECT blob_id FROM proxima_core.memory WHERE t = $1 AND forgotten_at IS NOT NULL",
+            "SELECT blob_id FROM proxiima_core.memory WHERE t = $1 AND forgotten_at IS NOT NULL",
         )
         .bind(t)
         .fetch_one(pool)
@@ -1314,13 +1314,13 @@ async fn redelivering_a_forgotten_ingest_key_is_an_idempotent_replay() {
         );
 
         let hot: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory WHERE ingest_key = 'delivery-forgotten'",
+            "SELECT count(*)::bigint FROM proxiima_core.memory WHERE ingest_key = 'delivery-forgotten'",
         )
         .fetch_one(pool)
         .await?;
         assert_eq!(hot, 1, "a replay mints no new row");
         let still_forgotten: bool = sqlx::query_scalar(
-            "SELECT forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+            "SELECT forgotten_at IS NOT NULL FROM proxiima_core.memory WHERE t = $1",
         )
         .bind(t)
         .fetch_one(pool)
@@ -1335,7 +1335,7 @@ async fn redelivering_a_forgotten_ingest_key_is_an_idempotent_replay() {
 
 #[tokio::test]
 async fn forget_pinless_abstraction_is_refused() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1350,7 +1350,7 @@ async fn forget_pinless_abstraction_is_refused() {
         let handle = Uuid::now_v7();
         let t = Uuid::now_v7();
         let content_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/test-abs-v1', $2)
              RETURNING content_id",
         )
@@ -1359,7 +1359,7 @@ async fn forget_pinless_abstraction_is_refused() {
         .fetch_one(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'abstraction', 'core/test-abs-v1', $2, $3)",
         )
         .bind(handle)
@@ -1368,7 +1368,7 @@ async fn forget_pinless_abstraction_is_refused() {
         .execute(pool)
         .await?;
         let err = sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                 (handle, t, kind, owner_id, schema_id, content_id, origins, refs, \"by\", via)
              VALUES ($1, $2, 'abstraction', $3, 'core/test-abs-v1', $4, '{}', '{}', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
@@ -1392,7 +1392,7 @@ async fn forget_pinless_abstraction_is_refused() {
 
 #[tokio::test]
 async fn concurrent_forgets_of_both_sources_both_commit() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1430,7 +1430,7 @@ async fn concurrent_forgets_of_both_sources_both_commit() {
             )
             .await?;
         let mut both = draft(None);
-        both.kind = proxima_core::MemoryKind::Abstraction;
+        both.kind = proxiima_core::MemoryKind::Abstraction;
         both.additional_references = vec![
             EdgeEndpoint::memory(EntityKind::Abstraction, a1.memory_id),
             EdgeEndpoint::memory(EntityKind::Abstraction, a2.memory_id),
@@ -1442,7 +1442,7 @@ async fn concurrent_forgets_of_both_sources_both_commit() {
         let dep_t = dep.memory_id.into_inner();
         let mut gate = pool.begin().await?;
         let _: Uuid =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory WHERE t = $1 FOR UPDATE")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.memory WHERE t = $1 FOR UPDATE")
                 .bind(dep_t)
                 .fetch_one(&mut *gate)
                 .await?;
@@ -1499,9 +1499,9 @@ async fn concurrent_forgets_of_both_sources_both_commit() {
         let remaining: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint
                FROM unnest(
-                    (SELECT origins || refs FROM proxima_core.memory WHERE t = $1)
+                    (SELECT origins || refs FROM proxiima_core.memory WHERE t = $1)
                ) AS p(id)
-              WHERE EXISTS (SELECT 1 FROM proxima_core.memory h WHERE h.t = p.id)",
+              WHERE EXISTS (SELECT 1 FROM proxiima_core.memory h WHERE h.t = p.id)",
         )
         .bind(dep.memory_id.into_inner())
         .fetch_one(&pool)
@@ -1519,7 +1519,7 @@ async fn concurrent_forgets_of_both_sources_both_commit() {
 
 #[tokio::test]
 async fn forget_blocks_admit_until_its_lifecycle_lock_is_released() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1543,7 +1543,7 @@ async fn forget_blocks_admit_until_its_lifecycle_lock_is_released() {
         // advisory first and deadlock when forget then tried to acquire it.
         sqlx::query(
             "SELECT pg_advisory_xact_lock(
-                 hashtextextended('proxima-forget:' || $1::text, 0)
+                 hashtextextended('proxiima-forget:' || $1::text, 0)
              )",
         )
         .bind(a_t)
@@ -1554,7 +1554,7 @@ async fn forget_blocks_admit_until_its_lifecycle_lock_is_released() {
         let handle = Uuid::now_v7();
         let new_t = Uuid::now_v7();
         let content_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/test-abs-v1', $2)
              RETURNING content_id",
         )
@@ -1563,7 +1563,7 @@ async fn forget_blocks_admit_until_its_lifecycle_lock_is_released() {
         .fetch_one(&pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
              VALUES ($1, 'abstraction', 'core/test-abs-v1', $2, $3)",
         )
         .bind(handle)
@@ -1575,7 +1575,7 @@ async fn forget_blocks_admit_until_its_lifecycle_lock_is_released() {
         let pool_admit = pool.clone();
         let admit = tokio::spawn(async move {
             sqlx::query(
-                "INSERT INTO proxima_core.memory
+                "INSERT INTO proxiima_core.memory
                     (handle, t, kind, owner_id, schema_id, content_id, origins, refs, \"by\", via)
                  VALUES ($1, $2, 'abstraction', $3, 'core/test-abs-v1', $4, ARRAY[$5]::uuid[], '{}', '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
             )
@@ -1626,7 +1626,7 @@ async fn forget_blocks_admit_until_its_lifecycle_lock_is_released() {
 /// and this append can form a head/advisory cycle.
 #[tokio::test]
 async fn admission_locks_pins_before_series_head() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1652,7 +1652,7 @@ async fn admission_locks_pins_before_series_head() {
         append.handle = Some(target.handle);
         append.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Fact,
-            proxima_core::MemoryId::new(origin.memory_id.into_inner()),
+            proxiima_core::MemoryId::new(origin.memory_id.into_inner()),
         )];
         append.refs = vec![target_t];
 
@@ -1673,7 +1673,7 @@ async fn admission_locks_pins_before_series_head() {
         // The writer is blocked on target_t's lifecycle lock and therefore
         // must not yet hold the source series head row lock.
         let mut head_probe = pool.begin().await?;
-        sqlx::query("SELECT 1 FROM proxima_core.memory_head WHERE handle = $1 FOR UPDATE NOWAIT")
+        sqlx::query("SELECT 1 FROM proxiima_core.memory_head WHERE handle = $1 FOR UPDATE NOWAIT")
             .bind(target.handle)
             .execute(&mut *head_probe)
             .await
@@ -1696,7 +1696,7 @@ async fn admission_locks_pins_before_series_head() {
         assert_eq!(written.handle, target.handle);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM proxima_core.memory WHERE handle = $1",
+                "SELECT count(*) FROM proxiima_core.memory WHERE handle = $1",
             )
             .bind(target.handle)
             .fetch_one(&pool)
@@ -1706,7 +1706,7 @@ async fn admission_locks_pins_before_series_head() {
         );
         assert_eq!(
             sqlx::query_scalar::<_, Option<Uuid>>(
-                "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
+                "SELECT t FROM proxiima_core.memory_head WHERE handle = $1",
             )
             .bind(target.handle)
             .fetch_one(&pool)
@@ -1715,7 +1715,7 @@ async fn admission_locks_pins_before_series_head() {
         );
         assert!(
             sqlx::query_scalar::<_, bool>(
-                "SELECT forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+                "SELECT forgotten_at IS NOT NULL FROM proxiima_core.memory WHERE t = $1",
             )
             .bind(target_t)
             .fetch_one(&pool)
@@ -1735,7 +1735,7 @@ async fn admission_locks_pins_before_series_head() {
 /// post-forget state and installs the new head without a cycle.
 #[tokio::test]
 async fn admission_locks_existing_head_without_declared_pins() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1765,7 +1765,7 @@ async fn admission_locks_existing_head_without_declared_pins() {
         // The append is waiting on prior_t and has not yet touched the shared
         // head row. This NOWAIT probe is the direct inversion guard.
         let mut head_probe = pool.begin().await?;
-        sqlx::query("SELECT 1 FROM proxima_core.memory_head WHERE handle = $1 FOR UPDATE NOWAIT")
+        sqlx::query("SELECT 1 FROM proxiima_core.memory_head WHERE handle = $1 FOR UPDATE NOWAIT")
             .bind(handle)
             .execute(&mut *head_probe)
             .await
@@ -1788,7 +1788,7 @@ async fn admission_locks_existing_head_without_declared_pins() {
         assert_eq!(written.handle, handle);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM proxima_core.memory WHERE handle = $1",
+                "SELECT count(*) FROM proxiima_core.memory WHERE handle = $1",
             )
             .bind(handle)
             .fetch_one(&pool)
@@ -1798,7 +1798,7 @@ async fn admission_locks_existing_head_without_declared_pins() {
         );
         assert_eq!(
             sqlx::query_scalar::<_, Option<Uuid>>(
-                "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
+                "SELECT t FROM proxiima_core.memory_head WHERE handle = $1",
             )
             .bind(handle)
             .fetch_one(&pool)
@@ -1807,7 +1807,7 @@ async fn admission_locks_existing_head_without_declared_pins() {
         );
         assert!(
             sqlx::query_scalar::<_, bool>(
-                "SELECT forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+                "SELECT forgotten_at IS NOT NULL FROM proxiima_core.memory WHERE t = $1",
             )
             .bind(prior_t)
             .fetch_one(&pool)
@@ -1826,7 +1826,7 @@ async fn admission_locks_existing_head_without_declared_pins() {
 /// attempts to reuse that blob, without an advisory/blob inversion.
 #[tokio::test]
 async fn citation_reuse_and_series_erase_share_one_lock_order() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -1899,7 +1899,7 @@ async fn citation_reuse_and_series_erase_share_one_lock_order() {
         wait_for_advisory_waiters(&pool, 1).await?;
 
         let mut blob_probe = pool.begin().await?;
-        sqlx::query("SELECT 1 FROM proxima_core.blob WHERE blob_id = $1 FOR UPDATE NOWAIT")
+        sqlx::query("SELECT 1 FROM proxiima_core.blob WHERE blob_id = $1 FOR UPDATE NOWAIT")
             .bind(blob_id)
             .execute(&mut *blob_probe)
             .await
@@ -1925,7 +1925,7 @@ async fn citation_reuse_and_series_erase_share_one_lock_order() {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM proxima_core.memory WHERE handle = $1",
+                "SELECT count(*) FROM proxiima_core.memory WHERE handle = $1",
             )
             .bind(second.handle)
             .fetch_one(&pool)
@@ -1935,7 +1935,7 @@ async fn citation_reuse_and_series_erase_share_one_lock_order() {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM proxima_core.blob WHERE schema_id = $1 AND content_hash = $2",
+                "SELECT count(*) FROM proxiima_core.blob WHERE schema_id = $1 AND content_hash = $2",
             )
             .bind("core/test-cited-object-v1")
             .bind(vec![0xA7_u8; 32])
@@ -1955,14 +1955,14 @@ struct FailDeleteCold;
 
 #[async_trait::async_trait]
 impl ColdObjectStore for FailDeleteCold {
-    async fn delete(&self, _key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
+    async fn delete(&self, _key: &str) -> Result<proxiima_core::PurgeDeleted, StorageError> {
         Err(StorageError::Internal("cold delete refused".into()))
     }
 
-    fn store_id(&self) -> &proxima_core::ObjectStoreId {
-        static ID: std::sync::LazyLock<proxima_core::ObjectStoreId> =
+    fn store_id(&self) -> &proxiima_core::ObjectStoreId {
+        static ID: std::sync::LazyLock<proxiima_core::ObjectStoreId> =
             std::sync::LazyLock::new(|| {
-                proxima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
+                proxiima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
             });
         &ID
     }
@@ -1970,7 +1970,7 @@ impl ColdObjectStore for FailDeleteCold {
 
 #[tokio::test]
 async fn forget_aborts_when_owner_transferred() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2009,13 +2009,13 @@ async fn forget_aborts_when_owner_transferred() {
         tx.rollback().await?;
 
         let moved: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(moved, dest.into_inner());
         let forgotten: bool = sqlx::query_scalar(
-            "SELECT forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+            "SELECT forgotten_at IS NOT NULL FROM proxiima_core.memory WHERE t = $1",
         )
         .bind(t)
         .fetch_one(pool)
@@ -2030,7 +2030,7 @@ async fn forget_aborts_when_owner_transferred() {
 
 #[tokio::test]
 async fn stale_source_erase_does_not_lock_transferred_series() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2131,18 +2131,18 @@ impl PurgeRecordingCold {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for PurgeRecordingCold {
-    fn store_id(&self) -> &proxima_core::ObjectStoreId {
+    fn store_id(&self) -> &proxiima_core::ObjectStoreId {
         self.inner.store_id()
     }
 
-    async fn delete(&self, key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
+    async fn delete(&self, key: &str) -> Result<proxiima_core::PurgeDeleted, StorageError> {
         self.deletes
             .lock()
             .expect("cold delete calls")
             .push(key.to_owned());
         let removed = self.objects.lock().expect("objects").remove(key);
         self.inner.delete(key).await?;
-        Ok(proxima_core::PurgeDeleted::from_versions(u64::from(
+        Ok(proxiima_core::PurgeDeleted::from_versions(u64::from(
             removed.is_some(),
         )))
     }
@@ -2158,7 +2158,7 @@ impl ColdObjectStore for PurgeRecordingCold {
 /// and the other store's debt survives untouched for its own drain.
 #[tokio::test]
 async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2175,7 +2175,7 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
         for key in [retired_key, reassigned_key, current_key] {
             cold.put(key, bytes);
             let (object_key, object_store): (String, String) = sqlx::query_as(
-                "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+                "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
                  VALUES ($1, NULL, $2)
                  RETURNING object_key, object_store",
             )
@@ -2193,7 +2193,7 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
         // Model a committed retirement and reassignment after plan capture,
         // before any provider I/O. The plan itself still names this store.
         assert_eq!(
-            sqlx::query("DELETE FROM proxima_core.cold_purge_pending WHERE object_key = $1")
+            sqlx::query("DELETE FROM proxiima_core.cold_purge_pending WHERE object_key = $1")
                 .bind(retired_key)
                 .execute(pool)
                 .await?
@@ -2202,7 +2202,7 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
         );
         assert_eq!(
             sqlx::query(
-                "UPDATE proxima_core.cold_purge_pending SET object_store = 's3:test/other-bucket'
+                "UPDATE proxiima_core.cold_purge_pending SET object_store = 's3:test/other-bucket'
                  WHERE object_key = $1",
             )
             .bind(reassigned_key)
@@ -2233,7 +2233,7 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
         assert_eq!(cold.get(reassigned_key)?, bytes);
         assert!(matches!(cold.get(current_key), Err(StorageError::NotFound)));
         let remaining: Vec<(String, String)> = sqlx::query_as(
-            "SELECT object_key, object_store FROM proxima_core.cold_purge_pending ORDER BY object_key",
+            "SELECT object_key, object_store FROM proxiima_core.cold_purge_pending ORDER BY object_key",
         )
         .fetch_all(pool)
         .await?;
@@ -2254,7 +2254,7 @@ async fn stale_purge_plan_rechecks_current_debt_before_provider_delete() {
 /// key stays in `cold_purge_pending` as the durable record a retry reads.
 #[tokio::test]
 async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2285,7 +2285,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         );
         let key = "objects/refused".to_owned();
         let object_store: String = sqlx::query_scalar(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+            "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
              VALUES ($1, $2, $3)
              RETURNING object_store",
         )
@@ -2305,7 +2305,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
         assert_eq!(purged.purged, 0, "a refusing object store destroys nothing");
         assert!(purged.pending);
         let pending: Vec<String> = sqlx::query_scalar(
-            "SELECT object_key FROM proxima_core.cold_purge_pending WHERE owner_id = $1",
+            "SELECT object_key FROM proxiima_core.cold_purge_pending WHERE owner_id = $1",
         )
         .bind(owner.into_inner())
         .fetch_all(pool)
@@ -2338,7 +2338,7 @@ async fn a_refusing_cold_store_leaves_the_purge_mark_for_retry() {
 /// the forget leg reads the contract, so the declaration is falsifiable.
 #[tokio::test]
 async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2362,7 +2362,7 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
             let pool = pool.clone();
             async move {
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE t = $1",
+                    "SELECT count(*)::bigint FROM proxiima_core.ingest_keys WHERE t = $1",
                 )
                 .bind(t)
                 .fetch_one(&pool)
@@ -2374,7 +2374,7 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
             let handle = first.handle;
             async move {
                 sqlx::query_scalar::<_, Option<Uuid>>(
-                    "SELECT t FROM proxima_core.memory_head WHERE handle = $1",
+                    "SELECT t FROM proxiima_core.memory_head WHERE handle = $1",
                 )
                 .bind(handle)
                 .fetch_optional(&pool)
@@ -2465,9 +2465,9 @@ async fn cooling_keeps_the_receipt_and_rewinds_the_head_while_erase_takes_both()
 /// The assertion is that the forget REFUSES and the rows survive.
 #[tokio::test]
 async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_erase() {
-    use proxima_core::flavor::{ForgetRule, Surface};
+    use proxiima_core::spiice::{ForgetRule, Surface};
 
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2478,9 +2478,9 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_erase() {
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
         let pool = pg.pool_for_tests();
 
-        // Flavor #0's surfaces with exactly one field changed: the note
+        // Spiice #0's surfaces with exactly one field changed: the note
         // sidecar now declares that the forget leaves it alone.
-        let mut declared: Vec<Surface> = proxima_core::FLAVOR_0.all_surfaces().collect();
+        let mut declared: Vec<Surface> = proxiima_core::SPIICE_0.all_surfaces().collect();
         let mut rewritten = 0;
         for surface in &mut declared {
             if surface.table == AGENT_NOTE {
@@ -2491,7 +2491,7 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_erase() {
             }
         }
         assert_eq!(rewritten, 1, "the note sidecar is a declared surface");
-        let kept_surfaces = proxima_core::owner_inverse::OwnerSurfaces::from_surfaces(declared);
+        let kept_surfaces = proxiima_core::owner_inverse::OwnerSurfaces::from_surfaces(declared);
 
         let written = ingest_stamped(
             pool,
@@ -2499,7 +2499,7 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_erase() {
             &draft(None),
             &[AGENT_NOTE.to_owned()],
             &[
-                "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+                "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
              VALUES ($1, $1, 'n', 'kept', ARRAY['tag'])",
             ],
         )
@@ -2529,7 +2529,7 @@ async fn a_kept_sidecar_that_is_not_owner_pinned_stops_the_erase() {
         );
 
         let notes: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.agent_note_v1 WHERE t = $1",
         )
         .bind(t)
         .fetch_one(pool)
@@ -2571,7 +2571,7 @@ async fn await_backend_blocked_on(pool: &sqlx::PgPool, prefix: &str) -> Result<(
 /// delete, and that head outlives the forgotten `t`.
 #[tokio::test]
 async fn forget_overlapping_drain_leaves_no_orphan_head() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -2585,12 +2585,12 @@ async fn forget_overlapping_drain_leaves_no_orphan_head() {
         let pool = pg.pool_for_tests().clone();
         let written = pg.ingest_fact_atomic(&permit, &draft(None), None).await?;
         let t = written.memory_id.into_inner();
-        sqlx::query("DELETE FROM proxima_core.embedding_jobs WHERE entity_id = $1")
+        sqlx::query("DELETE FROM proxiima_core.embedding_jobs WHERE entity_id = $1")
             .bind(t)
             .execute(&pool)
             .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
+            "INSERT INTO proxiima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
              VALUES ($1, 'test-embed', 1024, $2)",
         )
         .bind(t)
@@ -2601,7 +2601,7 @@ async fn forget_overlapping_drain_leaves_no_orphan_head() {
         // The drainer claims the job and holds it.
         let mut drain = pool.begin().await?;
         sqlx::query(
-            "SELECT job_id FROM proxima_core.embedding_jobs WHERE entity_id = $1 FOR UPDATE",
+            "SELECT job_id FROM proxiima_core.embedding_jobs WHERE entity_id = $1 FOR UPDATE",
         )
         .bind(t)
         .fetch_one(drain.as_mut())
@@ -2617,11 +2617,11 @@ async fn forget_overlapping_drain_leaves_no_orphan_head() {
         };
         barrier.wait().await;
         // Forget is now parked behind the drainer's job lock.
-        await_backend_blocked_on(&pool, "DELETE FROM proxima_core.embedding_jobs").await?;
+        await_backend_blocked_on(&pool, "DELETE FROM proxiima_core.embedding_jobs").await?;
 
         // The drainer finishes its write: one chunk and the head.
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings
+            "INSERT INTO proxiima_core.embeddings
                 (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
              VALUES ($1, 'test-embed', 1024, 1, 0, $3, $2)",
         )
@@ -2631,7 +2631,7 @@ async fn forget_overlapping_drain_leaves_no_orphan_head() {
         .execute(drain.as_mut())
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_heads
+            "INSERT INTO proxiima_core.embedding_heads
                 (entity_id, model_id, dim, embedding_version, owner_id)
              VALUES ($1, 'test-embed', 1024, 1, $2)",
         )
@@ -2643,7 +2643,7 @@ async fn forget_overlapping_drain_leaves_no_orphan_head() {
         forget.await??;
 
         let heads: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.embedding_heads WHERE entity_id = $1",
+            "SELECT count(*) FROM proxiima_core.embedding_heads WHERE entity_id = $1",
         )
         .bind(t)
         .fetch_one(&pool)

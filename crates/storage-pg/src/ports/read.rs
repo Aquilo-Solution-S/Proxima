@@ -1,7 +1,7 @@
-use proxima_core::read_models::MemorySchemaSpec;
-use proxima_core::storage_ports::CitationPort;
-use proxima_core::verbs::query::FactCitationReadback;
-use proxima_core::{MemoryId, OwnerId, StorageError};
+use proxiima_core::read_models::MemorySchemaSpec;
+use proxiima_core::storage_ports::CitationPort;
+use proxiima_core::verbs::query::FactCitationReadback;
+use proxiima_core::{MemoryId, OwnerId, StorageError};
 
 use crate::{PgStorage, verbs};
 
@@ -9,13 +9,13 @@ use crate::{PgStorage, verbs};
 impl CitationPort for PgStorage {
     async fn facts_citing_object(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
         cited_object_id: uuid::Uuid,
         schemas: &[MemorySchemaSpec],
-        after: Option<proxima_core::verbs::query::FactCitationCursor>,
+        after: Option<proxiima_core::verbs::query::FactCitationCursor>,
         limit: u32,
-    ) -> Result<proxima_core::verbs::query::FactCitationPage, StorageError> {
+    ) -> Result<proxiima_core::verbs::query::FactCitationPage, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
             crate::owner_scope::require_owner_scope(owner_scope)?,
@@ -39,7 +39,7 @@ impl CitationPort for PgStorage {
 
     async fn citation_of_fact(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
         fact_memory_id: MemoryId,
     ) -> Result<Option<FactCitationReadback>, StorageError> {

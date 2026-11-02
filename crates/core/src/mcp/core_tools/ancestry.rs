@@ -19,8 +19,8 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::flavor::Provenance;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::spiice::Provenance;
 use crate::storage_ports::other_stores::{
     MAX_LINEAGE_REMOTE_ORIGINS, OtherStoresError, RemoteOriginRead,
 };

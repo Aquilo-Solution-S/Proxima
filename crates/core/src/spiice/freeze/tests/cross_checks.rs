@@ -1,0 +1,835 @@
+//! One registry per contract cross-check, each shaped to trip exactly that
+//! check and nothing else.
+//!
+//! The refusals are table-driven on purpose: an unpinned check is one a
+//! refactor can delete without a single test going red. Each refusal is
+//! paired with the shape it must NOT refuse, because a refusal with no
+//! accepted twin proves only that freeze can fail.
+
+use super::fixtures::{
+    CITATION_WITH_A_SIDECAR, DECLARES_A_RESOURCE, DUPLICATE_ORDINAL, EMPTY, FIXTURE_ACTIONS,
+    FIXTURE_EFFECT, FIXTURE_SPIICE, FOREIGN_SCHEMA, TOOL_ACTIONS_DISAGREE, TOOL_AGREES,
+    UNENFORCED_REFUSAL, UNREGISTERED_SCHEMA, UNREGISTERED_TOOL, register_fixture_schema,
+    register_fixture_schema_of_kind, register_fixture_tool, register_uniformity_schemas,
+    registration_without_a_contract,
+};
+use super::leg_fixtures::{
+    BESPOKE_LEG_FOR_NOTHING, BESPOKE_LEG_OVER_A_CASCADE, BESPOKE_TRANSFER_LEG_FOR_NOTHING,
+    BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE, DERIVED_FROM_A_LOOP, DERIVED_FROM_MEMORY,
+    DERIVED_FROM_NOWHERE, DERIVED_FROM_THE_EXCLUDED, ERASED_BUT_EXCLUDED,
+    FOLLOW_WITH_NOTHING_TO_SET, HOST_MANAGED_EXPORTS, HOST_STATE_WITHOUT_OWNER_COLUMN,
+    NON_CORE_BESPOKE_ERASE_LEG, NON_CORE_BESPOKE_TRANSFER_LEG, NON_CORE_DEDUPE,
+    PER_ROW_ON_THE_WRONG_COLUMN, UNDELETABLE_SURFACE, UNFORGETTABLE_SURFACE, UNMOVABLE_SURFACE,
+    UNREACHABLE_ALLOWLIST_EXPORT_SURFACE, UNREACHABLE_EXPORT_SURFACE,
+};
+use super::projection_fixtures::{
+    BANDS_NOT_UNIFORM, EMBEDDED_SIDECAR_RIGHT_KEY, EMBEDDED_SIDECAR_WRONG_KEY,
+    EMBEDDING_DISAGREEMENT, EMBEDDING_NEVER_ON_AN_EMBEDDED_ID, EMPTY_EMBEDDING_UNITS,
+    LANGUAGE_NOT_UNIFORM, NATURAL_KEY_DISAGREEMENT, PROJECTED_SIDECAR_UNDECLARED,
+    PROJECTED_SIDECAR_WRONG_KEY, PROJECTION_A_QUERY_REACHES, PROJECTION_OUTSIDE_THE_MERGE,
+    PROJECTION_WITHOUT_TAGS, TOO_MANY_WEIGHT_LEVELS, WEIGHTS_NOT_UNIFORM,
+};
+use crate::mcp::ToolEffect;
+use crate::verbs::schema::PayloadKind;
+use crate::{SpiiceRegistry, SpiiceRegistryError};
+
+/// Register a fixture contract's schema, the way the typed
+/// `add_*_schema` methods would.
+///
+/// `validate_contract_schemas` runs BEFORE
+/// `validate_contract_projection`, so a fixture whose subject is a
+/// PROJECTION rule has to be registered to reach it. Registering is two
+/// lines; reordering the two validators instead would change which error
+/// every genuinely broken contract reports at boot.
+///
+/// A typed registration needs its ingress entry too, or
+/// `SchemaIngressMismatch` fires first and the fixture proves that
+/// instead.
+/// A listenable schema promises consumers a resolvable `dataschema`.
+/// A registration that cannot keep that promise is a build error, not a
+/// runtime surprise on the first admission.
+#[test]
+fn a_listenable_schema_without_a_json_schema_fails_the_build() {
+    let mut registry = SpiiceRegistry::new();
+    registry.add_contract_or_panic_for_tests(&crate::test_fixtures::SCHEMALESS_PROBE_SPIICE);
+    registry
+        .add_fact_schema_or_panic_for_tests::<crate::test_fixtures::SchemalessListenableProbeV1>();
+    let err = registry
+        .try_freeze()
+        .expect_err("a listenable schema with no json_schema() must not freeze");
+    assert!(
+        matches!(
+            err,
+            SpiiceRegistryError::ListenableWithoutSchema { ref schema_id }
+                if schema_id.as_str() == "probe/schemaless-v1"
+        ),
+        "unexpected error: {err:?}"
+    );
+}
+
+/// Every contract cross-check, each with a registry shaped to trip it
+/// and nothing else.
+///
+/// These are the checks that make "everything is a spiice" structural.
+/// An unpinned check is one a refactor can delete without a single test
+/// going red — and the resource rejection in particular is five lines
+/// standing for the whole resources-are-substrate rule.
+#[test]
+// One line per cross-check plus its fixture reference. Splitting it
+// would put half the checks in a second function to forget one in.
+#[allow(clippy::too_many_lines)]
+fn each_contract_cross_check_rejects_its_own_shape() {
+    #[allow(clippy::type_complexity)]
+    let cases: Vec<(
+        &'static str,
+        fn(&mut SpiiceRegistry),
+        fn(&SpiiceRegistryError) -> bool,
+    )> = vec![
+        (
+            "a spiice other than #0 declares a proxiima:// resource",
+            |registry| registry.contracts.push(&DECLARES_A_RESOURCE),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::ResourcesNotPermitted { spiice_id }
+                        if *spiice_id == FIXTURE_SPIICE
+                )
+            },
+        ),
+        (
+            "two contracts claim the same ordinal",
+            |registry| registry.contracts.push(&DUPLICATE_ORDINAL),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::DuplicateSpiiceOrdinal { ordinal: 0, .. }
+                )
+            },
+        ),
+        (
+            "contracts were registered but core's is not among them",
+            |registry| {
+                registry.contracts.clear();
+                registry.contracts.push(&EMPTY);
+            },
+            |err| matches!(err, SpiiceRegistryError::MissingCoreContract),
+        ),
+        (
+            "a contract entry's schema id carries another spiice's prefix",
+            |registry| registry.contracts.push(&FOREIGN_SCHEMA),
+            |err| matches!(err, SpiiceRegistryError::ContractSchemaPrefix { .. }),
+        ),
+        (
+            "a NotTransferable schema names no enforcement site",
+            |registry| registry.contracts.push(&UNENFORCED_REFUSAL),
+            |err| matches!(err, SpiiceRegistryError::UnenforcedTransferRefusal { .. }),
+        ),
+        (
+            "the contract declares a schema nothing registered",
+            |registry| registry.contracts.push(&UNREGISTERED_SCHEMA),
+            |err| matches!(err, SpiiceRegistryError::ContractSchemaNotRegistered { .. }),
+        ),
+        (
+            "a schema was registered under a spiice that does not declare it",
+            |registry| {
+                registry.schemas.push(registration_without_a_contract());
+                registry.contracts.push(&EMPTY);
+            },
+            |err| matches!(err, SpiiceRegistryError::SchemaWithoutContract { .. }),
+        ),
+        (
+            "one projection unit declares more weight levels than PG has classes",
+            |registry| registry.contracts.push(&TOO_MANY_WEIGHT_LEVELS),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::ProjectionWeightLevels {
+                        levels: 5,
+                        classes: 4,
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a citation payload declares a sidecar the blob remap cannot reach",
+            |registry| registry.contracts.push(&CITATION_WITH_A_SIDECAR),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::CitationSidecarNotRemappable {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a PerRow policy names a column the projection table does not have",
+            |registry| registry.contracts.push(&PER_ROW_ON_THE_WRONG_COLUMN),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::ProjectionLanguageColumn {
+                        declared: "row_config",
+                        projection_column: Some("lexical_language"),
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "two projection-ranked schemas disagree about the lexical configuration",
+            |registry| {
+                register_uniformity_schemas(registry);
+                registry.contracts.push(&LANGUAGE_NOT_UNIFORM);
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::ProjectionRenderNotUniform {
+                        property: "language",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "two projection-ranked schemas disagree about the score windows",
+            |registry| {
+                register_uniformity_schemas(registry);
+                registry.contracts.push(&BANDS_NOT_UNIFORM);
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::ProjectionRenderNotUniform {
+                        property: "bands",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "two projection-ranked schemas disagree about the ts_rank weight array",
+            |registry| {
+                register_uniformity_schemas(registry);
+                registry.contracts.push(&WEIGHTS_NOT_UNIFORM);
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::ProjectionRenderNotUniform {
+                        property: "rank_weights",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a surface declares an erase no leg can perform",
+            |registry| registry.contracts.push(&UNDELETABLE_SURFACE),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::UndeletableSurface {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a surface declares a transfer no leg can perform",
+            |registry| registry.contracts.push(&UNMOVABLE_SURFACE),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::UnmovableSurface {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a surface declares Follow with no owner column to set",
+            |registry| registry.contracts.push(&FOLLOW_WITH_NOTHING_TO_SET),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::UnmovableSurface {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a surface declares a forget that reaches none of its rows",
+            |registry| registry.contracts.push(&UNFORGETTABLE_SURFACE),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::UnforgettableSurface {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "an exportable surface has neither an owner column nor a key with a home",
+            |registry| registry.contracts.push(&UNREACHABLE_EXPORT_SURFACE),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::UnreachableExportSurface {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "an allowlisted export has neither an owner column nor a key with a home",
+            |registry| {
+                registry
+                    .contracts
+                    .push(&UNREACHABLE_ALLOWLIST_EXPORT_SURFACE);
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::UnreachableExportSurface {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a host-state surface names no owner column",
+            |registry| registry.contracts.push(&HOST_STATE_WITHOUT_OWNER_COLUMN),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::HostStateWithoutOwnerColumn {
+                        table: "test_spiice.host_rows",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "an embedding recipe names a unit the schema has no table to resolve it against",
+            |registry| {
+                register_fixture_schema(registry, "thing", "test_spiice.thing_v1");
+                registry.contracts.push(&EMBEDDING_DISAGREEMENT);
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::EmbeddabilityDisagreement {
+                        recipe_is_never: false,
+                        machinery_embeds: false,
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            // The costly direction; the case above is its mirror.
+            "a recipe says Never on an id another registration embeds",
+            |registry| {
+                register_fixture_schema_of_kind(
+                    registry,
+                    "thing",
+                    "test_spiice.thing_v1",
+                    PayloadKind::Abstraction,
+                );
+                register_fixture_schema(registry, "thing", "test_spiice.thing_v1");
+                registry.contracts.push(&EMBEDDING_NEVER_ON_AN_EMBEDDED_ID);
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::EmbeddabilityDisagreement {
+                        recipe_is_never: true,
+                        machinery_embeds: true,
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            // `validate_contract_schemas` runs first, so this is refused
+            // on its own account rather than as a behaviour disagreement.
+            "a recipe declares an empty unit list, which is Never without the reason",
+            |registry| {
+                register_fixture_schema(registry, "thing", "test_spiice.thing_v1");
+                registry.contracts.push(&EMPTY_EMBEDDING_UNITS);
+            },
+            |err| matches!(err, SpiiceRegistryError::EmptyEmbeddingUnits { .. }),
+        ),
+        (
+            "a contract names natural key columns the ingest does not read",
+            |registry| {
+                register_fixture_schema(registry, "thing", "test_spiice.thing_v1");
+                registry.contracts.push(&NATURAL_KEY_DISAGREEMENT);
+            },
+            |err| matches!(err, SpiiceRegistryError::NaturalKeyDisagreement { .. }),
+        ),
+        (
+            "the contract names an MCP tool nothing registered",
+            |registry| registry.contracts.push(&UNREGISTERED_TOOL),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::ContractToolNotRegistered { name, .. }
+                        if *name == "test_spiice_absent"
+                )
+            },
+        ),
+        (
+            "the contract's action list is not the dispatcher's",
+            |registry| {
+                register_fixture_tool(registry, &[], FIXTURE_EFFECT);
+                registry.contracts.push(&TOOL_ACTIONS_DISAGREE);
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::ToolActionsDisagreement { name, .. }
+                        if *name == "test_spiice_flat"
+                )
+            },
+        ),
+        (
+            "a linked spiice declares no contract at all",
+            |registry| {
+                registry.spiices.push(crate::spiice::SpiiceDescriptor {
+                    spiice_id: FIXTURE_SPIICE.to_owned(),
+                    display_name: "Fixture".to_owned(),
+                    package_version: "0.0.0".to_owned(),
+                    author: None,
+                    provenance: crate::spiice::SpiiceProvenance::Builtin,
+                });
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::UnclaimedRegistration { spiice_id }
+                        if spiice_id == FIXTURE_SPIICE
+                )
+            },
+        ),
+        (
+            // Not a skip. An empty contracts list is every registration
+            // undeclared, and core is the spiice that cannot be the
+            // missing one.
+            "nothing declares a contract, so the registry declares no core",
+            |registry| registry.contracts.clear(),
+            |err| matches!(err, SpiiceRegistryError::MissingCoreContract),
+        ),
+        (
+            "a projected schema's sidecar declares no surface to key the projection on",
+            |registry| {
+                register_fixture_schema(registry, "thing", "test_spiice.thing_v1");
+                registry.contracts.push(&PROJECTED_SIDECAR_UNDECLARED);
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::ProjectedSidecarNotMemoryKeyed {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a projected schema's sidecar is keyed on something the generator cannot spell",
+            |registry| {
+                register_fixture_schema(registry, "thing", "test_spiice.thing_v1");
+                registry.contracts.push(&PROJECTED_SIDECAR_WRONG_KEY);
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::ProjectedSidecarNotMemoryKeyed {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "an embed unit's sidecar declares no surface to key the text read on",
+            |registry| {
+                register_fixture_schema(registry, "thing", "test_spiice.thing_v1");
+                registry.contracts.push(&EMBEDDED_SIDECAR_WRONG_KEY);
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::EmbeddedSidecarNotMemoryKeyed {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a non-core projection's spiice declares a score the merge cannot compare",
+            |registry| {
+                register_fixture_schema(registry, "thing", "test_spiice.thing_v1");
+                registry.contracts.push(&PROJECTION_OUTSIDE_THE_MERGE);
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::UnreachableSearchProjection { why, .. }
+                        if why.contains("CoreBands")
+                )
+            },
+        ),
+        (
+            "a flat tool declares no effect",
+            |registry| register_fixture_tool(registry, &[], None),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::UndeclaredToolBehavior {
+                        name: "test_spiice_flat"
+                    }
+                )
+            },
+        ),
+        (
+            "a dispatcher declares a tool-level effect beside its actions'",
+            |registry| {
+                register_fixture_tool(registry, FIXTURE_ACTIONS, Some(ToolEffect::ReadOnly));
+            },
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::DispatcherToolEffect {
+                        name: "test_spiice_flat"
+                    }
+                )
+            },
+        ),
+        (
+            "an erased surface is declared out of the bundle",
+            |registry| registry.contracts.push(&ERASED_BUT_EXCLUDED),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::ErasedSurfaceNotExported {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a surface is derived from a surface nobody declares",
+            |registry| registry.contracts.push(&DERIVED_FROM_NOWHERE),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::DerivedFromUnknownSource {
+                        source_table: "test_spiice.gone_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "a surface is derived from a surface the bundle does not carry",
+            |registry| registry.contracts.push(&DERIVED_FROM_THE_EXCLUDED),
+            |err| {
+                matches!(
+                    err,
+                    SpiiceRegistryError::DerivedFromUnexported {
+                        table: "test_spiice.thing_v1",
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            "two surfaces are derived from each other",
+            |registry| registry.contracts.push(&DERIVED_FROM_A_LOOP),
+            |err| matches!(err, SpiiceRegistryError::DerivedFromUnexported { .. }),
+        ),
+    ];
+
+    for (shape, break_it, expected) in cases {
+        let mut registry = SpiiceRegistry::new();
+        break_it(&mut registry);
+        let Err(err) = registry.try_freeze() else {
+            panic!("freeze accepted a registry where {shape}");
+        };
+        assert!(expected(&err), "{shape}: freeze reported {err} instead");
+    }
+}
+
+/// The other half of each new refusal: the shape it must NOT refuse.
+///
+/// A refusal with no accepted twin proves only that freeze can fail.
+/// Both cases here are one edit away from the rejected fixtures the table
+/// draws on —
+/// a contract registered beside the descriptor; a
+/// memory-keyed sidecar surface declared beside the projection — so
+/// what the checks cost a correct spiice is pinned alongside what they
+/// catch.
+#[test]
+fn the_shapes_the_new_refusals_must_accept_freeze() {
+    let mut declared = SpiiceRegistry::new();
+    declared.spiices.push(crate::spiice::SpiiceDescriptor {
+        spiice_id: FIXTURE_SPIICE.to_owned(),
+        display_name: "Fixture".to_owned(),
+        package_version: "0.0.0".to_owned(),
+        author: None,
+        provenance: crate::spiice::SpiiceProvenance::Builtin,
+    });
+    declared.contracts.push(&EMPTY);
+    if let Err(err) = declared.try_freeze() {
+        panic!("a linked spiice that declares a contract must freeze: {err}");
+    }
+
+    for contract in [&PROJECTION_A_QUERY_REACHES, &PROJECTION_WITHOUT_TAGS] {
+        let mut reachable = SpiiceRegistry::new();
+        register_fixture_schema(&mut reachable, "thing", "test_spiice.thing_v1");
+        reachable.contracts.push(contract);
+        let frozen = reachable.try_freeze().unwrap_or_else(|err| {
+            panic!("a comparable memory-keyed projection must freeze with or without tags: {err}")
+        });
+        let projection = frozen
+            .search_projections()
+            .iter()
+            .find(|projection| projection.schema_id == contract.schemas[0].schema_id())
+            .expect("the declared projection is reachable");
+        assert_eq!(
+            projection.tag_column.as_deref(),
+            contract.schemas[0].search.tag_column()
+        );
+        assert!(projection.render_bands.is_some());
+    }
+
+    // The embedding lane's twin: the same embed unit over a sidecar
+    // whose surface DOES key on the memory `t` freezes, and the unit
+    // the drain reads carries that column rather than a convention.
+    let mut embedded = SpiiceRegistry::new();
+    register_fixture_schema(&mut embedded, "thing", "test_spiice.thing_v1");
+    embedded.contracts.push(&EMBEDDED_SIDECAR_RIGHT_KEY);
+    let frozen = match embedded.try_freeze() {
+        Ok(frozen) => frozen,
+        Err(err) => panic!("an embed unit over a memory-keyed sidecar must freeze: {err}"),
+    };
+    let unit = frozen
+        .embed_units()
+        .iter()
+        .find(|unit| unit.sidecar_table == "test_spiice.thing_v1")
+        .expect("the fixture's recipe resolves one unit");
+    assert_eq!(
+        unit.key_column, "t",
+        "the unit carries the column the surface declares, for the drain to filter on"
+    );
+
+    let mut lifecycle_owned_exports = SpiiceRegistry::new();
+    lifecycle_owned_exports
+        .spiices
+        .push(crate::spiice::SpiiceDescriptor {
+            spiice_id: FIXTURE_SPIICE.to_owned(),
+            display_name: "Fixture".to_owned(),
+            package_version: "0.0.0".to_owned(),
+            author: None,
+            provenance: crate::spiice::SpiiceProvenance::Builtin,
+        });
+    lifecycle_owned_exports
+        .contracts
+        .push(&HOST_MANAGED_EXPORTS);
+    if let Err(err) = lifecycle_owned_exports.try_freeze() {
+        panic!("host lifecycle can export its Rows and Allowlist surfaces: {err}");
+    }
+}
+
+/// The accepted twin of the two behaviour refusals: a flat tool that
+/// declares one effect, named by its spiice's contract, freezes.
+#[test]
+fn a_flat_tool_declaring_one_effect_freezes() {
+    let mut registry = SpiiceRegistry::new();
+    register_fixture_tool(&mut registry, &[], FIXTURE_EFFECT);
+    registry.contracts.push(&TOOL_AGREES);
+    if let Err(err) = registry.try_freeze() {
+        panic!("freeze refused a tool declaration that agrees with its registration: {err}");
+    }
+}
+
+/// #478 item 3: only the core contract may name hand-written legs or a
+/// dedupe transfer, because only storage-pg code runs them and storage-pg
+/// sees no spiice but core. Each of these froze cleanly before.
+#[test]
+fn a_non_core_spiice_may_not_name_hand_written_legs() {
+    let mut accepted = Vec::new();
+    for (shape, contract) in [
+        ("a bespoke erase leg", &NON_CORE_BESPOKE_ERASE_LEG),
+        ("a bespoke transfer leg", &NON_CORE_BESPOKE_TRANSFER_LEG),
+        ("a FollowOrDedupe surface", &NON_CORE_DEDUPE),
+    ] {
+        let mut registry = SpiiceRegistry::new();
+        registry.contracts.push(contract);
+        match registry.try_freeze() {
+            Ok(_) => accepted.push(shape),
+            Err(err) => assert!(
+                matches!(
+                    (shape, &err),
+                    (
+                        "a bespoke erase leg",
+                        SpiiceRegistryError::BespokeLegsNotPermitted { verb: "erase", .. }
+                    ) | (
+                        "a bespoke transfer leg",
+                        SpiiceRegistryError::BespokeLegsNotPermitted {
+                            verb: "transfer",
+                            ..
+                        }
+                    ) | (
+                        "a FollowOrDedupe surface",
+                        SpiiceRegistryError::DedupeNotPermitted {
+                            table: "test_spiice.thing_v1",
+                            ..
+                        }
+                    )
+                ),
+                "{shape}: freeze reported {err} instead of refusing the leg"
+            ),
+        }
+    }
+    assert!(
+        accepted.is_empty(),
+        "freeze accepted a non-core spiice declaring {accepted:?}"
+    );
+}
+
+/// The bespoke-leg mismatch checks are core-only now (only core may name a
+/// leg), and a registry already holds core at ordinal 0, so these call the
+/// leg validators on core-ordinal fixtures directly rather than through a
+/// second core contract.
+#[test]
+fn a_core_bespoke_leg_list_that_names_nothing_it_could_own_is_refused() {
+    let erase = |contract| SpiiceRegistry::validate_erase_legs(contract);
+    let transfer = |contract| SpiiceRegistry::validate_transfer_legs(contract);
+    assert!(matches!(
+        erase(&BESPOKE_LEG_FOR_NOTHING),
+        Err(SpiiceRegistryError::BespokeEraseLegMismatch {
+            table: "test_spiice.gone_v1",
+            ..
+        })
+    ));
+    assert!(matches!(
+        erase(&BESPOKE_LEG_OVER_A_CASCADE),
+        Err(SpiiceRegistryError::BespokeEraseLegMismatch {
+            table: "test_spiice.thing_v1",
+            ..
+        })
+    ));
+    assert!(matches!(
+        transfer(&BESPOKE_TRANSFER_LEG_FOR_NOTHING),
+        Err(SpiiceRegistryError::BespokeTransferLegMismatch {
+            table: "test_spiice.gone_v1",
+            ..
+        })
+    ));
+    assert!(matches!(
+        transfer(&BESPOKE_TRANSFER_LEG_OVER_A_NON_MOVE),
+        Err(SpiiceRegistryError::BespokeTransferLegMismatch {
+            table: "test_spiice.thing_v1",
+            ..
+        })
+    ));
+}
+
+/// The two "no leg can perform" refusals name what a spiice MAY declare,
+/// not a hand-written leg it may not.
+#[test]
+fn uncovered_surface_messages_do_not_suggest_a_bespoke_leg() {
+    for err in [
+        SpiiceRegistryError::UndeletableSurface {
+            spiice_id: FIXTURE_SPIICE_STATIC,
+            table: "test_spiice.thing_v1",
+        },
+        SpiiceRegistryError::UnmovableSurface {
+            spiice_id: FIXTURE_SPIICE_STATIC,
+            table: "test_spiice.thing_v1",
+        },
+    ] {
+        let message = err.to_string();
+        assert!(!message.contains("bespoke"), "{message}");
+    }
+}
+
+const FIXTURE_SPIICE_STATIC: &str = "test-spiice";
+
+/// Core is the only contract with hand-written legs, and every table such
+/// a leg runs on is core's own. A non-core spiice (the code spiice, any
+/// out-of-tree one) cannot reach this loop with a leg: freeze refuses it.
+#[test]
+fn every_hand_written_leg_runs_on_a_core_table() {
+    use crate::spiice::contract::{EraseLeg, TransferLeg};
+
+    let frozen = SpiiceRegistry::new().freeze_or_panic_for_tests();
+    for contract in frozen.contracts() {
+        for surface in contract.all_surfaces() {
+            let erase_bespoke = matches!(contract.erase_leg(&surface), EraseLeg::Bespoke);
+            let transfer_bespoke = matches!(
+                contract.transfer_leg(&surface),
+                TransferLeg::Bespoke | TransferLeg::Deduped { .. }
+            );
+            if erase_bespoke || transfer_bespoke {
+                assert!(contract.is_core(), "{} is not core", contract.spiice_id);
+                assert!(
+                    surface.table.starts_with("proxiima_core."),
+                    "{} names a hand-written leg on {}",
+                    contract.spiice_id,
+                    surface.table
+                );
+            }
+        }
+    }
+}
+
+/// A surface derived from one the bundle carries freezes cleanly.
+#[test]
+fn a_surface_derived_from_a_carried_surface_freezes() {
+    let mut registry = SpiiceRegistry::new();
+    registry.contracts.push(&DERIVED_FROM_MEMORY);
+    registry
+        .try_freeze()
+        .expect("DerivedFrom proxiima_core.memory is a carried source");
+}
+
+/// Acceptance 2 of #478 over spiice #0: what the erase deletes, the export
+/// carries (as rows, an allowlist, or derived from a carried surface). Only
+/// a declared non-erase may be Excluded.
+#[test]
+fn no_erased_core_surface_is_excluded_from_the_export() {
+    use crate::SPIICE_0;
+    use crate::spiice::{EraseLeg, ExportRule};
+    let offenders: Vec<&str> = SPIICE_0
+        .all_surfaces()
+        .filter(|surface| {
+            !matches!(
+                EraseLeg::derive(surface, SPIICE_0.bespoke_erase_legs),
+                EraseLeg::Never { .. }
+            ) && matches!(surface.export, ExportRule::Excluded { .. })
+        })
+        .map(|surface| surface.table)
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "erased but excluded from the export: {offenders:?}"
+    );
+}

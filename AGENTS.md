@@ -24,14 +24,14 @@ concepts and integration; avoid a second invariant or configuration ledger.
 
 | Path | Responsibility |
 |---|---|
-| `apps/proxima-mcp` | Canonical MCP host; core only, links no flavor |
+| `apps/proxiima-mcp` | Canonical MCP host; core only, links no spiice |
 | `crates/core` | Domain types, engine, typed ports, registry |
-| `crates/proxima` | Host facade and flavor SDK |
+| `crates/proxiima` | Host facade and spiice SDK |
 | `crates/storage-pg`, `crates/blob-s3` | PostgreSQL and object backends |
 | `crates/mcp-server`, `crates/auth-oidc` | Transports and bearer authentication |
 | `crates/llm-openai-compat` | Host-injected embedding adapter |
 | `crates/pg-testkit` | Owned-server test databases/templates |
-| `flavors/example` | Test and tutorial flavor (`publish = false`) |
+| `spiices/example` | Test and tutorial spiice (`publish = false`) |
 | `tools/dev-idp`, `tools/dev-migrate` | Local issuer and database bootstrap |
 
 ## Branch and release policy
@@ -49,7 +49,7 @@ concepts and integration; avoid a second invariant or configuration ledger.
    the batch, reverts the first red one on `main`, or opens an issue naming the
    range. Only verify runs save Rust caches. PRs remain for outside
    contributors.
-4. A commit that changes `proxima_core::RELEASE_VERSION` cuts `v${VERSION}`
+4. A commit that changes `proxiima_core::RELEASE_VERSION` cuts `v${VERSION}`
    through `release.yml` once `verified` reaches it; an unchanged constant cuts
    no release, and no release is cut from an unverified commit. The version
    checker validates the next published number.
@@ -65,7 +65,7 @@ concepts and integration; avoid a second invariant or configuration ledger.
 | F/A/P layering, closed pin roles, declared provenance | Typed write/operator ports; Lean principles; graph tests |
 | Server-resolved owner roles and source-owned pins | `AuthzContext`, owner command ports, mandatory owner RLS |
 | Optional kernel witnesses, typed schema contracts | Payload traits, registry freeze, authorized sidecar helpers |
-| Build-time flavors; no raw flavor core SQL | Facade SDK, architecture/SQL guardrails |
+| Build-time spiices; no raw spiice core SQL | Facade SDK, architecture/SQL guardrails |
 | Atomic writes and scoped host state | `UnitOfWork`, private permits, PG rollback tests |
 | Hard deletion through authorized inverses | `wipeable` principle, erase ports, inverse-completeness tests |
 | Independent embeddings; similarity authors no pins | Retrieval/write separation and graph tests |
@@ -95,11 +95,11 @@ The complete local gates are listed once, in
 [contributing](docs/contributing.md#local-verification); CI runs the same
 commands. Workspace lints deny warnings and Clippy pedantic findings. Use
 `cargo check` and selected nextest tests during iteration; per-package success
-does not verify a flavor's served catalog. Changes to `mcp_tools` require the
+does not verify a spiice's served catalog. Changes to `mcp_tools` require the
 host e2e path. Verify both the all-features lane and the default substrate-only
 host.
 
-PG tests require `PROXIMA_TEST_PG_URL`, an admin URL for a server you own.
+PG tests require `PROXIIMA_TEST_PG_URL`, an admin URL for a server you own.
 Testkit sweep/GC touches every matching test database behind that URL.
 `admin_url_or_skip()` skips locally and fails in CI; report every skip.
 

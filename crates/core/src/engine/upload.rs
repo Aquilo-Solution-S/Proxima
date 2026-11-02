@@ -111,15 +111,15 @@ impl Engine {
     /// Complete a pending upload and record it as a `core/upload-v1` Fact
     /// citing the stored artefact.
     ///
-    /// `extensions` are extra typed sidecar rows a flavor wants against
+    /// `extensions` are extra typed sidecar rows a spiice wants against
     /// this Fact — extra columns on an event the substrate defines. They
     /// land in the Fact's own transaction or not at all; pass `&[]` for
-    /// none. A flavor may only ADD rows against schemas it has registered,
+    /// none. A spiice may only ADD rows against schemas it has registered,
     /// and cannot alter the Fact itself.
     ///
     /// # What is atomic
     ///
-    /// The cited object (its `proxima_core.blob` row), the Fact that cites
+    /// The cited object (its `proxiima_core.blob` row), the Fact that cites
     /// it, its receipt, its embedding job, every extension row, and the completed
     /// upload row are one transaction. Nothing a reader can observe
     /// survives a failure partway: an artefact with no recorded arrival is
@@ -373,7 +373,7 @@ mod tests {
         CitedBlobHeld, CitedBlobPort, CitedBlobReadUrl, CitedBlobUploadAborted,
         CitedBlobUploadPrepared,
     };
-    use crate::{AuthPath, AuthzContext, FlavorRegistry, UserId};
+    use crate::{AuthPath, AuthzContext, SpiiceRegistry, UserId};
 
     fn staged_payload() -> crate::citations::UploadedBlobPayload {
         crate::citations::UploadedBlobPayload {
@@ -487,7 +487,7 @@ mod tests {
         }));
         let owner = OwnerId::from(UserId::new(uuid::Uuid::nil()));
         let authority = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests());
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests());
 
         let error = engine
             .complete_upload_as_fact_with_expectation(

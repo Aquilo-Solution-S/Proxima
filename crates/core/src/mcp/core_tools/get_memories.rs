@@ -1,4 +1,4 @@
-//! `proxima://memories` — batch memory read by UUIDs.
+//! `proxiima://memories` — batch memory read by UUIDs.
 //!
 //! Hydrates a bounded set of memory UUIDs in one call. Returns the visible
 //! subset plus an explicit `missing` list; not-exists and not-visible are

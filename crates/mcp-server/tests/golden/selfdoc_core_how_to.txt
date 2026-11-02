@@ -1,6 +1,6 @@
-# Proxima shared-brain — how to use it
+# Proxiima shared-brain — how to use it
 
-Proxima is the **substrate**: storage, embeddings, the Fact → Abstraction → Perspective structure, goals, retrieval. **You are the cognition.** There is no autonomous engine deriving things for you — when you remember, abstract, or reflect, *you* are the operator. The brain only helps if you query it before acting and feed it as you learn.
+Proxiima is the **substrate**: storage, embeddings, the Fact → Abstraction → Perspective structure, goals, retrieval. **You are the cognition.** There is no autonomous engine deriving things for you — when you remember, abstract, or reflect, *you* are the operator. The brain only helps if you query it before acting and feed it as you learn.
 
 ## The model: three layers
 
@@ -32,7 +32,7 @@ It returns a Perspective UUID. A reason and a confidence are a judgment, and a j
 
 ## Memory spaces
 
-In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_interpret`; hydrate a memory by reading `proxima://memory/{id}`. Omitted `space` preserves the current bound owner. Space keys are selectors only; every write/read is re-authorized by the server. A cross-space derivation or interpretation may ground in readable handles outside the selected write space.
+In multi-space hosts, call `core_memory_spaces` before durable memory writes. Use a returned `space` key in `core_remember`, `core_record_utterance`, `core_search_memories`, `core_derive`, and `core_interpret`; hydrate a memory by reading `proxiima://memory/{id}`. Omitted `space` preserves the current bound owner. Space keys are selectors only; every write/read is re-authorized by the server. A cross-space derivation or interpretation may ground in readable handles outside the selected write space.
 
 ## What to capture → which tool
 
@@ -46,7 +46,7 @@ In multi-space hosts, call `core_memory_spaces` before durable memory writes. Us
 | Set an intent / objective to pursue | `core_goal` action=set (+ action=decompose) |
 | Retrieve Self / situation-conditioned sketches | `core_recall` (question ∪ subjects; no sidecar) |
 | Walk provenance / episode siblings | `core_think` (cursor pages, not a stream) |
-| Precision search (tags/schema/words) | `core_search_memories` → `proxima://memory/{id}` (`?expand_neighbors=true`) |
+| Precision search (tags/schema/words) | `core_search_memories` → `proxiima://memory/{id}` (`?expand_neighbors=true`) |
 
 A generalization stored as a Fact flattens the hierarchy and loses its grounding — derive it instead.
 
@@ -76,9 +76,9 @@ An `idempotency_key` names one request: the same key with the same content repla
 
 1. `core_recall` — cue packet (question ∪ subjects). This is how Self is retrieved.
 2. `core_search_memories` — precision search (tags/schema/words); neighbors default off.
-3. `proxima://memory/{id}` — fetch one entity after search locates it; add `?expand_neighbors=true` for immediate edges.
+3. `proxiima://memory/{id}` — fetch one entity after search locates it; add `?expand_neighbors=true` for immediate edges.
 4. `core_think` — paged pin walk (ancestors/descendants/episode_siblings).
-5. `proxima://memory/{id}/lineage?direction=ancestors` — walk provenance/deep lineage only when you specifically need it.
+5. `proxiima://memory/{id}/lineage?direction=ancestors` — walk provenance/deep lineage only when you specifically need it.
 
 Discover available reads with `resources/list` and `resources/templates/list`. Semantic ranking needs embeddings; a space with no embedding client degrades to lexical search. When the searched spaces score on different scales the result says `ranking: "rank"`: compare `score` only within one `space`.
 

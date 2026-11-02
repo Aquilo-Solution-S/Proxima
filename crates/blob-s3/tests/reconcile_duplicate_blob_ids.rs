@@ -9,15 +9,15 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{
     BucketVersioningStatus, Delete, ObjectIdentifier, VersioningConfiguration,
 };
-use proxima_blob_s3::{CitedBlobStore, CitedBlobUploadPrepareTs, S3RuntimeConfig};
-use proxima_core::storage_ports::{
+use proxiima_blob_s3::{CitedBlobStore, CitedBlobUploadPrepareTs, S3RuntimeConfig};
+use proxiima_core::storage_ports::{
     CitedBlobOwnerReconcileOutcome, CitedBlobReconcileOutcome, CitedBlobService,
 };
-use proxima_core::test_fixtures::owner_fixture;
-use proxima_core::{AuthPath, AuthzContext, ColdObjectStore, Engine, FlavorRegistry, OwnerId};
-use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
+use proxiima_core::test_fixtures::owner_fixture;
+use proxiima_core::{AuthPath, AuthzContext, ColdObjectStore, Engine, OwnerId, SpiiceRegistry};
+use proxiima_pg_testkit::{db_url, drop_db, unique_db_name};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -56,7 +56,7 @@ where
     F: for<'a> FnOnce(&'a str, &'a S3RuntimeConfig, &'a Client) -> ObservationFuture<'a, T>,
 {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return Ok(None);
     }
     let config = S3RuntimeConfig {
@@ -65,7 +65,7 @@ where
         ..S3RuntimeConfig::from_env()?
     };
     let client = config.client();
-    let database = unique_db_name(&format!("proxima_reconcile_{label}"));
+    let database = unique_db_name(&format!("proxiima_reconcile_{label}"));
     create_core_db(&database).await?;
     eprintln!(
         "reconciliation fixture: database={database} bucket={}",
@@ -182,14 +182,13 @@ async fn observe_reports(
             config.clone(),
             pg.platform_scope_for_host(),
         )?;
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let service = CitedBlobService::new(Arc::new(store.clone()));
         let owner = owner_fixture();
-        let authz = proxima_core::test_fixtures::authenticated_context(AuthzContext::single_owner(
-            &owner,
-            AuthPath::HostBearer,
-        ));
+        let authz = proxiima_core::test_fixtures::authenticated_context(
+            AuthzContext::single_owner(&owner, AuthPath::HostBearer),
+        );
         // Prove this relation is produced by the normal prepare/HTTP PUT/
         // Engine complete path before amplifying its cardinality with SQL.
         let first = upload(&engine, &service, &store, &authz, owner, SHARED_BODY).await?;
@@ -198,7 +197,7 @@ async fn observe_reports(
             return Err("normal same-bytes uploads did not share one blob identity".into());
         }
         let completed: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.blob_uploads
+            "SELECT count(*) FROM proxiima_core.blob_uploads
               WHERE owner_id = $1 AND blob_id = $2 AND status = 'completed'",
         )
         .bind(owner.into_inner())
@@ -246,7 +245,7 @@ async fn observe_reports(
         // This phase explicitly models stored foreign locators, like the
         // existing reconciliation forgery tests. It never accesses that bucket.
         sqlx::query(
-            "UPDATE proxima_core.blob_uploads SET bucket = 'foreign-reconcile-fixture'
+            "UPDATE proxiima_core.blob_uploads SET bucket = 'foreign-reconcile-fixture'
               WHERE owner_id = $1 AND blob_id = $2",
         )
         .bind(owner.into_inner())
@@ -311,7 +310,7 @@ async fn amplify_rows(pool: &sqlx::PgPool, source: Uuid, ids: &[Uuid]) -> TestRe
     // staged hashes/length and canonical upload-derived identity. The same
     // bytes are written to every additional object's key in the real bucket.
     sqlx::query(
-        "INSERT INTO proxima_core.blob_uploads
+        "INSERT INTO proxiima_core.blob_uploads
             (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
              expected_byte_len, status, blob_id, sha256, etag, expires_at,
              completed_at, content_hash)
@@ -319,7 +318,7 @@ async fn amplify_rows(pool: &sqlx::PgPool, source: Uuid, ids: &[Uuid]) -> TestRe
                 'objects/' || extra.upload_id::text, u.filename, u.mime,
                 u.expected_byte_len, u.status, u.blob_id, u.sha256, u.etag,
                 u.expires_at, u.completed_at, u.content_hash
-           FROM proxima_core.blob_uploads u
+           FROM proxiima_core.blob_uploads u
            CROSS JOIN UNNEST($1::uuid[]) AS extra(upload_id)
           WHERE u.upload_id = $2 AND u.status = 'completed'",
     )

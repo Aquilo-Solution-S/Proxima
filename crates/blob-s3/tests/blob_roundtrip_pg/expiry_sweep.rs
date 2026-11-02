@@ -7,9 +7,9 @@
 use super::implied_keys::{Fixture, fixture, versions_left};
 use super::*;
 
-fn bound_authority(store: &CitedBlobStore) -> proxima_core::authz::SystemAuthority {
+fn bound_authority(store: &CitedBlobStore) -> proxiima_core::authz::SystemAuthority {
     let (_, authority) =
-        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+        Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
     store
         .bind_system_authority(&authority)
         .expect("test store binds to its maintenance engine");
@@ -18,7 +18,7 @@ fn bound_authority(store: &CitedBlobStore) -> proxima_core::authz::SystemAuthori
 
 async fn expire(f: &Fixture, upload_id: &str) {
     sqlx::query(
-        "UPDATE proxima_core.blob_uploads SET expires_at = now() - interval '1 second'
+        "UPDATE proxiima_core.blob_uploads SET expires_at = now() - interval '1 second'
           WHERE upload_id = $1",
     )
     .bind(Uuid::parse_str(upload_id).expect("upload id"))
@@ -51,7 +51,7 @@ async fn abandoned_prepare(f: &Fixture, name: &str) -> (String, String) {
 #[tokio::test]
 async fn the_sweep_expires_an_untouched_prepare_and_owes_both_keys() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     for versioned in [true, false] {
@@ -92,7 +92,7 @@ async fn the_sweep_expires_an_untouched_prepare_and_owes_both_keys() {
 #[tokio::test]
 async fn the_sweep_leaves_a_staged_upload_alone() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let f = fixture(false).await;
@@ -134,7 +134,7 @@ async fn the_sweep_leaves_a_staged_upload_alone() {
 #[tokio::test]
 async fn the_sweep_is_bounded_and_reports_what_remains() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let f = fixture(false).await;
@@ -169,7 +169,7 @@ async fn the_sweep_is_bounded_and_reports_what_remains() {
 #[tokio::test]
 async fn the_sweep_skips_a_row_someone_holds() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let f = fixture(false).await;
@@ -177,7 +177,7 @@ async fn the_sweep_skips_a_row_someone_holds() {
     let (upload_id, pending_key) = abandoned_prepare(&f, "held.pdf").await;
     expire(&f, &upload_id).await;
     let mut holder = f.pool.begin().await.expect("begin holder");
-    sqlx::query("SELECT 1 FROM proxima_core.blob_uploads WHERE upload_id = $1 FOR UPDATE")
+    sqlx::query("SELECT 1 FROM proxiima_core.blob_uploads WHERE upload_id = $1 FOR UPDATE")
         .bind(Uuid::parse_str(&upload_id).expect("upload id"))
         .execute(&mut *holder)
         .await
@@ -206,12 +206,12 @@ async fn the_sweep_skips_a_row_someone_holds() {
 #[tokio::test]
 async fn the_sweep_requires_the_boot_authority() {
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset");
+        eprintln!("skipped: PROXIIMA_S3_* unset");
         return;
     }
     let f = fixture(false).await;
     let (_, unbound) =
-        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+        Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
     let refused = f
         .store
         .sweep_expired_uploads(&unbound, 10)

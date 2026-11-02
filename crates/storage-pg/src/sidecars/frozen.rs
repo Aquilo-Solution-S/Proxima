@@ -1,6 +1,6 @@
-use proxima_core::flavor::LanguagePolicy;
-use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
+use proxiima_core::spiice::LanguagePolicy;
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
 
 use super::{
     Arc, GoalId, HashMap, HashSet, MemoryId, PgSidecarEntry, PgSidecarKey, PgSidecarReadCtx,
@@ -24,14 +24,14 @@ mod owner_transfer_differential_pg_tests;
 #[derive(Debug, Clone, Default)]
 pub struct PgSidecarRegistryFrozen {
     pub(super) entries: Arc<HashMap<PgSidecarKey, PgSidecarEntry>>,
-    pub(super) flavor_schema_names: Arc<[String]>,
+    pub(super) spiice_schema_names: Arc<[String]>,
 }
 
 impl PgSidecarRegistryFrozen {
-    /// Composed flavor schemas, in name order, excluding `proxima_core`.
+    /// Composed spiice schemas, in name order, excluding `proxiima_core`.
     #[must_use]
-    pub fn flavor_schema_names(&self) -> &[String] {
-        &self.flavor_schema_names
+    pub fn spiice_schema_names(&self) -> &[String] {
+        &self.spiice_schema_names
     }
 
     #[must_use]
@@ -89,9 +89,9 @@ impl PgSidecarRegistryFrozen {
     #[must_use]
     pub fn table_for_schema(
         &self,
-        kind: proxima_core::verbs::schema::PayloadKind,
-        schema_id: &proxima_core::SchemaId,
-        schema_version: proxima_core::SchemaVersion,
+        kind: proxiima_core::verbs::schema::PayloadKind,
+        schema_id: &proxiima_core::SchemaId,
+        schema_version: proxiima_core::SchemaVersion,
     ) -> Option<&str> {
         let key = PgSidecarKey::new(kind, schema_id.clone(), schema_version);
         self.entries
@@ -104,7 +104,7 @@ impl PgSidecarRegistryFrozen {
     /// registered memory sidecar.
     ///
     /// The one reader is the series-head lookup, which joins a sidecar back
-    /// to `proxima_core.memory` knowing only the table name. Freeze has
+    /// to `proxiima_core.memory` knowing only the table name. Freeze has
     /// already held this equal to the contract's
     /// `KeyShape::MemoryT { column }` for the same table, so the two sides
     /// of that join are one declaration read twice, not two spellings.
@@ -148,8 +148,8 @@ impl PgSidecarRegistryFrozen {
         table: &str,
         memory_key_column: &'static str,
     ) -> Self {
-        use proxima_core::verbs::schema::PayloadKind;
-        use proxima_core::{SchemaId, SchemaVersion};
+        use proxiima_core::verbs::schema::PayloadKind;
+        use proxiima_core::{SchemaId, SchemaVersion};
         let mut entries = (*self.entries).clone();
         let key = PgSidecarKey::new(
             PayloadKind::Fact,
@@ -175,11 +175,11 @@ impl PgSidecarRegistryFrozen {
         );
         Self {
             entries: Arc::new(entries),
-            flavor_schema_names: self.flavor_schema_names.clone(),
+            spiice_schema_names: self.spiice_schema_names.clone(),
         }
     }
 
-    /// Distinct memory sidecar tables (core + flavor), for forget/restore.
+    /// Distinct memory sidecar tables (core + spiice), for forget/restore.
     #[must_use]
     pub fn memory_sidecar_tables(&self) -> Vec<&str> {
         let mut tables: Vec<&str> = self
@@ -350,20 +350,20 @@ impl PgSidecarRegistryFrozen {
         Ok(())
     }
 
-    /// The declaration triggers ONE flavor's registered memory sidecars
+    /// The declaration triggers ONE spiice's registered memory sidecars
     /// need, in table order.
     ///
-    /// Selected by flavor rather than emitted whole, because the DDL lands
-    /// in that flavor's own migration and a flavor's migration may only
-    /// create objects on tables its own migrations created. The flavor is
+    /// Selected by spiice rather than emitted whole, because the DDL lands
+    /// in that spiice's own migration and a spiice's migration may only
+    /// create objects on tables its own migrations created. The spiice is
     /// read off the schema id's prefix, which is where `attach_projections`
     /// reads it too, so a table's migration and its trigger are chosen by
     /// one rule.
     ///
     /// [`crate::integrity::DECLARATION_TRIGGER_FUNCTION`] is deliberately
-    /// NOT part of this list: it is one function for every flavor, so it
+    /// NOT part of this list: it is one function for every spiice, so it
     /// lives once, in core's `definitions/triggers.sql`, and a
-    /// flavor's migration carries only the triggers that call it.
+    /// spiice's migration carries only the triggers that call it.
     ///
     /// # Errors
     ///
@@ -373,19 +373,19 @@ impl PgSidecarRegistryFrozen {
     /// declares no memory-key column.
     pub fn declaration_trigger_artifacts(
         &self,
-        flavor_id: &str,
+        spiice_id: &str,
     ) -> Result<Vec<crate::projection::Artifact>, StorageError> {
-        self.memory_sidecars_of_flavor(flavor_id)?
+        self.memory_sidecars_of_spiice(spiice_id)?
             .into_iter()
             .map(|(table, column)| crate::integrity::declaration_trigger(table, column))
             .collect()
     }
 
-    /// The `(table, memory-key column)` pairs one flavor registers, in table
-    /// order. The selection every per-flavor trigger generator shares.
-    fn memory_sidecars_of_flavor(
+    /// The `(table, memory-key column)` pairs one spiice registers, in table
+    /// order. The selection every per-spiice trigger generator shares.
+    fn memory_sidecars_of_spiice(
         &self,
-        flavor_id: &str,
+        spiice_id: &str,
     ) -> Result<Vec<(&str, &'static str)>, StorageError> {
         let mut tables: Vec<(&str, &'static str)> = self
             .entries
@@ -397,12 +397,12 @@ impl PgSidecarRegistryFrozen {
                     .schema_id
                     .as_str()
                     .split_once('/')
-                    .is_some_and(|(prefix, _)| prefix == flavor_id)
+                    .is_some_and(|(prefix, _)| prefix == spiice_id)
             })
             .map(|entry| {
                 let column = entry.memory_key_column.ok_or_else(|| {
                     StorageError::Internal(format!(
-                        "{} is a registered memory sidecar of flavor {flavor_id} with no \
+                        "{} is a registered memory sidecar of spiice {spiice_id} with no \
                          declared memory-key column",
                         entry.sidecar_table
                     ))
@@ -415,8 +415,8 @@ impl PgSidecarRegistryFrozen {
         Ok(tables)
     }
 
-    /// The presence-lane declaration-integrity DDL one flavor's migration
-    /// carries, in table order: for every memory sidecar this flavor
+    /// The presence-lane declaration-integrity DDL one spiice's migration
+    /// carries, in table order: for every memory sidecar this spiice
     /// registers that is not owner-pinned, the stamp ⊆ rows presence trigger
     /// and the orphan guard that refuses a `DELETE` of the row it promises;
     /// then the `UPDATE OF <key>` half of the row ⊆ stamp guard for every one
@@ -424,7 +424,7 @@ impl PgSidecarRegistryFrozen {
     ///
     /// The sibling of [`Self::declaration_trigger_artifacts`], one migration
     /// lane later, and split from it rather than folded into it because
-    /// `definitions/triggers.sql` and each flavor's declaration
+    /// `definitions/triggers.sql` and each spiice's declaration
     /// migration are already applied: a generator whose output grew would
     /// make the pin on those files unsatisfiable.
     ///
@@ -442,9 +442,9 @@ impl PgSidecarRegistryFrozen {
     /// As [`Self::declaration_trigger_artifacts`].
     pub fn presence_trigger_artifacts(
         &self,
-        flavor_id: &str,
+        spiice_id: &str,
     ) -> Result<Vec<crate::projection::Artifact>, StorageError> {
-        let tables = self.memory_sidecars_of_flavor(flavor_id)?;
+        let tables = self.memory_sidecars_of_spiice(spiice_id)?;
         let mut artifacts = Vec::with_capacity(tables.len() * 3);
         for (table, column) in &tables {
             if !self.is_owner_pinned_memory_sidecar_table(table) {
@@ -489,9 +489,9 @@ impl PgSidecarRegistryFrozen {
     ///    their rows are erased on their own owner's schedule, so their stamp
     ///    is a record of a past write rather than a claim about the present.
     ///
-    /// Every registered flavor is checked, so a downstream flavor's CI can
+    /// Every registered spiice is checked, so a downstream spiice's CI can
     /// run this once after its own ingest suite and assert zero drift.
-    /// Under the `proxima` crate's `testkit` feature that is one line:
+    /// Under the `proxiima` crate's `testkit` feature that is one line:
     ///
     /// ```ignore
     /// embedded.pg_sidecars.integrity_check(embedded.pool_for_tests()).await?;
@@ -612,9 +612,9 @@ impl PgSidecarRegistryFrozen {
         }
     }
 
-    /// Every projection table the linked flavors maintain, in name order.
+    /// Every projection table the linked spiices maintain, in name order.
     ///
-    /// Transfer walks this rather than a hardcoded list, so a flavor that
+    /// Transfer walks this rather than a hardcoded list, so a spiice that
     /// declares a projection gets owner-following for free and one that
     /// does not contributes nothing.
     #[must_use]
@@ -862,7 +862,7 @@ impl PgSidecarWriter {
                 None => Err(StorageError::ConstraintViolation(format!(
                     "{} declares LanguagePolicy::PerRow, so its projection row is stamped with \
                      the writing draft's lexical language, and this draft carries none: resolve \
-                     the write's language with proxima_core::lexical_language::\
+                     the write's language with proxiima_core::lexical_language::\
                      resolve_lexical_language (an omitted argument asks for the deployment \
                      configuration), or declare a pinned language policy on the schema",
                     key.schema_id.as_str()
@@ -875,9 +875,9 @@ impl PgSidecarWriter {
 #[cfg(test)]
 mod language_bind_tests {
     use super::{LanguagePolicy, PgSidecarEntry, PgSidecarKey, PgSidecarWriter};
-    use proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
-    use proxima_core::verbs::schema::PayloadKind;
-    use proxima_core::{SchemaId, SchemaVersion};
+    use proxiima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
+    use proxiima_core::verbs::schema::PayloadKind;
+    use proxiima_core::{SchemaId, SchemaVersion};
 
     fn key() -> PgSidecarKey {
         PgSidecarKey::new(
@@ -890,7 +890,7 @@ mod language_bind_tests {
     fn entry(language: Option<LanguagePolicy>) -> PgSidecarEntry {
         PgSidecarEntry {
             key: key(),
-            sidecar_table: "proxima_core.agent_note_v1".to_owned(),
+            sidecar_table: "proxiima_core.agent_note_v1".to_owned(),
             owner: crate::sidecars::SidecarOwnerMode::None,
             memory_key_column: Some("t"),
             memory_insert: None,
@@ -899,7 +899,7 @@ mod language_bind_tests {
             goal_insert: None,
             goal_copy: None,
             projection_insert: language.map(|_| "INSERT".to_owned()),
-            projection_table: language.map(|_| "proxima_core.projection".to_owned()),
+            projection_table: language.map(|_| "proxiima_core.projection".to_owned()),
             projection_language: language,
         }
     }

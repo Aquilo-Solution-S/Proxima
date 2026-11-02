@@ -29,7 +29,7 @@ impl Engine {
     /// Heads-only requests need no per-schema natural-key filter: a head
     /// is the latest `t` on a `handle`, and `FactPayload`
     /// natural-key columns already decide which `handle` an ingest lands
-    /// on (docs/build-a-flavor.md).
+    /// on (docs/build-a-spiice.md).
     ///
     /// # Errors
     ///
@@ -60,12 +60,12 @@ impl Engine {
     /// set reads nothing.
     ///
     /// Every read verb above narrows to this set before it touches storage.
-    /// A flavor that runs its own candidate scan needs the same set as a SQL
-    /// predicate rather than as a post-filter: `proxima_*.projection` carries
+    /// A spiice that runs its own candidate scan needs the same set as a SQL
+    /// predicate rather than as a post-filter: `proxiima_*.projection` carries
     /// a composite `gin(owner_id, search_tsv)`, and only an owner predicate on
     /// the projection itself lets that index serve the scan. Handing the set
     /// out is not a widening — it is the identical set the engine would have
-    /// applied afterwards, applied earlier. The flavor still admits its
+    /// applied afterwards, applied earlier. The spiice still admits its
     /// candidates through [`Engine::query`]; pushing the owner down narrows
     /// what the scan reads, never what the caller may see.
     ///
@@ -221,7 +221,7 @@ impl Engine {
     /// Current owned series handle whose sidecar matches `columns`.
     ///
     /// Owner-only. A transferred series is a miss for the prior
-    /// owner. Flavor code must not JOIN `memory_head` to answer this.
+    /// owner. Spiice code must not JOIN `memory_head` to answer this.
     ///
     /// # Errors
     ///

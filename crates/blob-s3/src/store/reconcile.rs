@@ -2,14 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use proxima_core::authz::SystemAuthority;
-use proxima_core::storage_ports::{
+use proxiima_core::authz::SystemAuthority;
+use proxiima_core::storage_ports::{
     CitedBlobMissingObject, CitedBlobOwnerMissingObject, CitedBlobOwnerReconcileOutcome,
     CitedBlobOwnerReconcilePort, CitedBlobReconcileOutcome, CitedBlobReconcilePort,
     MAX_RECONCILE_SAMPLE,
 };
-use proxima_core::{AuthzContext, OwnerId, StorageError, UPLOADED_BLOB_SCHEMA_ID};
-use proxima_storage_pg::begin_owner_transaction;
+use proxiima_core::{AuthzContext, OwnerId, StorageError, UPLOADED_BLOB_SCHEMA_ID};
+use proxiima_storage_pg::begin_owner_transaction;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -337,7 +337,7 @@ impl CitedBlobStore {
                 "SELECT owner_id, upload_id, mounted_from_upload_id,
                         status IN ('pending', 'completed') AS live,
                         (status = 'pending' AND expires_at > now()) AS in_flight
-                   FROM proxima_core.blob_uploads
+                   FROM proxiima_core.blob_uploads
                   WHERE object_store = $3 AND bucket = $4
                     AND ($1::uuid IS NULL OR upload_id > $1)
                   ORDER BY upload_id
@@ -390,7 +390,7 @@ impl CitedBlobStore {
         objects: &mut BTreeSet<String>,
         ended: BTreeMap<String, EndedClaim>,
     ) -> Result<u64, StorageError> {
-        use proxima_storage_pg::access::owner_columns as columns;
+        use proxiima_storage_pg::access::owner_columns as columns;
 
         let mut owed = 0_u64;
         for (key, claim) in ended {
@@ -401,16 +401,16 @@ impl CitedBlobStore {
             columns::lock_owner_fence_shared_tx(&mut tx, &OwnerId::from(claim.owner_id)).await?;
             columns::lock_object_keys_tx(&mut tx, std::slice::from_ref(&key)).await?;
             let inserted = sqlx::query(
-                "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+                "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
                  SELECT $1, $2, $3
                   WHERE EXISTS (
-                        SELECT 1 FROM proxima_core.blob_uploads
+                        SELECT 1 FROM proxiima_core.blob_uploads
                          WHERE owner_id = $2 AND object_store = $3
                            AND status IN ('aborted', 'expired')
                            AND ((upload_id = $4 AND mounted_from_upload_id IS NULL)
                                 OR mounted_from_upload_id = $4))
                     AND NOT EXISTS (
-                        SELECT 1 FROM proxima_core.blob_uploads
+                        SELECT 1 FROM proxiima_core.blob_uploads
                          WHERE object_store = $3
                            AND status IN ('pending', 'completed')
                            AND ((upload_id = $4 AND mounted_from_upload_id IS NULL)
@@ -450,7 +450,7 @@ impl CitedBlobStore {
         loop {
             let mut tx = self.begin_reconcile_transaction().await?;
             let page: Vec<String> = sqlx::query_scalar(
-                "SELECT object_key FROM proxima_core.cold_purge_pending
+                "SELECT object_key FROM proxiima_core.cold_purge_pending
                   WHERE object_store = $1 AND object_key COLLATE \"C\" > $2
                   ORDER BY object_key COLLATE \"C\"
                   LIMIT $3",
@@ -582,7 +582,7 @@ async fn load_live_upload_page(
                 u.upload_id,
                 u.mounted_from_upload_id, u.completed_at,
                 u.expected_byte_len AS byte_len, u.filename
-           FROM proxima_core.blob b
+           FROM proxiima_core.blob b
            JOIN",
         "WHERE b.schema_id = $1
             AND ($2::uuid IS NULL OR b.owner_id = $2)
@@ -614,8 +614,8 @@ async fn load_live_upload_page(
 mod tests {
     use std::sync::Arc;
 
-    use proxima_core::storage_ports::CitedBlobOwnerReconcileService;
-    use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, OwnerId, UserId};
+    use proxiima_core::storage_ports::CitedBlobOwnerReconcileService;
+    use proxiima_core::{AuthPath, AuthzContext, Engine, OwnerId, SpiiceRegistry, UserId};
     use uuid::Uuid;
 
     use super::super::keys::{canonical_object_key, pending_object_key};
@@ -640,7 +640,7 @@ mod tests {
         let store = CitedBlobStore::new(
             lazy_test_pool(),
             store_config(None, None),
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect("test store config");
         let readable = OwnerId::from(UserId::new(Uuid::now_v7()));
@@ -664,11 +664,11 @@ mod tests {
         let store = CitedBlobStore::new(
             lazy_test_pool(),
             store_config(None, None),
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect("test store config");
         let (_, authority) =
-            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+            Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
 
         let error = store
             .reconcile_all(&authority)
@@ -686,13 +686,13 @@ mod tests {
         let store = CitedBlobStore::new(
             lazy_test_pool(),
             store_config(None, None),
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect("test store config");
         let (_, authority) =
-            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+            Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
         let (_, foreign) =
-            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+            Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
         store
             .bind_system_authority(&authority)
             .expect("store binds to the first boot");

@@ -10,7 +10,7 @@ Kernel-wide primitives with no dependencies of their own:
 Every file in `Causa/` imports this module. Nothing else
 imports anything heavier here — keep the prelude clean.
 
-This kernel is the source of truth for Proxima's domainless
+This kernel is the source of truth for Proxiima's domainless
 invariants. The prose docs (`docs/*.md`) are rationale and
 commentary; where they disagree with the kernel, the kernel wins
 until renegotiated in writing.
@@ -38,7 +38,7 @@ abbrev Instant : Type := Nat
 
 /-- Free text attached to memory and goal rows. The kernel text type is
     ordinary Lean `String`; storage encoding, normalization, rendering,
-    and flavor sidecar payloads remain engine/flavor concerns. -/
+    and spiice sidecar payloads remain engine/spiice concerns. -/
 abbrev Text : Type := String
 
 end Causa

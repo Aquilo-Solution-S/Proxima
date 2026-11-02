@@ -12,7 +12,7 @@
 ///   rehomes it (`TransferRule::Follow` + `Surface.owner_column`);
 ///   forget/erase/export walk it with the memory, and hydrate uses the
 ///   ordinary batch select. The host derives its owner RLS from the frozen
-///   registry: both the sidecar's owner and `proxima_core.memory` govern
+///   registry: both the sidecar's owner and `proxiima_core.memory` govern
 ///   visibility, so a forgotten memory hides its row from owner reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidecarOwnerMode {
@@ -35,7 +35,7 @@ impl SidecarOwnerMode {
         matches!(self, Self::Pinned)
     }
 
-    /// Whether insert stamps `owner_id` from `proxima_core.memory`.
+    /// Whether insert stamps `owner_id` from `proxiima_core.memory`.
     #[must_use]
     pub const fn stamps_owner_at_insert(self) -> bool {
         self.has_owner_column()

@@ -4,15 +4,15 @@
 
 use std::process::Command;
 
-use proxima_pg_testkit::{
+use proxiima_pg_testkit::{
     SplitRoleDb, TemplateFamily, TemplateLease, admin_url, db_url, drop_db, ensure_template_in,
     split_role_urls,
 };
 use sqlx::{Connection, PgConnection, PgPool};
 use uuid::Uuid;
 
-const CHILD_VAR: &str = "PROXIMA_PG_TESTKIT_CHILD";
-const TEMPLATE_VAR: &str = "PROXIMA_PG_TESTKIT_TEMPLATE";
+const CHILD_VAR: &str = "PROXIIMA_PG_TESTKIT_CHILD";
+const TEMPLATE_VAR: &str = "PROXIIMA_PG_TESTKIT_TEMPLATE";
 
 fn family() -> TemplateFamily {
     let id = &Uuid::now_v7().simple().to_string()[20..];
@@ -20,7 +20,7 @@ fn family() -> TemplateFamily {
 }
 
 async fn exists(name: &str) -> bool {
-    proxima_pg_testkit::database_exists(name)
+    proxiima_pg_testkit::database_exists(name)
         .await
         .expect("exists")
 }
@@ -70,12 +70,12 @@ fn refused_with_42501(result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>
 async fn a_clone_holds_the_template_and_enforces_the_split_roles() {
     let family = family();
     let template = host_template(&family).await;
-    let db = SplitRoleDb::from_template("proxima_split_clone", &template, &["hostapp"])
+    let db = SplitRoleDb::from_template("proxiima_split_clone", &template, &["hostapp"])
         .await
         .expect("clone");
 
     assert!(
-        db.name().starts_with("proxima_split_clone_"),
+        db.name().starts_with("proxiima_split_clone_"),
         "{}",
         db.name()
     );
@@ -93,7 +93,7 @@ async fn a_clone_holds_the_template_and_enforces_the_split_roles() {
     .expect("runtime attributes");
     assert_eq!(
         attributes,
-        ("proxima_test_runtime".to_owned(), false, false)
+        ("proxiima_test_runtime".to_owned(), false, false)
     );
     let table_owner: String = sqlx::query_scalar(
         "SELECT pg_get_userbyid(relowner)::text FROM pg_class WHERE oid = 'hostapp.notes'::regclass",
@@ -102,7 +102,7 @@ async fn a_clone_holds_the_template_and_enforces_the_split_roles() {
     .await
     .expect("table owner");
     assert_eq!(
-        table_owner, "proxima_test_platform",
+        table_owner, "proxiima_test_platform",
         "the template carries the final state"
     );
 
@@ -139,10 +139,10 @@ async fn a_clone_holds_the_template_and_enforces_the_split_roles() {
 async fn clones_of_one_template_are_distinct_and_independent() {
     let family = family();
     let template = host_template(&family).await;
-    let first = SplitRoleDb::from_template("proxima_split_clone", &template, &["hostapp"])
+    let first = SplitRoleDb::from_template("proxiima_split_clone", &template, &["hostapp"])
         .await
         .expect("first");
-    let second = SplitRoleDb::from_template("proxima_split_clone", &template, &["hostapp"])
+    let second = SplitRoleDb::from_template("proxiima_split_clone", &template, &["hostapp"])
         .await
         .expect("second");
     assert_ne!(first.name(), second.name());
@@ -168,13 +168,13 @@ async fn clones_of_one_template_are_distinct_and_independent() {
 async fn a_bad_schema_name_fails_the_clone_and_leaves_no_database() {
     let family = family();
     let template = host_template(&family).await;
-    let error = SplitRoleDb::from_template("proxima_split_refused", &template, &["Bad-Schema"])
+    let error = SplitRoleDb::from_template("proxiima_split_refused", &template, &["Bad-Schema"])
         .await
         .expect_err("not a plain lowercase identifier");
     let leftovers: Vec<String> = {
         let mut admin = PgConnection::connect(&admin_url()).await.expect("admin");
         sqlx::query_scalar(
-            "SELECT datname::text FROM pg_database WHERE datname LIKE 'proxima\\_split\\_refused\\_%'",
+            "SELECT datname::text FROM pg_database WHERE datname LIKE 'proxiima\\_split\\_refused\\_%'",
         )
         .fetch_all(&mut admin)
         .await
@@ -192,7 +192,7 @@ async fn a_bad_schema_name_fails_the_clone_and_leaves_no_database() {
 async fn a_panicking_test_keeps_the_clone() {
     let family = family();
     let template = host_template(&family).await;
-    let db = SplitRoleDb::from_template("proxima_split_kept", &template, &["hostapp"])
+    let db = SplitRoleDb::from_template("proxiima_split_kept", &template, &["hostapp"])
         .await
         .expect("clone");
     let name = db.name().to_owned();
@@ -212,7 +212,7 @@ async fn a_panicking_test_keeps_the_clone() {
 }
 
 /// Re-executed by [`a_kept_clone_is_announced_with_a_redacted_url`]: clone
-/// the template of the family in `PROXIMA_PG_TESTKIT_TEMPLATE` (already built
+/// the template of the family in `PROXIIMA_PG_TESTKIT_TEMPLATE` (already built
 /// by the parent, so this only leases it), say which clone, and panic.
 #[tokio::test]
 async fn child() {
@@ -221,7 +221,7 @@ async fn child() {
     };
     assert_eq!(std::env::var(CHILD_VAR).as_deref(), Ok("panic"));
     let template = host_template(&TemplateFamily::new(&prefix).expect("family")).await;
-    let db = SplitRoleDb::from_template("proxima_split_announced", &template, &["hostapp"])
+    let db = SplitRoleDb::from_template("proxiima_split_announced", &template, &["hostapp"])
         .await
         .expect("clone");
     println!("DATABASE:{}", db.name());

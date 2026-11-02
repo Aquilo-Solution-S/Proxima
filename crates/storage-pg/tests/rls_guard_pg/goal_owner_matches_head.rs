@@ -1,8 +1,8 @@
 //! A series belongs to its head's owner: `goal_owner_matches_head_fk` refuses a
 //! version of another owner even from a scope that may write that owner's Goals.
 
-use proxima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
-use proxima_storage_pg::begin_owner_transaction;
+use proxiima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
+use proxiima_storage_pg::begin_owner_transaction;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -14,7 +14,7 @@ async fn insert_version(
     request_id: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO proxima_core.goal (handle, t, owner_id, title, text, state, request_id, close_fact_t, \"by\", via)
+        "INSERT INTO proxiima_core.goal (handle, t, owner_id, title, text, state, request_id, close_fact_t, \"by\", via)
          VALUES ($1, uuidv7(), $2, 'join', 'text', 'Active', $3, NULL, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
@@ -31,7 +31,7 @@ async fn a_scope_of_another_owner_cannot_join_the_series() {
         super::setup_full_schema().await;
     let (holder, other) = (Uuid::now_v7(), Uuid::now_v7());
     for owner in [holder, other] {
-        sqlx::query("INSERT INTO proxima_core.owners(owner_id, kind) VALUES ($1, 'group')")
+        sqlx::query("INSERT INTO proxiima_core.owners(owner_id, kind) VALUES ($1, 'group')")
             .bind(owner)
             .execute(&admin)
             .await
@@ -40,7 +40,7 @@ async fn a_scope_of_another_owner_cannot_join_the_series() {
     let handle = Uuid::now_v7();
     let mut seed = admin.acquire().await.unwrap();
     sqlx::query(
-        "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
          VALUES ($1, 'core/task-goal-v1', $2, uuidv7())",
     )
     .bind(handle)
@@ -64,7 +64,7 @@ async fn a_scope_of_another_owner_cannot_join_the_series() {
         )
         .unwrap(),
     };
-    let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("scope".into()))
+    let authz = proxiima_core::authenticate(&verifier, &Credentials::Bearer("scope".into()))
         .await
         .unwrap();
     let mut tx = begin_owner_transaction(&runtime, authz.owner_scope().unwrap())
@@ -82,7 +82,7 @@ async fn a_scope_of_another_owner_cannot_join_the_series() {
     tx.rollback().await.unwrap();
 
     let versions: i64 =
-        sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.goal WHERE handle = $1")
+        sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.goal WHERE handle = $1")
             .bind(handle)
             .fetch_one(&admin)
             .await

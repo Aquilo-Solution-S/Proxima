@@ -5,7 +5,7 @@ use super::{
     ModifyGoalAtomicRequest, OwnerId, PgConnection, StorageError, SystemOrigin,
     TransitionGoalAtomicRequest, internal, map_err,
 };
-use proxima_core::verbs::idempotency::{IdempotencyKey, KeyVerdict, judge};
+use proxiima_core::verbs::idempotency::{IdempotencyKey, KeyVerdict, judge};
 
 fn authorship_declaration(authorship: &GoalAuthorship) -> &'static str {
     // Replay identity records only the logical author category. The operator
@@ -34,7 +34,7 @@ fn command_declaration<const N: usize>(
 }
 
 fn sidecar_declaration(
-    sidecar: Option<&proxima_core::SidecarPayload>,
+    sidecar: Option<&proxiima_core::SidecarPayload>,
 ) -> Result<serde_json::Value, StorageError> {
     let Some(sidecar) = sidecar else {
         return Ok(serde_json::Value::Null);
@@ -197,9 +197,9 @@ pub(super) async fn resolve_decompose_replay_set(
                 d.declaration = r.declaration::jsonb
            FROM unnest($2::text[], $3::text[]) WITH ORDINALITY
                   AS r(request_id, declaration, ordinality)
-           LEFT JOIN proxima_core.goal g
+           LEFT JOIN proxiima_core.goal g
              ON g.owner_id = $1 AND g.request_id = r.request_id
-           LEFT JOIN proxima_core.goal_replay_declaration d
+           LEFT JOIN proxiima_core.goal_replay_declaration d
              ON d.goal_t = g.t
           ORDER BY r.ordinality",
     )
@@ -305,8 +305,8 @@ pub(super) async fn resolve_goal_replay(
 ) -> Result<Option<GoalWriteOutcome>, StorageError> {
     let row: Option<(uuid::Uuid, Option<i32>, Option<bool>)> = sqlx::query_as(
         "SELECT g.t, d.edge_count, d.declaration = $3::jsonb
-           FROM proxima_core.goal g
-           LEFT JOIN proxima_core.goal_replay_declaration d
+           FROM proxiima_core.goal g
+           LEFT JOIN proxiima_core.goal_replay_declaration d
              ON d.goal_t = g.t
           WHERE g.owner_id = $1 AND g.request_id = $2",
     )
@@ -361,7 +361,7 @@ pub(super) async fn record_goal_replay_declaration(
     let edge_count = i32::try_from(outcome.edge_count)
         .map_err(|_| internal("Goal replay edge_count exceeds PostgreSQL integer"))?;
     sqlx::query(
-        "INSERT INTO proxima_core.goal_replay_declaration
+        "INSERT INTO proxiima_core.goal_replay_declaration
              (goal_t, declaration, edge_count)
          VALUES ($1, $2, $3)",
     )

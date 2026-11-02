@@ -1,5 +1,5 @@
-use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::{OwnerId, StorageError};
+use proxiima_core::storage_ports::OwnerWritePermit;
+use proxiima_core::{OwnerId, StorageError};
 
 mod embeddings;
 mod goals;

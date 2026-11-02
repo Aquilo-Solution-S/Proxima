@@ -1,9 +1,9 @@
-use proxima_core::storage_ports::{FactIngestPort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{AccessKind, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
-use proxima_pg_testkit::{DbGuard, db_url, split_role_urls};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
+use proxiima_core::storage_ports::{FactIngestPort, OwnerWritePermit};
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::{AccessKind, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
+use proxiima_pg_testkit::{DbGuard, db_url, split_role_urls};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
 use uuid::Uuid;
 
 fn draft() -> FactWriteCommand {
@@ -22,7 +22,7 @@ fn draft() -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
@@ -30,7 +30,7 @@ fn draft() -> FactWriteCommand {
 #[tokio::test]
 async fn store_identity_is_required_persisted_and_immutable()
 -> Result<(), Box<dyn std::error::Error>> {
-    let name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_core_db(&name).await?;
     let _guard = DbGuard::adopt(name.clone());
     let (runtime_url, platform_url) = split_role_urls(&name).await?;
@@ -42,7 +42,7 @@ async fn store_identity_is_required_persisted_and_immutable()
     .await?;
     migration.run_migrations().await?;
     let platform_pool = sqlx::PgPool::connect(&platform_url).await?;
-    let scope = PgPlatformScope::new(platform_pool, &["proxima_core"]).await?;
+    let scope = PgPlatformScope::new(platform_pool, &["proxiima_core"]).await?;
     assert!(
         PgStorage::connect_with_config(
             &runtime_url,
@@ -90,7 +90,7 @@ async fn store_identity_is_required_persisted_and_immutable()
     assert_eq!(pg.store_number(), 3);
     let mut tx = scope.begin().await?;
     assert!(
-        sqlx::query("UPDATE proxima_core.store_identity SET store_number = 4")
+        sqlx::query("UPDATE proxiima_core.store_identity SET store_number = 4")
             .execute(tx.as_mut())
             .await
             .is_err()
@@ -98,13 +98,13 @@ async fn store_identity_is_required_persisted_and_immutable()
     tx.rollback().await?;
     let mut tx = scope.begin().await?;
     assert!(
-        sqlx::query("DELETE FROM proxima_core.store_identity")
+        sqlx::query("DELETE FROM proxiima_core.store_identity")
             .execute(tx.as_mut())
             .await
             .is_err()
     );
     tx.rollback().await?;
-    let current = proxima_core::new_memory_uuid(3);
+    let current = proxiima_core::new_memory_uuid(3);
     let mut tx = scope.begin().await?;
     sqlx::query("SET LOCAL TIME ZONE 'Europe/Berlin'")
         .execute(tx.as_mut())
@@ -114,14 +114,14 @@ async fn store_identity_is_required_persisted_and_immutable()
         bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
         let id = Uuid::from_bytes(bytes);
         let sql_time: time::OffsetDateTime =
-            sqlx::query_scalar("SELECT proxima_core.memory_created_at($1)")
+            sqlx::query_scalar("SELECT proxiima_core.memory_created_at($1)")
                 .bind(id)
                 .fetch_one(tx.as_mut())
                 .await?;
         assert_eq!(sql_time, MemoryId::new(id).created_at());
     }
     let sql_time: time::OffsetDateTime =
-        sqlx::query_scalar("SELECT proxima_core.memory_created_at($1)")
+        sqlx::query_scalar("SELECT proxiima_core.memory_created_at($1)")
             .bind(current)
             .fetch_one(tx.as_mut())
             .await?;
@@ -133,31 +133,31 @@ async fn store_identity_is_required_persisted_and_immutable()
 #[tokio::test]
 async fn a_colliding_insert_retries_without_leaving_an_old_head()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, guard) = proxima_storage_pg::test_fixtures::fresh_pg("store_collision").await;
+    let (pg, guard) = proxiima_storage_pg::test_fixtures::fresh_pg("store_collision").await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let existing = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
     let admin = sqlx::PgPool::connect(&db_url(guard.name())).await?;
     let existing_t = existing.memory_id.into_inner();
     assert_eq!(existing_t.get_version_num(), 8);
-    assert_eq!(proxima_core::memory_store_number(existing_t), 1);
+    assert_eq!(proxiima_core::memory_store_number(existing_t), 1);
     let occurred_at: time::OffsetDateTime =
-        sqlx::query_scalar("SELECT occurred_at FROM proxima_core.memory WHERE t = $1")
+        sqlx::query_scalar("SELECT occurred_at FROM proxiima_core.memory WHERE t = $1")
             .bind(existing_t)
             .fetch_one(&admin)
             .await?;
     assert_eq!(occurred_at, existing.memory_id.created_at());
     // SQL-POLICY: fixed-fragment — the only interpolation is a typed UUID.
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "CREATE SEQUENCE proxima_core.collision_attempt;
-         GRANT USAGE ON SEQUENCE proxima_core.collision_attempt TO PUBLIC;
-         CREATE FUNCTION proxima_core.force_one_collision() RETURNS trigger LANGUAGE plpgsql AS $$
+        "CREATE SEQUENCE proxiima_core.collision_attempt;
+         GRANT USAGE ON SEQUENCE proxiima_core.collision_attempt TO PUBLIC;
+         CREATE FUNCTION proxiima_core.force_one_collision() RETURNS trigger LANGUAGE plpgsql AS $$
          BEGIN
-             IF nextval('proxima_core.collision_attempt') = 1 THEN NEW.t := '{}'; END IF;
+             IF nextval('proxiima_core.collision_attempt') = 1 THEN NEW.t := '{}'; END IF;
              RETURN NEW;
          END; $$;
-         CREATE TRIGGER force_collision BEFORE INSERT ON proxima_core.memory
-             FOR EACH ROW EXECUTE FUNCTION proxima_core.force_one_collision();",
+         CREATE TRIGGER force_collision BEFORE INSERT ON proxiima_core.memory
+             FOR EACH ROW EXECUTE FUNCTION proxiima_core.force_one_collision();",
         existing.memory_id.into_inner()
     )))
     .execute(&admin)
@@ -168,30 +168,30 @@ async fn a_colliding_insert_retries_without_leaving_an_old_head()
     let outcome = pg.ingest_fact_atomic(&permit, &colliding, None).await?;
     assert_ne!(outcome.memory_id, existing.memory_id);
     assert_eq!(
-        proxima_core::memory_store_number(outcome.memory_id.into_inner()),
+        proxiima_core::memory_store_number(outcome.memory_id.into_inner()),
         1
     );
     let heads: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory_head WHERE owner_id = $1")
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory_head WHERE owner_id = $1")
             .bind(owner.into_inner())
             .fetch_one(&admin)
             .await?;
     assert_eq!(heads, 2);
     let rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE owner_id = $1")
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory WHERE owner_id = $1")
             .bind(owner.into_inner())
             .fetch_one(&admin)
             .await?;
     assert_eq!(rows, 2);
-    let keyed_t: Uuid = sqlx::query_scalar("SELECT t FROM proxima_core.ingest_keys WHERE owner_id = $1 AND source_id = 'collision-source'")
+    let keyed_t: Uuid = sqlx::query_scalar("SELECT t FROM proxiima_core.ingest_keys WHERE owner_id = $1 AND source_id = 'collision-source'")
         .bind(owner.into_inner()).fetch_one(&admin).await?;
     assert_eq!(keyed_t, outcome.memory_id.into_inner());
     // A second collision refuses rather than entering the outer transient retry.
     // SQL-POLICY: fixed-fragment — the only interpolation is a typed UUID.
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "CREATE OR REPLACE FUNCTION proxima_core.force_one_collision() RETURNS trigger LANGUAGE plpgsql AS $$
+        "CREATE OR REPLACE FUNCTION proxiima_core.force_one_collision() RETURNS trigger LANGUAGE plpgsql AS $$
          BEGIN
-             PERFORM nextval('proxima_core.collision_attempt');
+             PERFORM nextval('proxiima_core.collision_attempt');
              NEW.t := '{}';
              RETURN NEW;
          END; $$;", existing.memory_id.into_inner()
@@ -205,20 +205,21 @@ async fn a_colliding_insert_retries_without_leaving_an_old_head()
         .unwrap_err();
     assert!(matches!(
         refused,
-        proxima_core::StorageError::ConstraintViolation(_)
+        proxiima_core::StorageError::ConstraintViolation(_)
     ));
-    let attempts: i64 = sqlx::query_scalar("SELECT last_value FROM proxima_core.collision_attempt")
-        .fetch_one(&admin)
-        .await?;
+    let attempts: i64 =
+        sqlx::query_scalar("SELECT last_value FROM proxiima_core.collision_attempt")
+            .fetch_one(&admin)
+            .await?;
     assert_eq!(attempts, 4);
     let keys: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM proxima_core.ingest_keys WHERE owner_id = $1")
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.ingest_keys WHERE owner_id = $1")
             .bind(owner.into_inner())
             .fetch_one(&admin)
             .await?;
     assert_eq!(keys, 1, "the refused write leaves no replay key");
     let heads: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory_head WHERE owner_id = $1")
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory_head WHERE owner_id = $1")
             .bind(owner.into_inner())
             .fetch_one(&admin)
             .await?;

@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Propose a scoped improvement to Proxima
+about: Propose a scoped improvement to Proxiima
 title: "feat(<component>): "
 labels: enhancement
 assignees: ""

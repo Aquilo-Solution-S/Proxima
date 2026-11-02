@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use proxima_core::{GroupId, OwnerId, OwnerRoles, Relation, StorageError, UserId};
+use proxiima_core::{GroupId, OwnerId, OwnerRoles, Relation, StorageError, UserId};
 use sqlx::{PgConnection, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -50,7 +50,7 @@ pub enum GroupContainment {
 }
 
 #[derive(Debug, Clone, Copy, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.owner_kind", rename_all = "lowercase")]
+#[sqlx(type_name = "proxiima_core.owner_kind", rename_all = "lowercase")]
 enum PgOwnerKind {
     Personal,
     Group,
@@ -71,16 +71,16 @@ enum PgOwnerKind {
 /// deadlock/serialization retry requirements.
 ///
 /// ```no_run
-/// # use proxima_storage_pg::{AuthorityTargets, PgPlatformScope};
+/// # use proxiima_storage_pg::{AuthorityTargets, PgPlatformScope};
 /// # use sqlx::{Postgres, Transaction};
-/// # async fn use_facts(scope: &PgPlatformScope, tx: &mut Transaction<'_, Postgres>) -> Result<(), proxima_core::StorageError> {
+/// # async fn use_facts(scope: &PgPlatformScope, tx: &mut Transaction<'_, Postgres>) -> Result<(), proxiima_core::StorageError> {
 /// let mut facts = scope.authority_on(tx, AuthorityTargets::default()).await?;
 /// let _ = facts.transaction();
 /// # Ok(()) }
 /// ```
 ///
 /// ```compile_fail
-/// # use proxima_storage_pg::{AuthorityTargets, PgPlatformScope};
+/// # use proxiima_storage_pg::{AuthorityTargets, PgPlatformScope};
 /// # use sqlx::{Postgres, Transaction};
 /// # async fn commit_while_borrowed(scope: &PgPlatformScope, mut tx: Transaction<'_, Postgres>) {
 /// let mut facts = scope.authority_on(&mut tx, AuthorityTargets::default()).await.unwrap();
@@ -136,7 +136,7 @@ impl<'session, 'connection> PgAuthoritySession<'session, 'connection> {
             return Err(changed_footprint());
         }
         let subjects: Vec<_> = people.iter().map(|id| id.into_inner()).collect();
-        sqlx::query("SELECT proxima_core.lock_authority_targets($1, $2)")
+        sqlx::query("SELECT proxiima_core.lock_authority_targets($1, $2)")
             .bind(&ids)
             .bind(&subjects)
             .execute(&mut **tx)
@@ -299,9 +299,9 @@ impl PgAuthorityGroup<'_> {
         relation: Option<Relation>,
     ) -> Result<Vec<DirectUserMembership>, StorageError> {
         let rows: Vec<(Uuid, Relation)> = sqlx::query_as(
-            "SELECT member_user_id, relation FROM proxima_core.group_memberships
+            "SELECT member_user_id, relation FROM proxiima_core.group_memberships
               WHERE group_id = $1
-                AND ($2::proxima_core.membership_relation IS NULL OR relation = $2)
+                AND ($2::proxiima_core.membership_relation IS NULL OR relation = $2)
               ORDER BY member_user_id, relation",
         )
         .bind(self.group.into_inner())
@@ -329,9 +329,9 @@ impl PgAuthorityGroup<'_> {
         relation: Option<Relation>,
     ) -> Result<i64, StorageError> {
         sqlx::query_scalar(
-            "SELECT count(DISTINCT member_user_id) FROM proxima_core.group_memberships
+            "SELECT count(DISTINCT member_user_id) FROM proxiima_core.group_memberships
               WHERE group_id = $1
-                AND ($2::proxima_core.membership_relation IS NULL OR relation = $2)",
+                AND ($2::proxiima_core.membership_relation IS NULL OR relation = $2)",
         )
         .bind(self.group.into_inner())
         .bind(relation)
@@ -349,7 +349,7 @@ impl PgAuthorityGroup<'_> {
         &mut self,
     ) -> Result<Vec<DirectGroupMembership>, StorageError> {
         let rows: Vec<(Uuid, Relation)> = sqlx::query_as(
-            "SELECT child_group_id, relation FROM proxima_core.group_edges
+            "SELECT child_group_id, relation FROM proxiima_core.group_edges
               WHERE parent_group_id = $1 ORDER BY child_group_id",
         )
         .bind(self.group.into_inner())
@@ -370,10 +370,10 @@ impl PgAuthorityGroup<'_> {
         member: OwnerId,
     ) -> Result<Vec<Relation>, StorageError> {
         sqlx::query_scalar(
-            "SELECT relation FROM proxima_core.group_memberships
+            "SELECT relation FROM proxiima_core.group_memberships
               WHERE group_id = $1 AND member_user_id = $2
              UNION ALL
-             SELECT relation FROM proxima_core.group_edges
+             SELECT relation FROM proxiima_core.group_edges
               WHERE parent_group_id = $1 AND child_group_id = $2
              ORDER BY relation",
         )
@@ -391,7 +391,7 @@ impl PgAuthorityGroup<'_> {
     /// Returns database failures.
     pub async fn parent(&mut self) -> Result<Option<DirectGroupMembership>, StorageError> {
         let row: Option<(Uuid, Relation)> = sqlx::query_as(
-            "SELECT parent_group_id, relation FROM proxima_core.group_edges
+            "SELECT parent_group_id, relation FROM proxiima_core.group_edges
               WHERE child_group_id = $1",
         )
         .bind(self.group.into_inner())
@@ -414,10 +414,10 @@ impl PgAuthorityGroup<'_> {
         let rows: Vec<(Uuid, Relation)> = sqlx::query_as(
             "WITH RECURSIVE ancestors(group_id, relation, depth) AS (
                  SELECT parent_group_id, relation, 1
-                   FROM proxima_core.group_edges WHERE child_group_id = $1
+                   FROM proxiima_core.group_edges WHERE child_group_id = $1
                  UNION ALL
                  SELECT e.parent_group_id, e.relation, a.depth + 1
-                   FROM ancestors a JOIN proxima_core.group_edges e
+                   FROM ancestors a JOIN proxiima_core.group_edges e
                      ON e.child_group_id = a.group_id
              ) SELECT group_id, relation FROM ancestors ORDER BY depth",
         )
@@ -434,7 +434,7 @@ impl PgAuthorityGroup<'_> {
     ///
     /// Returns database failures.
     pub async fn root(&mut self) -> Result<GroupId, StorageError> {
-        sqlx::query_scalar::<_, Uuid>("SELECT proxima_core.group_tree_root($1)")
+        sqlx::query_scalar::<_, Uuid>("SELECT proxiima_core.group_tree_root($1)")
             .bind(self.group.into_inner())
             .fetch_one(&mut *self.conn)
             .await
@@ -491,7 +491,7 @@ pub(super) async fn direct_groups_of(
     person: UserId,
 ) -> Result<Vec<DirectGroupMembership>, StorageError> {
     let rows: Vec<(Uuid, Relation)> = sqlx::query_as(
-        "SELECT group_id, relation FROM proxima_core.group_memberships
+        "SELECT group_id, relation FROM proxiima_core.group_memberships
           WHERE member_user_id = $1 ORDER BY group_id, relation",
     )
     .bind(person.into_inner())
@@ -515,7 +515,7 @@ async fn owner_kind(
     owner: OwnerId,
 ) -> Result<Option<RegisteredOwner>, StorageError> {
     let kind: Option<PgOwnerKind> =
-        sqlx::query_scalar("SELECT kind FROM proxima_core.owners WHERE owner_id = $1")
+        sqlx::query_scalar("SELECT kind FROM proxiima_core.owners WHERE owner_id = $1")
             .bind(owner.into_inner())
             .fetch_optional(conn)
             .await
@@ -540,7 +540,7 @@ async fn direct_groups_for_ids(
     ids: &[Uuid],
 ) -> Result<BTreeSet<Uuid>, StorageError> {
     let groups: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT DISTINCT group_id FROM proxima_core.group_memberships
+        "SELECT DISTINCT group_id FROM proxiima_core.group_memberships
           WHERE member_user_id = ANY($1::uuid[])",
     )
     .bind(ids)
@@ -555,7 +555,7 @@ async fn tree_roots(
     ids: &[Uuid],
 ) -> Result<BTreeMap<Uuid, Uuid>, StorageError> {
     let roots: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT id, proxima_core.group_tree_root(id) FROM unnest($1::uuid[]) AS ids(id)",
+        "SELECT id, proxiima_core.group_tree_root(id) FROM unnest($1::uuid[]) AS ids(id)",
     )
     .bind(ids)
     .fetch_all(conn)

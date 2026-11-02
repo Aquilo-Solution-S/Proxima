@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use proxima_core::{EndpointUrlError, EndpointUrlPolicy};
+use proxiima_core::{EndpointUrlError, EndpointUrlPolicy};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum OidcConfigError {
@@ -86,7 +86,7 @@ pub(crate) fn validate_issuer_url(raw: &str) -> Result<(), OidcConfigError> {
 /// host — whether through an explicitly configured `jwks_uri` or through the
 /// `jwks_uri` in its own discovery document. Without this, a compromised or
 /// hostile upstream `IdP` could name `http://127.0.0.1:<port>/keys` and have
-/// Proxima trust whatever happens to answer there.
+/// Proxiima trust whatever happens to answer there.
 ///
 /// # Errors
 ///
@@ -97,10 +97,10 @@ pub fn validate_jwks_url(
     raw: &str,
     issuer: &str,
 ) -> Result<(), OidcConfigError> {
-    if proxima_core::is_loopback_endpoint(issuer) {
+    if proxiima_core::is_loopback_endpoint(issuer) {
         return validate_https_url(field, raw);
     }
-    proxima_core::validate_endpoint_url(raw, EndpointUrlPolicy::HttpsOnly).map_err(|error| {
+    proxiima_core::validate_endpoint_url(raw, EndpointUrlPolicy::HttpsOnly).map_err(|error| {
         match error {
             EndpointUrlError::InvalidUrl(parse_error) => {
                 OidcConfigError::InvalidUrl { field, parse_error }
@@ -118,9 +118,9 @@ pub fn validate_jwks_url(
 ///
 /// The loopback carve-out exists so a self-hosted deployment can run its
 /// issuer on the same machine — see `tools/dev-idp`, and any operator
-/// fronting Proxima with a local `IdP`. It is the same
+/// fronting Proxiima with a local `IdP`. It is the same
 /// [`EndpointUrlPolicy::AllowLoopbackHttp`] the workspace already applies to
-/// locally-hosted model endpoints in `proxima-llm-openai-compat`, and it is
+/// locally-hosted model endpoints in `proxiima-llm-openai-compat`, and it is
 /// narrow by construction: `validate_endpoint_url` admits plaintext only for
 /// `localhost`, `127.0.0.0/8`, and `::1`, so reaching it already requires
 /// code executing on the host. Every other host stays HTTPS-only, which is
@@ -136,7 +136,7 @@ pub fn validate_jwks_url(
 /// Returns an error when `raw` is not a URL, or uses a non-HTTPS scheme on a
 /// non-loopback host.
 pub fn validate_https_url(field: &'static str, raw: &str) -> Result<(), OidcConfigError> {
-    proxima_core::validate_endpoint_url(raw, EndpointUrlPolicy::AllowLoopbackHttp).map_err(
+    proxiima_core::validate_endpoint_url(raw, EndpointUrlPolicy::AllowLoopbackHttp).map_err(
         |error| match error {
             EndpointUrlError::InvalidUrl(parse_error) => {
                 OidcConfigError::InvalidUrl { field, parse_error }
@@ -157,7 +157,7 @@ mod tests {
         OidcAuthConfig {
             issuer: issuer.to_string(),
             jwks_uri: jwks_uri.map(ToOwned::to_owned),
-            audience: "proxima-api".to_string(),
+            audience: "proxiima-api".to_string(),
             allowed_subjects: None,
             leeway_secs: 60,
         }

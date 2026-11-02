@@ -2,7 +2,7 @@
 //!
 //! See docs/protocol.md §"`GoalWrite`" and
 //! docs/concepts.md §"Goal entity". The
-//! storage-side body lives in proxima-storage-pg.
+//! storage-side body lives in proxiima-storage-pg.
 
 use crate::ProtocolError;
 use crate::publication::PublicationStamp;
@@ -31,7 +31,7 @@ pub const EVIDENCE_DOES_NOT_EXIST: &str = "evidence does not exist";
     serde::Deserialize,
     sqlx::Type,
 )]
-#[sqlx(type_name = "proxima_core.goal_state")]
+#[sqlx(type_name = "proxiima_core.goal_state")]
 pub enum GoalState {
     Active,
     Paused,
@@ -146,8 +146,8 @@ impl std::str::FromStr for GoalState {
 /// through the achieve verb, which may carry evidence).
 ///
 /// ```compile_fail
-/// use proxima_core::PendingWork;
-/// use proxima_core::verbs::goal_write::GoalTransitionKind;
+/// use proxiima_core::PendingWork;
+/// use proxiima_core::verbs::goal_write::GoalTransitionKind;
 ///
 /// // `pending` is a field of `Pause` alone.
 /// let _ = GoalTransitionKind::Resume {
@@ -596,7 +596,7 @@ impl<P> GoalCreateRequest<P> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct GoalAtomicContext<'a> {
-    pub registry: &'a crate::FlavorRegistryFrozen,
+    pub registry: &'a crate::SpiiceRegistryFrozen,
     pub author_self_perspective_id: Option<MemoryId>,
     /// What storage needs to capture the write's `core/goal-change-v1` Fact.
     /// Storage writes that Fact exactly when the schema is listenable in

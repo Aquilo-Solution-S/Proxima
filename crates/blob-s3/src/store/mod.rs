@@ -7,7 +7,7 @@
 //! - [`dto`] — the wire types, the whole public surface
 //! - [`upload`] / [`read`] — the presigned request-path verbs
 //! - [`verified_read`] — bounded in-process bytes, verified before release
-//! - [`port`] — the [`CitedBlobPort`](proxima_core::storage_ports::CitedBlobPort)
+//! - [`port`] — the [`CitedBlobPort`](proxiima_core::storage_ports::CitedBlobPort)
 //!   adapter, translation only
 //! - [`erase`] — destroy an owner's bytes; the object-store half of an
 //!   owner erase
@@ -50,8 +50,8 @@ use crate::config::{
     validate_presign_ttl,
 };
 use crate::error::BlobError;
-use proxima_core::authz::{SystemAuthority, SystemAuthorityBinding};
-use proxima_storage_pg::PgPlatformScope;
+use proxiima_core::authz::{SystemAuthority, SystemAuthorityBinding};
+use proxiima_storage_pg::PgPlatformScope;
 
 /// Cited-blob transfer, verified-read, and reconcile backend over one
 /// Postgres pool and one S3 target. Construct once at boot; capabilities are
@@ -70,13 +70,13 @@ pub struct CitedBlobStore {
     /// Client that signs read links for the public endpoint when one is
     /// configured, and for the store endpoint otherwise.
     read_presigning_client: std::sync::OnceLock<aws_sdk_s3::Client>,
-    /// Set once by normal Proxima boot and shared by every store clone.
+    /// Set once by normal Proxiima boot and shared by every store clone.
     /// A witness minted by an unrelated disposable Engine cannot authorize
     /// this store's global operations.
     system_authority: std::sync::Arc<std::sync::OnceLock<SystemAuthorityBinding>>,
     platform_scope: PgPlatformScope,
     /// Computed once from the config: what upload rows and debt record.
-    store_id: proxima_core::ObjectStoreId,
+    store_id: proxiima_core::ObjectStoreId,
     /// One slot per stage in flight, shared by every clone. A stage holds
     /// its object in memory until it is published, so the slots bound the
     /// memory staging can hold at [`MAX_CONCURRENT_STAGES`] objects.
@@ -100,14 +100,14 @@ impl CitedBlobStore {
     ) -> Result<Self, BlobError> {
         if let Some(endpoint_url) = &config.endpoint_url {
             validate_endpoint_url(
-                "PROXIMA_S3_ENDPOINT_URL",
+                "PROXIIMA_S3_ENDPOINT_URL",
                 endpoint_url,
                 &config.plaintext_hosts,
             )?;
         }
         if let Some(endpoint_url) = &config.public_endpoint_url {
             validate_endpoint_url(
-                "PROXIMA_S3_PUBLIC_ENDPOINT_URL",
+                "PROXIIMA_S3_PUBLIC_ENDPOINT_URL",
                 endpoint_url,
                 &config.plaintext_hosts,
             )?;
@@ -115,8 +115,8 @@ impl CitedBlobStore {
         // Checked at the consuming boundary too, not only in `from_env`: a
         // host may build this struct directly, and an out-of-range TTL must
         // fail here rather than panic inside a request.
-        validate_presign_ttl("PROXIMA_S3_UPLOAD_TTL_SECONDS", config.upload_ttl_seconds)?;
-        validate_presign_ttl("PROXIMA_S3_READ_TTL_SECONDS", config.read_ttl_seconds)?;
+        validate_presign_ttl("PROXIIMA_S3_UPLOAD_TTL_SECONDS", config.upload_ttl_seconds)?;
+        validate_presign_ttl("PROXIIMA_S3_READ_TTL_SECONDS", config.read_ttl_seconds)?;
         let max_blob_bytes = config.max_blob_bytes.unwrap_or(DEFAULT_MAX_BLOB_BYTES);
         let store_id = config.object_store_id()?;
 
@@ -168,14 +168,14 @@ impl CitedBlobStore {
         &self,
         authority: &SystemAuthority,
         operation: &str,
-    ) -> Result<(), proxima_core::StorageError> {
+    ) -> Result<(), proxiima_core::StorageError> {
         let binding = self.system_authority.get().ok_or_else(|| {
-            proxima_core::StorageError::ConstraintViolation(format!(
+            proxiima_core::StorageError::ConstraintViolation(format!(
                 "{operation} requires a boot-bound store"
             ))
         })?;
         if !authority.authorizes(binding) {
-            return Err(proxima_core::StorageError::ConstraintViolation(
+            return Err(proxiima_core::StorageError::ConstraintViolation(
                 "SystemAuthority belongs to a different cited-blob store boot".into(),
             ));
         }
@@ -209,14 +209,14 @@ impl CitedBlobStore {
     /// The identity of the object store this store writes to: what its
     /// upload rows and purge debt record.
     #[must_use]
-    pub fn store_id(&self) -> &proxima_core::ObjectStoreId {
+    pub fn store_id(&self) -> &proxiima_core::ObjectStoreId {
         &self.store_id
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::{Engine, FlavorRegistry};
+    use proxiima_core::{Engine, SpiiceRegistry};
 
     use super::guards::validate_prepare;
     use super::testkit::{lazy_test_pool, prepare_req, store_config};
@@ -228,7 +228,7 @@ mod tests {
         let store = CitedBlobStore::new(
             lazy_test_pool(),
             store_config(None, None),
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .unwrap();
         assert!(!format!("{store:?}").contains(secret));
@@ -247,7 +247,7 @@ mod tests {
         let store = CitedBlobStore::new(
             lazy_test_pool(),
             config,
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .unwrap();
         for (client, expected) in [
@@ -283,7 +283,7 @@ mod tests {
         let error = CitedBlobStore::new(
             lazy_test_pool(),
             store_config(Some("http://s3.internal:9000"), Some(1_024)),
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect_err("plaintext remote S3 endpoint rejected");
 
@@ -304,11 +304,11 @@ mod tests {
             let error = CitedBlobStore::new(
                 lazy_test_pool(),
                 config,
-                proxima_storage_pg::PgPlatformScope::for_tests(),
+                proxiima_storage_pg::PgPlatformScope::for_tests(),
             )
             .expect_err("direct public endpoint configuration must be validated");
             assert!(
-                matches!(error, BlobError::Config(message) if message.contains("PROXIMA_S3_PUBLIC_ENDPOINT_URL"))
+                matches!(error, BlobError::Config(message) if message.contains("PROXIIMA_S3_PUBLIC_ENDPOINT_URL"))
             );
         }
     }
@@ -326,23 +326,23 @@ mod tests {
             let mut config = store_config(None, None);
             config.public_endpoint_url = Some(endpoint.to_owned());
             if let Some(named) = named {
-                config.plaintext_hosts = proxima_core::PlaintextHosts::parse(named).unwrap();
+                config.plaintext_hosts = proxiima_core::PlaintextHosts::parse(named).unwrap();
             }
             CitedBlobStore::new(
                 lazy_test_pool(),
                 config,
-                proxima_storage_pg::PgPlatformScope::for_tests(),
+                proxiima_storage_pg::PgPlatformScope::for_tests(),
             )
             .expect("public endpoint follows the existing transport policy");
         }
         let mut config = store_config(None, None);
         config.public_endpoint_url = Some("http://other-gateway:9090".into());
-        config.plaintext_hosts = proxima_core::PlaintextHosts::parse("public-gateway").unwrap();
+        config.plaintext_hosts = proxiima_core::PlaintextHosts::parse("public-gateway").unwrap();
         assert!(matches!(
             CitedBlobStore::new(
                 lazy_test_pool(),
                 config,
-                proxima_storage_pg::PgPlatformScope::for_tests()
+                proxiima_storage_pg::PgPlatformScope::for_tests()
             ),
             Err(BlobError::Config(_))
         ));
@@ -352,11 +352,11 @@ mod tests {
     async fn store_accepts_a_plaintext_endpoint_only_on_a_named_host() {
         let named = |hosts: &str| {
             let mut config = store_config(Some("http://gateway:9090"), Some(1_024));
-            config.plaintext_hosts = proxima_core::PlaintextHosts::parse(hosts).unwrap();
+            config.plaintext_hosts = proxiima_core::PlaintextHosts::parse(hosts).unwrap();
             CitedBlobStore::new(
                 lazy_test_pool(),
                 config,
-                proxima_storage_pg::PgPlatformScope::for_tests(),
+                proxiima_storage_pg::PgPlatformScope::for_tests(),
             )
         };
         named("gateway").expect("named host accepted");
@@ -365,7 +365,7 @@ mod tests {
         let error = CitedBlobStore::new(
             lazy_test_pool(),
             store_config(Some("http://gateway:9090"), Some(1_024)),
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect_err("nothing named: refused");
         assert!(error.to_string().contains("must use https"));
@@ -376,7 +376,7 @@ mod tests {
         let store = CitedBlobStore::new(
             lazy_test_pool(),
             store_config(None, None),
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect("default-capped store builds");
 
@@ -394,13 +394,13 @@ mod tests {
         let store = CitedBlobStore::new(
             lazy_test_pool(),
             store_config(None, None),
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect("test store builds");
         let (_, authority) =
-            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+            Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
         let (_, foreign) =
-            Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
+            Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests()).into_system_authority();
 
         store.bind_system_authority(&authority).expect("first bind");
         store
@@ -428,12 +428,12 @@ mod tests {
         let error = CitedBlobStore::new(
             lazy_test_pool(),
             config,
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect_err("an unusable read TTL is refused at construction");
         assert!(matches!(error, BlobError::Config(_)));
         assert!(
-            error.to_string().contains("PROXIMA_S3_READ_TTL_SECONDS"),
+            error.to_string().contains("PROXIIMA_S3_READ_TTL_SECONDS"),
             "the refusal names the variable to fix: {error}"
         );
 
@@ -442,11 +442,11 @@ mod tests {
         let error = CitedBlobStore::new(
             lazy_test_pool(),
             config,
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect_err("a zero upload TTL is refused");
         assert!(
-            error.to_string().contains("PROXIMA_S3_UPLOAD_TTL_SECONDS"),
+            error.to_string().contains("PROXIIMA_S3_UPLOAD_TTL_SECONDS"),
             "the refusal names the variable to fix: {error}"
         );
 
@@ -456,7 +456,7 @@ mod tests {
         CitedBlobStore::new(
             lazy_test_pool(),
             config,
-            proxima_storage_pg::PgPlatformScope::for_tests(),
+            proxiima_storage_pg::PgPlatformScope::for_tests(),
         )
         .expect("7 days is allowed");
     }

@@ -674,7 +674,7 @@ mod tests {
     use crate::verbs::query::{
         MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
     };
-    use crate::{Engine, FlavorRegistry, GroupId, MemoryId, OwnerId, UserId};
+    use crate::{Engine, GroupId, MemoryId, OwnerId, SpiiceRegistry, UserId};
 
     type ResolvedAuthz = AuthzContext;
 
@@ -684,7 +684,7 @@ mod tests {
     };
 
     fn engine() -> Engine {
-        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
     }
 
     /// #479 item 3: every core memory schema displays the field its search
@@ -807,7 +807,7 @@ mod tests {
     /// other two modes. Accepting it there returns a ranking that ignored
     /// an argument the caller set. `core_search_memories` has always
     /// rejected the pairing — the verb it delegates to, which every
-    /// embedding host and flavor also enters through, did not.
+    /// embedding host and spiice also enters through, did not.
     #[tokio::test]
     async fn search_rejects_a_fusion_weight_no_mode_would_use() {
         let owner = owner();

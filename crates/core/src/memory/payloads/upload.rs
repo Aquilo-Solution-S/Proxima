@@ -5,9 +5,9 @@
 //! its id handed back. What nothing wrote was a record that the upload
 //! HAPPENED. A cited object is a thing that can be cited; it is not an
 //! event, it carries no receipt, it appears in no change history, and
-//! nothing in the substrate says who put it there or when. Flavors filled
-//! that in themselves, which made "a file entered the corpus" a per-flavor
-//! guarantee — true in the flavors that bothered, absent everywhere else.
+//! nothing in the substrate says who put it there or when. Spiices filled
+//! that in themselves, which made "a file entered the corpus" a per-spiice
+//! guarantee — true in the spiices that bothered, absent everywhere else.
 //!
 //! This schema makes it a substrate guarantee. The Fact cites the artefact
 //! through `memory.blob_id`, so the event and the bytes are one
@@ -68,7 +68,7 @@ impl FactPayload for UploadV1 {
 
     // `sidecar_table` stays at its `None` default. The description of the
     // artefact is already stored, once, on its completed
-    // `proxima_core.blob_uploads` row, and the citation this Fact carries is
+    // `proxiima_core.blob_uploads` row, and the citation this Fact carries is
     // how a reader reaches it. A sidecar here would be a second
     // copy of that row under a second identity, and the two would disagree
     // the first time one of them was corrected.

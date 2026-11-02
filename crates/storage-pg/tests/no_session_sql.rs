@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 const ALLOWED: &[(&str, Option<&str>)] = &[
     // The runtime migration orchestrator: whole-run lock and session setup on
     // its direct connection.
-    ("crates/proxima/src/migrations.rs", None),
+    ("crates/proxiima/src/migrations.rs", None),
     // The storage migration runner's direct connection.
     (
         "crates/storage-pg/src/lib.rs",
@@ -468,7 +468,7 @@ fn line_of(text: &str, offset: usize) -> usize {
 fn serving_code_runs_no_session_scoped_sql() {
     let root = workspace_root();
     let mut files = Vec::new();
-    for top in ["apps", "crates", "flavors", "tools"] {
+    for top in ["apps", "crates", "spiices", "tools"] {
         sources(&root.join(top), ".rs", &mut files);
     }
     assert!(files.len() > 100, "the scan found the workspace sources");
@@ -548,16 +548,16 @@ fn the_scan_recognizes_session_and_transaction_forms() {
         r#"sqlx::query("SELECT pg_advisory_unlock_all()")"#,
         r#"sqlx::query("SET statement_timeout = 0")"#,
         r#"sqlx::query("set search_path to x")"#,
-        r#"sqlx::query("SELECT set_config('app.proxima_scope', 'platform', false)")"#,
+        r#"sqlx::query("SELECT set_config('app.proxiima_scope', 'platform', false)")"#,
         // Session forms other than an assignment.
-        r#"sqlx::query("SET ROLE proxima_runtime")"#,
-        r#"sqlx::query("SET SESSION AUTHORIZATION proxima_runtime")"#,
+        r#"sqlx::query("SET ROLE proxiima_runtime")"#,
+        r#"sqlx::query("SET SESSION AUTHORIZATION proxiima_runtime")"#,
         r#"sqlx::query("SET SESSION statement_timeout = 0")"#,
         r#"sqlx::query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")"#,
         r#"sqlx::query("RESET ALL")"#,
         r#"sqlx::query("RESET statement_timeout")"#,
         r#"sqlx::query("DISCARD ALL")"#,
-        r#"sqlx::query("LISTEN proxima_writes")"#,
+        r#"sqlx::query("LISTEN proxiima_writes")"#,
         r#"sqlx::query("UNLISTEN *")"#,
         // SET followed by a tab or a line break.
         r#"sqlx::query("SET\tstatement_timeout = 0")"#,
@@ -597,7 +597,7 @@ fn the_scan_recognizes_session_and_transaction_forms() {
         r#"sqlx::query("SET\tLOCAL lock_timeout = '5s'")"#,
         r#"sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")"#,
         r#"sqlx::query("SET CONSTRAINTS ALL DEFERRED")"#,
-        r#"sqlx::query("SELECT set_config('app.proxima_scope', 'platform', true)")"#,
+        r#"sqlx::query("SELECT set_config('app.proxiima_scope', 'platform', true)")"#,
         r#"sqlx::query("SELECT set_config(
                            'app.owner',
                            $1,
@@ -614,7 +614,7 @@ fn the_scan_recognizes_session_and_transaction_forms() {
         assert!(rust_hits(transaction).is_empty(), "flagged: {transaction}");
     }
     for sql in [
-        "CREATE OR REPLACE FUNCTION f()\n RETURNS void\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nBEGIN\n    PERFORM set_config('app.proxima_scope', 'platform', true);\nEND;\n$function$;",
+        "CREATE OR REPLACE FUNCTION f()\n RETURNS void\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nBEGIN\n    PERFORM set_config('app.proxiima_scope', 'platform', true);\nEND;\n$function$;",
         "-- SET search_path TO public;\nSELECT 1;",
         "UPDATE t\n   SET v = 1;",
     ] {
@@ -631,7 +631,7 @@ fn the_scan_recognizes_any_set_any_case_and_spaced_calls() {
         r#"sqlx::query("SET TIME ZONE 'UTC'")"#,
         r#"sqlx::query("set time zone 'UTC'")"#,
         r#"sqlx::query("SET NAMES 'UTF8'")"#,
-        r#"sqlx::query("SET SCHEMA 'proxima_core'")"#,
+        r#"sqlx::query("SET SCHEMA 'proxiima_core'")"#,
         r#"sqlx::query("SET \"search_path\" = x")"#,
         r##"sqlx::query(r#"set "search_path" = x"#)"##,
         r#"sqlx::query("discard all")"#,
@@ -656,7 +656,7 @@ fn the_scan_recognizes_any_set_any_case_and_spaced_calls() {
         r#"format!("prepare the upload for {owner}")"#,
         r#"format!("discard the draft")"#,
         r#"format!("listen on {bind}")"#,
-        r#"format!("set PROXIMA_TOOL_PROFILE=memory for agent-facing hosts")"#,
+        r#"format!("set PROXIIMA_TOOL_PROFILE=memory for agent-facing hosts")"#,
         r#"format!("is {seconds}s, under the floor; set 0 to keep records")"#,
         r#"let name = "my_pg_advisory_lock_helper";"#,
     ] {

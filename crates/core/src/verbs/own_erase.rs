@@ -1,8 +1,8 @@
-//! Flavor-scoped erase — typed surface only.
+//! Spiice-scoped erase — typed surface only.
 //!
 //! [`crate::UnitOfWork::erase_own_series`] hard-erases whole series of ONE
-//! flavor's own memory schemas under ONE owner (docs/data-and-erasure.md
-//! erase). The storage body lives in `proxima-storage-pg`.
+//! spiice's own memory schemas under ONE owner (docs/data-and-erasure.md
+//! erase). The storage body lives in `proxiima-storage-pg`.
 
 use crate::error::ProtocolError;
 use crate::verbs::query::SidecarAtom;
@@ -88,11 +88,11 @@ pub enum EraseMode {
     DryRun,
 }
 
-/// What one flavor-scoped erase destroyed, or under [`EraseMode::DryRun`]
+/// What one spiice-scoped erase destroyed, or under [`EraseMode::DryRun`]
 /// would destroy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeriesEraseReceipt {
-    pub flavor_id: &'static str,
+    pub spiice_id: &'static str,
     pub owner: OwnerId,
     pub mode: EraseMode,
     /// Every version erased, ascending by `t`.
@@ -118,8 +118,8 @@ pub struct SeriesEraseReceipt {
 /// Why a selection was refused. Nothing was deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeriesEraseRefusalKind {
-    /// A version is not one of the named flavor's memory schemas: a core
-    /// schema, or another flavor's.
+    /// A version is not one of the named spiice's memory schemas: a core
+    /// schema, or another spiice's.
     ForeignSchema,
     /// A selected id, a version of a selected series, or a row referencing
     /// the erase set belongs to another owner.
@@ -136,7 +136,7 @@ impl SeriesEraseRefusalKind {
     #[must_use]
     pub const fn message(self) -> &'static str {
         match self {
-            Self::ForeignSchema => "selection reaches a schema the flavor does not declare",
+            Self::ForeignSchema => "selection reaches a schema the spiice does not declare",
             Self::CrossOwner => "selection reaches rows of another owner",
             Self::UnerasableReference => {
                 "selection is referenced from a table that is not a memory sidecar"
@@ -164,7 +164,7 @@ impl std::fmt::Display for SeriesEraseRefusal {
 /// [`crate::UnitOfWork::erase_own_series`] failed.
 #[derive(Debug, Clone)]
 pub enum SeriesEraseError {
-    /// The selection is outside the flavor's scope or the cap.
+    /// The selection is outside the spiice's scope or the cap.
     Refused(SeriesEraseRefusal),
     /// A transient conflict (deadlock, lock wait timeout, a series replaced
     /// mid-erase). Nothing was deleted; run the whole unit again.
@@ -213,11 +213,11 @@ impl From<SeriesEraseError> for ProtocolError {
 /// The backend half of one erase: what the engine resolved and authorized.
 #[derive(Debug, Clone, Copy)]
 pub struct SeriesEraseRequest<'a> {
-    /// The named flavor's memory schema ids. Every erased version's series
+    /// The named spiice's memory schema ids. Every erased version's series
     /// must carry one of them.
     pub own_schemas: &'a [String],
     pub selection: &'a SeriesSelection,
-    /// The selection schema's sidecar table, off the flavor contract. Set
+    /// The selection schema's sidecar table, off the spiice contract. Set
     /// for [`SeriesSelection::SidecarEquals`] and
     /// [`SeriesSelection::DeclaredBefore`], the selections that read it.
     pub sidecar_table: Option<&'a str>,
@@ -254,11 +254,11 @@ mod tests {
     fn a_refusal_names_every_offender_and_maps_to_a_protocol_code() {
         let refusal = SeriesEraseRefusal {
             kind: SeriesEraseRefusalKind::CrossOwner,
-            offending: vec!["t=a".into(), "proxima_x.y.z t=b".into()],
+            offending: vec!["t=a".into(), "proxiima_x.y.z t=b".into()],
         };
         assert_eq!(
             refusal.to_string(),
-            "selection reaches rows of another owner: t=a, proxima_x.y.z t=b"
+            "selection reaches rows of another owner: t=a, proxiima_x.y.z t=b"
         );
         let err: ProtocolError = SeriesEraseError::Refused(refusal).into();
         assert_eq!(err.code, ErrorCode::Forbidden);

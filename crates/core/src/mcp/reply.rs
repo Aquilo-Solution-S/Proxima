@@ -6,7 +6,7 @@ use base64::Engine as _;
 
 /// One content block of a [`ToolReply`].
 ///
-/// Proxima's own type, so the public API does not move when the MCP SDK
+/// Proxiima's own type, so the public API does not move when the MCP SDK
 /// does; the transport maps each variant onto the MCP content block of the
 /// same name. `data` and `blob` are base64 (standard alphabet, padded), as
 /// MCP carries binary content; [`Self::image`] and [`Self::audio`] encode
@@ -78,15 +78,15 @@ impl ToolContent {
 /// carries only JSON turns such a failure back into that error.
 ///
 /// ```compile_fail,E0277
-/// let error = proxima_core::McpToolError::NotAuthorized("tool".into());
-/// let _reply: proxima_core::ToolReply = error.into();
+/// let error = proxiima_core::McpToolError::NotAuthorized("tool".into());
+/// let _reply: proxiima_core::ToolReply = error.into();
 /// ```
 ///
 /// A structured failure carries a JSON object, so any other JSON value does
 /// not build one:
 ///
 /// ```compile_fail,E0308
-/// let _reply = proxima_core::ToolReply::StructuredFailure {
+/// let _reply = proxiima_core::ToolReply::StructuredFailure {
 ///     structured: serde_json::json!("not an object"),
 ///     content: Vec::new(),
 /// };
@@ -101,14 +101,14 @@ pub enum ToolReply {
     /// Content blocks and no `structuredContent`.
     Content(Vec<ToolContent>),
     /// The tool ran and failed in a way the caller should read and may
-    /// retry: content blocks with `isError: true`. Proxima does not redact
+    /// retry: content blocks with `isError: true`. Proxiima does not redact
     /// them; the tool owns what it puts here. A registry tool answers this
     /// way with [`ToolError::Failure`](crate::ToolError::Failure).
     Failure(Vec<ToolContent>),
     /// The tool ran and failed with details a program reads: `structured` is
     /// sent as `structuredContent` beside the content blocks, with
     /// `isError: true`. Only from a tool that declares no output schema
-    /// (docs/protocol.md). Proxima does not redact either; the host owns
+    /// (docs/protocol.md). Proxiima does not redact either; the host owns
     /// what it puts here.
     StructuredFailure {
         structured: serde_json::Map<String, serde_json::Value>,

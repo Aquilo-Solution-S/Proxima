@@ -1,10 +1,10 @@
 //! Goal timeseries write.
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
-use proxima_core::publication::PublicationStamp;
-use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{
+use proxiima_core::publication::PublicationStamp;
+use proxiima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
+use proxiima_core::verbs::goal_write::GoalState;
+use proxiima_core::{
     FactPayload, GoalChange, GoalChangeV1, GoalId, OwnerId, SchemaVersion, SidecarPayload,
     StorageError,
 };
@@ -66,7 +66,7 @@ pub(crate) struct PreparedGoalWrite {
     fresh_handle: bool,
     owner: OwnerId,
     owner_id: Uuid,
-    writer: proxima_core::WriterAttribution,
+    writer: proxiima_core::WriterAttribution,
     handle: Uuid,
     t: Uuid,
     /// The predecessor named by a Goal successor request. This is kept
@@ -144,7 +144,7 @@ pub(crate) async fn load_goal_by_request_id(
     request_id: &str,
 ) -> Result<Option<GoalRequestRow>, StorageError> {
     let row = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>)>(
-        "SELECT handle, t, write_act_t FROM proxima_core.goal
+        "SELECT handle, t, write_act_t FROM proxiima_core.goal
           WHERE owner_id = $1 AND request_id = $2",
     )
     .bind(owner.into_inner())
@@ -160,9 +160,9 @@ pub(crate) async fn load_goal_by_request_id(
 }
 
 pub(crate) fn reserve_fact_identity(store_number: u16) -> ReservedFactIdentity {
-    let t = proxima_core::new_memory_uuid(store_number);
+    let t = proxiima_core::new_memory_uuid(store_number);
     ReservedFactIdentity {
-        handle: proxima_core::new_memory_uuid(store_number),
+        handle: proxiima_core::new_memory_uuid(store_number),
         t,
     }
 }
@@ -170,12 +170,12 @@ pub(crate) fn reserve_fact_identity(store_number: u16) -> ReservedFactIdentity {
 pub(crate) async fn ingest_write_act_at(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
-    writer: proxima_core::WriterAttribution,
+    writer: proxiima_core::WriterAttribution,
     identity: ReservedFactIdentity,
 ) -> Result<FactIngestOutcome, StorageError> {
     let draft = FactWriteCommand {
-        schema_id: proxima_core::SchemaId::new(WRITE_ACT_SCHEMA.to_string()),
-        schema_version: proxima_core::SchemaVersion::new(1),
+        schema_id: proxiima_core::SchemaId::new(WRITE_ACT_SCHEMA.to_string()),
+        schema_version: proxiima_core::SchemaVersion::new(1),
         handle: Some(identity.handle),
         source_id: None,
         ingest_key: None,
@@ -188,7 +188,7 @@ pub(crate) async fn ingest_write_act_at(
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     };
     ingest_unpinned_fact_at(
@@ -209,7 +209,7 @@ pub(crate) async fn ingest_write_act_at(
 pub async fn write_goal(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
-    writer: proxima_core::WriterAttribution,
+    writer: proxiima_core::WriterAttribution,
     draft: &GoalWriteCommand,
     store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
@@ -236,7 +236,7 @@ pub async fn write_goal(
 pub(crate) async fn prepare_goal_write(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
-    writer: proxima_core::WriterAttribution,
+    writer: proxiima_core::WriterAttribution,
     draft: &GoalWriteCommand,
     expected_prior_t: Option<Uuid>,
     store_number: u16,
@@ -268,23 +268,23 @@ pub(crate) async fn prepare_goal_write(
         .or(draft.write_act_t);
     let handle = draft
         .handle
-        .unwrap_or_else(|| proxima_core::new_memory_uuid(store_number));
+        .unwrap_or_else(|| proxiima_core::new_memory_uuid(store_number));
     let mut command = draft.clone();
     command.mint_write_act = false;
     command.write_act_t = write_act_t;
     let expected_head_t: Option<Uuid> =
-        sqlx::query_scalar("SELECT t FROM proxima_core.goal_head WHERE handle = $1")
+        sqlx::query_scalar("SELECT t FROM proxiima_core.goal_head WHERE handle = $1")
             .bind(handle)
             .fetch_optional(tx.as_mut())
             .await
             .map_err(map_err)?;
     let t = match expected_head_t.max(expected_prior_t) {
         Some(floor) => {
-            proxima_core::new_memory_uuid_after(store_number, floor).ok_or_else(|| {
+            proxiima_core::new_memory_uuid_after(store_number, floor).ok_or_else(|| {
                 StorageError::ConstraintViolation("memory UUID timestamp range exhausted".into())
             })?
         }
-        None => proxima_core::new_memory_uuid(store_number),
+        None => proxiima_core::new_memory_uuid(store_number),
     };
     let mut targets = Vec::with_capacity(
         1 + usize::from(command.assignment_t.is_some())
@@ -346,7 +346,7 @@ async fn lock_and_validate_prepared_goal_write(
     crate::verbs::forget::lock_memory_handles_tx(tx, &handles).await?;
     crate::verbs::forget::lock_lifecycle_targets_tx(tx, &prepared.targets).await?;
     let current_head: Option<Uuid> =
-        sqlx::query_scalar("SELECT t FROM proxima_core.goal_head WHERE handle = $1 FOR UPDATE")
+        sqlx::query_scalar("SELECT t FROM proxiima_core.goal_head WHERE handle = $1 FOR UPDATE")
             .bind(prepared.handle)
             .fetch_optional(tx.as_mut())
             .await
@@ -444,7 +444,7 @@ pub(crate) async fn persist_goal_change_fact(
     // version's position. A version's `t` is the database clock and is no
     // order.
     let revision: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM proxima_core.goal WHERE handle = $1")
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.goal WHERE handle = $1")
             .bind(prepared.handle)
             .fetch_one(tx.as_mut())
             .await
@@ -484,7 +484,7 @@ pub(crate) async fn persist_goal_change_fact(
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     };
     let tables = sidecars.tables_for_payloads(std::slice::from_ref(&payload))?;
@@ -504,7 +504,7 @@ pub(crate) async fn persist_goal_change_fact(
     // The event is about the goal, not about the change Fact's own series:
     // its position is the goal version's revision, counted under the goal
     // series lock above.
-    let position = proxima_core::publication::SubjectPosition::new(
+    let position = proxiima_core::publication::SubjectPosition::new(
         prepared.handle,
         std::num::NonZeroU64::from(revision_position),
     );
@@ -608,7 +608,7 @@ async fn advance_goal_head(
     prepared: &PreparedGoalWrite,
 ) -> Result<(), StorageError> {
     if prepared.fresh_handle {
-        sqlx::query("INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t) VALUES ($1, $2, $3, $4)")
+        sqlx::query("INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t) VALUES ($1, $2, $3, $4)")
             .bind(prepared.handle)
             .bind(&prepared.command.schema_id)
             .bind(prepared.owner_id)
@@ -619,12 +619,12 @@ async fn advance_goal_head(
         return Ok(());
     }
     let head = sqlx::query(
-        "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (handle) DO UPDATE SET t = EXCLUDED.t
-         WHERE proxima_core.goal_head.schema_id = EXCLUDED.schema_id
-           AND proxima_core.goal_head.owner_id = EXCLUDED.owner_id
-           AND ($5::uuid IS NOT NULL AND proxima_core.goal_head.t = $5)
+         WHERE proxiima_core.goal_head.schema_id = EXCLUDED.schema_id
+           AND proxiima_core.goal_head.owner_id = EXCLUDED.owner_id
+           AND ($5::uuid IS NOT NULL AND proxiima_core.goal_head.t = $5)
          RETURNING handle",
     )
     .bind(prepared.handle)
@@ -639,7 +639,7 @@ async fn advance_goal_head(
         return Ok(());
     }
     let current: Option<(String, Uuid, Uuid)> = sqlx::query_as(
-        "SELECT schema_id, owner_id, t FROM proxima_core.goal_head WHERE handle = $1",
+        "SELECT schema_id, owner_id, t FROM proxiima_core.goal_head WHERE handle = $1",
     )
     .bind(prepared.handle)
     .fetch_optional(tx.as_mut())
@@ -683,7 +683,7 @@ async fn insert_goal_revision(
     prepared: &PreparedGoalWrite,
 ) -> Result<(), StorageError> {
     sqlx::query(
-        "INSERT INTO proxima_core.goal
+        "INSERT INTO proxiima_core.goal
             (handle, t, owner_id, title, text, state, request_id, close_fact_t,
             assignment_t, dependency_t, evidence_t, write_act_t, \"by\", via, parent_handle)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
@@ -745,7 +745,7 @@ async fn validate_goal_targets_live(
     }
     for dependency in &draft.dependency_t {
         let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxima_core.goal WHERE t = $1)")
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxiima_core.goal WHERE t = $1)")
                 .bind(dependency)
                 .fetch_one(tx.as_mut())
                 .await
@@ -759,7 +759,7 @@ async fn validate_goal_targets_live(
     for evidence in draft
         .evidence_t
         .iter()
-        .filter(|evidence| proxima_core::memory_store_number(**evidence) == store_number)
+        .filter(|evidence| proxiima_core::memory_store_number(**evidence) == store_number)
     {
         ensure_live_memory_kind(
             tx,
@@ -788,7 +788,7 @@ async fn ensure_live_memory_kind(
     allowed: &[PgMemoryKind],
 ) -> Result<(), StorageError> {
     let kind: Option<PgMemoryKind> =
-        sqlx::query_scalar("SELECT kind FROM proxima_core.memory WHERE t = $1")
+        sqlx::query_scalar("SELECT kind FROM proxiima_core.memory WHERE t = $1")
             .bind(t)
             .fetch_optional(tx.as_mut())
             .await

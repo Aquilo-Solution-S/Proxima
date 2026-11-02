@@ -1,10 +1,10 @@
-# Proxima
+# Proxiima
 
 Typed, owner-scoped durable memory for agents.
 
-- Documentation: https://aquilo-solution-s.github.io/Proxima/
-- Agent ritual: https://aquilo-solution-s.github.io/Proxima/agents/
-- Runtime instructions: MCP resource proxima://how-to
-- Runtime contracts: MCP tools/list, resources/list, resources/templates/list, proxima://tools
+- Documentation: https://aquilo-solution-s.github.io/Proxiima/
+- Agent ritual: https://aquilo-solution-s.github.io/Proxiima/agents/
+- Runtime instructions: MCP resource proxiima://how-to
+- Runtime contracts: MCP tools/list, resources/list, resources/templates/list, proxiima://tools
 - REST contract when enabled: /v1/openapi.json
-- Repository: https://github.com/Aquilo-Solution-S/Proxima
+- Repository: https://github.com/Aquilo-Solution-S/proxiima

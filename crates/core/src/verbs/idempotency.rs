@@ -102,7 +102,7 @@ impl KeyScope {
     }
 }
 
-const FINGERPRINT_DOMAIN: &[u8] = b"proxima-request-v1";
+const FINGERPRINT_DOMAIN: &[u8] = b"proxiima-request-v1";
 
 /// What a keyed request asserts. Built only through [`ContentFingerprint::builder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -393,7 +393,7 @@ mod tests {
         assert_eq!(err.existing, id);
     }
 
-    /// The encoding is frozen: this digest, taken before the framing was shared, must not move.
+    /// Known answer for the renamed request domain; the field framing stays frozen.
     #[test]
     fn the_fingerprint_encoding_does_not_move() {
         let id = Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
@@ -414,7 +414,7 @@ mod tests {
             .build();
         assert_eq!(
             fingerprint.to_hex(),
-            "939efb5d99a8cdcf34c60842cd71d988e2ec3d2c8b832b1b15d60967d8db5a26"
+            "05845bb8ada1591840a8d4b93f57b1fc7e21aaeb1851d5b36ab065ee9149f68f"
         );
     }
 

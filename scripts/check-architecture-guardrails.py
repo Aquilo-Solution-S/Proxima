@@ -19,16 +19,16 @@ ROOT = Path(__file__).resolve().parents[1]
 ALLOW = "ARCH-GUARDRAIL-ALLOW"
 OWNER_WRITE_PERMIT = "OwnerWritePermit"
 
-# Dated exemptions for flavor code that still reads `proxima_core.*` tables
-# directly instead of going through an authorized flavor-read facade. Every
+# Dated exemptions for spiice code that still reads `proxiima_core.*` tables
+# directly instead of going through an authorized spiice-read facade. Every
 # entry needs an ISO `expires` date and a `reason`; once an entry expires it
 # stops suppressing findings and the failure renders the expiration date so
 # reviewers see why it started failing.
 #
-# A flavor under flavors/ holds zero raw `proxima_core.*` SQL in its `src` —
-# every flavor read goes through `proxima::flavor::authorized_*` — so the allowlist
+# A spiice under spiices/ holds zero raw `proxiima_core.*` SQL in its `src` —
+# every spiice read goes through `proxiima::spiice::authorized_*` — so the allowlist
 # is empty.
-ALLOWLISTED_FLAVOR_CORE_SQL: dict[str, dict[str, str]] = {}
+ALLOWLISTED_SPIICE_CORE_SQL: dict[str, dict[str, str]] = {}
 
 
 @dataclass(frozen=True)
@@ -68,12 +68,12 @@ def iter_files(*roots: str) -> list[Path]:
 
 
 def source_files() -> list[Path]:
-    return iter_files("crates", "apps", "flavors", "examples")
+    return iter_files("crates", "apps", "spiices", "examples")
 
 
 def production_src_files() -> list[Path]:
     files: list[Path] = []
-    for root in ("crates", "apps", "flavors", "examples"):
+    for root in ("crates", "apps", "spiices", "examples"):
         base = ROOT / root
         if not base.exists():
             continue
@@ -159,8 +159,8 @@ def check_runtime_registration(findings: list[Finding]) -> None:
     )
     add_regex_findings(
         findings,
-        iter_files("crates", "apps", "flavors", "examples"),
-        r"proxima_core\.(?:tools|tool_invocations)\b|CREATE\s+TABLE\s+proxima_core\.(?:tools|tool_invocations)\b",
+        iter_files("crates", "apps", "spiices", "examples"),
+        r"proxiima_core\.(?:tools|tool_invocations)\b|CREATE\s+TABLE\s+proxiima_core\.(?:tools|tool_invocations)\b",
         "runtime tool table surface",
         flags=re.IGNORECASE,
     )
@@ -172,9 +172,9 @@ def check_runtime_registration(findings: list[Finding]) -> None:
 ENTITY_OWNER_UNION_DEF = "crates/storage-pg/src/verbs/query/mod.rs"
 ENTITY_OWNER_UNION_TEXT = (
     r"SELECT\s+memory_id\s+AS\s+entity_id,\s*owner_kind,\s*owner_id\s+"
-    r"FROM\s+proxima_core\.memories\s+UNION\s+ALL\s+"
+    r"FROM\s+proxiima_core\.memories\s+UNION\s+ALL\s+"
     r"SELECT\s+goal_id\s+AS\s+entity_id,\s*owner_kind,\s*owner_id\s+"
-    r"FROM\s+proxima_core\.goals"
+    r"FROM\s+proxiima_core\.goals"
 )
 
 
@@ -269,13 +269,13 @@ def iter_rust_string_literals(text: str):
         i += 1
 
 
-#: Pure `proxima_core` SQL functions a flavor may call from its own query.
+#: Pure `proxiima_core` SQL functions a spiice may call from its own query.
 #:
-#: The rule this supports is that a flavor must not reach core *data* — it
+#: The rule this supports is that a spiice must not reach core *data* — it
 #: goes through an authorized port instead. These are not data: each is
 #: IMMUTABLE, STRICT and PARALLEL SAFE, reads no row, enforces no
 #: authorization, and returns a pure function of its arguments. They exist to
-#: be shared, and a flavor that could not call them would have to restate the
+#: be shared, and a spiice that could not call them would have to restate the
 #: definition — which is the drift they were introduced to prevent
 #: (`0011_v007.sql`). Anything with a table or view behind it stays denied.
 PURE_CORE_SQL_FUNCTIONS = (
@@ -288,17 +288,17 @@ PURE_CORE_SQL_FUNCTIONS = (
 )
 
 _PURE_CORE_SQL_CALL = re.compile(
-    r"proxima_core\.(?:" + "|".join(PURE_CORE_SQL_FUNCTIONS) + r")\s*\("
+    r"proxiima_core\.(?:" + "|".join(PURE_CORE_SQL_FUNCTIONS) + r")\s*\("
 )
 
 
-def flavor_core_sql_hits(text: str) -> list[tuple[int, int, str]]:
+def spiice_core_sql_hits(text: str) -> list[tuple[int, int, str]]:
     """Return ``(start_line, end_line, literal)`` for every string literal
-    containing a schema-qualified ``proxima_core.`` reference.
+    containing a schema-qualified ``proxiima_core.`` reference.
 
-    A literal dot after `proxima_core` is a schema-qualified SQL identifier
-    (`proxima_core.memories`); a colon there is Rust path syntax
-    (`proxima_core::verbs`) and must stay allowed everywhere.
+    A literal dot after `proxiima_core` is a schema-qualified SQL identifier
+    (`proxiima_core.memories`); a colon there is Rust path syntax
+    (`proxiima_core::verbs`) and must stay allowed everywhere.
 
     Calls to `PURE_CORE_SQL_FUNCTIONS` are masked out before the check, so a
     literal that references core only to call one of them is not a finding
@@ -306,9 +306,9 @@ def flavor_core_sql_hits(text: str) -> list[tuple[int, int, str]]:
     """
     hits: list[tuple[int, int, str]] = []
     for start_line, _start_offset, literal in iter_rust_string_literals(text):
-        if "proxima_core." not in literal:
+        if "proxiima_core." not in literal:
             continue
-        if "proxima_core." not in _PURE_CORE_SQL_CALL.sub("", literal):
+        if "proxiima_core." not in _PURE_CORE_SQL_CALL.sub("", literal):
             continue
         hits.append((start_line, start_line + literal.count("\n"), literal))
     return hits
@@ -334,18 +334,18 @@ def allow_marker_lines(text: str) -> set[int]:
     return marker_lines
 
 
-def check_flavor_core_sql(findings: list[Finding]) -> None:
-    flavors = ROOT / "flavors"
-    if not flavors.exists():
+def check_spiice_core_sql(findings: list[Finding]) -> None:
+    spiices = ROOT / "spiices"
+    if not spiices.exists():
         return
-    paths = [p for p in flavors.rglob("src/**/*.rs") if p.is_file()]
+    paths = [p for p in spiices.rglob("src/**/*.rs") if p.is_file()]
     for path in sorted(paths):
         rel = path.relative_to(ROOT).as_posix()
         text = path.read_text(encoding="utf-8")
         lines = text.splitlines()
         allow_lines = allow_marker_lines(text)
-        allowance = ALLOWLISTED_FLAVOR_CORE_SQL.get(rel)
-        for start_line, end_line, literal in flavor_core_sql_hits(text):
+        allowance = ALLOWLISTED_SPIICE_CORE_SQL.get(rel)
+        for start_line, end_line, literal in spiice_core_sql_hits(text):
             if allow_lines & set(range(start_line, end_line + 1)):
                 continue
             snippet = lines[start_line - 1].strip() if start_line - 1 < len(lines) else literal.strip()
@@ -356,12 +356,12 @@ def check_flavor_core_sql(findings: list[Finding]) -> None:
                     Finding(
                         path,
                         start_line,
-                        "flavor raw proxima_core SQL",
+                        "spiice raw proxiima_core SQL",
                         f"allowlist expired {allowance['expires']} ({allowance['reason']}): {snippet}",
                     )
                 )
                 continue
-            findings.append(Finding(path, start_line, "flavor raw proxima_core SQL", snippet))
+            findings.append(Finding(path, start_line, "spiice raw proxiima_core SQL", snippet))
 
 
 def check_event_source_vocabulary(findings: list[Finding]) -> None:
@@ -370,8 +370,8 @@ def check_event_source_vocabulary(findings: list[Finding]) -> None:
         "crates/storage-pg/src",
         "crates/storage-pg/migrations/0057_baseline.sql",
         "crates/mcp-server/src",
-        "crates/proxima/src",
-        "apps/proxima-mcp/src",
+        "crates/proxiima/src",
+        "apps/proxiima-mcp/src",
     ]
     add_regex_findings(
         findings,
@@ -384,9 +384,9 @@ def check_event_source_vocabulary(findings: list[Finding]) -> None:
 def check_tombstone_tool(findings: list[Finding]) -> None:
     module_roots = [
         "crates/core/src/mcp",
-        "crates/proxima/src",
+        "crates/proxiima/src",
         "crates/mcp-server/src",
-        "apps/proxima-mcp/src",
+        "apps/proxiima-mcp/src",
     ]
     add_regex_findings(
         findings,
@@ -406,8 +406,8 @@ def check_public_witnesses(findings: list[Finding]) -> None:
     )
     export_files = [
         ROOT / "crates/core/src/lib.rs",
-        ROOT / "crates/proxima/src/lib.rs",
-        ROOT / "crates/proxima/src/host.rs",
+        ROOT / "crates/proxiima/src/lib.rs",
+        ROOT / "crates/proxiima/src/host.rs",
     ]
     add_regex_findings(
         findings,
@@ -658,11 +658,11 @@ def check_owner_write_permit_surfaces(findings: list[Finding]) -> None:
     check_authorized_fact_surface(findings)
 
 
-# Acceptance 1 of #473: the code flavor left the repository and stays in git
+# Acceptance 1 of #473: the code spiice left the repository and stays in git
 # history only. This pattern names it, so the scan below skips this file (and
 # only this file) besides the generated release notes.
-REMOVED_FLAVOR_PATTERN = r"proxima[-_]code|flavors/code"
-REMOVED_FLAVOR_EXEMPT = {"CHANGELOG.md", "scripts/check-architecture-guardrails.py"}
+REMOVED_SPIICE_PATTERN = r"proxiima[-_]code|spiices/code"
+REMOVED_SPIICE_EXEMPT = {"CHANGELOG.md", "scripts/check-architecture-guardrails.py"}
 
 
 def git_lines(*args: str) -> list[str]:
@@ -674,19 +674,19 @@ def git_lines(*args: str) -> list[str]:
     return result.stdout.splitlines()
 
 
-def removed_flavor_hits(path: str, text: str) -> list[tuple[int, str]]:
-    """Lines of `text` naming a removed flavor, unless `path` is exempt."""
-    if path in REMOVED_FLAVOR_EXEMPT:
+def removed_spiice_hits(path: str, text: str) -> list[tuple[int, str]]:
+    """Lines of `text` naming a removed spiice, unless `path` is exempt."""
+    if path in REMOVED_SPIICE_EXEMPT:
         return []
-    rx = re.compile(REMOVED_FLAVOR_PATTERN, re.IGNORECASE)
+    rx = re.compile(REMOVED_SPIICE_PATTERN, re.IGNORECASE)
     return [(n, line) for n, line in enumerate(text.splitlines(), 1) if rx.search(line)]
 
 
-def flavor_vocabulary(package_names: list[str]) -> list[str]:
-    """The PG schema, flavor id and tool prefix each in-tree flavor owns.
+def spiice_vocabulary(package_names: list[str]) -> list[str]:
+    """The PG schema, spiice id and tool prefix each in-tree spiice owns.
 
-    A flavor's package name `proxima-x` is its flavor id; its schema is
-    `proxima_x` and its tools are named `proxima-x_*`.
+    A spiice's package name `proxiima-x` is its spiice id; its schema is
+    `proxiima_x` and its tools are named `proxiima-x_*`.
     """
     words: list[str] = []
     for name in package_names:
@@ -694,52 +694,52 @@ def flavor_vocabulary(package_names: list[str]) -> list[str]:
     return words
 
 
-def crate_src_flavor_hits(text: str, vocabulary: list[str]) -> list[tuple[int, str]]:
+def crate_src_spiice_hits(text: str, vocabulary: list[str]) -> list[tuple[int, str]]:
     if not vocabulary:
         return []
     rx = re.compile("|".join(re.escape(word) for word in vocabulary))
     return [(n, line) for n, line in enumerate(text.splitlines(), 1) if rx.search(line)]
 
 
-def in_tree_flavor_packages() -> list[str]:
+def in_tree_spiice_packages() -> list[str]:
     names: list[str] = []
-    for manifest in sorted((ROOT / "flavors").glob("*/Cargo.toml")):
+    for manifest in sorted((ROOT / "spiices").glob("*/Cargo.toml")):
         match = re.search(r'(?m)^\[package\][^\[]*?^name\s*=\s*"([^"]+)"', manifest.read_text(encoding="utf-8"))
         if match:
             names.append(match.group(1))
     return names
 
 
-def check_removed_flavor_vocabulary(findings: list[Finding]) -> None:
-    # Rule 1: no tracked file names the removed code flavor.
-    for rel in git_lines("grep", "-l", "-i", "-I", "-E", REMOVED_FLAVOR_PATTERN):
+def check_removed_spiice_vocabulary(findings: list[Finding]) -> None:
+    # Rule 1: no tracked file names the removed code spiice.
+    for rel in git_lines("grep", "-l", "-i", "-I", "-E", REMOVED_SPIICE_PATTERN):
         path = ROOT / rel
-        for line_no, line in removed_flavor_hits(rel, path.read_text(encoding="utf-8")):
-            findings.append(Finding(path, line_no, "removed flavor named", line))
-    # Rule 2: crate sources never name an in-tree flavor's schema, flavor id
-    # or tool prefix. Crate tests may name the test flavor.
-    vocabulary = flavor_vocabulary(in_tree_flavor_packages())
+        for line_no, line in removed_spiice_hits(rel, path.read_text(encoding="utf-8")):
+            findings.append(Finding(path, line_no, "removed spiice named", line))
+    # Rule 2: crate sources never name an in-tree spiice's schema, spiice id
+    # or tool prefix. Crate tests may name the test spiice.
+    vocabulary = spiice_vocabulary(in_tree_spiice_packages())
     for rel in git_lines("ls-files", "--", "crates/*/src/**"):
         path = ROOT / rel
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, FileNotFoundError):
             continue
-        for line_no, line in crate_src_flavor_hits(text, vocabulary):
-            findings.append(Finding(path, line_no, "crate source names an in-tree flavor", line))
+        for line_no, line in crate_src_spiice_hits(text, vocabulary):
+            findings.append(Finding(path, line_no, "crate source names an in-tree spiice", line))
 
 
-# Census of reads of `proxima_core.memory` that do not go through the owner
-# read policy (#488). Owner-scope SQL is decided by `proxima_owner_read`;
+# Census of reads of `proxiima_core.memory` that do not go through the owner
+# read policy (#488). Owner-scope SQL is decided by `proxiima_owner_read`;
 # platform-scope SQL bypasses it, so every such read states whether it wants
 # live memories only or forgotten ones too. The counts are pinned so a new
 # platform read is classified on purpose.
 FORGET_POLICY_MARKER = re.compile(r"FORGET-POLICY: (live-only|includes-forgotten) \(([^)]*\S[^)]*)\)")
 MEMORY_READ = re.compile(
-    r"\b(?:FROM|JOIN|UPDATE|INTO)\s+(?:[\w.]+(?:\s+\w+)?\s*,\s*)*proxima_core\.memory\b"
+    r"\b(?:FROM|JOIN|UPDATE|INTO)\s+(?:[\w.]+(?:\s+\w+)?\s*,\s*)*proxiima_core\.memory\b"
 )
 PLATFORM_SCOPE_BINDING = re.compile(
-    r"PgPlatformScope|platform_scope|platform_transaction\(|set_config\('app\.proxima_scope', 'platform'"
+    r"PgPlatformScope|platform_scope|platform_transaction\(|set_config\('app\.proxiima_scope', 'platform'"
 )
 FUNCTION_START = re.compile(r"CREATE (?:OR REPLACE )?FUNCTION ")
 MEMORY_CENSUS_ALWAYS = (
@@ -888,7 +888,7 @@ def check_memory_reads(findings: list[Finding]) -> None:
 # transaction-local GUC below is on. One module sets it (PgLifecycleScope);
 # a second writer would be a way around the policy nobody reviewed.
 LIFECYCLE_GUC_WRITE = re.compile(
-    r"set_config\(\s*'app\.proxima_lifecycle'|\bSET\s+(?:LOCAL\s+)?(?:SESSION\s+)?app\.proxima_lifecycle\b",
+    r"set_config\(\s*'app\.proxiima_lifecycle'|\bSET\s+(?:LOCAL\s+)?(?:SESSION\s+)?app\.proxiima_lifecycle\b",
     re.IGNORECASE,
 )
 LIFECYCLE_GUC_MODULE = "crates/storage-pg/src/lifecycle_scope.rs"
@@ -912,7 +912,7 @@ EXPECTED_LIFECYCLE_ENTER_SITES = {
     ("crates/storage-pg/src/verbs/query/lineage.rs", "forgotten_nodes_on_connection"): 1,
     ("crates/storage-pg/src/verbs/request_keys.rs", "judge_request"): 1,
 }
-LIFECYCLE_GUC_ROOTS = ("crates", "apps", "tools", "flavors")
+LIFECYCLE_GUC_ROOTS = ("crates", "apps", "tools", "spiices")
 
 
 def lifecycle_guc_writers(files: dict[str, str]) -> list[tuple[str, int]]:
@@ -970,10 +970,10 @@ def check_lifecycle_guc(findings: list[Finding]) -> None:
             files[path.relative_to(ROOT).as_posix()] = path.read_text(encoding="utf-8")
     module = files.get(LIFECYCLE_GUC_MODULE, "")
     if not LIFECYCLE_GUC_WRITE.search(module):
-        findings.append(Finding(ROOT / LIFECYCLE_GUC_MODULE, 1, "lifecycle scope", "the lifecycle module no longer sets app.proxima_lifecycle"))
+        findings.append(Finding(ROOT / LIFECYCLE_GUC_MODULE, 1, "lifecycle scope", "the lifecycle module no longer sets app.proxiima_lifecycle"))
     for rel, line_no in lifecycle_guc_writers(files):
         line = files[rel].splitlines()[line_no - 1]
-        findings.append(Finding(ROOT / rel, line_no, "app.proxima_lifecycle set outside PgLifecycleScope", line))
+        findings.append(Finding(ROOT / rel, line_no, "app.proxiima_lifecycle set outside PgLifecycleScope", line))
     for problem in lifecycle_enter_mismatch(EXPECTED_LIFECYCLE_ENTER_SITES, lifecycle_enter_sites(files)):
         findings.append(Finding(ROOT / "scripts/check-architecture-guardrails.py", 1, "lifecycle scope enter sites", problem))
 
@@ -1009,24 +1009,24 @@ def check_cold_vocabulary(findings: list[Finding]) -> None:
 
 
 def run_self_test() -> int:
-    """Assert the flavor core SQL detector fires on its committed fixture.
+    """Assert the spiice core SQL detector fires on its committed fixture.
 
     Runs the raw detection logic (no allowlist, no ALLOW markers) so a
     regression in the whole-literal tokenizer cannot hide behind either
     suppression path. Green requires: the multi-line raw-string evasion case
-    detected, the single-line case detected, and `proxima_core::` Rust paths
+    detected, the single-line case detected, and `proxiima_core::` Rust paths
     not flagged.
     """
-    fixture = ROOT / "scripts/fixtures/architecture-guardrails/flavor_core_sql.rs"
+    fixture = ROOT / "scripts/fixtures/architecture-guardrails/spiice_core_sql.rs"
     rel = fixture.relative_to(ROOT)
     text = fixture.read_text(encoding="utf-8")
     lines = text.splitlines()
-    hits = flavor_core_sql_hits(text)
+    hits = spiice_core_sql_hits(text)
     for start_line, _end_line, _literal in hits:
-        print(f"{rel}:{start_line}: flavor raw proxima_core SQL: {lines[start_line - 1].strip()}")
+        print(f"{rel}:{start_line}: spiice raw proxiima_core SQL: {lines[start_line - 1].strip()}")
     failures: list[str] = []
     if not any(
-        end_line > start_line and "proxima_core." not in literal.splitlines()[0]
+        end_line > start_line and "proxiima_core." not in literal.splitlines()[0]
         for start_line, end_line, literal in hits
     ):
         failures.append("multi-line raw-string evasion case not detected")
@@ -1034,7 +1034,7 @@ def run_self_test() -> int:
         failures.append("single-line literal case not detected")
     if len(hits) != 2:
         failures.append(
-            f"expected exactly 2 flagged literals (`proxima_core::` Rust paths must stay allowed), got {len(hits)}"
+            f"expected exactly 2 flagged literals (`proxiima_core::` Rust paths must stay allowed), got {len(hits)}"
         )
     good = "pub async fn write(\n    permit: &OwnerWritePermit,\n) -> Result<(), StorageError> { Ok(()) }"
     bad = "pub async fn write(\n    owner: &Owner,\n) -> Result<(), StorageError> { Ok(()) }"
@@ -1061,17 +1061,17 @@ async fn ingest_fact_atomic(
         failures.append("fixture-gated raw Fact adapter was not recognized")
     if not ungated or directly_fixture_gated(ungated_raw, ungated[0][2]):
         failures.append("ungated raw Fact adapter was not detected")
-    if not removed_flavor_hits("docs/x.md", "see flavors/code\nproxima_code.chunk\nPROXIMA-CODE\nproxima_core"):
-        failures.append("removed flavor name not detected")
-    elif len(removed_flavor_hits("docs/x.md", "flavors/code\nproxima_code\nPROXIMA-CODE\nproxima_core")) != 3:
-        failures.append("removed flavor rule must flag exactly the three spellings, not proxima_core")
-    if removed_flavor_hits("CHANGELOG.md", "proxima-code"):
-        failures.append("CHANGELOG.md must stay exempt from the removed flavor rule")
-    vocabulary = flavor_vocabulary(["proxima-example"])
-    if vocabulary != ["proxima_example", "proxima-example", "proxima-example_"]:
-        failures.append(f"flavor vocabulary derivation changed: {vocabulary}")
-    if len(crate_src_flavor_hits("// proxima_example\nproxima-example_note\nproxima_core", vocabulary)) != 2:
-        failures.append("crate source flavor vocabulary not detected")
+    if not removed_spiice_hits("docs/x.md", "see spiices/code\nproxiima_code.chunk\nPROXIIMA-CODE\nproxiima_core"):
+        failures.append("removed spiice name not detected")
+    elif len(removed_spiice_hits("docs/x.md", "spiices/code\nproxiima_code\nPROXIIMA-CODE\nproxiima_core")) != 3:
+        failures.append("removed spiice rule must flag exactly the three spellings, not proxiima_core")
+    if removed_spiice_hits("CHANGELOG.md", "proxiima-code"):
+        failures.append("CHANGELOG.md must stay exempt from the removed spiice rule")
+    vocabulary = spiice_vocabulary(["proxiima-example"])
+    if vocabulary != ["proxiima_example", "proxiima-example", "proxiima-example_"]:
+        failures.append(f"spiice vocabulary derivation changed: {vocabulary}")
+    if len(crate_src_spiice_hits("// proxiima_example\nproxiima-example_note\nproxiima_core", vocabulary)) != 2:
+        failures.append("crate source spiice vocabulary not detected")
     memory_fixture = ROOT / "scripts/fixtures/architecture-guardrails/memory_reads.rs"
     memory_hits = memory_read_hits(memory_fixture.read_text(encoding="utf-8"), ".rs")
     unmarked = [line for line, kind in memory_hits if kind is None]
@@ -1082,10 +1082,10 @@ async fn ingest_fact_atomic(
         failures.append(f"memory census: marked reads not classified (same line, line above): {marked}")
     sql_fixture = (
         "-- FORGET-POLICY: live-only (fixture) applies to every read in this function\n"
-        "CREATE OR REPLACE FUNCTION proxima_core.f() RETURNS void AS $$\n"
-        "  SELECT 1 FROM proxima_core.memory m;\n$$;\n"
-        "CREATE OR REPLACE FUNCTION proxima_core.g() RETURNS void AS $$\n"
-        "  SELECT 1 FROM proxima_core.memory m;\n$$;\n"
+        "CREATE OR REPLACE FUNCTION proxiima_core.f() RETURNS void AS $$\n"
+        "  SELECT 1 FROM proxiima_core.memory m;\n$$;\n"
+        "CREATE OR REPLACE FUNCTION proxiima_core.g() RETURNS void AS $$\n"
+        "  SELECT 1 FROM proxiima_core.memory m;\n$$;\n"
     )
     if [kind for _line, kind in memory_read_hits(sql_fixture, ".sql")] != ["live-only", None]:
         failures.append("memory census: a function-level marker must cover its own function only")
@@ -1096,13 +1096,13 @@ async fn ingest_fact_atomic(
     if in_memory_census("let scope = owner_scope(&pool).await?;", ".rs"):
         failures.append("memory census: an owner-scope file was put in the census")
     guc_files = {
-        LIFECYCLE_GUC_MODULE: "sqlx::query(\"SELECT set_config('app.proxima_lifecycle', 'on', true)\")",
-        "crates/storage-pg/src/other.rs": "sqlx::query(\"SELECT set_config( 'app.proxima_lifecycle', 'on', true)\")",
-        "crates/x/src/y.sql": "SET LOCAL app.proxima_lifecycle = 'on';",
-        "crates/storage-pg/definitions/policies.sql": "current_setting('app.proxima_lifecycle'::text, true) = 'on'::text",
+        LIFECYCLE_GUC_MODULE: "sqlx::query(\"SELECT set_config('app.proxiima_lifecycle', 'on', true)\")",
+        "crates/storage-pg/src/other.rs": "sqlx::query(\"SELECT set_config( 'app.proxiima_lifecycle', 'on', true)\")",
+        "crates/x/src/y.sql": "SET LOCAL app.proxiima_lifecycle = 'on';",
+        "crates/storage-pg/definitions/policies.sql": "current_setting('app.proxiima_lifecycle'::text, true) = 'on'::text",
     }
     if [rel for rel, _line in lifecycle_guc_writers(guc_files)] != ["crates/storage-pg/src/other.rs", "crates/x/src/y.sql"]:
-        failures.append("lifecycle scope: a second writer of app.proxima_lifecycle was not detected (or a reader was)")
+        failures.append("lifecycle scope: a second writer of app.proxiima_lifecycle was not detected (or a reader was)")
     if not in_memory_census("let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;", ".rs"):
         failures.append("memory census: a lifecycle-scope file was not recognized")
     enter_files = {
@@ -1124,15 +1124,15 @@ async fn ingest_fact_atomic(
     if enter_problems != ["crates/storage-pg/src/verbs/a.rs added: expected 0 lifecycle scope enter(s), found 1"]:
         failures.append(f"lifecycle scope: an unpinned enter site was not detected exactly: {enter_problems}")
     live_fixture = (
-        'sqlx::query("SELECT t FROM proxima_core.memory /* FORGET-POLICY: live-only (fixture) */ WHERE t = $1")\n'
-        'sqlx::query("SELECT t FROM proxima_core.memory /* FORGET-POLICY: live-only (fixture) */\n'
+        'sqlx::query("SELECT t FROM proxiima_core.memory /* FORGET-POLICY: live-only (fixture) */ WHERE t = $1")\n'
+        'sqlx::query("SELECT t FROM proxiima_core.memory /* FORGET-POLICY: live-only (fixture) */\n'
         '    WHERE t = $1 AND forgotten_at IS NULL")\n'
-        'sqlx::query("UPDATE j FROM claimed, proxima_core.memory m /* FORGET-POLICY: includes-forgotten (fixture) */")\n'
+        'sqlx::query("UPDATE j FROM claimed, proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (fixture) */")\n'
     )
     if unfiltered_live_only(live_fixture, ".rs") != [1]:
         failures.append("memory census: a live-only read without the forgotten filter was not flagged (or a filtered one was)")
     if [kind for _line, kind in memory_read_hits(live_fixture, ".rs")] != ["live-only", "live-only", "includes-forgotten"]:
-        failures.append("memory census: a comma join to proxima_core.memory was not recognized as a read")
+        failures.append("memory census: a comma join to proxiima_core.memory was not recognized as a read")
     if not in_memory_census("fn f() {}", ".rs", "crates/storage-pg/src/verbs/fact_embeddings/write.rs"):
         failures.append("memory census: a platform callee module was not put in the census")
     cold_fixture = ROOT / "scripts/fixtures/architecture-guardrails/cold_vocabulary.rs"
@@ -1143,7 +1143,7 @@ async fn ingest_fact_atomic(
         for failure in failures:
             print(f"self-test failed: {failure}: {rel}", file=sys.stderr)
         return 1
-    print(f"self-test detected {len(hits)} flavor raw proxima_core SQL literals", file=sys.stderr)
+    print(f"self-test detected {len(hits)} spiice raw proxiima_core SQL literals", file=sys.stderr)
     return 0
 
 
@@ -1152,7 +1152,7 @@ def main() -> int:
     parser.add_argument(
         "--self-test",
         action="store_true",
-        help="assert the flavor core SQL detector fires on its fixture; exits zero when it does",
+        help="assert the spiice core SQL detector fires on its fixture; exits zero when it does",
     )
     args = parser.parse_args()
 
@@ -1165,13 +1165,13 @@ def main() -> int:
     check_storage_resurrection(findings)
     check_runtime_registration(findings)
     check_entity_owner_union(findings)
-    check_flavor_core_sql(findings)
+    check_spiice_core_sql(findings)
     check_event_source_vocabulary(findings)
     check_tombstone_tool(findings)
     check_public_witnesses(findings)
     check_caller_supplied_audit(findings)
     check_owner_write_permit_surfaces(findings)
-    check_removed_flavor_vocabulary(findings)
+    check_removed_spiice_vocabulary(findings)
     check_memory_reads(findings)
     check_lifecycle_guc(findings)
     check_cold_vocabulary(findings)

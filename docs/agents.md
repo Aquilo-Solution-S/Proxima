@@ -1,15 +1,15 @@
 # Agents
 > Status: current
 
-This page is the compact operating ritual for an agent using Proxima. The
+This page is the compact operating ritual for an agent using Proxiima. The
 running host is authoritative for available actions and resources: read
-`proxima://how-to` for current guidance and discover the catalog with
-`tools/list`, `proxima://tools`, or `/v1/openapi.json`. Those surfaces can
+`proxiima://how-to` for current guidance and discover the catalog with
+`tools/list`, `proxiima://tools`, or `/v1/openapi.json`. Those surfaces can
 change with the host build, so this page does not copy their schemas.
 
 ## Session ritual
 
-1. **Discover first.** Read `proxima://how-to`, then inspect the live catalog.
+1. **Discover first.** Read `proxiima://how-to`, then inspect the live catalog.
    This is a judgment call: do it because a prose page cannot describe a
    particular deployment's capabilities; for a self-contained answer, discovery
    adds no value.

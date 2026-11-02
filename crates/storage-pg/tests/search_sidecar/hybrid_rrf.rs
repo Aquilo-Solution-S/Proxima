@@ -1,6 +1,6 @@
 use super::*;
-use proxima_core::verbs::query::{MemorySearchPage, SearchCursor};
-use proxima_storage_pg::test_fixtures::fresh_pg;
+use proxiima_core::verbs::query::{MemorySearchPage, SearchCursor};
+use proxiima_storage_pg::test_fixtures::fresh_pg;
 use std::collections::{BTreeMap, BTreeSet};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -24,7 +24,7 @@ fn hybrid_request(owner: OwnerId, query: &str) -> MemorySearchRequest {
 
 fn hits_by_id(
     page: &MemorySearchPage,
-) -> BTreeMap<Uuid, &proxima_core::verbs::query::MemorySearchResult> {
+) -> BTreeMap<Uuid, &proxiima_core::verbs::query::MemorySearchResult> {
     page.results
         .iter()
         .map(|hit| (hit.memory_id.into_inner(), hit))
@@ -164,13 +164,13 @@ async fn hybrid_min_score_keeps_either_raw_leg_and_drops_both_below_floor() -> T
 
 async fn seed_window_notes(pool: &sqlx::PgPool, owner: OwnerId) -> Result<Vec<Uuid>, sqlx::Error> {
     let ids: Vec<_> = (0..1_001).map(|_| Uuid::now_v7()).collect();
-    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+    sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
         .bind(owner.into_inner())
         .execute(pool)
         .await?;
     let mut stamped = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, t, kind, schema_id, owner_id)
+        "INSERT INTO proxiima_core.memory_head (handle, t, kind, schema_id, owner_id)
          SELECT t, t, 'fact', 'core/agent-note-v1', $2 FROM unnest($1::uuid[]) AS t",
     )
     .bind(&ids)
@@ -178,10 +178,10 @@ async fn seed_window_notes(pool: &sqlx::PgPool, owner: OwnerId) -> Result<Vec<Uu
     .execute(&mut *stamped)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
              (handle, t, kind, schema_id, owner_id, sidecar_tables, occurred_at, \"by\", via)
          SELECT t, t, 'fact', 'core/agent-note-v1', $2,
-                ARRAY['proxima_core.agent_note_v1'], uuid_extract_timestamp(t), '00000000-0000-0000-0000-000000000509'::uuid, NULL
+                ARRAY['proxiima_core.agent_note_v1'], uuid_extract_timestamp(t), '00000000-0000-0000-0000-000000000509'::uuid, NULL
            FROM unnest($1::uuid[]) AS t",
     )
     .bind(&ids)
@@ -189,7 +189,7 @@ async fn seed_window_notes(pool: &sqlx::PgPool, owner: OwnerId) -> Result<Vec<Uu
     .execute(&mut *stamped)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+        "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
          SELECT t, t, 'quartz', 'Window membership', '{}'::text[] FROM unnest($1::uuid[]) AS t",
     )
     .bind(&ids)

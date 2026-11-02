@@ -7,22 +7,22 @@ use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{
+use proxiima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::{
     AccessKind, EdgeEndpoint, EntityKind, MemoryId, OwnerId, SchemaId, SchemaVersion, StorageError,
     UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::forget::erase_memory;
-use proxima_storage_pg::{PgPoolConfig, PgStorage, PgTuning, core_pg_sidecars};
+use proxiima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::verbs::forget::erase_memory;
+use proxiima_storage_pg::{PgPoolConfig, PgStorage, PgTuning, core_pg_sidecars};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-const COARSE: &str = "LOCK TABLE proxima_core.memory, proxima_core.goal \
+const COARSE: &str = "LOCK TABLE proxiima_core.memory, proxiima_core.goal \
                       IN SHARE ROW EXCLUSIVE MODE";
 
 /// Target locks a transaction takes before it reads `pg_locks`.
@@ -44,14 +44,14 @@ fn fact_draft() -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
 
 fn abstraction_draft(origin: MemoryId) -> FactWriteCommand {
     let mut draft = fact_draft();
-    draft.kind = proxima_core::MemoryKind::Abstraction;
+    draft.kind = proxiima_core::MemoryKind::Abstraction;
     draft.additional_references = vec![EdgeEndpoint::memory(EntityKind::Fact, origin)];
     draft
 }
@@ -62,9 +62,9 @@ async fn insert_facts(
     owner_id: Uuid,
     rows: i64,
 ) -> Result<(), sqlx::Error> {
-    let handle = proxima_core::new_memory_uuid(1);
+    let handle = proxiima_core::new_memory_uuid(1);
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
          VALUES ($1, 'fact', 'core/test-fact-v1', $2, uuidv7())",
     )
     .bind(handle)
@@ -72,12 +72,12 @@ async fn insert_facts(
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
              (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
-         SELECT $1, t, 'fact'::proxima_core.memory_kind, $2, 'core/test-fact-v1', now(),
+         SELECT $1, t, 'fact'::proxiima_core.memory_kind, $2, 'core/test-fact-v1', now(),
                 '00000000-0000-0000-0000-000000000509'::uuid, NULL::uuid
            FROM (
-                SELECT t FROM proxima_core.memory_head WHERE handle = $1
+                SELECT t FROM proxiima_core.memory_head WHERE handle = $1
                 UNION ALL
                 SELECT uuidv7() FROM generate_series(1, $3 - 1)
            ) AS versions(t)",
@@ -111,7 +111,7 @@ async fn insert_derived_pairs(
     sqlx::query(
         "WITH numbered AS (
             SELECT t, row_number() OVER (ORDER BY t) AS n
-              FROM proxima_core.memory
+              FROM proxiima_core.memory
              WHERE owner_id = $1 AND kind = 'fact'
              ORDER BY t
              LIMIT ($2 * 2)
@@ -124,7 +124,7 @@ async fn insert_derived_pairs(
              WHERE a.n % 2 = 1
          ),
          ins_content AS (
-            INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+            INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
             SELECT $1, 'core/test-fact-v1',
                    decode(md5(left_t::text || right_t::text), 'hex')
                    || decode(md5(right_t::text || left_t::text), 'hex')
@@ -144,7 +144,7 @@ async fn insert_derived_pairs(
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
          SELECT handle, 'abstraction', 'core/test-fact-v1', $1, mem_t
            FROM seed_derived",
     )
@@ -152,7 +152,7 @@ async fn insert_derived_pairs(
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory
+        "INSERT INTO proxiima_core.memory
              (handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at, \"by\", via)
          SELECT handle, mem_t, 'abstraction', $1, 'core/test-fact-v1', content_id,
                 ARRAY[left_t, right_t], NULL,
@@ -174,7 +174,7 @@ async fn insert_derived(
 ) -> Result<Uuid, sqlx::Error> {
     let (handle, t) = (Uuid::now_v7(), Uuid::now_v7());
     let content_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/test-fact-v1', $2)
          RETURNING content_id",
     )
@@ -183,8 +183,8 @@ async fn insert_derived(
     .fetch_one(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, $2::proxima_core.memory_kind, 'core/test-fact-v1', $3, $4)",
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, $2::proxiima_core.memory_kind, 'core/test-fact-v1', $3, $4)",
     )
     .bind(handle)
     .bind(kind)
@@ -193,8 +193,8 @@ async fn insert_derived(
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at, \"by\", via)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, 'core/test-fact-v1', $5, $6, CASE WHEN $3::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+        "INSERT INTO proxiima_core.memory (handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at, \"by\", via)
+         VALUES ($1, $2, $3::proxiima_core.memory_kind, $4, 'core/test-fact-v1', $5, $6, CASE WHEN $3::proxiima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -210,7 +210,7 @@ async fn insert_derived(
 /// The mode this transaction bound and the advisory locks it holds.
 async fn pin_lock_state(conn: &mut PgConnection) -> Result<(Option<String>, i64), sqlx::Error> {
     sqlx::query_as(
-        "SELECT current_setting('proxima_core.pin_lock_mode', true),
+        "SELECT current_setting('proxiima_core.pin_lock_mode', true),
                 (SELECT count(*) FROM pg_locks
                   WHERE pid = pg_backend_pid() AND locktype = 'advisory')",
     )
@@ -239,9 +239,9 @@ async fn wait_for_lock_waiter(pool: &PgPool) -> TestResult {
 
 async fn ungrounded_memories(pool: &PgPool) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
-        "SELECT count(*) FROM proxima_core.memory m
+        "SELECT count(*) FROM proxiima_core.memory m
           WHERE m.kind <> 'fact'
-            AND NOT proxima_core.pins_have_grounding_support(m.origins || m.refs, NULL, NULL)",
+            AND NOT proxiima_core.pins_have_grounding_support(m.origins || m.refs, NULL, NULL)",
     )
     .fetch_one(pool)
     .await
@@ -254,7 +254,7 @@ async fn migrated_db(name: &str) -> Result<PgStorage, Box<dyn Error>> {
     create_db(name).await?;
     let pg = PgStorage::connect_for_tests(db_url(name)).await?;
     let (_, platform_url) = split_role_urls(name).await?;
-    proxima_storage_pg::PgMigrationStorage::connect_with_config(
+    proxiima_storage_pg::PgMigrationStorage::connect_with_config(
         &platform_url,
         PgPoolConfig::default(),
         PgTuning::default(),
@@ -282,7 +282,7 @@ async fn seed_owner(pg: &PgStorage) -> Result<(OwnerId, OwnerWritePermit, Memory
 
 #[tokio::test]
 async fn coarse_mode_needs_both_tables_in_share_row_exclusive() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     let result: TestResult = async {
         let pg = engine_db(&db_name).await?;
         let (owner, _, _) = seed_owner(&pg).await?;
@@ -292,21 +292,21 @@ async fn coarse_mode_needs_both_tables_in_share_row_exclusive() {
             (
                 "memory",
                 Some(sqlx::query(
-                    "LOCK TABLE proxima_core.memory IN SHARE ROW EXCLUSIVE MODE",
+                    "LOCK TABLE proxiima_core.memory IN SHARE ROW EXCLUSIVE MODE",
                 )),
                 false,
             ),
             (
                 "goal",
                 Some(sqlx::query(
-                    "LOCK TABLE proxima_core.goal IN ACCESS EXCLUSIVE MODE",
+                    "LOCK TABLE proxiima_core.goal IN ACCESS EXCLUSIVE MODE",
                 )),
                 false,
             ),
             (
                 "both in SHARE",
                 Some(sqlx::query(
-                    "LOCK TABLE proxima_core.memory, proxima_core.goal IN SHARE MODE",
+                    "LOCK TABLE proxiima_core.memory, proxiima_core.goal IN SHARE MODE",
                 )),
                 false,
             ),
@@ -314,7 +314,7 @@ async fn coarse_mode_needs_both_tables_in_share_row_exclusive() {
             (
                 "both in ACCESS EXCLUSIVE",
                 Some(sqlx::query(
-                    "LOCK TABLE proxima_core.memory, proxima_core.goal IN ACCESS EXCLUSIVE MODE",
+                    "LOCK TABLE proxiima_core.memory, proxiima_core.goal IN ACCESS EXCLUSIVE MODE",
                 )),
                 true,
             ),
@@ -349,7 +349,7 @@ async fn coarse_mode_needs_both_tables_in_share_row_exclusive() {
         // The setting is not trusted: bound without the locks, the trigger
         // takes them instead of skipping the target locks unprotected.
         let mut tx = pool.begin().await?;
-        sqlx::query("SET LOCAL proxima_core.pin_lock_mode = 'coarse'")
+        sqlx::query("SET LOCAL proxiima_core.pin_lock_mode = 'coarse'")
             .execute(&mut *tx)
             .await?;
         insert_facts(&mut tx, owner.into_inner(), 3).await?;
@@ -361,8 +361,8 @@ async fn coarse_mode_needs_both_tables_in_share_row_exclusive() {
             "SELECT count(DISTINCT relation) FROM pg_locks
               WHERE pid = pg_backend_pid() AND granted
                 AND mode = 'ShareRowExclusiveLock'
-                AND relation IN ('proxima_core.memory'::regclass,
-                                 'proxima_core.goal'::regclass)",
+                AND relation IN ('proxiima_core.memory'::regclass,
+                                 'proxiima_core.goal'::regclass)",
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -377,7 +377,7 @@ async fn coarse_mode_needs_both_tables_in_share_row_exclusive() {
 
 #[tokio::test]
 async fn coarse_mode_still_refuses_missing_and_erased_targets() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     let result: TestResult = async {
         let pg = engine_db(&db_name).await?;
         let (owner, permit, erased) = seed_owner(&pg).await?;
@@ -398,7 +398,7 @@ async fn coarse_mode_still_refuses_missing_and_erased_targets() {
         )
         .await?;
         tx.commit().await?;
-        let before: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory")
+        let before: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory")
             .fetch_one(pool)
             .await?;
 
@@ -427,7 +427,7 @@ async fn coarse_mode_still_refuses_missing_and_erased_targets() {
             );
             tx.rollback().await?;
         }
-        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory")
+        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory")
             .fetch_one(pool)
             .await?;
         assert_eq!(after, before, "a refused pin fails the whole transaction");
@@ -440,7 +440,7 @@ async fn coarse_mode_still_refuses_missing_and_erased_targets() {
 
 #[tokio::test]
 async fn concurrent_forget_waits_for_the_bulk_transaction() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     let result: TestResult = async {
         let pg = engine_db(&db_name).await?;
         let (owner, permit, fact) = seed_owner(&pg).await?;
@@ -492,7 +492,7 @@ async fn concurrent_forget_waits_for_the_bulk_transaction() {
         forget_result.expect("forget after the bulk commits");
 
         let live: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT t FROM proxima_core.memory
+            "SELECT t FROM proxiima_core.memory
               WHERE t = ANY($1) AND forgotten_at IS NULL ORDER BY t",
         )
         .bind(vec![abstraction.into_inner(), perspective])
@@ -509,7 +509,7 @@ async fn concurrent_forget_waits_for_the_bulk_transaction() {
 
 #[tokio::test]
 async fn concurrent_erase_waits_for_the_bulk_transaction() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     let result: TestResult = async {
         let pg = engine_db(&db_name).await?;
         let (owner, permit, first) = seed_owner(&pg).await?;
@@ -543,7 +543,7 @@ async fn concurrent_erase_waits_for_the_bulk_transaction() {
         driver_result?;
         erase_result?;
         let origins: Vec<Uuid> =
-            sqlx::query_scalar("SELECT origins FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT origins FROM proxiima_core.memory WHERE t = $1")
                 .bind(pinned)
                 .fetch_one(pool)
                 .await?;
@@ -553,7 +553,7 @@ async fn concurrent_erase_waits_for_the_bulk_transaction() {
             "erase never rewrites a pin"
         );
         let witnessed: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM proxima_core.erased_pin_target WHERE t = $1)",
+            "SELECT EXISTS (SELECT 1 FROM proxiima_core.erased_pin_target WHERE t = $1)",
         )
         .bind(first.into_inner())
         .fetch_one(pool)
@@ -626,13 +626,13 @@ fn deadlocked(error: &sqlx::Error) -> bool {
 /// Postgres aborts one side.
 #[tokio::test]
 async fn documented_lock_order_meets_lifecycle_writers() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     let result: TestResult = async {
         let pg = engine_db(&db_name).await?;
         let pool = pg.pool_for_tests();
 
         let mut writer = pool.begin().await?;
-        sqlx::query("DELETE FROM proxima_core.memory WHERE false")
+        sqlx::query("DELETE FROM proxiima_core.memory WHERE false")
             .execute(&mut *writer)
             .await?;
         let locked = AtomicBool::new(false);
@@ -645,7 +645,7 @@ async fn documented_lock_order_meets_lifecycle_writers() {
         };
         let driver = async {
             wait_for_lock_waiter(pool).await?;
-            sqlx::query("DELETE FROM proxima_core.goal WHERE false")
+            sqlx::query("DELETE FROM proxiima_core.goal WHERE false")
                 .execute(&mut *writer)
                 .await?;
             assert!(
@@ -660,7 +660,7 @@ async fn documented_lock_order_meets_lifecycle_writers() {
         bulk_result?;
 
         let mut writer = pool.begin().await?;
-        sqlx::query("DELETE FROM proxima_core.goal WHERE false")
+        sqlx::query("DELETE FROM proxiima_core.goal WHERE false")
             .execute(&mut *writer)
             .await?;
         let bulk = async {
@@ -671,7 +671,7 @@ async fn documented_lock_order_meets_lifecycle_writers() {
         };
         let driver = async {
             wait_for_lock_waiter(pool).await?;
-            let wrote = sqlx::query("DELETE FROM proxima_core.memory WHERE false")
+            let wrote = sqlx::query("DELETE FROM proxiima_core.memory WHERE false")
                 .execute(&mut *writer)
                 .await;
             writer.rollback().await?;
@@ -694,7 +694,7 @@ async fn documented_lock_order_meets_lifecycle_writers() {
 /// lock-table settings, as the platform role under enforced owner RLS.
 #[tokio::test]
 async fn hundred_thousand_memories_commit_under_the_coarse_lock() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     let result: TestResult = async {
         migrated_db(&db_name).await?;
         let (_, platform_url) = split_role_urls(&db_name).await?;
@@ -713,11 +713,11 @@ async fn hundred_thousand_memories_commit_under_the_coarse_lock() {
 
         let owner_id = Uuid::now_v7();
         let mut tx = platform.begin().await?;
-        sqlx::query("SELECT set_config('app.proxima_scope', 'platform', true)")
+        sqlx::query("SELECT set_config('app.proxiima_scope', 'platform', true)")
             .execute(&mut *tx)
             .await?;
         sqlx::query(COARSE).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
             .bind(owner_id)
             .execute(&mut *tx)
             .await?;
@@ -731,11 +731,11 @@ async fn hundred_thousand_memories_commit_under_the_coarse_lock() {
         tx.commit().await?;
 
         let mut tx = platform.begin().await?;
-        sqlx::query("SELECT set_config('app.proxima_scope', 'platform', true)")
+        sqlx::query("SELECT set_config('app.proxiima_scope', 'platform', true)")
             .execute(&mut *tx)
             .await?;
         let committed: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE owner_id = $1")
+            sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory WHERE owner_id = $1")
                 .bind(owner_id)
                 .fetch_one(&mut *tx)
                 .await?;

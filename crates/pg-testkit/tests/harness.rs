@@ -1,14 +1,14 @@
-use proxima_pg_testkit::{DbGuard, create_db, drop_db, unique_db_name};
+use proxiima_pg_testkit::{DbGuard, create_db, drop_db, unique_db_name};
 
 async fn exists(name: &str) -> bool {
-    proxima_pg_testkit::database_exists(name)
+    proxiima_pg_testkit::database_exists(name)
         .await
         .expect("exists")
 }
 
 #[tokio::test]
 async fn passing_guard_drops_the_database() {
-    let name = unique_db_name("proxima_test");
+    let name = unique_db_name("proxiima_test");
     create_db(&name).await.expect("create");
     {
         let _guard = DbGuard::adopt(name.clone());
@@ -18,7 +18,7 @@ async fn passing_guard_drops_the_database() {
 
 #[tokio::test]
 async fn panicking_guard_keeps_the_database() {
-    let name = unique_db_name("proxima_test");
+    let name = unique_db_name("proxiima_test");
     create_db(&name).await.expect("create");
     let join = std::thread::spawn({
         let name = name.clone();
@@ -34,7 +34,7 @@ async fn panicking_guard_keeps_the_database() {
 
 #[tokio::test]
 async fn the_connection_budget_reads_the_servers_slots_and_their_use() {
-    let budget = proxima_pg_testkit::connection_budget()
+    let budget = proxiima_pg_testkit::connection_budget()
         .await
         .expect("budget");
     assert!(budget.max_connections > budget.superuser_reserved);
@@ -44,7 +44,7 @@ async fn the_connection_budget_reads_the_servers_slots_and_their_use() {
     );
     assert!(budget.non_superuser_backends <= budget.client_backends);
 
-    let exhausted = proxima_pg_testkit::describe_connection_error(
+    let exhausted = proxiima_pg_testkit::describe_connection_error(
         "runtime connection",
         &"pool timed out while waiting for an open connection",
     )
@@ -56,7 +56,7 @@ async fn the_connection_budget_reads_the_servers_slots_and_their_use() {
         "{exhausted}"
     );
     let other =
-        proxima_pg_testkit::describe_connection_error("platform validation", &"scope refused")
+        proxiima_pg_testkit::describe_connection_error("platform validation", &"scope refused")
             .await;
     assert_eq!(other, "platform validation: scope refused");
 }

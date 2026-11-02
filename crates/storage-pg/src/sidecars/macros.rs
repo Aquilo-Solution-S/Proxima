@@ -539,7 +539,7 @@ macro_rules! pg_sidecar {
         }
 
         // Written out, not `#[derive(sqlx::FromRow)]`: the derive expands to
-        // absolute `sqlx` paths a flavor depending only on `proxima` cannot
+        // absolute `sqlx` paths a spiice depending only on `proxiima` cannot
         // resolve. Decodes each field by its own name, as the derive does.
         impl<'r> $crate::__private::sqlx::FromRow<'r, $crate::__private::sqlx::postgres::PgRow>
             for $row_ty

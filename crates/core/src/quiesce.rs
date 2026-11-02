@@ -16,14 +16,14 @@
 //!
 //! ```compile_fail,E0277
 //! fn needs_clone<T: Clone>() {}
-//! needs_clone::<proxima_core::GateWorker>();
+//! needs_clone::<proxiima_core::GateWorker>();
 //! ```
 //!
 //! The control half cannot park, so a host holding a [`QuiesceGate`] cannot
 //! acknowledge its own pause:
 //!
 //! ```compile_fail,E0599
-//! async fn host(gate: proxima_core::QuiesceGate) {
+//! async fn host(gate: proxiima_core::QuiesceGate) {
 //!     gate.checkpoint(std::future::pending()).await;
 //! }
 //! ```

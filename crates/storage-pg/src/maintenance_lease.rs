@@ -8,7 +8,7 @@
 //! pooler such a lock stays on a shared server connection and is granted again
 //! to whichever client reuses it.
 //!
-//! The lease is a row of `proxima_core.maintenance_lease` written in short
+//! The lease is a row of `proxiima_core.maintenance_lease` written in short
 //! platform transactions: taken when missing or expired, renewed by its holder
 //! while the pass runs, and deleted when the pass ends. A holder that dies
 //! stops renewing, and its lease expires after [`MAINTENANCE_LEASE_TTL`].
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 use uuid::Uuid;
 
 use crate::PgPlatformScope;
@@ -69,7 +69,7 @@ impl MaintenanceLease {
         let holder = Uuid::now_v7();
         let mut tx = platform.begin().await?;
         let taken: Option<Uuid> = sqlx::query_scalar(
-            "INSERT INTO proxima_core.maintenance_lease AS lease (name, holder, expires_at)
+            "INSERT INTO proxiima_core.maintenance_lease AS lease (name, holder, expires_at)
                   VALUES ($1, $2, clock_timestamp() + make_interval(secs => $3))
              ON CONFLICT (name) DO UPDATE
                      SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at
@@ -170,7 +170,7 @@ async fn renew(
 ) -> Result<bool, StorageError> {
     let mut tx = platform.begin().await?;
     let renewed = sqlx::query(
-        "UPDATE proxima_core.maintenance_lease
+        "UPDATE proxiima_core.maintenance_lease
             SET expires_at = clock_timestamp() + make_interval(secs => $3)
           WHERE name = $1 AND holder = $2 AND expires_at >= clock_timestamp()",
     )
@@ -192,7 +192,7 @@ async fn release(
     holder: Uuid,
 ) -> Result<(), StorageError> {
     let mut tx = platform.begin().await?;
-    sqlx::query("DELETE FROM proxima_core.maintenance_lease WHERE name = $1 AND holder = $2")
+    sqlx::query("DELETE FROM proxiima_core.maintenance_lease WHERE name = $1 AND holder = $2")
         .bind(name.as_str())
         .bind(holder)
         .execute(&mut *tx)

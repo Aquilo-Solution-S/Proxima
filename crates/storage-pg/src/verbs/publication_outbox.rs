@@ -18,20 +18,20 @@
 //! delivered or go away (a mark, a retire) settles the aggregate in the same
 //! transaction, under the record's row lock.
 //!
-//! [`PublicationRetentionPort`]: proxima_core::storage_ports::publication::PublicationRetentionPort
+//! [`PublicationRetentionPort`]: proxiima_core::storage_ports::publication::PublicationRetentionPort
 
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use proxima_core::publication::{
+use proxiima_core::publication::{
     PublicationError, PublicationLimits, PublicationPlan, SubjectPosition,
 };
-use proxima_core::storage_ports::publication::{
+use proxiima_core::storage_ports::publication::{
     AckOutcome, ClaimToken, ClaimedPublication, ConsumerName, OriginScope, PublicationConsumerPort,
     PublicationOriginEligibility, PublicationOriginEligibilityPort, PublicationOutboxPort,
     PublisherId, ReleaseOutcome, RetireOutcome,
 };
-use proxima_core::{SealedPublication, StorageError};
+use proxiima_core::{SealedPublication, StorageError};
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
 
@@ -60,9 +60,9 @@ pub(crate) async fn next_series_position(
     handle: Uuid,
 ) -> Result<SubjectPosition, StorageError> {
     let sequence: i64 = sqlx::query_scalar(
-        "INSERT INTO proxima_core.publication_counter AS c (handle, owner_id, sequence)
+        "INSERT INTO proxiima_core.publication_counter AS c (handle, owner_id, sequence)
          SELECT h.handle, h.owner_id, 1
-           FROM proxima_core.memory_head h
+           FROM proxiima_core.memory_head h
           WHERE h.handle = $1
          ON CONFLICT (handle) DO UPDATE SET sequence = c.sequence + 1
       RETURNING c.sequence",
@@ -116,7 +116,7 @@ pub(crate) async fn next_series_position(
 /// read of the Fact agree. Only a new Fact admission captures, and every new
 /// Fact resolves one; `None` is a caller fault.
 ///
-/// [`PublicationConfig`]: proxima_core::publication::PublicationConfig
+/// [`PublicationConfig`]: proxiima_core::publication::PublicationConfig
 pub(crate) async fn capture_publication_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner_id: Uuid,
@@ -135,7 +135,7 @@ pub(crate) async fn capture_publication_in_tx(
         StorageError::ConstraintViolation("schema version does not fit an integer column".into())
     })?;
     sqlx::query(
-        "INSERT INTO proxima_core.publication_outbox
+        "INSERT INTO proxiima_core.publication_outbox
              (t, owner_id, schema_id, schema_version, event_type, event_id,
               envelope, envelope_digest)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -152,8 +152,8 @@ pub(crate) async fn capture_publication_in_tx(
     .await
     .map_err(map_err)?;
     let lanes = sqlx::query(
-        "INSERT INTO proxima_core.publication_delivery (t, consumer)
-         SELECT $1, name FROM proxima_core.publication_consumer",
+        "INSERT INTO proxiima_core.publication_delivery (t, consumer)
+         SELECT $1, name FROM proxiima_core.publication_consumer",
     )
     .bind(t)
     .execute(tx.as_mut())
@@ -162,7 +162,7 @@ pub(crate) async fn capture_publication_in_tx(
     .rows_affected();
     if lanes == 0 {
         sqlx::query(
-            "UPDATE proxima_core.publication_outbox
+            "UPDATE proxiima_core.publication_outbox
                 SET state = 'published', published_at = now()
               WHERE t = $1",
         )
@@ -173,8 +173,8 @@ pub(crate) async fn capture_publication_in_tx(
     }
     let captured = sqlx::query_scalar::<_, Option<String>>(
         "SELECT memory.source_id
-           FROM proxima_core.memory memory /* FORGET-POLICY: includes-forgotten (reads the Fact this transaction just inserted) */
-           JOIN proxima_core.owners owner ON owner.owner_id = memory.owner_id
+           FROM proxiima_core.memory memory /* FORGET-POLICY: includes-forgotten (reads the Fact this transaction just inserted) */
+           JOIN proxiima_core.owners owner ON owner.owner_id = memory.owner_id
           WHERE memory.t = $1
             AND memory.owner_id = $2
             AND memory.kind = 'fact'",
@@ -190,7 +190,7 @@ pub(crate) async fn capture_publication_in_tx(
         )
     })?;
     sqlx::query(
-        "INSERT INTO proxima_core.publication_origin
+        "INSERT INTO proxiima_core.publication_origin
              (t, original_owner_id, source_id)
          VALUES ($1, $2, $3)",
     )
@@ -213,14 +213,14 @@ const BACKLOG_ESTIMATE_VALID_FOR: Duration = Duration::from_secs(30);
 const BACKLOG_ESTIMATE_REFRESH_AFTER: Duration = Duration::from_secs(10);
 
 /// The estimate a write may trust: one row, and none once it is too old.
-const FRESH_BACKLOG_ESTIMATE_SQL: &str = "SELECT pending FROM proxima_core.publication_backlog
+const FRESH_BACKLOG_ESTIMATE_SQL: &str = "SELECT pending FROM proxiima_core.publication_backlog
           WHERE measured_at > now() - make_interval(secs => $1)";
 
 /// Measure the backlog if the estimate is old: the count runs only when the
 /// row passes the age test, so claims inside the window cost one failed
 /// predicate.
-const REFRESH_BACKLOG_ESTIMATE_SQL: &str = "UPDATE proxima_core.publication_backlog
-            SET pending = (SELECT count(*) FROM proxima_core.publication_outbox
+const REFRESH_BACKLOG_ESTIMATE_SQL: &str = "UPDATE proxiima_core.publication_backlog
+            SET pending = (SELECT count(*) FROM proxiima_core.publication_outbox
                             WHERE state <> 'published'),
                 measured_at = now()
           WHERE measured_at < now() - make_interval(secs => $1)";
@@ -294,7 +294,7 @@ async fn refuse_when_full(
         StorageError::ConstraintViolation("max_pending does not fit a bigint offset".into())
     })?;
     let over: Option<i32> = sqlx::query_scalar(
-        "SELECT 1 FROM proxima_core.publication_outbox
+        "SELECT 1 FROM proxiima_core.publication_outbox
           WHERE state <> 'published'
          OFFSET $1 LIMIT 1",
     )
@@ -320,14 +320,14 @@ async fn refuse_when_full(
 macro_rules! deliverable {
     () => {
         "AND EXISTS (
-                    SELECT 1 FROM proxima_core.publication_origin origin
-                    JOIN proxima_core.owners original_owner
+                    SELECT 1 FROM proxiima_core.publication_origin origin
+                    JOIN proxiima_core.owners original_owner
                       ON original_owner.owner_id = origin.original_owner_id
                    WHERE origin.t = record.t
                      AND origin.original_owner_id = record.owner_id
                 )
                 AND NOT EXISTS (
-                    SELECT 1 FROM proxima_core.erased_pin_target erased
+                    SELECT 1 FROM proxiima_core.erased_pin_target erased
                      WHERE erased.t = record.t
                 )"
     };
@@ -360,8 +360,8 @@ macro_rules! deliverable {
 const CLAIM_SQL: &str = concat!(
     "WITH claimed AS (
              SELECT lane.t
-               FROM proxima_core.publication_delivery lane
-               JOIN proxima_core.publication_outbox record ON record.t = lane.t
+               FROM proxiima_core.publication_delivery lane
+               JOIN proxiima_core.publication_outbox record ON record.t = lane.t
               WHERE lane.consumer = $4
                 AND (lane.state = 'pending'
                   OR (lane.state = 'claimed' AND lane.lease_expires_at < now()))
@@ -373,7 +373,7 @@ const CLAIM_SQL: &str = concat!(
               LIMIT $1
          ),
          leased AS (
-         UPDATE proxima_core.publication_delivery lane
+         UPDATE proxiima_core.publication_delivery lane
             SET state = 'claimed',
                 claim_token = uuidv7(),
                 claimed_by = $2,
@@ -400,8 +400,8 @@ const CLAIM_SQL: &str = concat!(
                 leased.claim_token,
                 leased.lease_expires_at
            FROM leased
-           JOIN proxima_core.publication_outbox p ON p.t = leased.t
-           JOIN proxima_core.owners o ON o.owner_id = p.owner_id
+           JOIN proxiima_core.publication_outbox p ON p.t = leased.t
+           JOIN proxiima_core.owners o ON o.owner_id = p.owner_id
           ORDER BY leased.attempts ASC, leased.t ASC"
 );
 
@@ -472,10 +472,10 @@ impl PublicationOutboxPort for PgStorage {
         // window is at-least-once delivery and no mark can close it.
         let deliverable: Vec<Uuid> = sqlx::query_scalar(concat!(
             "SELECT lane.t
-               FROM proxima_core.publication_delivery lane
+               FROM proxiima_core.publication_delivery lane
                JOIN unnest($1::uuid[], $3::uuid[]) AS asked(t, claim_token)
                  ON asked.t = lane.t AND asked.claim_token = lane.claim_token
-               JOIN proxima_core.publication_outbox record ON record.t = lane.t
+               JOIN proxiima_core.publication_outbox record ON record.t = lane.t
               WHERE lane.consumer = $2
                 AND lane.state = 'claimed'
                 AND lane.lease_expires_at > now()
@@ -492,7 +492,7 @@ impl PublicationOutboxPort for PgStorage {
         .await
         .map_err(map_err)?;
         let published: Vec<Uuid> = sqlx::query_scalar(
-            "UPDATE proxima_core.publication_delivery lane
+            "UPDATE proxiima_core.publication_delivery lane
                 SET state = 'published',
                     published_at = now(),
                     claim_token = NULL,
@@ -518,7 +518,7 @@ impl PublicationOutboxPort for PgStorage {
         }
         // A claim that did not mark is stale unless its lane is published.
         let already: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT t FROM proxima_core.publication_delivery
+            "SELECT t FROM proxiima_core.publication_delivery
               WHERE t = ANY($1) AND consumer = $2 AND state = 'published'",
         )
         .bind(&ids)
@@ -559,9 +559,9 @@ impl PublicationOutboxPort for PgStorage {
         // The same deliverability filter as CLAIM_SQL, so a record the claim
         // would no longer hand out is not delivered under an older claim.
         let renewed = sqlx::query(concat!(
-            "UPDATE proxima_core.publication_delivery lane
+            "UPDATE proxiima_core.publication_delivery lane
                 SET lease_expires_at = now() + make_interval(secs => $4)
-               FROM proxima_core.publication_outbox record
+               FROM proxiima_core.publication_outbox record
               WHERE record.t = lane.t
                 AND lane.t = $1
                 AND lane.consumer = $2
@@ -590,7 +590,7 @@ impl PublicationOutboxPort for PgStorage {
     ) -> Result<ReleaseOutcome, StorageError> {
         let mut tx = self.platform_transaction().await?;
         let result = sqlx::query(
-            "UPDATE proxima_core.publication_delivery
+            "UPDATE proxiima_core.publication_delivery
                 SET state = 'pending',
                     claim_token = NULL,
                     claimed_by = NULL,
@@ -620,7 +620,7 @@ impl PublicationOutboxPort for PgStorage {
     async fn pending_count(&self) -> Result<u64, StorageError> {
         let mut tx = self.platform_transaction().await?;
         let count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.publication_outbox WHERE state <> 'published'",
+            "SELECT count(*) FROM proxiima_core.publication_outbox WHERE state <> 'published'",
         )
         .fetch_one(tx.as_mut())
         .await
@@ -643,7 +643,7 @@ pub(crate) async fn cancel_undelivered_for_forget(
     t: Uuid,
 ) -> Result<(), StorageError> {
     sqlx::query(
-        "SELECT 1 FROM proxima_core.publication_delivery
+        "SELECT 1 FROM proxiima_core.publication_delivery
           WHERE t = $1
           ORDER BY consumer
             FOR UPDATE",
@@ -653,7 +653,7 @@ pub(crate) async fn cancel_undelivered_for_forget(
     .await
     .map_err(map_err)?;
     let record = sqlx::query_scalar::<_, Uuid>(
-        "SELECT t FROM proxima_core.publication_outbox WHERE t = $1 FOR UPDATE",
+        "SELECT t FROM proxiima_core.publication_outbox WHERE t = $1 FOR UPDATE",
     )
     .bind(t)
     .fetch_optional(tx.as_mut())
@@ -663,7 +663,7 @@ pub(crate) async fn cancel_undelivered_for_forget(
         return Ok(());
     }
     sqlx::query(
-        "DELETE FROM proxima_core.publication_delivery
+        "DELETE FROM proxiima_core.publication_delivery
           WHERE t = $1 AND state <> 'published'",
     )
     .bind(t)
@@ -671,10 +671,10 @@ pub(crate) async fn cancel_undelivered_for_forget(
     .await
     .map_err(map_err)?;
     let removed = sqlx::query(
-        "DELETE FROM proxima_core.publication_outbox record
+        "DELETE FROM proxiima_core.publication_outbox record
           WHERE record.t = $1
             AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.publication_delivery lane
+                SELECT 1 FROM proxiima_core.publication_delivery lane
                  WHERE lane.t = record.t
             )",
     )
@@ -701,7 +701,7 @@ async fn settle_records(
     records: &[Uuid],
 ) -> Result<(), StorageError> {
     sqlx::query(
-        "SELECT 1 FROM proxima_core.publication_outbox
+        "SELECT 1 FROM proxiima_core.publication_outbox
           WHERE t = ANY($1) AND state <> 'published'
           ORDER BY t
             FOR UPDATE",
@@ -711,12 +711,12 @@ async fn settle_records(
     .await
     .map_err(map_err)?;
     sqlx::query(
-        "UPDATE proxima_core.publication_outbox record
+        "UPDATE proxiima_core.publication_outbox record
             SET state = 'published', published_at = now()
           WHERE record.t = ANY($1)
             AND record.state <> 'published'
             AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.publication_delivery lane
+                SELECT 1 FROM proxiima_core.publication_delivery lane
                  WHERE lane.t = record.t AND lane.state <> 'published'
             )",
     )
@@ -732,7 +732,7 @@ impl PublicationConsumerPort for PgStorage {
     async fn register(&self, consumer: &ConsumerName) -> Result<(), StorageError> {
         let mut tx = self.platform_transaction().await?;
         let result = sqlx::query(
-            "INSERT INTO proxima_core.publication_consumer (name) VALUES ($1)
+            "INSERT INTO proxiima_core.publication_consumer (name) VALUES ($1)
              ON CONFLICT (name) DO NOTHING",
         )
         .bind(consumer.as_str())
@@ -746,7 +746,7 @@ impl PublicationConsumerPort for PgStorage {
     async fn registered(&self) -> Result<Vec<ConsumerName>, StorageError> {
         let mut tx = self.platform_transaction().await?;
         let names: Vec<String> =
-            sqlx::query_scalar("SELECT name FROM proxima_core.publication_consumer ORDER BY name")
+            sqlx::query_scalar("SELECT name FROM proxiima_core.publication_consumer ORDER BY name")
                 .fetch_all(tx.as_mut())
                 .await
                 .map_err(map_err)?;
@@ -771,19 +771,19 @@ impl PublicationConsumerPort for PgStorage {
     /// listenable writes for the length of one delete is the cheap side.
     async fn retire(&self, consumer: &ConsumerName) -> Result<RetireOutcome, StorageError> {
         let mut tx = self.platform_transaction().await?;
-        sqlx::query("LOCK TABLE proxima_core.publication_delivery IN SHARE MODE")
+        sqlx::query("LOCK TABLE proxiima_core.publication_delivery IN SHARE MODE")
             .execute(tx.as_mut())
             .await
             .map_err(map_err)?;
         let owed: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT t FROM proxima_core.publication_delivery
+            "SELECT t FROM proxiima_core.publication_delivery
               WHERE consumer = $1 AND state <> 'published'",
         )
         .bind(consumer.as_str())
         .fetch_all(tx.as_mut())
         .await
         .map_err(map_err)?;
-        let removed = sqlx::query("DELETE FROM proxima_core.publication_consumer WHERE name = $1")
+        let removed = sqlx::query("DELETE FROM proxiima_core.publication_consumer WHERE name = $1")
             .bind(consumer.as_str())
             .execute(tx.as_mut())
             .await
@@ -794,7 +794,7 @@ impl PublicationConsumerPort for PgStorage {
         } else {
             settle_records(&mut tx, &owed).await?;
             RetireOutcome::Retired {
-                undelivered: proxima_core::count_u64(owed.len()),
+                undelivered: proxiima_core::count_u64(owed.len()),
             }
         };
         crate::owner_scope::finish_transaction(tx, Ok(outcome)).await
@@ -805,8 +805,8 @@ impl PublicationConsumerPort for PgStorage {
 impl PublicationOriginEligibilityPort for PgStorage {
     async fn check_committed(
         &self,
-        original_owner: proxima_core::OwnerId,
-        fact_id: proxima_core::MemoryId,
+        original_owner: proxiima_core::OwnerId,
+        fact_id: proxiima_core::MemoryId,
     ) -> Result<PublicationOriginEligibility, StorageError> {
         let mut tx = self.platform_transaction().await?;
         let result = self
@@ -819,8 +819,8 @@ impl PublicationOriginEligibilityPort for PgStorage {
     async fn check_in_transaction(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        original_owner: proxima_core::OwnerId,
-        fact_id: proxima_core::MemoryId,
+        original_owner: proxiima_core::OwnerId,
+        fact_id: proxiima_core::MemoryId,
     ) -> Result<PublicationOriginEligibility, StorageError> {
         // Take the same per-Fact target fence used by hard deletion and keep
         // it through the caller's host-state write and commit; an erase that
@@ -832,11 +832,11 @@ impl PublicationOriginEligibilityPort for PgStorage {
         let eligible: bool = sqlx::query_scalar(
             "SELECT EXISTS (
                 SELECT 1
-                  FROM proxima_core.publication_origin origin
+                  FROM proxiima_core.publication_origin origin
                  WHERE origin.t = $1
                    AND origin.original_owner_id = $2
                    AND NOT EXISTS (
-                       SELECT 1 FROM proxima_core.erased_pin_target erased
+                       SELECT 1 FROM proxiima_core.erased_pin_target erased
                         WHERE erased.t = origin.t
                    )
             )",
@@ -875,13 +875,13 @@ impl PgStorage {
     pub async fn origin_scope(&self) -> Result<OriginScope, StorageError> {
         let mut tx = self.platform_transaction().await?;
         let id: Option<Uuid> = sqlx::query_scalar(
-            "SELECT installation_id FROM proxima_core.installation WHERE singleton",
+            "SELECT installation_id FROM proxiima_core.installation WHERE singleton",
         )
         .fetch_optional(tx.as_mut())
         .await
         .map_err(map_err)?;
         let result = id.map(OriginScope::new).ok_or_else(|| {
-            internal("proxima_core.installation holds no row; the schema is incomplete")
+            internal("proxiima_core.installation holds no row; the schema is incomplete")
         });
         crate::owner_scope::finish_transaction(tx, result).await
     }
@@ -901,10 +901,10 @@ impl PgStorage {
 /// because `DELETE` takes no `LIMIT` of its own.
 /// The prune statement. `publication_outbox_published_idx` holds only the
 /// delivered rows by `published_at`, so a batch reads the rows it deletes.
-const PRUNE_PUBLISHED_SQL: &str = "DELETE FROM proxima_core.publication_outbox
+const PRUNE_PUBLISHED_SQL: &str = "DELETE FROM proxiima_core.publication_outbox
               WHERE ctid IN (
                     SELECT p.ctid
-                      FROM proxima_core.publication_outbox p
+                      FROM proxiima_core.publication_outbox p
                      WHERE p.state = 'published'
                        AND p.published_at < now() - make_interval(secs => $1)
                      ORDER BY p.published_at ASC
@@ -920,7 +920,7 @@ pub fn prune_published_sql_for_tests() -> &'static str {
 }
 
 #[async_trait::async_trait]
-impl proxima_core::storage_ports::publication::PublicationRetentionPort for PgStorage {
+impl proxiima_core::storage_ports::publication::PublicationRetentionPort for PgStorage {
     async fn prune_published(
         &self,
         older_than: Duration,
@@ -947,7 +947,7 @@ async fn current_lane_state(
     consumer: &ConsumerName,
 ) -> Result<Option<PublicationDeliveryState>, StorageError> {
     sqlx::query_scalar(
-        "SELECT state FROM proxima_core.publication_delivery
+        "SELECT state FROM proxiima_core.publication_delivery
           WHERE t = $1 AND consumer = $2",
     )
     .bind(id)

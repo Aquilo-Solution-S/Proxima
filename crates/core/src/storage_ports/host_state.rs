@@ -3,7 +3,7 @@
 //! Core stays backend-neutral: a command is an opaque payload plus the
 //! tables it will touch. The Postgres session dispatches that payload to
 //! a startup-registered participant on the **same** transaction it already
-//! holds. The participant never escapes the transaction, and Flavor SDK /
+//! holds. The participant never escapes the transaction, and Spiice SDK /
 //! tools never receive SQL, a pool, or a generic administration surface.
 
 use std::any::Any;
@@ -41,7 +41,7 @@ impl StateSurfaceName {
         Self(value)
     }
 
-    /// Surface label used by the frozen flavor registry.
+    /// Surface label used by the frozen spiice registry.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         self.0
@@ -83,8 +83,8 @@ impl HostStateParticipantDescriptor {
 
 /// Typed host-owned command executed inside a [`crate::engine::UnitOfWork`].
 ///
-/// `TABLES` must be declared on some linked flavor's
-/// [`crate::FlavorContract::state_surfaces`]. The engine refuses the command
+/// `TABLES` must be declared on some linked spiice's
+/// [`crate::SpiiceContract::state_surfaces`]. The engine refuses the command
 /// before any mutation when they are not. `PARTICIPANT_ID` must match the
 /// participant registered on the Postgres write session at boot.
 pub trait HostStateCommand: Send + 'static {

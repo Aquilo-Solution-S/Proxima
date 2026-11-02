@@ -1,4 +1,4 @@
-//! Generic OIDC bearer-JWT host authenticator for Proxima.
+//! Generic OIDC bearer-JWT host authenticator for Proxiima.
 //!
 //! Validates a Zitadel/OIDC access token (signature via JWKS with RSA,
 //! P-256 or Ed25519 keys, `iss`/`aud`/`exp`, optional `sub` allowlist and
@@ -7,7 +7,7 @@
 //! identity resolution: the issuer-aware [`OidcSubjectMap`] +
 //! `OwnerAccessPort` path ([`OidcAuthenticator::new`]). [`OidcBindingSet`]
 //! composes several validated `(issuer, audience)` bindings into one
-//! fail-closed [`proxima_core::Authenticator`].
+//! fail-closed [`proxiima_core::Authenticator`].
 
 mod authenticator;
 mod authorized_party;

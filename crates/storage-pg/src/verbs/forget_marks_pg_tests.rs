@@ -5,14 +5,14 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use proxima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
-use proxima_core::{AccessKind, ColdObjectStore, OwnerId, StorageError, UserId};
+use proxiima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
+use proxiima_core::{AccessKind, ColdObjectStore, OwnerId, StorageError, UserId};
 use uuid::Uuid;
 
 use crate::test_fixtures::fresh_pg;
 use crate::verbs::forget::forget_pg_tests::{draft, ingest_stamped};
 
-const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
+const AGENT_NOTE: &str = "proxiima_core.agent_note_v1";
 
 /// Counts every call and refuses it: forget must not reach an object store.
 #[derive(Default)]
@@ -22,15 +22,15 @@ struct CountingCold {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for CountingCold {
-    async fn delete(&self, _key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
+    async fn delete(&self, _key: &str) -> Result<proxiima_core::PurgeDeleted, StorageError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Err(StorageError::Internal("forget called delete".into()))
     }
 
-    fn store_id(&self) -> &proxima_core::ObjectStoreId {
-        static ID: std::sync::LazyLock<proxima_core::ObjectStoreId> =
+    fn store_id(&self) -> &proxiima_core::ObjectStoreId {
+        static ID: std::sync::LazyLock<proxiima_core::ObjectStoreId> =
             std::sync::LazyLock::new(|| {
-                proxima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
+                proxiima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
             });
         &ID
     }
@@ -46,9 +46,9 @@ fn unit_vector() -> pgvector::Vector {
 /// table owner, past every policy.
 async fn stored(pool: &sqlx::PgPool, t: Uuid) -> (i64, i64, i64) {
     sqlx::query_as(
-        "SELECT (SELECT count(*) FROM proxima_core.memory WHERE t = $1),
-                (SELECT count(*) FROM proxima_core.memory WHERE t = $1 AND forgotten_at IS NOT NULL),
-                (SELECT count(*) FROM proxima_core.agent_note_v1 WHERE t = $1)",
+        "SELECT (SELECT count(*) FROM proxiima_core.memory WHERE t = $1),
+                (SELECT count(*) FROM proxiima_core.memory WHERE t = $1 AND forgotten_at IS NOT NULL),
+                (SELECT count(*) FROM proxiima_core.agent_note_v1 WHERE t = $1)",
     )
     .bind(t)
     .fetch_one(pool)
@@ -58,7 +58,7 @@ async fn stored(pool: &sqlx::PgPool, t: Uuid) -> (i64, i64, i64) {
 
 async fn note_fact(pg: &crate::PgStorage, permit: &OwnerWritePermit, body_bytes: usize) -> Uuid {
     let insert = format!(
-        "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+        "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
          VALUES ($1, $1, 'n', repeat('x', {body_bytes}), ARRAY['tag'])"
     );
     ingest_stamped(
@@ -81,7 +81,7 @@ async fn a_fact_with_a_sidecar_row_over_64_kib_forgets() {
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let t = note_fact(&pg, &permit, 70 * 1024).await;
 
-    MemoryAuthoringPort::forget_memory(&pg, &permit, proxima_core::MemoryId::new(t))
+    MemoryAuthoringPort::forget_memory(&pg, &permit, proxiima_core::MemoryId::new(t))
         .await
         .expect("a 70 KiB sidecar row forgets");
 
@@ -101,7 +101,7 @@ async fn forget_makes_no_object_store_call() {
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
     let t = note_fact(&pg, &permit, 16).await;
 
-    MemoryAuthoringPort::forget_memory(&pg, &permit, proxima_core::MemoryId::new(t))
+    MemoryAuthoringPort::forget_memory(&pg, &permit, proxiima_core::MemoryId::new(t))
         .await
         .expect("forget succeeds without an object store");
 
@@ -121,13 +121,13 @@ async fn forget_deletes_the_embeddings_and_keeps_the_row() {
         .expect("fact")
         .memory_id
         .into_inner();
-    sqlx::query("DELETE FROM proxima_core.embedding_jobs WHERE entity_id = $1")
+    sqlx::query("DELETE FROM proxiima_core.embedding_jobs WHERE entity_id = $1")
         .bind(t)
         .execute(&pool)
         .await
         .expect("clear jobs");
     sqlx::query(
-        "INSERT INTO proxima_core.embeddings
+        "INSERT INTO proxiima_core.embeddings
             (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
          VALUES ($1, 'test-embed', 1024, 1, 0, $3, $2)",
     )
@@ -138,7 +138,7 @@ async fn forget_deletes_the_embeddings_and_keeps_the_row() {
     .await
     .expect("embedding");
     sqlx::query(
-        "INSERT INTO proxima_core.embedding_heads
+        "INSERT INTO proxiima_core.embedding_heads
             (entity_id, model_id, dim, embedding_version, owner_id)
          VALUES ($1, 'test-embed', 1024, 1, $2)",
     )
@@ -148,13 +148,13 @@ async fn forget_deletes_the_embeddings_and_keeps_the_row() {
     .await
     .expect("head");
 
-    MemoryAuthoringPort::forget_memory(&pg, &permit, proxima_core::MemoryId::new(t))
+    MemoryAuthoringPort::forget_memory(&pg, &permit, proxiima_core::MemoryId::new(t))
         .await
         .expect("forget");
 
     let (vectors, heads): (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM proxima_core.embeddings WHERE entity_id = $1),
-                (SELECT count(*) FROM proxima_core.embedding_heads WHERE entity_id = $1)",
+        "SELECT (SELECT count(*) FROM proxiima_core.embeddings WHERE entity_id = $1),
+                (SELECT count(*) FROM proxiima_core.embedding_heads WHERE entity_id = $1)",
     )
     .bind(t)
     .fetch_one(&pool)
@@ -189,11 +189,12 @@ async fn forgetting_the_series_head_makes_the_previous_version_head() {
         .await
         .expect("forget head");
 
-    let head: Uuid = sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
-        .bind(first.handle)
-        .fetch_one(pg.pool_for_tests())
-        .await
-        .expect("head");
+    let head: Uuid =
+        sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
+            .bind(first.handle)
+            .fetch_one(pg.pool_for_tests())
+            .await
+            .expect("head");
     assert_eq!(head, first.memory_id.into_inner());
     let (rows, forgotten, _) = stored(pg.pool_for_tests(), second.memory_id.into_inner()).await;
     assert_eq!(

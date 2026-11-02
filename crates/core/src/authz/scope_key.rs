@@ -6,7 +6,7 @@
 //! |---|---|---|
 //! | [`ScopeKey::Tool`] | `tool` | a flat tool, or a dispatcher as a whole |
 //! | [`ScopeKey::Action`] | `tool:action` | one action of a dispatcher |
-//! | [`ScopeKey::Resource`] | `resource:name` | a `proxima://` resource read |
+//! | [`ScopeKey::Resource`] | `resource:name` | a `proxiima://` resource read |
 //!
 //! [`ScopeKey::parse`] is the one parser and [`Display`](std::fmt::Display)
 //! the one printer: `parse(s).to_string() == s` for every canonical key. The
@@ -46,7 +46,7 @@ impl fmt::Display for ScopeKeyPart {
 /// Why a string is not a [`ScopeKey`], or not one of its parts.
 ///
 /// Carries no input text, so a caller that holds the entry names it
-/// (`PROXIMA_TOOL_ALLOW` does) and a message never repeats request data.
+/// (`PROXIIMA_TOOL_ALLOW` does) and a message never repeats request data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ScopeKeyError {
     /// The key, or a part of it, is empty: `""`, `":set"`, `"goal:"`,
@@ -124,7 +124,7 @@ key_name!(
     /// passed [`Self::parse`]:
     ///
     /// ```compile_fail
-    /// let _ = proxima_core::ToolName("core_goal:set".to_owned());
+    /// let _ = proxiima_core::ToolName("core_goal:set".to_owned());
     /// ```
     ToolName,
     ScopeKeyPart::Tool
@@ -176,9 +176,9 @@ impl fmt::Display for ResourceKey {
 /// into one:
 ///
 /// ```compile_fail
-/// let tool = proxima_core::ToolName::parse("resource").unwrap();
-/// let action = proxima_core::ActionName::parse("memory").unwrap();
-/// let _ = proxima_core::ScopeKey::Action { tool, action };
+/// let tool = proxiima_core::ToolName::parse("resource").unwrap();
+/// let action = proxiima_core::ActionName::parse("memory").unwrap();
+/// let _ = proxiima_core::ScopeKey::Action { tool, action };
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ScopeKey {
@@ -320,14 +320,14 @@ mod tests {
         assert_eq!(parse("core_goal:set"), Ok(leaf("core_goal", "set")));
         assert_eq!(parse("resource:memory"), Ok(resource_key("memory")));
         // The name grammar allows `-` and `.`: `resource:memory-lineage`,
-        // `flavor.tool_name`.
+        // `spiice.tool_name`.
         assert_eq!(
             parse("resource:memory-lineage"),
             Ok(resource_key("memory-lineage"))
         );
         assert_eq!(
-            parse("proxima-notes_x:a.b"),
-            Ok(leaf("proxima-notes_x", "a.b"))
+            parse("proxiima-notes_x:a.b"),
+            Ok(leaf("proxiima-notes_x", "a.b"))
         );
     }
 
@@ -432,7 +432,7 @@ mod tests {
             ("resource: memory", NotProviderSafe(Resource)),
             // characters outside the grammar
             ("a/b", NotProviderSafe(Tool)),
-            ("proxima-notes/register_notebook", NotProviderSafe(Tool)),
+            ("proxiima-notes/register_notebook", NotProviderSafe(Tool)),
             ("core_goal:a/b", NotProviderSafe(Action)),
             ("caf\u{e9}", NotProviderSafe(Tool)),
             ("a\0b", NotProviderSafe(Tool)),

@@ -273,7 +273,7 @@ pub struct HostStateUnitOfWork<'a> {
 }
 
 fn validate_registration(
-    registry: &crate::verbs::schema::FlavorRegistryFrozen,
+    registry: &crate::verbs::schema::SpiiceRegistryFrozen,
     descriptor: HostStateParticipantDescriptor,
 ) -> Result<(), ProtocolError> {
     if descriptor.participant_id().as_str().is_empty() {
@@ -308,7 +308,7 @@ fn validate_registration(
             return Err(ProtocolError::invalid_argument(
                 "host_state",
                 format!(
-                    "registered table {} is not a declared FlavorContract.state_surfaces binding",
+                    "registered table {} is not a declared SpiiceContract.state_surfaces binding",
                     table.as_str()
                 ),
             ));
@@ -348,7 +348,7 @@ fn validate_host_state_command<C: HostStateCommand>(
             return Err(ProtocolError::invalid_argument(
                 "host_state",
                 format!(
-                    "table {} is not a declared FlavorContract.state_surfaces binding",
+                    "table {} is not a declared SpiiceContract.state_surfaces binding",
                     table.as_str()
                 ),
             ));
@@ -416,8 +416,8 @@ impl Engine {
     /// It admits exactly one verb, [`UnitOfWork::erase_own_series`]: the
     /// host's retention schedule runs with nobody in the loop, so there is no
     /// user to hold Admin and no tool to declare itself destructive. The
-    /// flavor-scope rules are the ordinary unit's: one owner, the named
-    /// flavor's own schemas. Every cognitive write on it is refused.
+    /// spiice-scope rules are the ordinary unit's: one owner, the named
+    /// spiice's own schemas. Every cognitive write on it is refused.
     ///
     /// # Errors
     /// Returns a forbidden error when `authority` belongs to another engine
@@ -834,7 +834,7 @@ impl<'a> UnitOfWork<'a> {
     /// existing write session.
     ///
     /// Owner authority is resolved through the same write gate as Fact
-    /// ingest. Declared tables must be [`crate::FlavorContract::state_surfaces`]
+    /// ingest. Declared tables must be [`crate::SpiiceContract::state_surfaces`]
     /// bindings; unregistered participants and invalid bindings are refused
     /// before mutation. The Postgres backend then runs the command on the
     /// live transaction — host ops may run before or after a Fact write and
@@ -1242,7 +1242,7 @@ impl<'a> UnitOfWork<'a> {
             })
     }
 
-    /// Hard-erase whole series of `flavor_id`'s own memory schemas under
+    /// Hard-erase whole series of `spiice_id`'s own memory schemas under
     /// `owner` (docs/data-and-erasure.md).
     ///
     /// Every selected admission is expanded to its whole series, live and
@@ -1254,12 +1254,12 @@ impl<'a> UnitOfWork<'a> {
     /// here and destroyed after [`Self::commit`].
     ///
     /// Admission, all before the first delete:
-    /// - `flavor_id` names a registered flavor other than core, and every
+    /// - `spiice_id` names a registered spiice other than core, and every
     ///   erased series is one of its Fact, Abstraction or Perspective schemas;
     /// - every version and every referencing row belongs to `owner`;
     /// - Admin on `owner` ([`Engine::unit_of_work`]) or the host's system
     ///   authority ([`Engine::system_unit_of_work`]);
-    /// - inside a tool handler, the tool is one `flavor_id` declares
+    /// - inside a tool handler, the tool is one `spiice_id` declares
     ///   `destructive` in its contract;
     /// - a selection naming a schema names one of those; `SidecarEquals`
     ///   and `DeclaredBefore` read that schema's declared sidecar, name only
@@ -1280,7 +1280,7 @@ impl<'a> UnitOfWork<'a> {
     /// and storage faults.
     pub async fn erase_own_series(
         &mut self,
-        flavor_id: &str,
+        spiice_id: &str,
         owner: OwnerId,
         selection: SeriesSelection,
         mode: EraseMode,
@@ -1293,7 +1293,7 @@ impl<'a> UnitOfWork<'a> {
             .into());
         }
         let (contract, own_schemas, sidecar_table) =
-            self.admit_series_erase(flavor_id, &selection)?;
+            self.admit_series_erase(spiice_id, &selection)?;
         let permit = authorize_series_erase(self.engine, &self.authorization, owner).await?;
         let request = SeriesEraseRequest {
             own_schemas: &own_schemas,
@@ -1334,7 +1334,7 @@ impl<'a> UnitOfWork<'a> {
             report
         };
         Ok(SeriesEraseReceipt {
-            flavor_id: contract.flavor_id,
+            spiice_id: contract.spiice_id,
             owner: *permit.owner(),
             mode,
             series_erased: report.series_erased,
@@ -1375,17 +1375,17 @@ impl<'a> UnitOfWork<'a> {
 }
 
 impl UnitOfWork<'_> {
-    /// The declaration half of [`Self::erase_own_series`]: the named flavor,
+    /// The declaration half of [`Self::erase_own_series`]: the named spiice,
     /// the calling tool, and the selection's own shape. Nothing here reads
     /// storage. Answers the contract, its own memory schemas, and the
     /// sidecar table a sidecar selection reads.
     fn admit_series_erase(
         &self,
-        flavor_id: &str,
+        spiice_id: &str,
         selection: &SeriesSelection,
     ) -> Result<
         (
-            &'static crate::FlavorContract,
+            &'static crate::SpiiceContract,
             Vec<String>,
             Option<&'static str>,
         ),
@@ -1394,22 +1394,22 @@ impl UnitOfWork<'_> {
         let contract = self
             .engine
             .registry()
-            .flavor_contract(flavor_id)
+            .spiice_contract(spiice_id)
             .ok_or_else(|| {
                 ProtocolError::invalid_argument(
-                    "flavor",
-                    format!("{flavor_id} is not a registered flavor"),
+                    "spiice",
+                    format!("{spiice_id} is not a registered spiice"),
                 )
             })?;
-        if contract.ordinal == crate::flavor::contract::CORE_ORDINAL {
+        if contract.ordinal == crate::spiice::contract::CORE_ORDINAL {
             return Err(ProtocolError::forbidden(
                 "core schemas are erased only by the owner and source-scope erases",
             )
             .into());
         }
         // The calling action's own effect, stamped by the registration's
-        // call wrapper, and a tool the named flavor's contract lists — so a
-        // destructive tool of one flavor cannot erase another's series.
+        // call wrapper, and a tool the named spiice's contract lists — so a
+        // destructive tool of one spiice cannot erase another's series.
         if let UnitAuthorization::Ordinary(authz) = self.authorization
             && let Some(tool) = authz.invoking_tool()
             && !(tool.effect.is_some_and(ToolEffect::is_destructive)
@@ -1419,7 +1419,7 @@ impl UnitOfWork<'_> {
                     .any(|declared| declared.wire_name == tool.name))
         {
             return Err(ProtocolError::forbidden(format!(
-                "tool {} is not a destructive tool of flavor {flavor_id}, so it cannot erase",
+                "tool {} is not a destructive tool of spiice {spiice_id}, so it cannot erase",
                 tool.name
             ))
             .into());
@@ -1491,9 +1491,9 @@ async fn authorize_series_erase(
     Ok(permit)
 }
 
-/// The Fact, Abstraction and Perspective schema ids a flavor declares:
+/// The Fact, Abstraction and Perspective schema ids a spiice declares:
 /// the only series its erase may reach.
-fn own_memory_schemas(contract: &crate::FlavorContract) -> Vec<String> {
+fn own_memory_schemas(contract: &crate::SpiiceContract) -> Vec<String> {
     use crate::verbs::schema::PayloadKind;
     let mut schemas: Vec<String> = contract
         .schemas
@@ -1514,7 +1514,7 @@ fn own_memory_schemas(contract: &crate::FlavorContract) -> Vec<String> {
 /// The sidecar table `schema` declares in `contract`: the one table a
 /// sidecar selection reads.
 fn own_sidecar_table(
-    contract: &crate::FlavorContract,
+    contract: &crate::SpiiceContract,
     schema: &crate::SchemaId,
 ) -> Result<&'static str, ProtocolError> {
     contract
@@ -1591,8 +1591,8 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::flavor::contract::{
-        CounterRule, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape, ProjectionDecl,
+    use crate::spiice::contract::{
+        CounterRule, EraseRule, ExportRule, ForgetRule, KeyShape, ProjectionDecl, SpiiceContract,
         Surface, TransferRule,
     };
     use crate::storage::StorageError;
@@ -1623,8 +1623,8 @@ mod tests {
         },
         completeness: None,
     }];
-    static HOST_STATE_TEST_CONTRACT: FlavorContract = FlavorContract {
-        flavor_id: "host_state_test",
+    static HOST_STATE_TEST_CONTRACT: SpiiceContract = SpiiceContract {
+        spiice_id: "host_state_test",
         ordinal: 97,
         schemas: &[],
         state_surfaces: STATE_SURFACES,
@@ -1633,7 +1633,7 @@ mod tests {
         tools: &[],
         resources: &[],
         projection: ProjectionDecl::None {
-            why: "the host-state test flavor has no search surface",
+            why: "the host-state test spiice has no search surface",
         },
         bespoke_erase_legs: &[],
         bespoke_transfer_legs: &[],
@@ -1745,18 +1745,18 @@ mod tests {
         use futures::future::BoxFuture;
 
         use super::BeginSpyFactory;
-        use crate::flavor::contract::{FlavorContract, ProjectionDecl, ToolContract};
         use crate::mcp::{
             McpActionArgSpec, McpAuthorContext, McpToolAudience, McpToolCtx, Replay, ToolEffect,
         };
+        use crate::spiice::contract::{ProjectionDecl, SpiiceContract, ToolContract};
         use crate::storage_ports::StoragePorts;
         use crate::verbs::own_erase::{EraseMode, SeriesEraseError, SeriesSelection};
         use crate::{
-            AuthPath, AuthzContext, Engine, FlavorServices, OwnerId, Tool, ToolCtx, ToolError,
+            AuthPath, AuthzContext, Engine, OwnerId, SpiiceServices, Tool, ToolCtx, ToolError,
             UserId,
         };
 
-        const GATE_FLAVOR: &str = "gate_fixture";
+        const GATE_SPIICE: &str = "gate_fixture";
 
         #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
         struct GateArgs {
@@ -1792,7 +1792,7 @@ mod tests {
                     .unit_of_work(ctx.authz())
                     .await
                     .map_err(ToolError::Protocol)?;
-                unit.erase_own_series(GATE_FLAVOR, ctx.owner(), selection, EraseMode::DryRun)
+                unit.erase_own_series(GATE_SPIICE, ctx.owner(), selection, EraseMode::DryRun)
                     .await
                     .map_err(|err: SeriesEraseError| ToolError::Protocol(err.into()))?;
                 Ok(GateOutput {})
@@ -1881,7 +1881,7 @@ mod tests {
             }
         }
 
-        /// Destructive, and registered under the flavor, but not named by
+        /// Destructive, and registered under the spiice, but not named by
         /// its contract.
         struct StrayTool;
 
@@ -1901,8 +1901,8 @@ mod tests {
             }
         }
 
-        static GATE_CONTRACT: FlavorContract = FlavorContract {
-            flavor_id: GATE_FLAVOR,
+        static GATE_CONTRACT: SpiiceContract = SpiiceContract {
+            spiice_id: GATE_SPIICE,
             ordinal: 96,
             schemas: &[],
             state_surfaces: &[],
@@ -1937,10 +1937,10 @@ mod tests {
                     StoragePorts::rejecting_with_write_session(factory),
                     |registry| {
                         registry.try_add_contract(&GATE_CONTRACT)?;
-                        registry.try_add_tool::<WipeTool>(GATE_FLAVOR)?;
-                        registry.try_add_tool::<TouchTool>(GATE_FLAVOR)?;
-                        registry.try_add_tool::<MixedTool>(GATE_FLAVOR)?;
-                        registry.try_add_tool::<StrayTool>(GATE_FLAVOR)?;
+                        registry.try_add_tool::<WipeTool>(GATE_SPIICE)?;
+                        registry.try_add_tool::<TouchTool>(GATE_SPIICE)?;
+                        registry.try_add_tool::<MixedTool>(GATE_SPIICE)?;
+                        registry.try_add_tool::<StrayTool>(GATE_SPIICE)?;
                         Ok(())
                     },
                 )
@@ -1974,9 +1974,9 @@ mod tests {
                     caller_self_perspective: None,
                 },
                 caller_self_perspective: None,
-                services: FlavorServices::default(),
+                services: SpiiceServices::default(),
                 engine: Some(Arc::clone(engine)),
-                judged: proxima_core::mcp::JudgedKey::default(),
+                judged: proxiima_core::mcp::JudgedKey::default(),
             };
             (descriptor.call)(ctx, args)
                 .await
@@ -2056,8 +2056,8 @@ mod tests {
             );
         }
 
-        /// A destructive tool of the flavor's registration that its contract
-        /// does not name is not the flavor's tool for this purpose.
+        /// A destructive tool of the spiice's registration that its contract
+        /// does not name is not the spiice's tool for this purpose.
         #[tokio::test]
         async fn a_destructive_tool_its_contract_does_not_name_cannot_erase() {
             let begins = Arc::new(AtomicUsize::new(0));
@@ -2070,7 +2070,7 @@ mod tests {
         }
 
         /// Outside a tool nothing is stamped, so the gate does not apply:
-        /// the flavor's own code and the host reach the same verb.
+        /// the spiice's own code and the host reach the same verb.
         #[tokio::test]
         async fn a_unit_outside_any_tool_is_not_gated_by_a_tool_declaration() {
             let begins = Arc::new(AtomicUsize::new(0));
@@ -2080,12 +2080,12 @@ mod tests {
             assert_eq!(authz.invoking_tool(), None);
             let mut unit = engine.unit_of_work(&authz).await.expect("a unit opens");
             let _ = unit
-                .erase_own_series(GATE_FLAVOR, owner, some_series(), EraseMode::DryRun)
+                .erase_own_series(GATE_SPIICE, owner, some_series(), EraseMode::DryRun)
                 .await;
             assert_eq!(begins.load(Ordering::SeqCst), 1);
         }
 
-        /// A sidecar selection names its schema, and a schema the flavor does
+        /// A sidecar selection names its schema, and a schema the spiice does
         /// not declare is refused by name before a session is begun.
         #[tokio::test]
         async fn a_sidecar_selection_of_a_foreign_schema_is_refused_before_storage() {
@@ -2093,7 +2093,7 @@ mod tests {
             let engine = engine(begins.clone());
             let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
             let authz = AuthzContext::single_owner(&owner, AuthPath::HostBearer);
-            let schema = || crate::SchemaId::new("another_flavor/thing-v1".to_owned());
+            let schema = || crate::SchemaId::new("another_spiice/thing-v1".to_owned());
             for selection in [
                 SeriesSelection::SidecarEquals {
                     schema: schema(),
@@ -2110,7 +2110,7 @@ mod tests {
             ] {
                 let mut unit = engine.unit_of_work(&authz).await.expect("a unit opens");
                 match unit
-                    .erase_own_series(GATE_FLAVOR, owner, selection, EraseMode::DryRun)
+                    .erase_own_series(GATE_SPIICE, owner, selection, EraseMode::DryRun)
                     .await
                 {
                     Err(SeriesEraseError::Refused(refusal)) => {
@@ -2118,7 +2118,7 @@ mod tests {
                             refusal.kind,
                             crate::verbs::own_erase::SeriesEraseRefusalKind::ForeignSchema
                         );
-                        assert_eq!(refusal.offending, vec!["schema=another_flavor/thing-v1"]);
+                        assert_eq!(refusal.offending, vec!["schema=another_spiice/thing-v1"]);
                     }
                     other => panic!("a foreign schema must be refused: {other:?}"),
                 }
@@ -2139,7 +2139,7 @@ mod tests {
             let mut unit = engine.unit_of_work(&authz).await.expect("a unit opens");
             let receipt = unit
                 .erase_own_series(
-                    GATE_FLAVOR,
+                    GATE_SPIICE,
                     owner,
                     SeriesSelection::Ids(Vec::new()),
                     EraseMode::Erase,
@@ -2162,7 +2162,7 @@ mod tests {
             let mut unit = engine.unit_of_work(&ingest).await.expect("a unit opens");
             let err = unit
                 .erase_own_series(
-                    GATE_FLAVOR,
+                    GATE_SPIICE,
                     group,
                     SeriesSelection::Ids(Vec::new()),
                     EraseMode::Erase,

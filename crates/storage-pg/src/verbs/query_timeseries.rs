@@ -1,7 +1,7 @@
 //! Query starts at memory_head.
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -16,8 +16,8 @@ pub async fn query_heads(
     sqlx::query_as(
         "SELECT m.handle, m.t, m.kind::text, m.owner_id, m.\"by\", m.via, m.source_id, m.ingest_key,
                 m.origins, m.refs, m.goal_refs, m.occurred_at
-           FROM proxima_core.memory_head h
-           JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t
+           FROM proxiima_core.memory_head h
+           JOIN proxiima_core.memory m ON m.handle = h.handle AND m.t = h.t
           WHERE h.owner_id = $1 AND h.schema_id = $2
             AND m.forgotten_at IS NULL
           ORDER BY h.handle",

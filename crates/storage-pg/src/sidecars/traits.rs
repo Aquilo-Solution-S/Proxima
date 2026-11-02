@@ -3,9 +3,9 @@ use super::{
     PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarInsertPermit, StorageError, Transaction,
 };
 
-/// A flavor's typed memory-sidecar insert.
+/// A spiice's typed memory-sidecar insert.
 ///
-/// Flavors IMPLEMENT this; only the frozen registry INVOKES it. The
+/// Spiices IMPLEMENT this; only the frozen registry INVOKES it. The
 /// [`SidecarInsertPermit`] argument is what separates the two — an
 /// implementor names the type, a caller has to mint one, and the mint is
 /// crate-private. See [`SidecarInsertPermit`] for the invariant that buys.

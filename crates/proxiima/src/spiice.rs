@@ -1,0 +1,259 @@
+//! Spiice SDK exports.
+
+pub use crate::bundle::SpiiceBundle;
+pub use crate::migrations::{NamedMigrator, is_spiice_ledger_id, spiice_ledger_table};
+/// One-declaration spiice bundle; see the macro's docs.
+pub use crate::spiice_bundle;
+/// Background-worker surface for [`SpiiceBundle::spawn_workers`]: the
+/// runtime handles a spawning spiice receives and the named join handle
+/// it returns.
+pub use crate::workers::{SpiiceWorker, SpiiceWorkerContext};
+/// The generator and sidecar adapters return this storage refusal type.
+pub use proxiima_core::StorageError;
+/// The typed artefact inside [`CitedBlobStaged`], and the outcome of
+/// [`proxiima_core::Engine::complete_upload_as_fact`].
+///
+/// NAMING A TYPE IS NOT ENOUGH TO RETURN ONE. `stage_upload` returns
+/// `CitedBlobStaged`, whose `payload` field is an
+/// [`UploadedBlobPayload`] — a struct with no constructor, so an
+/// out-of-tree spiice that could name the outer type still could not
+/// build one, and the port was unimplementable for exactly as long as
+/// this line was missing. That is the recurring shape of a facade gap
+/// here: the blocker is never the trait, it is a field type one level
+/// down that no `use` can reach. The tier test below constructs the
+/// struct rather than only naming it, because only construction
+/// exercises the difference.
+///
+/// [`UploadCompleted`] rides along for the caller's half of the same
+/// verb: without it the result of a completion cannot be bound to a
+/// named local or returned from a spiice's own function.
+pub use proxiima_core::citations::UploadedBlobPayload;
+pub use proxiima_core::engine::{FactWrite, UnitOfWork};
+/// Goal write DTOs, including nested topology declarations.
+pub use proxiima_core::engine::{
+    GoalDecomposeRequest, GoalMarkAchievedRequest, GoalModifyRequest, GoalTransitionRequest,
+};
+pub use proxiima_core::engine::{UploadCompleted, UploadCompletionExpectation};
+pub use proxiima_core::error::{ErrorCode, ProtocolError};
+/// Explicitly select the deployment's lexical configuration for a memory write.
+pub use proxiima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
+/// Transport-neutral tool metadata.
+/// Implement [`Tool`] with [`ToolCtx`] / [`ToolError`]; MCP and REST adapt it.
+/// Declare what the tool does once, as a [`ToolEffect`]: `Tool::EFFECT` on a
+/// flat tool, `McpActionArgSpec::effect` per action of a dispatcher. Name it
+/// for a person once too: `Tool::TITLE`, and `McpActionArgSpec::title` per
+/// action, each at most [`MAX_TITLE_CHARS`] characters.
+/// Resolve dependencies with `ctx.service::<T>()` and model labels with
+/// [`ToolCtx::operator_label`]. The authenticated model identity takes precedence.
+/// Read application-specific verified claims through
+/// `ctx.authz().verified_claims()`; interpretation belongs to the spiice.
+pub use proxiima_core::mcp::{
+    KeyDeclaration, MAX_TITLE_CHARS, McpActionArgSpec, McpAuthorContext, Replay, ToolEffect,
+};
+/// Build-time spiice declaration vocabulary. These are const-constructible
+/// contract values; no runtime registry or storage handle crosses the SDK.
+pub use proxiima_core::spiice::{
+    BAND_NAME_EXACT, BAND_NAME_RESCUE, BAND_NAME_SUBSTRING, Band, BandComparability, CORE_ORDINAL,
+    CoreBandName, CounterRule, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, EmbeddingSlot,
+    Enforcement, EraseLeg, EraseRule, ExportRule, ForgetLeg, ForgetRule, HostStateEraseDisposition,
+    KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec, Provenance, RankSource,
+    ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SpiiceContract, SubstringArm, Surface,
+    TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
+    TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferLeg, TransferRule, WEIGHT_UNIFORM,
+    WeightedField,
+};
+/// Core's renderer bands, reused by a projection declaring
+/// [`BandComparability::CoreBands`].
+pub use proxiima_core::spiice0::{BAND_EXACT, BAND_RESCUE, BAND_SUBSTRING};
+/// Host-wired cited-blob lane, resolved by tools and workers from
+/// [`SpiiceServices`]. Present only when the host configured S3; the concrete
+/// backend (`proxiima-blob-s3`) is never named across this seam.
+///
+/// [`CitedBlobHeld`] and [`MAX_HELD_BLOB_DIGESTS`] are the two halves of
+/// `find_held_blobs`, and both have to cross this seam for the same reason:
+/// a spiice faking the port must be able to RETURN the outcome type, and a
+/// spiice batching its digests must be able to read the bound it is being
+/// held to rather than hardcode a copy that drifts from it.
+pub use proxiima_core::storage_ports::{
+    CitedBlobHeld, CitedBlobIntegrityMismatch, CitedBlobOwnerMissingObject,
+    CitedBlobOwnerReconcileOutcome, CitedBlobOwnerReconcilePort, CitedBlobOwnerReconcileService,
+    CitedBlobPort, CitedBlobReadError, CitedBlobReadPort, CitedBlobReadService, CitedBlobReadUrl,
+    CitedBlobService, CitedBlobStaged, CitedBlobUploadAborted, CitedBlobUploadCompleted,
+    CitedBlobUploadHeader, CitedBlobUploadPrepared, MAX_HELD_BLOB_DIGESTS, VerifiedCitedBlob,
+};
+/// Transaction-scoped, owner-stamped sidecar precondition reads.
+pub use proxiima_core::storage_ports::{SIDECAR_SESSION_READ_MAX_ROWS, SidecarSessionRead};
+/// Typed inline cited-object drafts and the Engine admission witnesses they
+/// produce. `authorize_fact_with_citation` takes the draft plus a sidecar
+/// slice; without these names an out-of-tree spiice can only spell
+/// `CitationSpec` (opaque hash) or take `proxiima-core`.
+pub use proxiima_core::verbs::fact_ingest::{
+    AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, CitationSpec, FactIngestOutcome,
+    FactWriteCommand, IngestReceipt, InlineCitedObjectDraft,
+};
+pub use proxiima_core::verbs::goal_write::{
+    ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,
+    GoalDependencyRef, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
+    GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey, OperatorKind, SystemOrigin,
+};
+/// Spiice-scoped erase ([`UnitOfWork::erase_own_series`]): the selection,
+/// the mode, the receipt, the refusal, and the per-call caps a caller pages
+/// against.
+pub use proxiima_core::verbs::own_erase::{
+    EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,
+    SeriesEraseReceipt, SeriesEraseRefusal, SeriesEraseRefusalKind, SeriesSelection,
+};
+pub use proxiima_core::verbs::query::{
+    GoalRow, MAX_SIDECAR_HEAD_PAGE_LIMIT, QueryRequest, QueryResponse, SearchMode, SidecarAtom,
+    SidecarHead, SidecarHeadsPage, SidecarHeadsRequest, SidecarHeadsScope, SupersessionStatus,
+};
+pub use proxiima_core::verbs::schema::PayloadKind;
+/// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
+/// spiice that declares a *stateful* Fact schema — one with a head per
+/// natural key and an explicit deletion observation — cannot write that
+/// override without it. A spiice's file-revision sidecar can reach it
+/// through a direct `proxiima-core` dependency, which an out-of-tree spiice
+/// does not have. Without the override a schema can
+/// still declare `natural_key_columns`, but registry consumers cannot
+/// identify which hot-head payload value represents a deletion observation.
+/// Core Query does not filter tombstone heads.
+pub use proxiima_core::{
+    AbstractionPayload, ActionName, CapabilitySet, CitedObjectPayload, DelegatedAuthorityError,
+    DelegatedAuthorityService, DelegatedCommand, DelegatedPhase, DelegationId, DelegationIssued,
+    DelegationRevocation, EndpointUrlError, EndpointUrlPolicy, EngineAuthority, FactPayload,
+    FactReceiptId, FactTombstone, GoalId, GoalPayload, GroupId, InputContractId, MemoryId, ModelId,
+    OperatorId, OwnerId, PayloadKeyBuilder, PerspectivePayload, PlaintextHosts,
+    PlaintextHostsError, PromptVersion, RequestHeaders, ResourceKey, SchemaId, SchemaVersion,
+    ScopeKey, ScopeKeyError, SearchProjectionColumnKind, ServedSurface, SidecarPayload,
+    SpiiceDescriptor, SpiiceProvenance, SpiiceRegistry, SpiiceRegistryError, SpiiceRegistryFrozen,
+    SpiiceServiceError, SpiiceServices, Tool, ToolCaller, ToolCtx, ToolError, ToolId, ToolName,
+    ToolScope, ToolServices, TrustedModelIdError, UserId, WriterAttribution, proxiima_spiice,
+    validate_endpoint_url, validate_endpoint_url_for_hosts,
+};
+/// Query / ingest types a spiice names next to [`crate::Engine`]
+/// (Host API). `Engine` itself stays off this module (`docs/protocol.md`).
+/// `AuthorizedFactWrite` is Engine-internal (UoW-first).
+///
+/// [`AuthorizationHook`] is the advertised extension. Implementing `veto`
+/// or `observe` requires the input/outcome types; [`OwnerResolver`] is the
+/// sibling remap trait the registry already accepts. Naming the trait
+/// alone is not enough (see the `UploadedBlobPayload` note below).
+/// A `veto` on [`AuthzOperation::Read`] applies to every engine read, not
+/// only search: a vetoed owner's memories read exactly like absent ones, and
+/// observers get one read decision per owner gated.
+pub use proxiima_core::{
+    AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, EntityId,
+    MembershipChange, OwnerResolver,
+};
+/// Typed derived-memory writes. `DerivedMemory` infers kind/schema from its payload;
+/// `Engine::derive_memory` resolves actual origin kinds and validates provenance.
+/// `MemoryTarget` distinguishes a new series from a revision. Always retain the returned row ID.
+/// Derived writes queue embedding jobs in the same transaction as the memory.
+/// Admission never calls the provider; `DerivedMemoryOutcome` reports queued work.
+pub use proxiima_core::{
+    DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EntityKind, MemoryTarget, SeriesHandle,
+};
+/// The connection vocabulary a spiice is allowed to speak (docs/concepts.md).
+///
+/// A spiice never writes an edge, so none of these is a write surface.
+/// [`PayloadReference`] is the whole of what a payload declares — the field
+/// it was read from, the binding, and the target — and the defaulted
+/// `references()` on every payload trait returns a `Vec` of them, so a
+/// schema that points at another node cannot be written without naming this
+/// type. [`ReferenceBinding`] is a property of the field, decided once by
+/// the schema author. The only binding is [`ReferenceBinding::Pin`].
+///
+/// [`EdgeEndpoint`] is the address form the constructors below mint
+/// (`memory`, `goal`); [`EdgeKind`] is exported to be *read*
+/// — off a listed [`Edge`], or when filtering — never passed to a writer,
+/// because the kind follows the operation.
+pub use proxiima_core::{
+    Edge, EdgeEndpoint, EdgeKind, EdgeTargetProjection, EntityRef, PayloadReference,
+    ReferenceBinding,
+};
+/// One embedding job of one memory, including claim age while it is processing.
+/// [`Engine::embedding_coverage`](proxiima_core::Engine::embedding_coverage) is the counter read.
+pub use proxiima_core::{
+    EmbeddingJobDiagnostic, EmbeddingJobState, MAX_EMBEDDING_DIAGNOSTIC_UNITS,
+};
+/// Shared argument rules for search and paged reads, so a spiice does not
+/// have to invent its own — and so the in-tree tools cannot drift apart.
+///
+/// [`reject_zero_limit`]: every paged read faces the same question, and
+/// the in-tree tools once answered it three different ways: one rejected
+/// `limit: 0`, one returned a well-formed empty page indistinguishable
+/// from "nothing matched", and one clamped to 1 and answered a question
+/// nobody asked. The engine has rejected zero from the start; this is how
+/// a spiice agrees with it in one line. Upper bounds stay the spiice's own
+/// business — clamping those still serves the caller's intent.
+///
+/// [`MAX_QUERY_CHARS`]: three tools carried a byte-identical copy of the
+/// same search-query check with `512` inlined in each.
+///
+/// [`MAX_TEXT_CAP_CHARS`] is the ceiling on a caller-supplied cap over
+/// returned text (`body_max_chars`, `snippet_max_chars`). The *default*
+/// under it is deliberately not shared — how much of a short snippet versus
+/// a memory body is worth returning is a property of the object.
+pub use proxiima_core::{MAX_QUERY_CHARS, MAX_TEXT_CAP_CHARS, reject_zero_limit};
+/// The spiice-owned lifecycle scope: the declaration a spiice writes, and
+/// the erase-side fence that declaration makes available.
+///
+/// [`ScopeDecl`] goes in the spiice's [`SpiiceContract::scopes`], and
+/// [`ScopeKind`] names it from the payloads that belong to it. Declaring
+/// the scope is the whole of the admission side — the Engine takes the
+/// fence and runs the liveness probe on EVERY write of a payload that
+/// names the scope, whether the caller is the spiice or a host writing
+/// straight through [`proxiima_core::Engine`], and there is no opt-in and
+/// no opt-out.
+///
+/// [`lock_scope_fence_exclusive_tx`] is the other half, and the only half
+/// a spiice spells: a scope erase takes it in its own transaction BEFORE
+/// it reads what it intends to delete, so the footprint it computes is
+/// exact by construction. [`lock_scope_fence_shared_tx`] is for the
+/// spiice-owned writes that are NOT payload admissions — a run row, a
+/// cursor — which the Engine never sees and so cannot fence for you.
+///
+/// [`SpiiceContract::scopes`]: proxiima_core::SpiiceContract::scopes
+pub use proxiima_core::{ScopeDecl, ScopeKind, ScopeRef};
+pub use proxiima_storage_pg::access::owner_columns::{
+    lock_scope_fence_exclusive_tx, lock_scope_fence_shared_tx,
+};
+/// Read one Fact receipt on the caller's transaction. See [`ingest_receipt`].
+pub use proxiima_storage_pg::ingest_receipt;
+pub use proxiima_storage_pg::pg_sidecar;
+/// Generate a projection migration and its inverses from the spiice contract.
+/// The generator returns [`ProjectionArtifacts`], whose fields are [`Artifact`]s.
+pub use proxiima_storage_pg::projection::{Artifact, ProjectionArtifacts, projection_artifacts};
+pub use proxiima_storage_pg::search_candidates::candidate_artifacts as search_candidate_artifacts;
+pub use proxiima_storage_pg::sidecars::{
+    PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
+    PgSidecarReadCtx, SidecarInsertPermit, SidecarOwnerMode,
+};
+pub use proxiima_storage_pg::{
+    PgSidecarRegistry, PgSidecarRegistryFrozen, register_core_pg_sidecars,
+};
+
+mod authorized_read;
+mod detached;
+mod sidecar_heads;
+pub use authorized_read::{
+    authorized_abstraction_payloads, authorized_fact_payloads, authorized_memory_ids,
+    read_owner_ids,
+};
+/// Cancel-safe Fact ingest after an upstream side effect.
+pub use detached::ingest_fact_detached;
+pub use sidecar_heads::sidecar_heads_by_key;
+
+/// Types of the [`Tool::ARGV_ACTION_SPECS`] and [`Tool::AUDIENCE`] consts.
+pub use proxiima_core::mcp::{McpArgvActionSpec, McpToolAudience};
+/// The request-behavior onion [`SpiiceRegistry::add_request_behavior`] takes,
+/// with the reply it passes along ([`ToolReply`]) and the view
+/// [`RequestBehavior::visible`] reads ([`ToolDescriptorView`]). Its transport
+/// context/error (`McpToolCtx`, `McpToolError`) stay host-tier.
+pub use proxiima_core::mcp::{
+    Next, RequestBehavior, ToolCall, ToolContent, ToolDescriptorView, ToolReply, ToolSource,
+};
+/// sqlx → `StorageError` classifier for hand-written [`PgMemorySidecar`]
+/// inserts; `pg_sidecar!` expansions use the same one.
+pub use proxiima_storage_pg::map_err;

@@ -7,10 +7,10 @@
 //! pending-key deletion remains best effort outside it.
 
 use aws_sdk_s3::primitives::ByteStream;
-use proxima_core::citations::UploadedBlobPayload;
-use proxima_core::storage_ports::CitedBlobStaged;
-use proxima_core::{AuthzContext, OwnerId};
-use proxima_storage_pg::verbs::forget::ColdPurgeEntry;
+use proxiima_core::citations::UploadedBlobPayload;
+use proxiima_core::storage_ports::CitedBlobStaged;
+use proxiima_core::{AuthzContext, OwnerId};
+use proxiima_storage_pg::verbs::forget::ColdPurgeEntry;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -57,13 +57,13 @@ where
     loop {
         match op().await {
             Err(BlobError::Db(error))
-                if attempt < proxima_storage_pg::MAX_TRANSACTION_ATTEMPTS
-                    && proxima_storage_pg::is_transient_conflict(&error) =>
+                if attempt < proxiima_storage_pg::MAX_TRANSACTION_ATTEMPTS
+                    && proxiima_storage_pg::is_transient_conflict(&error) =>
             {
                 attempt += 1;
             }
-            Err(BlobError::Storage(proxima_core::StorageError::Retryable(_)))
-                if attempt < proxima_storage_pg::MAX_TRANSACTION_ATTEMPTS =>
+            Err(BlobError::Storage(proxiima_core::StorageError::Retryable(_)))
+                if attempt < proxiima_storage_pg::MAX_TRANSACTION_ATTEMPTS =>
             {
                 attempt += 1;
             }
@@ -315,7 +315,7 @@ impl CitedBlobStore {
 
     async fn load_upload_scoped(
         &self,
-        scope: Option<&proxima_core::OwnerScope>,
+        scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         upload_id: Uuid,
     ) -> Result<super::rows::UploadRow, BlobError> {
@@ -326,7 +326,7 @@ impl CitedBlobStore {
 
     async fn load_upload_scoped_optional(
         &self,
-        scope: Option<&proxima_core::OwnerScope>,
+        scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         upload_id: Uuid,
     ) -> Result<Option<super::rows::UploadRow>, BlobError> {
@@ -338,7 +338,7 @@ impl CitedBlobStore {
 
     async fn load_staged_scoped(
         &self,
-        scope: Option<&proxima_core::OwnerScope>,
+        scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         upload_id: Uuid,
         blob_id: Uuid,
@@ -390,11 +390,11 @@ impl CitedBlobStore {
         let mut tx = self.begin_owner_tx(ctx.owner_scope()).await?;
         lock_owner_fence(&mut tx, &owner).await?;
         let owner_id =
-            proxima_storage_pg::access::owner_columns::ensure_owner_row(tx.as_mut(), &owner)
+            proxiima_storage_pg::access::owner_columns::ensure_owner_row(tx.as_mut(), &owner)
                 .await
                 .map_err(|err| BlobError::State(format!("ensure upload owner: {err}")))?;
         sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads \
+            "INSERT INTO proxiima_core.blob_uploads \
                 (owner_id, upload_id, \
                  bucket, object_key, filename, mime, expected_byte_len, expires_at, \
                  object_store) \
@@ -562,7 +562,7 @@ impl CitedBlobStore {
     /// `Ok(None)` means the row is pending and unexpired, so staging proceeds.
     async fn stage_entry_shortcut(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         upload_id: Uuid,
         row: &super::rows::UploadRow,
@@ -628,7 +628,7 @@ impl CitedBlobStore {
     /// before reporting its terminal status.
     async fn record_stage_locator(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         upload_id: Uuid,
         row: &super::rows::UploadRow,
@@ -683,7 +683,7 @@ impl CitedBlobStore {
     /// identity.
     async fn commit_stage_locator(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         upload_id: Uuid,
         row: &super::rows::UploadRow,
@@ -697,7 +697,7 @@ impl CitedBlobStore {
         // answers from being taken against different snapshots.
         lock_fence_and_keys(&mut tx, owner, std::slice::from_ref(canonical_key)).await?;
         let rows_affected = sqlx::query(
-            "UPDATE proxima_core.blob_uploads \
+            "UPDATE proxiima_core.blob_uploads \
                 SET object_key = $1, content_hash = $2, sha256 = $3, etag = $4 \
               WHERE owner_id = $5 AND upload_id = $6 AND status = 'pending'",
         )
@@ -785,7 +785,7 @@ impl CitedBlobStore {
         let still_referenced: bool = sqlx::query_scalar(
             "SELECT EXISTS (
                  SELECT 1
-                   FROM proxima_core.blob_uploads
+                   FROM proxiima_core.blob_uploads
                   WHERE (object_key = $1 AND object_store = $3)
                      OR upload_id = $2
                      OR mounted_from_upload_id = $2
@@ -807,7 +807,7 @@ impl CitedBlobStore {
         // drop a debt on the floor. The store is not: it is the store this
         // stage published to, so the drain deletes against the right one.
         sqlx::query(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+            "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
              VALUES ($1, NULL, $2)
              ON CONFLICT (object_store, object_key) DO UPDATE
                 SET enqueued_at = now(), next_attempt_at = now()",
@@ -832,7 +832,7 @@ impl CitedBlobStore {
     /// `None` means the owner row is gone.
     async fn resolve_missing_pending(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         upload_id: Uuid,
         pending_key: &str,
@@ -883,7 +883,7 @@ impl CitedBlobStore {
     ) -> Result<StageLocatorDecision, BlobError> {
         let owner_id = owner.into_inner();
         let rows_affected = sqlx::query(
-            "UPDATE proxima_core.blob_uploads \
+            "UPDATE proxiima_core.blob_uploads \
                 SET object_key = $1, sha256 = $2, etag = $3 \
               WHERE owner_id = $4 AND upload_id = $5 AND status = $6",
         )
@@ -909,7 +909,7 @@ impl CitedBlobStore {
         // drained these keys before the canonical PUT landed. Nobody may
         // cite a terminal upload, so the bytes just published are owed again,
         // under the fence the terminal transition and every erase take.
-        proxima_storage_pg::access::owner_columns::owe_terminal_upload_keys_tx(
+        proxiima_storage_pg::access::owner_columns::owe_terminal_upload_keys_tx(
             tx,
             &self.store_id,
             owner,
@@ -988,13 +988,13 @@ impl CitedBlobStore {
     /// whole. Returns the bucket whose pending copy is now expendable.
     async fn commit_finish(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         upload_id: Uuid,
         blob_id: Uuid,
     ) -> Result<String, BlobError> {
         let mut tx = self.begin_owner_tx(owner_scope).await?;
-        let bucket = proxima_storage_pg::access::owner_columns::complete_upload_in_tx(
+        let bucket = proxiima_storage_pg::access::owner_columns::complete_upload_in_tx(
             &mut tx, owner, upload_id, blob_id,
         )
         .await
@@ -1056,7 +1056,7 @@ impl CitedBlobStore {
     /// whole. Provider cleanup happens after it returns, never inside it.
     async fn commit_abort(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         upload_id: Uuid,
     ) -> Result<AbortCommit, BlobError> {
@@ -1093,7 +1093,7 @@ impl CitedBlobStore {
         }
 
         let rows_affected = sqlx::query(
-            "UPDATE proxima_core.blob_uploads \
+            "UPDATE proxiima_core.blob_uploads \
                 SET status = 'aborted', aborted_at = now() \
               WHERE owner_id = $1 \
                 AND upload_id = $2 \
@@ -1109,7 +1109,7 @@ impl CitedBlobStore {
         // transfer key and its canonical object (if a stage published one)
         // are owed now, in the transaction that decides the abort.
         let owed = if rows_affected == 1 {
-            proxima_storage_pg::access::owner_columns::owe_terminal_upload_keys_tx(
+            proxiima_storage_pg::access::owner_columns::owe_terminal_upload_keys_tx(
                 &mut tx,
                 &self.store_id,
                 owner,
@@ -1147,7 +1147,7 @@ impl CitedBlobStore {
             return;
         }
         let cold = self.cold_store();
-        let outcome = proxima_storage_pg::access::owner_columns::purge_owed_keys_after_commit(
+        let outcome = proxiima_storage_pg::access::owner_columns::purge_owed_keys_after_commit(
             &self.pool,
             &self.platform_scope,
             &cold,

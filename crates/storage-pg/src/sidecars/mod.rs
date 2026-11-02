@@ -1,16 +1,16 @@
 //! Postgres-owned sidecar registration.
 //!
 //! Core owns schema metadata. This module owns backend-specific sidecar
-//! coverage so flavor composition can remain build-time and storage can
-//! stay out of `proxima-core`.
+//! coverage so spiice composition can remain build-time and storage can
+//! stay out of `proxiima-core`.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{
+use proxiima_core::verbs::schema::{PayloadKind, SchemaInfo};
+use proxiima_core::{
     AbstractionPayload, FactPayload, GoalId, GoalPayload, MemoryId, PerspectivePayload, SchemaId,
     SchemaVersion, SidecarPayload, StorageError,
 };

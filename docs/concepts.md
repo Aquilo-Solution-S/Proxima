@@ -31,7 +31,7 @@ own writer, and transfer, forget and restore preserve it.
 
 Typed payload is owner-scoped `Content`. Content may be shared by admissions
 within its owner and schema, but shared content never collapses two `t` values.
-Use the [core rustdoc source](https://github.com/Aquilo-Solution-S/Proxima/tree/main/crates/core/src)
+Use the [core rustdoc source](https://github.com/Aquilo-Solution-S/proxiima/tree/main/crates/core/src)
 for public types and constructors; use migrations for table shape.
 
 ## Layering
@@ -112,7 +112,7 @@ chain.
 
 The Lean kernel states these principles. Code and tests establish runtime
 behaviour; they are not inferred from prose. Start with
-[Principles.lean](https://github.com/Aquilo-Solution-S/Proxima/blob/main/docs/lean/Causa/Principles.lean),
-[Memory.lean](https://github.com/Aquilo-Solution-S/Proxima/blob/main/docs/lean/Causa/Memory.lean),
-[Edges.lean](https://github.com/Aquilo-Solution-S/Proxima/blob/main/docs/lean/Causa/Edges.lean),
-and [Goals.lean](https://github.com/Aquilo-Solution-S/Proxima/blob/main/docs/lean/Causa/Goals.lean).
+[Principles.lean](https://github.com/Aquilo-Solution-S/proxiima/blob/main/docs/lean/Causa/Principles.lean),
+[Memory.lean](https://github.com/Aquilo-Solution-S/proxiima/blob/main/docs/lean/Causa/Memory.lean),
+[Edges.lean](https://github.com/Aquilo-Solution-S/proxiima/blob/main/docs/lean/Causa/Edges.lean),
+and [Goals.lean](https://github.com/Aquilo-Solution-S/proxiima/blob/main/docs/lean/Causa/Goals.lean).

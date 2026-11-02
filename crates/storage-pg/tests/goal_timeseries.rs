@@ -7,17 +7,17 @@
 
 use std::collections::BTreeSet;
 
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::{MemoryReadPort, OwnerWritePermit};
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::verbs::query::{EntityKind, GoalAssignmentFilter, QueryRequest};
-use proxima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, WRITE_ACT_SCHEMA, write_goal};
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::storage_ports::{MemoryReadPort, OwnerWritePermit};
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::verbs::goal_write::GoalState;
+use proxiima_core::verbs::query::{EntityKind, GoalAssignmentFilter, QueryRequest};
+use proxiima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, WRITE_ACT_SCHEMA, write_goal};
 use uuid::Uuid;
 
 fn fact_draft() -> FactWriteCommand {
@@ -36,14 +36,14 @@ fn fact_draft() -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
 
 #[tokio::test]
 async fn goal_write_replay_terminal_and_write_act() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -53,11 +53,11 @@ async fn goal_write_replay_terminal_and_write_act() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
         let pool = pg.pool_for_tests();
-        let first_writer = proxima_core::WriterAttribution {
+        let first_writer = proxiima_core::WriterAttribution {
             by: Uuid::now_v7(),
             via: Some(Uuid::now_v7()),
         };
-        let next_writer = proxima_core::WriterAttribution {
+        let next_writer = proxiima_core::WriterAttribution {
             by: Uuid::now_v7(),
             via: None,
         };
@@ -90,7 +90,7 @@ async fn goal_write_replay_terminal_and_write_act() {
         assert!(created.write_act_t.is_some());
 
         let schema: String = sqlx::query_scalar(
-            "SELECT m.schema_id FROM proxima_core.memory m
+            "SELECT m.schema_id FROM proxiima_core.memory m
              WHERE m.t = $1",
         )
         .bind(created.write_act_t)
@@ -98,7 +98,7 @@ async fn goal_write_replay_terminal_and_write_act() {
         .await?;
         assert_eq!(schema, WRITE_ACT_SCHEMA);
         let act_writer: (Uuid, Option<Uuid>) =
-            sqlx::query_as("SELECT \"by\", via FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_as("SELECT \"by\", via FROM proxiima_core.memory WHERE t = $1")
                 .bind(created.write_act_t)
                 .fetch_one(pool)
                 .await?;
@@ -108,7 +108,7 @@ async fn goal_write_replay_terminal_and_write_act() {
         produced.refs = vec![created.write_act_t.expect("write-act")];
         let produced_out = pg.ingest_fact_atomic(&permit, &produced, None).await?;
         let refs: Vec<Uuid> =
-            sqlx::query_scalar("SELECT refs FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT refs FROM proxiima_core.memory WHERE t = $1")
                 .bind(produced_out.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -171,15 +171,15 @@ async fn goal_write_replay_terminal_and_write_act() {
         assert_ne!(closed.t, created.t);
         for (id, expected) in [(created.t, first_writer), (closed.t, next_writer)] {
             let stored: (Uuid, Option<Uuid>) =
-                sqlx::query_as("SELECT \"by\", via FROM proxima_core.goal WHERE t = $1")
+                sqlx::query_as("SELECT \"by\", via FROM proxiima_core.goal WHERE t = $1")
                     .bind(id)
                     .fetch_one(pool)
                     .await?;
             assert_eq!(stored, (expected.by, expected.via));
         }
         for query in [
-            sqlx::query("UPDATE proxima_core.goal SET \"by\" = $2 WHERE t = $1"),
-            sqlx::query("UPDATE proxima_core.goal SET via = $2 WHERE t = $1"),
+            sqlx::query("UPDATE proxiima_core.goal SET \"by\" = $2 WHERE t = $1"),
+            sqlx::query("UPDATE proxiima_core.goal SET via = $2 WHERE t = $1"),
         ] {
             let error = query
                 .bind(created.t)
@@ -228,7 +228,7 @@ async fn goal_write_replay_terminal_and_write_act() {
 
 #[tokio::test]
 async fn goal_query_projects_assignment_and_evidence_filters() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -241,12 +241,12 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
 
         let base = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
         let mut abstraction = fact_draft();
-        abstraction.kind = proxima_core::MemoryKind::Abstraction;
+        abstraction.kind = proxiima_core::MemoryKind::Abstraction;
         abstraction.additional_references =
             vec![EdgeEndpoint::memory(EntityKind::Fact, base.memory_id)];
         let abstraction = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;
         let mut perspective = fact_draft();
-        perspective.kind = proxima_core::MemoryKind::Perspective;
+        perspective.kind = proxiima_core::MemoryKind::Perspective;
         perspective.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Abstraction,
             abstraction.memory_id,
@@ -258,7 +258,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let created = write_goal(
             &mut tx,
             &owner,
-            proxima_storage_pg::test_fixtures::writer(),
+            proxiima_storage_pg::test_fixtures::writer(),
             &GoalWriteCommand {
                 handle: None,
                 schema_id: "core/task-v1".into(),
@@ -295,7 +295,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         assert_eq!(assigned.goals[0].id.into_inner(), created.t);
         assert_eq!(
             assigned.goals[0].writer,
-            proxima_storage_pg::test_fixtures::writer()
+            proxiima_storage_pg::test_fixtures::writer()
         );
         assert_eq!(assigned.goals[0].assignment, Some(assignment.memory_id));
         assert_eq!(assigned.goals[0].evidence, vec![evidence.memory_id]);
@@ -316,7 +316,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
 
         // Several Perspectives select the goals assigned to any of them.
         let mut second = fact_draft();
-        second.kind = proxima_core::MemoryKind::Perspective;
+        second.kind = proxiima_core::MemoryKind::Perspective;
         second.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Abstraction,
             abstraction.memory_id,
@@ -326,7 +326,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let second_goal = write_goal(
             &mut tx,
             &owner,
-            proxima_storage_pg::test_fixtures::writer(),
+            proxiima_storage_pg::test_fixtures::writer(),
             &GoalWriteCommand {
                 handle: None,
                 schema_id: "core/task-v1".into(),
@@ -378,7 +378,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let loose = write_goal(
             &mut tx,
             &owner,
-            proxima_storage_pg::test_fixtures::writer(),
+            proxiima_storage_pg::test_fixtures::writer(),
             &GoalWriteCommand {
                 handle: None,
                 schema_id: "core/task-v1".into(),
@@ -409,7 +409,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
                     .await?;
                 let mut ids: Vec<Uuid> = page.goals.iter().map(|g| g.id.into_inner()).collect();
                 ids.sort_unstable();
-                Ok::<_, proxima_core::StorageError>(ids)
+                Ok::<_, proxiima_core::StorageError>(ids)
             }
         };
         assert_eq!(

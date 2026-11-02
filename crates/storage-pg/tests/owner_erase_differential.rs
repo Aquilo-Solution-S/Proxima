@@ -97,8 +97,8 @@
 //! bundle's key set is pinned separately, against the DECLARATIONS rather
 //! than against a corpus:
 //! `owner_export::the_bundle_carries_every_exportable_surface_even_when_empty`
-//! and the cross-flavor half in the facade's `owner_inverse_reach_pg`, which
-//! composes core with the example flavor.
+//! and the cross-spiice half in the facade's `owner_inverse_reach_pg`, which
+//! composes core with the example spiice.
 //! Neither belongs here — regenerating these goldens would destroy their
 //! provenance, which is the whole of this file's argument.
 //!
@@ -124,21 +124,21 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use proxima_core::publication::{
+use proxiima_core::publication::{
     PublicationDraft, PublicationExtensions, PublicationLimits, PublicationPlan, PublicationSource,
 };
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::MemoryAuthoringPort;
-use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
-use proxima_core::{
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::storage_ports::MemoryAuthoringPort;
+use proxiima_core::storage_ports::OwnerWritePermit;
+use proxiima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
+use proxiima_core::{
     AccessKind, AgentNoteV1, ColdObjectStore, OwnerId, SchemaId, SchemaVersion, SidecarPayload,
     StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::PgStorage;
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::verbs::forget::MemoryColdStore;
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::PgStorage;
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::verbs::forget::MemoryColdStore;
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -150,15 +150,15 @@ struct CorpusColdStore(MemoryColdStore);
 
 #[async_trait::async_trait]
 impl ColdObjectStore for CorpusColdStore {
-    fn store_id(&self) -> &proxima_core::ObjectStoreId {
-        static ID: std::sync::LazyLock<proxima_core::ObjectStoreId> =
+    fn store_id(&self) -> &proxiima_core::ObjectStoreId {
+        static ID: std::sync::LazyLock<proxiima_core::ObjectStoreId> =
             std::sync::LazyLock::new(|| {
-                proxima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
+                proxiima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
             });
         &ID
     }
 
-    async fn delete(&self, key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
+    async fn delete(&self, key: &str) -> Result<proxiima_core::PurgeDeleted, StorageError> {
         self.0.delete(key).await
     }
 }
@@ -189,7 +189,7 @@ fn draft(
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
@@ -212,7 +212,7 @@ const FIXTURE_GOAL_HANDLES: [Uuid; 3] = [
 /// projects nowhere (see the module docs) — but the port is entitled to ask.
 fn authorized(owner: OwnerId, mut draft: FactWriteCommand) -> AuthorizedFactWrite {
     draft.lexical_language =
-        Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
+        Some(proxiima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
     AuthorizedFactWrite::new_for_tests(
         OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
         draft,
@@ -237,7 +237,7 @@ fn authorized_with_sidecars(
 /// carries the real thing. Two admissions get one: the target's, which an
 /// owner erase must destroy, and the neighbour's, which it must not touch.
 fn published(owner: OwnerId, note: &str, write: AuthorizedFactWrite) -> AuthorizedFactWrite {
-    let source = PublicationSource::new("urn:proxima:owner-differential")
+    let source = PublicationSource::new("urn:proxiima:owner-differential")
         .expect("a URN is an absolute source");
     write.with_publication_for_tests(PublicationPlan::new(
         PublicationDraft::new(
@@ -266,8 +266,8 @@ fn note(title: &str) -> SidecarPayload {
 
 async fn owner_row(pool: &PgPool, owner: OwnerId) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT (owner_id) DO NOTHING",
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal'::proxiima_core.owner_kind) ON CONFLICT (owner_id) DO NOTHING",
     )
     .bind(owner.into_inner())
     .execute(pool)
@@ -292,7 +292,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     // Blobs: one cited by an admission, one mounted — the same object key
     // named by an upload row of each owner.
     let blob: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
     )
     .bind(owner.into_inner())
@@ -300,7 +300,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     .fetch_one(pool)
     .await?;
     let mounted: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
     )
     .bind(owner.into_inner())
@@ -308,7 +308,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     .fetch_one(pool)
     .await?;
     let neighbour_blob: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
     )
     .bind(other.into_inner())
@@ -346,11 +346,11 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         ),
     ] {
         sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads
+            "INSERT INTO proxiima_core.blob_uploads
                  (owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len,
                   status, blob_id, sha256, expires_at, completed_at)
              VALUES ($1, 'bucket', 's3:test/bucket', $2, 'f.pdf', 'application/pdf', 1,
-                     $3::proxima_core.blob_upload_status, $4, $5,
+                     $3::proxiima_core.blob_upload_status, $4, $5,
                      TIMESTAMPTZ '2030-01-01 00:00:00Z',
                      CASE WHEN $6 THEN TIMESTAMPTZ '2026-01-01 00:00:00Z' ELSE NULL END)",
         )
@@ -445,7 +445,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     // repointed off them; leaving them would compare the write path's
     // bookkeeping instead of the corpus.
     let minted_content: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT content_id FROM proxima_core.memory
+        "SELECT content_id FROM proxiima_core.memory
           WHERE t = ANY($1::uuid[]) AND content_id IS NOT NULL",
     )
     .bind(vec![t1, t2, t3, tn])
@@ -460,7 +460,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     // ctid`, an UPDATE writes a new tuple at the end of the heap, and this
     // row and `k3`'s are the two that survive a `src-a` source-scope erase —
     // so which of them is updated first IS the order the baseline pins.
-    sqlx::query("UPDATE proxima_core.memory SET content_id = NULL WHERE t = $1")
+    sqlx::query("UPDATE proxiima_core.memory SET content_id = NULL WHERE t = $1")
         .bind(tn)
         .execute(pool)
         .await?;
@@ -469,7 +469,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     // source erase of `src-a` GCs it too), one shared across sources (source
     // erase must NOT GC it), one held by the neighbour.
     let shared_a: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/test-fact-v1', $2) RETURNING content_id",
     )
     .bind(owner.into_inner())
@@ -477,7 +477,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     .fetch_one(pool)
     .await?;
     let cross_source: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/test-fact-v1', $2) RETURNING content_id",
     )
     .bind(owner.into_inner())
@@ -485,19 +485,19 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     .fetch_one(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/test-fact-v1', $2)",
     )
     .bind(other.into_inner())
     .bind(vec![13u8; 32])
     .execute(pool)
     .await?;
-    sqlx::query("UPDATE proxima_core.memory SET content_id = $2 WHERE t = ANY($1::uuid[])")
+    sqlx::query("UPDATE proxiima_core.memory SET content_id = $2 WHERE t = ANY($1::uuid[])")
         .bind(vec![t1, t2])
         .bind(shared_a)
         .execute(pool)
         .await?;
-    sqlx::query("UPDATE proxima_core.memory SET content_id = $2 WHERE t = $1")
+    sqlx::query("UPDATE proxiima_core.memory SET content_id = $2 WHERE t = $1")
         .bind(t3)
         .bind(cross_source)
         .execute(pool)
@@ -505,12 +505,12 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     // `cross_source` is also named by a `src-a` admission, so a source-scope
     // erase of `src-a` must leave it: the anti-join, not the selection set,
     // is what decides.
-    sqlx::query("UPDATE proxima_core.memory SET content_id = $2 WHERE t = $1")
+    sqlx::query("UPDATE proxiima_core.memory SET content_id = $2 WHERE t = $1")
         .bind(t1)
         .bind(cross_source)
         .execute(pool)
         .await?;
-    sqlx::query("DELETE FROM proxima_core.content WHERE content_id = ANY($1::uuid[])")
+    sqlx::query("DELETE FROM proxiima_core.content WHERE content_id = ANY($1::uuid[])")
         .bind(&minted_content)
         .execute(pool)
         .await?;
@@ -525,7 +525,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     // Embedding infrastructure.
     for t in [t1, t2, tn] {
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings
+            "INSERT INTO proxiima_core.embeddings
                  (entity_id, model_id, dim, embedding_version, vec, owner_id)
              VALUES ($1, 'test-embed', 1024, 1, $2, $3)",
         )
@@ -539,7 +539,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_heads
+            "INSERT INTO proxiima_core.embedding_heads
                  (entity_id, model_id, dim, embedding_version, owner_id)
              VALUES ($1, 'test-embed', 1024, 1, $2)",
         )
@@ -563,7 +563,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     .zip(FIXTURE_GOAL_HANDLES)
     {
         sqlx::query(
-            "INSERT INTO proxima_core.goal_head (handle, schema_id, owner_id, t)
+            "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
              VALUES ($1, 'core/task-goal-v1', $2, $1)",
         )
         .bind(goal_handle)
@@ -571,7 +571,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .execute(pool)
         .await?;
         let goal_t: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.goal
+            "INSERT INTO proxiima_core.goal
                  (handle, t, owner_id, title, state, request_id, \"by\", via)
              VALUES ($1, $1, $2, 'a goal', 'Active', $3, '00000000-0000-0000-0000-000000000509'::uuid, NULL) RETURNING t",
         )
@@ -581,7 +581,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .fetch_one(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.task_goal_v1 (t, due_at)
+            "INSERT INTO proxiima_core.task_goal_v1 (t, due_at)
              VALUES ($1, TIMESTAMPTZ '2027-01-01 00:00:00Z')",
         )
         .bind(goal_t)
@@ -589,7 +589,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
         .await
         .ok();
         sqlx::query(
-            "INSERT INTO proxima_core.sketch (t, owner_id, kind, text)
+            "INSERT INTO proxiima_core.sketch (t, owner_id, kind, text)
              VALUES ($1, $2, 'goal', 'goal sketch')",
         )
         .bind(goal_t)
@@ -602,7 +602,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     // Source cursors and delegated authority.
     for (owner_ref, source) in [(owner, "src-a"), (owner, "src-b"), (other, "src-a")] {
         sqlx::query(
-            "INSERT INTO proxima_core.source_cursors
+            "INSERT INTO proxiima_core.source_cursors
                  (owner_id, source, cursor, updated_at)
              VALUES ($1, $2, $3,
                      TIMESTAMPTZ '2026-03-03 00:00:00Z')",
@@ -615,7 +615,7 @@ pub async fn seed(pg: &PgStorage) -> Result<Corpus, Box<dyn std::error::Error>> 
     }
     for (subject, holder) in [(target, owner), (target, other), (neighbour, other)] {
         sqlx::query(
-            "INSERT INTO proxima_core.delegated_authority_grants
+            "INSERT INTO proxiima_core.delegated_authority_grants
                  (delegation_id, subject_user_id, owner_id, tool_name,
                   read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at, \"by\", via)
              VALUES ($1, $2, $3, 'core_remember',
@@ -662,14 +662,14 @@ pub const DROPPED_TABLES: &[&str] = &[
     "publication_delivery",
     // Added after the baseline by 0029: other-store origins of a derived
     // memory, keyed on its `t`. Skipped here only because the pinned
-    // baseline lacks it; it is a flavor #0 surface (#478), so its erase leg
+    // baseline lacks it; it is a spiice #0 surface (#478), so its erase leg
     // is generated, live and forgotten, and `external_origin_reach` pins it.
     "memory_external_origin",
     // Added after the baseline by 0034: a series' publication position,
     // deleted by owner erase once nothing of its series is left.
     // `publication_outbox_pg_tests` pins it.
     "publication_counter",
-    // Added after the baseline by 0042: which flavor tables are Follows
+    // Added after the baseline by 0042: which spiice tables are Follows
     // sidecars, host-written schema metadata about no owner.
     "owner_follows",
     // Added after the baseline by 0049: coordination relations about no
@@ -697,10 +697,10 @@ pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
 ];
 
 fn names_relation(table: &str, relation: &str) -> bool {
-    table == relation || table.strip_prefix("proxima_core.") == Some(relation)
+    table == relation || table.strip_prefix("proxiima_core.") == Some(relation)
 }
 
-/// Every base relation of `proxima_core`, dumped in physical insertion order
+/// Every base relation of `proxiima_core`, dumped in physical insertion order
 /// and normalized: identifiers and timestamps become order-of-appearance
 /// tokens, so two runs that did the same thing to the same logical corpus
 /// produce the same bytes.
@@ -723,14 +723,14 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
                     '/table/row/to_jsonb/text()',
                     query_to_xml(
                         format(
-                            'SELECT to_jsonb(x) FROM proxima_core.%I x ORDER BY x.ctid',
+                            'SELECT to_jsonb(x) FROM proxiima_core.%I x ORDER BY x.ctid',
                             t.table_name
                         ),
                         false, false, ''
                     )
                 ))::text[]
            FROM information_schema.tables t
-          WHERE t.table_schema = 'proxima_core' AND t.table_type = 'BASE TABLE'
+          WHERE t.table_schema = 'proxiima_core' AND t.table_type = 'BASE TABLE'
             AND t.table_name NOT IN ('erased_pin_target', 'installation', 'store_identity')
           ORDER BY t.table_name",
     )
@@ -741,7 +741,7 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
         if DROPPED_TABLES.contains(&table.as_str()) {
             continue;
         }
-        out.push_str(&format!("## proxima_core.{table} ({})\n", rows.len()));
+        out.push_str(&format!("## proxiima_core.{table} ({})\n", rows.len()));
         for row in rows {
             let mut row: Value = serde_json::from_str(&row)?;
             for (unpaired_table, column) in UNPAIRED_COLUMNS {
@@ -773,7 +773,7 @@ pub async fn dump_database(pool: &PgPool) -> Result<String, Box<dyn std::error::
 }
 
 pub fn canonical(value: &Value) -> String {
-    String::from_utf8(proxima_core::canonical_json_bytes(value)).expect("utf8")
+    String::from_utf8(proxiima_core::canonical_json_bytes(value)).expect("utf8")
 }
 
 /// Replace every uuid and timestamp with an order-of-appearance token.
@@ -869,7 +869,7 @@ pub async fn boot(url: &str) -> Result<PgStorage, Box<dyn std::error::Error>> {
     // payload by its own `(kind, schema_id, version)` through this registry.
     // Erase and export are unaffected: both are driven by `OwnerSurfaces`
     // off the contract, and neither reads the PG sidecar registry.
-    Ok(pg.with_sidecars(proxima_storage_pg::core_pg_sidecars()))
+    Ok(pg.with_sidecars(proxiima_storage_pg::core_pg_sidecars()))
 }
 
 pub async fn teardown(db_name: &str) {
@@ -882,13 +882,13 @@ pub async fn teardown(db_name: &str) {
 // file. That is the point of the split: if the shared half were allowed to
 // drift, the two sides would stop being a comparison.
 
-use proxima_core::owner_inverse::{
+use proxiima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseTarget, OwnerExportTarget, OwnerSurfaces,
 };
-use proxima_core::storage_ports::OwnerInversePort;
+use proxiima_core::storage_ports::OwnerInversePort;
 
 fn tables() -> OwnerSurfaces {
-    OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
+    OwnerSurfaces::for_registry(&proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests())
 }
 
 async fn export_dump(pg: &PgStorage, user: UserId) -> Result<String, Box<dyn std::error::Error>> {
@@ -928,7 +928,7 @@ async fn export_dump(pg: &PgStorage, user: UserId) -> Result<String, Box<dyn std
 }
 
 async fn scenario(source_scope: Option<&str>, out_key: &str) {
-    let (db_name, url) = fresh_db("proxima_diff").await;
+    let (db_name, url) = fresh_db("proxiima_diff").await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = boot(&url).await?;
         let pool = pg.pool_for_tests();
@@ -941,9 +941,9 @@ async fn scenario(source_scope: Option<&str>, out_key: &str) {
                 // which keeps the golden file as pinned.
                 let target_owner = Uuid::from(OwnerId::from(corpus.target));
                 sqlx::query(
-                    "INSERT INTO proxima_core.publication_counter (handle, owner_id, sequence)
+                    "INSERT INTO proxiima_core.publication_counter (handle, owner_id, sequence)
                      SELECT h.handle, h.owner_id, 1
-                       FROM proxima_core.memory_head h
+                       FROM proxiima_core.memory_head h
                       WHERE h.owner_id = $1
                      ON CONFLICT (handle) DO NOTHING",
                 )
@@ -967,7 +967,7 @@ async fn scenario(source_scope: Option<&str>, out_key: &str) {
                 );
             }
             Some(source) => {
-                let source_id = proxima_core::SourceId::new(source.to_owned());
+                let source_id = proxiima_core::SourceId::new(source.to_owned());
                 let auth =
                     EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
                         user_id: corpus.target,
@@ -982,7 +982,7 @@ async fn scenario(source_scope: Option<&str>, out_key: &str) {
         }
         text.push_str(&dump_database(pool).await?);
         let actual = normalize(&text);
-        if let Ok(dir) = std::env::var("PROXIMA_DIFFERENTIAL_DIR") {
+        if let Ok(dir) = std::env::var("PROXIIMA_DIFFERENTIAL_DIR") {
             std::fs::write(format!("{dir}/{out_key}.txt"), &actual)?;
             return Ok(());
         }
@@ -1002,15 +1002,15 @@ async fn scenario(source_scope: Option<&str>, out_key: &str) {
 }
 
 async fn counter_rows(pool: &PgPool, owner: Uuid) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT count(*) FROM proxima_core.publication_counter WHERE owner_id = $1")
+    sqlx::query_scalar("SELECT count(*) FROM proxiima_core.publication_counter WHERE owner_id = $1")
         .bind(owner)
         .fetch_one(pool)
         .await
 }
 
-fn outcome_shape(outcome: &proxima_core::owner_inverse::OwnerEraseOutcome) -> String {
+fn outcome_shape(outcome: &proxiima_core::owner_inverse::OwnerEraseOutcome) -> String {
     match outcome {
-        proxima_core::owner_inverse::OwnerEraseOutcome::Completed {
+        proxiima_core::owner_inverse::OwnerEraseOutcome::Completed {
             cold_object_purge_pending,
             ..
         } => format!("Completed cold_pending={cold_object_purge_pending}"),

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use proxima_core::StorageError;
-use proxima_core::flavor::{ExportRule, Surface};
-use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportBundle, OwnerSurfaces};
+use proxiima_core::StorageError;
+use proxiima_core::owner_inverse::{ExportAuthorization, OwnerExportBundle, OwnerSurfaces};
+use proxiima_core::spiice::{ExportRule, Surface};
 use serde_json::Value;
 use sqlx::PgPool;
 
@@ -37,7 +37,7 @@ pub async fn export_owner_bundle(
 async fn export_owner_bundle_snapshot(
     mut tx: Transaction<'static, Postgres>,
     auth: &ExportAuthorization,
-    owner: proxima_core::OwnerId,
+    owner: proxiima_core::OwnerId,
     owner_id: uuid::Uuid,
     surfaces: &OwnerSurfaces,
     lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
@@ -82,7 +82,7 @@ async fn export_owner_bundle_snapshot(
     // memory's origins and refs stay in the graph (#478, #488).
     let edges = pins_from_memories(
         tables
-            .get("proxima_core.memory")
+            .get("proxiima_core.memory")
             .map_or(&[][..], Vec::as_slice),
     );
 
@@ -146,7 +146,7 @@ fn validate_lifecycle_dispatch(
 async fn invoke_host_lifecycle_export(
     tx: &mut Transaction<'_, Postgres>,
     surfaces: &OwnerSurfaces,
-    owner: proxima_core::OwnerId,
+    owner: proxiima_core::OwnerId,
     lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
     tables: &mut BTreeMap<String, Vec<Value>>,
 ) -> Result<(), StorageError> {
@@ -164,7 +164,7 @@ async fn invoke_host_lifecycle_export(
         .port
         .export(
             tx,
-            proxima_core::storage_ports::HostStateExportRequest::new(
+            proxiima_core::storage_ports::HostStateExportRequest::new(
                 lifecycle.descriptor.participant_id(),
                 owner,
                 included_tables.clone(),
@@ -252,7 +252,7 @@ fn validate_host_export_rows(
 /// describes has been transferred away, and out of the receiving owner's. A
 /// surface with a `None` `owner_column` asserts it is reached through its
 /// key's owner, so the statement joins that key's home table and filters
-/// there. `try_freeze` refuses a flavor that declares an exportable surface
+/// there. `try_freeze` refuses a spiice that declares an exportable surface
 /// which is neither, so the `Internal` arm below is unreachable through a
 /// frozen registry and is kept for the synthetic surfaces tests build.
 fn export_statement(
@@ -297,7 +297,7 @@ fn export_statement(
     let sql = if let Some(owner_column) = surface.owner_column {
         // `s.{owner}` is the surface's OWN owner column as it declares it.
         // The branch below joins to the key's home table instead, and
-        // `base.owner_id` there is `proxima_core.memory`'s own column,
+        // `base.owner_id` there is `proxiima_core.memory`'s own column,
         // which is fixed.
         let owner = PgIdent::column(owner_column)?;
         format!(
@@ -452,8 +452,8 @@ fn push_pins(edges: &mut Vec<Value>, source_t: &Value, pins: Option<&Value>, kin
 #[cfg(test)]
 mod tests {
     use super::{export_statement, pin_sort_key, pins_from_memories};
-    use proxima_core::FLAVOR_0;
-    use proxima_core::flavor::{ExportRule, Surface};
+    use proxiima_core::SPIICE_0;
+    use proxiima_core::spiice::{ExportRule, Surface};
     use serde_json::json;
 
     fn pk(columns: &[&str]) -> Vec<String> {
@@ -464,7 +464,7 @@ mod tests {
     /// ties, so a non-unique key still gives a total order.
     #[test]
     fn export_order_is_the_key_then_the_rest_of_the_primary_key() {
-        let ingest = surface("proxima_core.ingest_keys");
+        let ingest = surface("proxiima_core.ingest_keys");
         let sql = export_statement(&ingest, &pk(&["owner_id", "source_id", "ingest_key"]))
             .expect("generates")
             .expect("ingest keys are exported");
@@ -479,10 +479,10 @@ mod tests {
     }
 
     fn surface(table: &str) -> Surface {
-        FLAVOR_0
+        SPIICE_0
             .all_surfaces()
             .find(|surface| surface.table == table)
-            .unwrap_or_else(|| panic!("flavor #0 declares {table}"))
+            .unwrap_or_else(|| panic!("spiice #0 declares {table}"))
     }
 
     #[test]
@@ -530,7 +530,7 @@ mod tests {
     /// rather than a comment.
     #[test]
     fn an_allowlisted_surface_generates_exactly_its_declared_fields() {
-        let sql = export_statement(&surface("proxima_core.blob"), &pk(&["blob_id"]))
+        let sql = export_statement(&surface("proxiima_core.blob"), &pk(&["blob_id"]))
             .expect("generates")
             .expect("blob is exported");
         assert!(
@@ -547,10 +547,10 @@ mod tests {
     /// key's owner, and the generated join is what makes the claim true.
     #[test]
     fn a_keyed_sidecar_reaches_the_owner_through_its_home_table() {
-        let sql = export_statement(&surface("proxima_core.agent_note_v1"), &pk(&["t"]))
+        let sql = export_statement(&surface("proxiima_core.agent_note_v1"), &pk(&["t"]))
             .expect("generates")
             .expect("the note sidecar is exported");
-        assert!(sql.contains("JOIN proxima_core.memory base"), "{sql}");
+        assert!(sql.contains("JOIN proxiima_core.memory base"), "{sql}");
         assert!(sql.contains("WHERE base.owner_id = $1"), "{sql}");
         assert!(sql.contains("to_jsonb(s)"), "{sql}");
     }
@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn external_origins_reach_the_owner_through_the_memory_row() {
         let sql = export_statement(
-            &surface("proxima_core.memory_external_origin"),
+            &surface("proxiima_core.memory_external_origin"),
             &pk(&["t", "memory"]),
         )
         .expect("generates")
@@ -568,8 +568,8 @@ mod tests {
         let flat = sql.split_whitespace().collect::<Vec<_>>().join(" ");
         assert_eq!(
             flat,
-            "SELECT to_jsonb(s) FROM proxima_core.memory_external_origin s \
-             JOIN proxima_core.memory base ON base.t = s.t \
+            "SELECT to_jsonb(s) FROM proxiima_core.memory_external_origin s \
+             JOIN proxiima_core.memory base ON base.t = s.t \
              WHERE base.owner_id = $1 ORDER BY s.t, s.memory"
         );
     }
@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn no_export_statement_filters_its_owner_with_is_not_distinct_from() {
         let mut generated = 0;
-        for declared in FLAVOR_0.all_surfaces() {
+        for declared in SPIICE_0.all_surfaces() {
             let Some(sql) = export_statement(&declared, &pk(&["t"])).expect("generates") else {
                 continue;
             };
@@ -591,15 +591,15 @@ mod tests {
             );
             assert!(sql.contains(" = $1"), "{sql}");
         }
-        assert!(generated > 1, "flavor #0 exports more than one surface");
+        assert!(generated > 1, "spiice #0 exports more than one surface");
     }
 
     #[test]
     fn a_surface_that_carries_no_rows_generates_nothing() {
         for table in [
-            "proxima_core.owners",
-            "proxima_core.memory_head",
-            "proxima_core.embeddings",
+            "proxiima_core.owners",
+            "proxiima_core.memory_head",
+            "proxiima_core.embeddings",
         ] {
             let declared = surface(table);
             assert!(!declared.export.carries_rows());
@@ -611,7 +611,7 @@ mod tests {
             );
         }
         // content and blob_uploads were declared gaps; #478 carries them.
-        for table in ["proxima_core.content", "proxima_core.blob_uploads"] {
+        for table in ["proxiima_core.content", "proxiima_core.blob_uploads"] {
             assert!(
                 matches!(surface(table).export, ExportRule::Allowlist(_)),
                 "{table}"
@@ -623,7 +623,7 @@ mod tests {
     /// statement.
     #[test]
     fn no_generated_statement_aliases_a_table_t() {
-        for surface in FLAVOR_0.all_surfaces() {
+        for surface in SPIICE_0.all_surfaces() {
             let key = surface
                 .key
                 .columns()

@@ -19,10 +19,10 @@ use crate::{MemoryId, SchemaId};
 /// wants more than this is a query, and queries go through the read ports.
 pub const SIDECAR_SESSION_READ_MAX_ROWS: u32 = 512;
 
-/// One flavor-owned read of its OWN registered sidecar surface, run inside
+/// One spiice-owned read of its OWN registered sidecar surface, run inside
 /// the write session's transaction.
 ///
-/// This is the read half of `read → check → append`: a flavor that must see
+/// This is the read half of `read → check → append`: a spiice that must see
 /// its own rows before deciding what to append needs them read under the
 /// same advisory lock and the same snapshot as the append. A pool-scoped
 /// read cannot give it either, which is the whole reason a raw transaction
@@ -83,7 +83,7 @@ pub trait WriteSessionFactory: Send + Sync {
         owner_scope: Option<&crate::OwnerScope>,
     ) -> Result<Box<dyn WriteSession>, StorageError>;
 
-    /// Begin the transaction one flavor-scoped erase runs in
+    /// Begin the transaction one spiice-scoped erase runs in
     /// ([`WriteSession::erase_series`]).
     ///
     /// A separate begin because the erase's locks come FIRST: the backend
@@ -103,7 +103,7 @@ pub trait WriteSessionFactory: Send + Sync {
     ) -> Result<Box<dyn WriteSession>, StorageError> {
         let _ = permit;
         Err(StorageError::Unavailable(
-            "this backend has no flavor-scoped erase".into(),
+            "this backend has no spiice-scoped erase".into(),
         ))
     }
 }
@@ -130,7 +130,7 @@ pub trait WriteSession: Send {
     /// both append. Use [`Self::advisory_xact_lock`] for that.
     async fn advisory_xact_lock_shared(&mut self, key: i64) -> Result<(), StorageError>;
 
-    /// Read the flavor's own sidecar rows INSIDE this session's transaction.
+    /// Read the spiice's own sidecar rows INSIDE this session's transaction.
     ///
     /// Sees this session's uncommitted writes and is serialized by whatever
     /// [`Self::advisory_xact_lock`] the session already took — which is what
@@ -141,7 +141,7 @@ pub trait WriteSession: Send {
     /// needs the exclusive mode.
     ///
     /// Rows come back as JSON objects of the sidecar's own columns; the
-    /// flavor deserializes them into its own row type. That is a read
+    /// spiice deserializes them into its own row type. That is a read
     /// projection of a typed row, not an untyped payload store: the sidecar
     /// remains the typed surface, and nothing is written through this path.
     ///
@@ -220,7 +220,7 @@ pub trait WriteSession: Send {
     /// Run one startup-registered host-state command on THIS transaction.
     ///
     /// The engine authorizes the destination owner and checks that every
-    /// declared table is a [`crate::FlavorContract::state_surfaces`] binding
+    /// declared table is a [`crate::SpiiceContract::state_surfaces`] binding
     /// before this method is called. The backend then dispatches only to the
     /// participant registered at boot, on the same `Transaction` it already
     /// holds — no second pooled connection, no independent BEGIN/COMMIT, and
@@ -242,7 +242,7 @@ pub trait WriteSession: Send {
     /// Only valid on a session from
     /// [`WriteSessionFactory::begin_series_erase`], as its first and only
     /// operation. The engine has authorized `permit` (Admin on the owner, or
-    /// system authority) and resolved the named flavor's schemas; the backend
+    /// system authority) and resolved the named spiice's schemas; the backend
     /// expands the selection to whole series plus every series whose rows
     /// reference it, refuses anything outside the owner or those schemas, and
     /// erases. Blob objects are enqueued here and destroyed after
@@ -259,7 +259,7 @@ pub trait WriteSession: Send {
     ) -> Result<SeriesEraseOutcome, StorageError> {
         let _ = (permit, request);
         Err(StorageError::Unavailable(
-            "this backend has no flavor-scoped erase".into(),
+            "this backend has no spiice-scoped erase".into(),
         ))
     }
 

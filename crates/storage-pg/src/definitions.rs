@@ -1,6 +1,6 @@
 //! The mutable core functions, triggers and policies pass.
 
-use proxima_core::{RELEASE_VERSION, StorageError};
+use proxiima_core::{RELEASE_VERSION, StorageError};
 use sha2::{Digest, Sha384};
 use sqlx::PgConnection;
 
@@ -66,7 +66,7 @@ impl AppliedDefinitions {
         policy: crate::MissingMigrationPolicy,
     ) -> Result<Option<Self>, StorageError> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT to_regprocedure('proxima_core.definitions_applied()') IS NOT NULL",
+            "SELECT to_regprocedure('proxiima_core.definitions_applied()') IS NOT NULL",
         )
         .fetch_one(&mut *connection)
         .await
@@ -75,7 +75,7 @@ impl AppliedDefinitions {
             return Ok(None);
         }
         let record: Option<(String, String)> =
-            sqlx::query_as("SELECT checksum, release FROM proxima_core.definitions_applied()")
+            sqlx::query_as("SELECT checksum, release FROM proxiima_core.definitions_applied()")
                 .fetch_optional(&mut *connection)
                 .await
                 .map_err(internal)?;
@@ -135,7 +135,7 @@ pub(crate) async fn apply(
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT format('%I.%I', n.nspname, c.relname)
            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-          WHERE n.nspname = 'proxima_core' AND c.relkind IN ('r', 'p')
+          WHERE n.nspname = 'proxiima_core' AND c.relkind IN ('r', 'p')
           ORDER BY c.relname",
     )
     .fetch_all(&mut *connection)
@@ -164,7 +164,7 @@ pub(crate) async fn apply(
     let checksum = checksum_hex(vectors);
     // SQL-POLICY: fixed-fragment — generated hex checksum and compiled release constant.
     let record = format!(
-        "CREATE OR REPLACE FUNCTION proxima_core.definitions_applied()
+        "CREATE OR REPLACE FUNCTION proxiima_core.definitions_applied()
          RETURNS TABLE(checksum text, release text) LANGUAGE sql IMMUTABLE
          AS $$ SELECT '{checksum}'::text, '{RELEASE_VERSION}'::text $$"
     );
@@ -206,6 +206,42 @@ pub async fn current_matches_with_policy(
         Some(AppliedDefinitions::Current { checksum }) => checksum == checksum_hex(vectors),
         None => false,
     })
+}
+
+/// Preserve the release refusal while replaying the immutable historical catalog.
+pub(crate) async fn validate_historical_release(
+    connection: &mut PgConnection,
+    policy: crate::MissingMigrationPolicy,
+) -> Result<(), StorageError> {
+    let function = format!(
+        "{}core.definitions_applied",
+        crate::rename_bootstrap::historical_namespace_prefix()
+    );
+    let exists: bool = sqlx::query_scalar("SELECT to_regprocedure($1) IS NOT NULL")
+        .bind(format!("{function}()"))
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(internal)?;
+    if !exists {
+        return Ok(());
+    }
+    // SQL-POLICY: fixed-fragment — namespace derived only from embedded historical SQL.
+    let release: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT release FROM {function}()"
+    )))
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(internal)?;
+    if let Some(release) = release {
+        let recorded = Release::parse(&release)?;
+        let binary = Release::parse(RELEASE_VERSION)?;
+        if recorded > binary && policy == crate::MissingMigrationPolicy::Reject {
+            return Err(StorageError::Internal(format!(
+                "database definitions were applied by newer release {release}; this binary is {RELEASE_VERSION}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

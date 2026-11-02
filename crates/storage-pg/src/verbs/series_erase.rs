@@ -1,7 +1,7 @@
-//! Flavor-scoped series erase: the storage half of
+//! Spiice-scoped series erase: the storage half of
 //! `UnitOfWork::erase_own_series` (docs/data-and-erasure.md).
 //!
-//! The engine has authorized the owner and resolved the named flavor's
+//! The engine has authorized the owner and resolved the named spiice's
 //! memory schemas. This module turns the selection into a closed footprint —
 //! every version of every selected series, plus every series whose rows
 //! reference the footprint through a foreign key — refuses the footprint when
@@ -15,13 +15,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use proxima_core::flavor::KeyShape;
-use proxima_core::owner_inverse::OwnerSurfaces;
-use proxima_core::verbs::own_erase::{
+use proxiima_core::owner_inverse::OwnerSurfaces;
+use proxiima_core::spiice::KeyShape;
+use proxiima_core::verbs::own_erase::{
     SeriesEraseOutcome, SeriesEraseRefusal, SeriesEraseRefusalKind, SeriesEraseReport,
     SeriesEraseRequest, SeriesSelection,
 };
-use proxima_core::{MemoryId, OwnerId, StorageError};
+use proxiima_core::{MemoryId, OwnerId, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -32,7 +32,7 @@ use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::sidecars::{PgSidecarRegistryFrozen, int_to_u64};
 
-/// One foreign key into `proxima_core.memory (t)` that makes a row depend on
+/// One foreign key into `proxiima_core.memory (t)` that makes a row depend on
 /// a memory OTHER than its own.
 ///
 /// A row keyed on the memory it references is that memory's own dependent
@@ -48,7 +48,7 @@ struct ReferencePair {
 }
 
 /// Every `NO ACTION` / `RESTRICT` single-column foreign key into
-/// `proxima_core.memory (t)`, from the catalog rather than a list: a flavor
+/// `proxiima_core.memory (t)`, from the catalog rather than a list: a spiice
 /// adding a referencing column is covered the day its migration runs.
 /// `CASCADE` and `SET NULL` keys are the database's to resolve.
 const REFERENCE_KEYS_SQL: &str = "\
@@ -58,7 +58,7 @@ SELECT n.nspname || '.' || cl.relname AS tbl, a.attname::text AS col
   JOIN pg_catalog.pg_namespace n ON n.oid = cl.relnamespace
   JOIN pg_catalog.pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
  WHERE c.contype = 'f'
-   AND c.confrelid = 'proxima_core.memory'::regclass
+   AND c.confrelid = 'proxiima_core.memory'::regclass
    AND cardinality(c.conkey) = 1
    AND c.confdeltype IN ('a', 'r')
  ORDER BY 1, 2";
@@ -98,10 +98,10 @@ struct Version {
 /// Every version of every series named by `ts`, any owner, with its schema.
 const VERSIONS_OF_SQL: &str = "\
 WITH handles AS (
-    SELECT DISTINCT handle FROM proxima_core.memory WHERE t = ANY($1::uuid[])
+    SELECT DISTINCT handle FROM proxiima_core.memory WHERE t = ANY($1::uuid[])
 )
 SELECT m.t, m.handle, m.owner_id, m.schema_id
-  FROM proxima_core.memory m JOIN handles h ON h.handle = m.handle";
+  FROM proxiima_core.memory m JOIN handles h ON h.handle = m.handle";
 
 /// The footprint: a closed set of whole series.
 #[derive(Debug, Default)]
@@ -302,10 +302,10 @@ macro_rules! newest_versions_cte {
     () => {
         "\
 WITH own AS (
-    SELECT DISTINCT handle FROM proxima_core.memory
+    SELECT DISTINCT handle FROM proxiima_core.memory
      WHERE owner_id = $1 AND schema_id = $2
 ), versions AS (
-    SELECT m.handle, m.t FROM proxima_core.memory m JOIN own USING (handle)
+    SELECT m.handle, m.t FROM proxiima_core.memory m JOIN own USING (handle)
 ), newest AS (
     SELECT DISTINCT ON (handle) t FROM versions ORDER BY handle, t DESC
 )
@@ -349,7 +349,7 @@ async fn footprint_grew(
     let ts = footprint.ts();
     let handles: Vec<Uuid> = footprint.handles().into_iter().collect();
     let now: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.memory WHERE handle = ANY($1::uuid[])
+        "SELECT t FROM proxiima_core.memory WHERE handle = ANY($1::uuid[])
          ORDER BY 1",
     )
     .bind(&handles)
@@ -426,7 +426,7 @@ async fn delete_referencing_rows(
 
 /// Hot memories outside the footprint whose pins name one of its versions.
 const DANGLING_PINS_SQL: &str = "\
-SELECT count(*) FROM proxima_core.memory
+SELECT count(*) FROM proxiima_core.memory
  WHERE (origins && $1::uuid[] OR refs && $1::uuid[])
    AND NOT t = ANY($1::uuid[])";
 
@@ -596,7 +596,7 @@ pub(crate) async fn erase_series(
     let blobs_removed: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM unnest($1::uuid[]) AS b(blob_id)
           WHERE NOT EXISTS (
-                SELECT 1 FROM proxima_core.blob k WHERE k.blob_id = b.blob_id)",
+                SELECT 1 FROM proxiima_core.blob k WHERE k.blob_id = b.blob_id)",
     )
     .bind(&cited)
     .fetch_one(tx.as_mut())
@@ -629,7 +629,7 @@ mod tests {
         let floor = memory_uuid_floor(cutoff);
         let millis = u64::try_from(cutoff.unix_timestamp() * 1000).expect("positive");
         let id_at = |millis: u64| {
-            let mut bytes = proxima_core::new_memory_uuid(3).into_bytes();
+            let mut bytes = proxiima_core::new_memory_uuid(3).into_bytes();
             bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
             uuid::Uuid::from_bytes(bytes)
         };

@@ -5,7 +5,7 @@
 //! what makes the config validation in `CitedBlobStore::new` assertable in
 //! a plain `cargo test`.
 
-use proxima_core::{OwnerId, UserId};
+use proxiima_core::{OwnerId, UserId};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
@@ -31,7 +31,7 @@ pub(super) fn store_config(
         key_pair: S3KeyPair::new("test-access-key".into(), "test-secret-key".into()),
         endpoint_url: endpoint_url.map(ToOwned::to_owned),
         public_endpoint_url: None,
-        plaintext_hosts: proxima_core::PlaintextHosts::none(),
+        plaintext_hosts: proxiima_core::PlaintextHosts::none(),
         force_path_style: false,
         upload_ttl_seconds: 900,
         read_ttl_seconds: 300,
@@ -42,6 +42,6 @@ pub(super) fn store_config(
 
 pub(super) fn lazy_test_pool() -> sqlx::PgPool {
     PgPoolOptions::new()
-        .connect_lazy("postgres://postgres@localhost/proxima_blob_test")
+        .connect_lazy("postgres://postgres@localhost/proxiima_blob_test")
         .expect("test database URL is valid")
 }

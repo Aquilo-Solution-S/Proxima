@@ -1,6 +1,6 @@
 //! The read lane: one presigned GET, over a locator this store itself wrote.
 
-use proxima_core::{AuthzContext, OwnerId};
+use proxiima_core::{AuthzContext, OwnerId};
 use time::OffsetDateTime;
 
 use super::CitedBlobStore;
@@ -8,7 +8,7 @@ use super::dto::{CitedBlobReadUrlOutcomeTs, CitedBlobReadUrlTs};
 use super::guards::{ensure_owner_access, format_time, parse_opaque_identifier, presign_config};
 use super::rows::{find_held_blobs_on_connection, load_blob_location_on_connection};
 use crate::error::BlobError;
-use proxima_core::storage_ports::{CitedBlobHeld, MAX_HELD_BLOB_DIGESTS};
+use proxiima_core::storage_ports::{CitedBlobHeld, MAX_HELD_BLOB_DIGESTS};
 
 impl CitedBlobStore {
     /// Which of `content_hashes` this owner already holds.

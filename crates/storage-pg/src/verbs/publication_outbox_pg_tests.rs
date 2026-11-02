@@ -8,28 +8,28 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
-use proxima_core::publication::{
+use proxiima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
+use proxiima_core::publication::{
     PublicationDraft, PublicationExtensions, PublicationLimits, PublicationPlan, PublicationSource,
     SealedPublication, SubjectPosition,
 };
-use proxima_core::storage_ports::publication::{
+use proxiima_core::storage_ports::publication::{
     AckOutcome, ClaimToken, ClaimedPublication, ConsumerName, PublicationConsumerPort,
     PublicationOriginEligibility, PublicationOriginEligibilityPort, PublicationOutboxPort,
     PublicationRetentionPort, PublisherId, ReleaseOutcome, RetireOutcome,
 };
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     MemoryAuthoringPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit, WriteSessionFactory,
 };
-use proxima_core::test_fixtures::ListenableProbeV1;
-use proxima_core::verbs::fact_ingest::{
+use proxiima_core::test_fixtures::ListenableProbeV1;
+use proxiima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, FactIngestOutcome, FactReceiptDraft, FactWriteCommand,
 };
-use proxima_core::{
+use proxiima_core::{
     AccessKind, EntityId, FactIngestPort, FactPayload, GroupId, MemoryId, OwnerId, SchemaId,
     SchemaVersion, SidecarPayload, SourceId, StorageError, UserId,
 };
-use proxima_pg_testkit::drop_db;
+use proxiima_pg_testkit::drop_db;
 use uuid::Uuid;
 
 use crate::PgStorage;
@@ -38,7 +38,7 @@ use crate::test_fixtures::fresh_pg;
 const PUBLISHER: &str = "publication-outbox-tests";
 
 fn source() -> PublicationSource {
-    PublicationSource::new("urn:proxima:publication-outbox-tests").expect("a URN is absolute")
+    PublicationSource::new("urn:proxiima:publication-outbox-tests").expect("a URN is absolute")
 }
 
 fn owner_fixture() -> OwnerId {
@@ -47,8 +47,8 @@ fn owner_fixture() -> OwnerId {
 
 async fn register_owner(pool: &sqlx::PgPool, owner: &OwnerId) {
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, 'personal'::proxima_core.owner_kind)
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal'::proxiima_core.owner_kind)
          ON CONFLICT (owner_id) DO NOTHING",
     )
     .bind(owner.into_inner())
@@ -123,7 +123,7 @@ fn fact_command(schema_id: &str, ingest_key: Option<&str>) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
@@ -138,7 +138,7 @@ fn witness(owner: &OwnerId, command: FactWriteCommand) -> AuthorizedFactWrite {
 }
 
 /// One listenable admission through the typed-sidecar port — the route a
-/// flavor's Fact write takes.
+/// spiice's Fact write takes.
 async fn ingest_listenable(
     pg: &PgStorage,
     owner: &OwnerId,
@@ -199,7 +199,7 @@ async fn ingest_listenable_with_extensions(
 }
 
 async fn outbox_rows(pool: &sqlx::PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM proxima_core.publication_outbox")
+    sqlx::query_scalar("SELECT count(*) FROM proxiima_core.publication_outbox")
         .fetch_one(pool)
         .await
         .expect("count reads")
@@ -216,7 +216,7 @@ async fn assert_ineligible(pg: &PgStorage, pool: &sqlx::PgPool, owner: OwnerId, 
 }
 
 async fn memory_rows(pool: &sqlx::PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory")
+    sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory")
         .fetch_one(pool)
         .await
         .expect("count reads")
@@ -225,7 +225,7 @@ async fn memory_rows(pool: &sqlx::PgPool) -> i64 {
 async fn publication_origin(pool: &sqlx::PgPool, t: Uuid) -> Option<(Uuid, Option<String>)> {
     sqlx::query_as(
         "SELECT original_owner_id, source_id
-           FROM proxima_core.publication_origin WHERE t = $1",
+           FROM proxiima_core.publication_origin WHERE t = $1",
     )
     .bind(t)
     .fetch_optional(pool)
@@ -234,7 +234,7 @@ async fn publication_origin(pool: &sqlx::PgPool, t: Uuid) -> Option<(Uuid, Optio
 }
 
 async fn publication_origin_rows(pool: &sqlx::PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM proxima_core.publication_origin")
+    sqlx::query_scalar("SELECT count(*) FROM proxiima_core.publication_origin")
         .fetch_one(pool)
         .await
         .expect("count reads")
@@ -265,8 +265,8 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
     ) = sqlx::query_as(
         "SELECT record.t, record.event_id, record.envelope, record.envelope_digest,
                 record.state::text, lane.attempts
-           FROM proxima_core.publication_outbox record
-           JOIN proxima_core.publication_delivery lane
+           FROM proxiima_core.publication_outbox record
+           JOIN proxiima_core.publication_delivery lane
              ON lane.t = record.t AND lane.consumer = 'default'",
     )
     .fetch_one(&pool)
@@ -294,8 +294,8 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
         "\"datacontenttype\"",
         "\"dataschema\"",
         "\"time\"",
-        "\"proximaowner\"",
-        "\"proximamodel\"",
+        "\"proxiimaowner\"",
+        "\"proxiimamodel\"",
         "\"data\"",
     ]
     .into_iter()
@@ -315,9 +315,9 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
     assert_eq!(parsed["datacontenttype"], "application/json");
     assert_eq!(
         parsed["dataschema"],
-        format!("proxima://schema/{}/1", ListenableProbeV1::SCHEMA_ID)
+        format!("proxiima://schema/{}/1", ListenableProbeV1::SCHEMA_ID)
     );
-    assert_eq!(parsed["proximamodel"], "trusted/runner");
+    assert_eq!(parsed["proxiimamodel"], "trusted/runner");
     assert_eq!(
         parsed["data"],
         serde_json::to_value(&payload).expect("json")
@@ -332,7 +332,7 @@ async fn a_listenable_write_captures_exactly_one_cloudevent_keyed_by_the_fact_t(
         .expect("formats");
     assert_eq!(parsed["time"], expected);
     let stored: time::OffsetDateTime =
-        sqlx::query_scalar("SELECT occurred_at FROM proxima_core.memory WHERE t = $1")
+        sqlx::query_scalar("SELECT occurred_at FROM proxiima_core.memory WHERE t = $1")
             .bind(t)
             .fetch_one(&pool)
             .await
@@ -379,8 +379,8 @@ async fn a_backdated_fact_publishes_when_it_occurred() {
 
     let (envelope, stored): (Vec<u8>, time::OffsetDateTime) = sqlx::query_as(
         "SELECT record.envelope, memory.occurred_at
-           FROM proxima_core.publication_outbox record
-           JOIN proxima_core.memory memory ON memory.t = record.t
+           FROM proxiima_core.publication_outbox record
+           JOIN proxiima_core.memory memory ON memory.t = record.t
           WHERE record.t = $1",
     )
     .bind(t)
@@ -451,7 +451,7 @@ async fn origin_eligibility_fails_closed_for_wrong_owner_and_hard_delete_witness
     // This direct hard delete intentionally leaves the origin row behind, a
     // stale state that the normal same-transaction inverse prevents. The
     // append-only core witness must still make admission fail closed.
-    sqlx::query("DELETE FROM proxima_core.memory WHERE t = $1")
+    sqlx::query("DELETE FROM proxiima_core.memory WHERE t = $1")
         .bind(t)
         .execute(&pool)
         .await
@@ -494,14 +494,14 @@ async fn host_bound_extension_attributes_reach_the_captured_row() {
         .expect("a listenable write with bound extensions commits");
 
     let (envelope, digest): (Vec<u8>, Vec<u8>) =
-        sqlx::query_as("SELECT envelope, envelope_digest FROM proxima_core.publication_outbox")
+        sqlx::query_as("SELECT envelope, envelope_digest FROM proxiima_core.publication_outbox")
             .fetch_one(&pool)
             .await
             .expect("exactly one row");
     let text = String::from_utf8(envelope.clone()).expect("the envelope is UTF-8");
     let mut cursor = 0usize;
     for key in [
-        "\"proximamodel\"",
+        "\"proxiimamodel\"",
         "\"attempt\":2",
         "\"runid\":\"run-3\"",
         "\"stepid\":\"step-7\"",
@@ -516,7 +516,7 @@ async fn host_bound_extension_attributes_reach_the_captured_row() {
     assert_eq!(parsed["runid"], "run-3");
     assert_eq!(parsed["stepid"], "step-7");
     assert_eq!(parsed["attempt"], 2);
-    assert_eq!(parsed["proximamodel"], "trusted/runner");
+    assert_eq!(parsed["proxiimamodel"], "trusted/runner");
     assert_eq!(digest, blake3::hash(&envelope).as_bytes().to_vec());
 
     drop(pg);
@@ -565,7 +565,7 @@ async fn a_failing_sidecar_rolls_back_the_fact_and_its_capture() {
     assert_eq!(memory_rows(&pool).await, 0);
     assert_eq!(outbox_rows(&pool).await, 0);
     assert_eq!(publication_origin_rows(&pool).await, 0);
-    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.ingest_keys")
+    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.ingest_keys")
         .fetch_one(&pool)
         .await
         .expect("count reads");
@@ -624,7 +624,7 @@ async fn a_failure_after_the_capture_takes_the_captured_record_with_it() {
     // assertions after the rollback would also pass for a write that never
     // captured anything.
     let captured: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM proxima_core.publication_outbox WHERE t = $1")
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.publication_outbox WHERE t = $1")
             .bind(t)
             .fetch_one(tx.as_mut())
             .await
@@ -639,9 +639,9 @@ async fn a_failure_after_the_capture_takes_the_captured_record_with_it() {
         &mut tx,
         stranger,
         t,
-        [&proxima_core::EmbeddingSpace::new(
+        [&proxiima_core::EmbeddingSpace::new(
             "probe/model",
-            proxima_core::EmbeddingDim::D1024,
+            proxiima_core::EmbeddingDim::D1024,
         )],
     )
     .await
@@ -655,7 +655,7 @@ async fn a_failure_after_the_capture_takes_the_captured_record_with_it() {
     assert_eq!(memory_rows(&pool).await, 0, "the Fact rolled back");
     assert_eq!(outbox_rows(&pool).await, 0, "and took its capture with it");
     assert_eq!(publication_origin_rows(&pool).await, 0, "and its origin");
-    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.ingest_keys")
+    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.ingest_keys")
         .fetch_one(&pool)
         .await
         .expect("count reads");
@@ -684,7 +684,7 @@ async fn an_oversized_export_refuses_the_whole_fact_write() {
         matches!(
             err,
             StorageError::PublicationRefused(
-                proxima_core::publication::PublicationError::PayloadTooLarge { .. }
+                proxiima_core::publication::PublicationError::PayloadTooLarge { .. }
             )
         ),
         "{err}"
@@ -692,7 +692,7 @@ async fn an_oversized_export_refuses_the_whole_fact_write() {
 
     assert_eq!(memory_rows(&pool).await, 0, "nothing committed");
     assert_eq!(outbox_rows(&pool).await, 0);
-    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.ingest_keys")
+    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.ingest_keys")
         .fetch_one(&pool)
         .await
         .expect("count reads");
@@ -706,7 +706,7 @@ async fn an_exhausted_outbox_refuses_the_next_listenable_write() {
     let (pg, db) = fresh_pg("pub_capture_capacity").await;
     let limits = PublicationLimits {
         max_pending: 2,
-        max_payload_bytes: proxima_core::publication::DEFAULT_MAX_PAYLOAD_BYTES,
+        max_payload_bytes: proxiima_core::publication::DEFAULT_MAX_PAYLOAD_BYTES,
     };
     let pool = pg.pool_for_tests().clone();
     let owner = owner_fixture();
@@ -724,7 +724,7 @@ async fn an_exhausted_outbox_refuses_the_next_listenable_write() {
         matches!(
             err,
             StorageError::PublicationRefused(
-                proxima_core::publication::PublicationError::CapacityExhausted {
+                proxiima_core::publication::PublicationError::CapacityExhausted {
                     pending: 2,
                     max: 2
                 }
@@ -756,7 +756,7 @@ async fn a_refusal_names_the_ceiling_not_the_whole_backlog() {
     }
     let limits = PublicationLimits {
         max_pending: 2,
-        max_payload_bytes: proxima_core::publication::DEFAULT_MAX_PAYLOAD_BYTES,
+        max_payload_bytes: proxiima_core::publication::DEFAULT_MAX_PAYLOAD_BYTES,
     };
     let err = ingest_listenable_under(&pg, &owner, &probe("refused"), None, limits)
         .await
@@ -765,7 +765,7 @@ async fn a_refusal_names_the_ceiling_not_the_whole_backlog() {
         matches!(
             err,
             StorageError::PublicationRefused(
-                proxima_core::publication::PublicationError::CapacityExhausted {
+                proxiima_core::publication::PublicationError::CapacityExhausted {
                     pending: 2,
                     max: 2
                 }
@@ -785,7 +785,7 @@ async fn the_capacity_check_trusts_only_a_fresh_estimate_under_the_ceiling() {
     let (pg, db) = fresh_pg("pub_capture_estimate").await;
     let limits = PublicationLimits {
         max_pending: 2,
-        max_payload_bytes: proxima_core::publication::DEFAULT_MAX_PAYLOAD_BYTES,
+        max_payload_bytes: proxiima_core::publication::DEFAULT_MAX_PAYLOAD_BYTES,
     };
     let pool = pg.pool_for_tests().clone();
     let owner = owner_fixture();
@@ -799,7 +799,7 @@ async fn the_capacity_check_trusts_only_a_fresh_estimate_under_the_ceiling() {
         let pool = pool.clone();
         async move {
             sqlx::query(
-                "UPDATE proxima_core.publication_backlog
+                "UPDATE proxiima_core.publication_backlog
                     SET pending = $1,
                         measured_at = CASE WHEN $2 THEN now() ELSE '-infinity' END",
             )
@@ -831,7 +831,7 @@ async fn the_capacity_check_trusts_only_a_fresh_estimate_under_the_ceiling() {
     // A fresh one at the ceiling is not trusted to refuse: the probe finds
     // the backlog below it once the publisher has drained.
     sqlx::query(
-        "UPDATE proxima_core.publication_outbox SET state = 'published', published_at = now()",
+        "UPDATE proxiima_core.publication_outbox SET state = 'published', published_at = now()",
     )
     .execute(&pool)
     .await
@@ -872,7 +872,7 @@ async fn a_claim_measures_the_backlog_when_the_estimate_is_old() {
     let estimate = || async {
         sqlx::query_as::<_, (i64, bool)>(
             "SELECT pending, measured_at > now() - interval '5 seconds'
-               FROM proxima_core.publication_backlog",
+               FROM proxiima_core.publication_backlog",
         )
         .fetch_one(&pool)
         .await
@@ -914,7 +914,7 @@ async fn the_receipt_only_route_refuses_a_listenable_schema() {
         matches!(
             err,
             StorageError::PublicationRefused(
-                proxima_core::publication::PublicationError::UntypedListenableWrite { .. }
+                proxiima_core::publication::PublicationError::UntypedListenableWrite { .. }
             )
         ),
         "{err}"
@@ -1014,7 +1014,7 @@ async fn an_expired_lease_is_reclaimed_and_fences_out_the_first_holder() {
     assert_eq!(first.attempts, 1);
 
     sqlx::query(
-        "UPDATE proxima_core.publication_delivery
+        "UPDATE proxiima_core.publication_delivery
             SET lease_expires_at = now() - interval '1 second'
           WHERE t = $1 AND consumer = 'default'",
     )
@@ -1053,7 +1053,7 @@ async fn an_expired_lease_is_reclaimed_and_fences_out_the_first_holder() {
     );
 
     let unpublished: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM proxima_core.publication_outbox WHERE state <> 'published'",
+        "SELECT count(*) FROM proxiima_core.publication_outbox WHERE state <> 'published'",
     )
     .fetch_one(&pool)
     .await
@@ -1080,14 +1080,14 @@ async fn published_is_exactly_published_at(pg: &PgStorage, owner: &OwnerId, publ
         (
             "a published record without its publication time",
             sqlx::query(
-                "UPDATE proxima_core.publication_outbox SET published_at = NULL WHERE t = $1",
+                "UPDATE proxiima_core.publication_outbox SET published_at = NULL WHERE t = $1",
             )
             .bind(published),
         ),
         (
             "a publication time on a record that is not published",
             sqlx::query(
-                "UPDATE proxima_core.publication_outbox SET published_at = now() WHERE t = $1",
+                "UPDATE proxiima_core.publication_outbox SET published_at = now() WHERE t = $1",
             )
             .bind(pending),
         ),
@@ -1122,13 +1122,13 @@ async fn the_captured_envelope_cannot_be_rewritten() {
 
     for rewrite in [
         sqlx::query(
-            "UPDATE proxima_core.publication_outbox SET envelope = '\\x00'::bytea WHERE t = $1",
+            "UPDATE proxiima_core.publication_outbox SET envelope = '\\x00'::bytea WHERE t = $1",
         ),
         sqlx::query(
-            "UPDATE proxima_core.publication_outbox SET event_id = 'F:forged' WHERE t = $1",
+            "UPDATE proxiima_core.publication_outbox SET event_id = 'F:forged' WHERE t = $1",
         ),
         sqlx::query(
-            "UPDATE proxima_core.publication_outbox SET envelope_digest = \
+            "UPDATE proxiima_core.publication_outbox SET envelope_digest = \
              decode(repeat('00', 32), 'hex') WHERE t = $1",
         ),
     ] {
@@ -1176,7 +1176,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
         "the source erase must target an original owner after transfer"
     );
     assert_eq!(
-        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
             .bind(t)
             .fetch_one(&pool)
             .await
@@ -1200,7 +1200,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
     let claimed_by = "same-uow-race";
     let claim_token = Uuid::now_v7();
     let updated = sqlx::query(
-        "UPDATE proxima_core.publication_delivery
+        "UPDATE proxiima_core.publication_delivery
             SET state = 'claimed', claim_token = $2, claimed_by = $3,
                 lease_expires_at = now() + interval '30 seconds', attempts = 1
           WHERE t = $1 AND consumer = 'default'",
@@ -1271,7 +1271,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
         .expect("erase task completes without panic");
 
     let erased_host_rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM proxima_core.publication_outbox WHERE t = $1")
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.publication_outbox WHERE t = $1")
             .bind(t)
             .fetch_one(&pool)
             .await
@@ -1281,7 +1281,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
         "the source inverse removes the committed host row"
     );
     let origin_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM proxima_core.publication_origin WHERE t = $1)",
+        "SELECT EXISTS (SELECT 1 FROM proxiima_core.publication_origin WHERE t = $1)",
     )
     .bind(t)
     .fetch_one(&pool)
@@ -1290,7 +1290,7 @@ async fn eligibility_and_host_write_share_the_transaction_with_source_erase() {
     assert!(!origin_exists, "the origin is revoked with source erase");
 
     assert_eq!(
-        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
             .bind(t)
             .fetch_one(&pool)
             .await
@@ -1417,7 +1417,7 @@ async fn late_eligibility_after_owner_source_and_exact_erases_is_ineligible() {
     .await
     .expect("original source erase commits first");
     assert_eq!(
-        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
             .bind(source_fact.into_inner())
             .fetch_one(&pool)
             .await
@@ -1527,7 +1527,7 @@ async fn source_erase_after_outbox_prune_revokes_transferred_origin_only() {
     assert_eq!(publication_origin(&pool, t).await, None);
     assert_eq!(outbox_rows(&pool).await, 0);
     assert_eq!(
-        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
             .bind(t)
             .fetch_one(&pool)
             .await
@@ -1654,7 +1654,7 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
     let transferred_t = source_transferred.memory_id.into_inner();
     assert_eq!(publication_origin(&pool, transferred_t).await, None);
     assert_eq!(
-        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+        sqlx::query_scalar::<_, Uuid>("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
             .bind(transferred_t)
             .fetch_one(&pool)
             .await
@@ -1727,14 +1727,14 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
     // even if a legacy/malformed retained row has no origin evidence. The
     // outbox copy is still selected by t and removed exactly once.
     let destination_source_t = destination_source_transferred.memory_id.into_inner();
-    sqlx::query("DELETE FROM proxima_core.publication_origin WHERE t = $1")
+    sqlx::query("DELETE FROM proxiima_core.publication_origin WHERE t = $1")
         .bind(destination_source_t)
         .execute(&pool)
         .await
         .expect("remove only the origin evidence to model legacy data");
     assert_eq!(publication_origin(&pool, destination_source_t).await, None);
     let legacy_outbox: i64 = sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.publication_outbox WHERE t = $1",
+        "SELECT count(*)::bigint FROM proxiima_core.publication_outbox WHERE t = $1",
     )
     .bind(destination_source_t)
     .fetch_one(&pool)
@@ -1769,7 +1769,7 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
     assert_eq!(publication_origin(&pool, destination_source_t).await, None);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM proxima_core.publication_outbox WHERE t = $1",
+            "SELECT count(*) FROM proxiima_core.publication_outbox WHERE t = $1",
         )
         .bind(destination_source_t)
         .fetch_one(&pool)
@@ -1778,7 +1778,7 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
         0
     );
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxima_core.memory WHERE t = $1",)
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxiima_core.memory WHERE t = $1",)
             .bind(destination_source_t)
             .fetch_one(&pool)
             .await
@@ -1822,7 +1822,7 @@ async fn source_and_destination_erase_revoke_physical_and_original_publication_s
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM proxima_core.publication_outbox WHERE t = $1",
+            "SELECT count(*) FROM proxiima_core.publication_outbox WHERE t = $1",
         )
         .bind(unrelated.memory_id.into_inner())
         .fetch_one(&pool)
@@ -1862,7 +1862,7 @@ async fn forgetting_a_fact_cancels_its_undelivered_records() {
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM proxima_core.publication_delivery WHERE t = $1",
+            "SELECT count(*) FROM proxiima_core.publication_delivery WHERE t = $1",
         )
         .bind(t)
         .fetch_one(&pool)
@@ -1929,7 +1929,7 @@ async fn forgetting_a_partially_delivered_fact_keeps_the_delivered_lane() {
         .expect("forget");
 
     let lanes: Vec<(String, String)> = sqlx::query_as(
-        "SELECT consumer, state::text FROM proxima_core.publication_delivery
+        "SELECT consumer, state::text FROM proxiima_core.publication_delivery
           WHERE t = $1 ORDER BY consumer",
     )
     .bind(t)
@@ -1942,7 +1942,7 @@ async fn forgetting_a_partially_delivered_fact_keeps_the_delivered_lane() {
         "the delivered lane stays and the pending one goes"
     );
     let state: String =
-        sqlx::query_scalar("SELECT state::text FROM proxima_core.publication_outbox WHERE t = $1")
+        sqlx::query_scalar("SELECT state::text FROM proxiima_core.publication_outbox WHERE t = $1")
             .bind(t)
             .fetch_one(&pool)
             .await
@@ -2037,8 +2037,8 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
     }
 
     let user_id = erased_owner.as_user();
-    let auth = proxima_core::owner_inverse::EraseAuthorization::new_for_tests(
-        proxima_core::owner_inverse::OwnerEraseTarget::PersonalOwner {
+    let auth = proxiima_core::owner_inverse::EraseAuthorization::new_for_tests(
+        proxiima_core::owner_inverse::OwnerEraseTarget::PersonalOwner {
             user_id,
             drop_event_id: "publication-outbox-erase".into(),
         },
@@ -2049,12 +2049,12 @@ async fn an_owner_erase_removes_that_owners_records_and_no_others() {
     assert!(
         matches!(
             outcome,
-            proxima_core::owner_inverse::OwnerEraseOutcome::Completed { .. }
+            proxiima_core::owner_inverse::OwnerEraseOutcome::Completed { .. }
         ),
         "expected a completed erase"
     );
 
-    let surviving: Vec<Uuid> = sqlx::query_scalar("SELECT t FROM proxima_core.publication_outbox")
+    let surviving: Vec<Uuid> = sqlx::query_scalar("SELECT t FROM proxiima_core.publication_outbox")
         .fetch_all(&pool)
         .await
         .expect("rows read");
@@ -2115,7 +2115,7 @@ async fn publish_and_backdate(pg: &PgStorage, pool: &sqlx::PgPool, t: Uuid, secs
             .expect("release");
     }
     sqlx::query(
-        "UPDATE proxima_core.publication_outbox
+        "UPDATE proxiima_core.publication_outbox
             SET published_at = now() - make_interval(secs => $2)
           WHERE t = $1",
     )
@@ -2127,7 +2127,7 @@ async fn publish_and_backdate(pg: &PgStorage, pool: &sqlx::PgPool, t: Uuid, secs
 }
 
 async fn states(pool: &sqlx::PgPool) -> Vec<(Uuid, String)> {
-    sqlx::query_as("SELECT t, state::text FROM proxima_core.publication_outbox ORDER BY t")
+    sqlx::query_as("SELECT t, state::text FROM proxiima_core.publication_outbox ORDER BY t")
         .fetch_all(pool)
         .await
         .expect("states read")
@@ -2481,7 +2481,7 @@ async fn two_consumers_each_receive_every_record_and_a_failing_one_holds_only_it
         2,
         "delivered to every consumer: retention may reclaim both"
     );
-    let lanes: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.publication_delivery")
+    let lanes: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.publication_delivery")
         .fetch_one(&pool)
         .await
         .expect("count reads");
@@ -2569,7 +2569,7 @@ async fn retiring_a_consumer_settles_what_only_it_still_owed() {
         .memory_id
         .into_inner();
     let lanes: Vec<String> =
-        sqlx::query_scalar("SELECT consumer FROM proxima_core.publication_delivery WHERE t = $1")
+        sqlx::query_scalar("SELECT consumer FROM proxiima_core.publication_delivery WHERE t = $1")
             .bind(later)
             .fetch_all(&pool)
             .await
@@ -2612,7 +2612,7 @@ async fn a_record_captured_with_no_consumer_registered_is_published_at_once() {
 
 async fn envelope_of(pool: &sqlx::PgPool, t: Uuid) -> serde_json::Value {
     let bytes: Vec<u8> =
-        sqlx::query_scalar("SELECT envelope FROM proxima_core.publication_outbox WHERE t = $1")
+        sqlx::query_scalar("SELECT envelope FROM proxiima_core.publication_outbox WHERE t = $1")
             .bind(t)
             .fetch_one(pool)
             .await
@@ -2669,7 +2669,7 @@ async fn every_event_of_a_series_carries_the_next_position_in_it() {
     let mut positions: Vec<SubjectPosition> = claimed
         .iter()
         .map(|record| {
-            proxima_core::publication::intake::ReceivedEvent::from_record(record)
+            proxiima_core::publication::intake::ReceivedEvent::from_record(record)
                 .expect("parses")
                 .position
         })
@@ -2687,7 +2687,7 @@ async fn every_event_of_a_series_carries_the_next_position_in_it() {
     // The position never goes back. It lives in `publication_counter`
     // since 0032, so that a forget that deletes the head cannot reset it.
     let refused =
-        sqlx::query("UPDATE proxima_core.publication_counter SET sequence = 0 WHERE handle = $1")
+        sqlx::query("UPDATE proxiima_core.publication_counter SET sequence = 0 WHERE handle = $1")
             .bind(series)
             .execute(&pool)
             .await
@@ -2842,11 +2842,12 @@ async fn overlapping_series_writes_head_has_highest_sequence() {
     } else {
         b.memory_id
     };
-    let head: Uuid = sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
-        .bind(series)
-        .fetch_one(&pool)
-        .await
-        .expect("head");
+    let head: Uuid =
+        sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
+            .bind(series)
+            .fetch_one(&pool)
+            .await
+            .expect("head");
     assert!(
         head == latest.into_inner(),
         "the head is the write with the highest publication position"

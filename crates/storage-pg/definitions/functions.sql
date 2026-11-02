@@ -1,10 +1,10 @@
--- Functions and aggregate definitions owned by the proxima_core catalog.
+-- Functions and aggregate definitions owned by the proxiima_core catalog.
 -- This file is the source for current core function definitions.
 -- Definitions are replaceable; runtime and platform grants come from defaults.
 
 -- Assertion functions
 
-CREATE OR REPLACE FUNCTION proxima_core.assert_declared_sidecar_present() RETURNS trigger
+CREATE OR REPLACE FUNCTION proxiima_core.assert_declared_sidecar_present() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -33,18 +33,18 @@ END;
 $$;
 
 -- FORGET-POLICY: includes-forgotten (pin integrity holds for forgotten targets) applies to every read in this function
-CREATE OR REPLACE FUNCTION proxima_core.assert_erased_pin_target_insert()
+CREATE OR REPLACE FUNCTION proxiima_core.assert_erased_pin_target_insert()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     IF pg_trigger_depth() < 2
-       OR current_setting('proxima_core.erased_pin_target_writer', true)
+       OR current_setting('proxiima_core.erased_pin_target_writer', true)
               IS DISTINCT FROM NEW.t::text
     THEN
         RAISE EXCEPTION
@@ -53,24 +53,24 @@ BEGIN
     END IF;
 
     IF NOT EXISTS (
-        SELECT 1 FROM proxima_core.memory m
+        SELECT 1 FROM proxiima_core.memory m
          WHERE m.t = NEW.t AND m.kind::text = NEW.kind::text
         UNION ALL
-        SELECT 1 FROM proxima_core.goal g
+        SELECT 1 FROM proxiima_core.goal g
          WHERE g.t = NEW.t AND NEW.kind = 'goal'
     ) THEN
         RAISE EXCEPTION
             'erased_pin_target % must match the live row being deleted', NEW.t
             USING ERRCODE = '23503';
     END IF;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN NEW;
 END;
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.assert_erased_pin_target_insert() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.assert_erased_pin_target_insert() FROM PUBLIC;
 
 -- FORGET-POLICY: includes-forgotten (a forgotten memory keeps its sidecar rows) applies to every read in this function
-CREATE OR REPLACE FUNCTION proxima_core.assert_memory_declares_sidecar() RETURNS trigger
+CREATE OR REPLACE FUNCTION proxiima_core.assert_memory_declares_sidecar() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -79,7 +79,7 @@ DECLARE
 BEGIN
     IF NOT EXISTS (
         SELECT 1
-          FROM proxima_core.memory m
+          FROM proxiima_core.memory m
          WHERE m.t = memory_t
            AND m.sidecar_tables @> ARRAY[surface]
     ) THEN
@@ -98,7 +98,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION proxima_core.assert_owner_rls_census(target_schema text)
+CREATE OR REPLACE FUNCTION proxiima_core.assert_owner_rls_census(target_schema text)
  RETURNS void
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
@@ -116,7 +116,7 @@ BEGIN
          WHERE n.nspname = target_schema AND c.relkind IN ('r', 'p')
          ORDER BY c.relname
     LOOP
-        PERFORM proxima_core.owner_rls_census_table(target_schema, base_table);
+        PERFORM proxiima_core.owner_rls_census_table(target_schema, base_table);
         counted := counted + 1;
     END LOOP;
     IF counted = 0 THEN
@@ -124,11 +124,11 @@ BEGIN
     END IF;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.assert_owner_rls_census(target_schema text) FROM PUBLIC;
-COMMENT ON FUNCTION proxima_core.assert_owner_rls_census(target_schema text) IS 'Raises on the first base table of the schema without ENABLE/FORCE RLS, exactly three policies and the owner-role platform policy.';
+REVOKE ALL ON FUNCTION proxiima_core.assert_owner_rls_census(target_schema text) FROM PUBLIC;
+COMMENT ON FUNCTION proxiima_core.assert_owner_rls_census(target_schema text) IS 'Raises on the first base table of the schema without ENABLE/FORCE RLS, exactly three policies and the owner-role platform policy.';
 
 -- FORGET-POLICY: includes-forgotten (a forgotten memory keeps its sidecar rows) applies to every read in this function
-CREATE OR REPLACE FUNCTION proxima_core.assert_row_not_still_declared() RETURNS trigger
+CREATE OR REPLACE FUNCTION proxiima_core.assert_row_not_still_declared() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -137,7 +137,7 @@ DECLARE
 BEGIN
     IF EXISTS (
         SELECT 1
-          FROM proxima_core.memory m
+          FROM proxiima_core.memory m
          WHERE m.t = memory_t
            AND m.sidecar_tables @> ARRAY[surface]
     ) THEN
@@ -154,7 +154,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION proxima_core.assert_sidecar_stamp_declared()
+CREATE OR REPLACE FUNCTION proxiima_core.assert_sidecar_stamp_declared()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
@@ -165,13 +165,13 @@ BEGIN
       FROM unnest(NEW.sidecar_tables) AS stamped
      WHERE NOT EXISTS (
                SELECT 1
-                 FROM proxima_core.flavor_surface fs
+                 FROM proxiima_core.spiice_surface fs
                 WHERE fs.table_name = stamped
            )
      LIMIT 1;
     IF undeclared IS NOT NULL THEN
         RAISE EXCEPTION
-            'memory.sidecar_tables names %, which no flavor declares in proxima_core.flavor_surface',
+            'memory.sidecar_tables names %, which no spiice declares in proxiima_core.spiice_surface',
             undeclared
             USING ERRCODE = '23503';
     END IF;
@@ -185,31 +185,31 @@ $function$;
 -- forget-is-a-state change; the trigger that calls it is memory_forget_grounding.
 -- Since S13 it only takes the footprint and depender locks; it refuses nothing.
 -- FORGET-POLICY: includes-forgotten (forget grounding: locks every depender, checks the live ones) applies to every read in this function
-CREATE OR REPLACE FUNCTION proxima_core.cooled_forget_grounding()
+CREATE OR REPLACE FUNCTION proxiima_core.cooled_forget_grounding()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
     dependent_ids uuid[];
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     IF NEW.kind = 'fact' THEN
-        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
         RETURN NEW;
     END IF;
     SELECT COALESCE(array_agg(m.t ORDER BY m.t), '{}'::uuid[])
       INTO dependent_ids
-      FROM proxima_core.memory m
+      FROM proxiima_core.memory m
      WHERE m.kind <> 'fact'
        AND m.t <> NEW.t
        AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t]);
-    PERFORM proxima_core.lock_pin_targets(ARRAY[NEW.t] || dependent_ids);
+    PERFORM proxiima_core.lock_pin_targets(ARRAY[NEW.t] || dependent_ids);
     IF EXISTS (
         SELECT 1
-          FROM proxima_core.memory m
+          FROM proxiima_core.memory m
          WHERE m.kind <> 'fact'
            AND m.t <> NEW.t
            AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
@@ -221,7 +221,7 @@ BEGIN
     END IF;
     -- Lock dependers only after the complete lifecycle set is held.
     PERFORM 1
-      FROM proxima_core.memory m
+      FROM proxiima_core.memory m
      WHERE m.kind <> 'fact'
        AND m.t <> NEW.t
        AND (m.origins @> ARRAY[NEW.t] OR m.refs @> ARRAY[NEW.t])
@@ -230,15 +230,15 @@ BEGIN
     -- No grounding refusal since #488 S13: a forgotten memory still grounds
     -- what was derived from it. The locks above keep forget serialized with
     -- a concurrent derive over the same targets.
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN NEW;
 END;
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.cooled_forget_grounding() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.cooled_forget_grounding() FROM PUBLIC;
 
 -- Immutability functions
 
-CREATE OR REPLACE FUNCTION proxima_core.enforce_installation_immutable()
+CREATE OR REPLACE FUNCTION proxiima_core.enforce_installation_immutable()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
@@ -248,7 +248,7 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.enforce_publication_immutable()
+CREATE OR REPLACE FUNCTION proxiima_core.enforce_publication_immutable()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
@@ -271,7 +271,7 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.enforce_publication_origin_immutable()
+CREATE OR REPLACE FUNCTION proxiima_core.enforce_publication_origin_immutable()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
@@ -281,7 +281,7 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.enforce_row_append_only()
+CREATE OR REPLACE FUNCTION proxiima_core.enforce_row_append_only()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
@@ -298,11 +298,11 @@ $function$;
 -- the newest change replaces an older one. A statement trigger writes a whole
 -- erase's deletes in one insert; an owner move, which only a transfer makes,
 -- is one row's.
-CREATE OR REPLACE FUNCTION proxima_core.embedding_heads_deleted_index_debt() RETURNS trigger
+CREATE OR REPLACE FUNCTION proxiima_core.embedding_heads_deleted_index_debt() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-    INSERT INTO proxima_core.vector_index_debt (entity_id, model_id, dim, owner_id, op)
+    INSERT INTO proxiima_core.vector_index_debt (entity_id, model_id, dim, owner_id, op)
     SELECT entity_id, model_id, dim, owner_id, 'delete' FROM deleted_heads
     ON CONFLICT (entity_id, model_id, dim) DO UPDATE
         SET owner_id = EXCLUDED.owner_id, op = EXCLUDED.op, enqueued_at = now(),
@@ -311,11 +311,11 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION proxima_core.embedding_head_moved_index_debt() RETURNS trigger
+CREATE OR REPLACE FUNCTION proxiima_core.embedding_head_moved_index_debt() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-    INSERT INTO proxima_core.vector_index_debt (entity_id, model_id, dim, owner_id, op)
+    INSERT INTO proxiima_core.vector_index_debt (entity_id, model_id, dim, owner_id, op)
     VALUES (NEW.entity_id, NEW.model_id, NEW.dim, NEW.owner_id, 'owner')
     ON CONFLICT (entity_id, model_id, dim) DO UPDATE
         SET owner_id = EXCLUDED.owner_id, op = EXCLUDED.op, enqueued_at = now(),
@@ -326,7 +326,7 @@ $$;
 
 -- Erasure functions
 
-CREATE OR REPLACE FUNCTION proxima_core.erased_pin_target_append_only()
+CREATE OR REPLACE FUNCTION proxiima_core.erased_pin_target_append_only()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
@@ -336,20 +336,20 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.record_erased_pin_target(target uuid, target_kind proxima_core.pin_target_kind)
+CREATE OR REPLACE FUNCTION proxiima_core.record_erased_pin_target(target uuid, target_kind proxiima_core.pin_target_kind)
  RETURNS void
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    existing_kind proxima_core.pin_target_kind;
-    previous_scope text := current_setting('app.proxima_scope', true);
+    existing_kind proxiima_core.pin_target_kind;
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
-    PERFORM proxima_core.lock_pin_targets(ARRAY[target]);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
+    PERFORM proxiima_core.lock_pin_targets(ARRAY[target]);
     SELECT kind INTO existing_kind
-      FROM proxima_core.erased_pin_target
+      FROM proxiima_core.erased_pin_target
      WHERE t = target;
     IF FOUND THEN
         IF existing_kind <> target_kind THEN
@@ -358,39 +358,39 @@ BEGIN
                 target, existing_kind, target_kind
                 USING ERRCODE = '23505';
         END IF;
-        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
         RETURN;
     END IF;
-    PERFORM set_config('proxima_core.erased_pin_target_writer', target::text, true);
-    INSERT INTO proxima_core.erased_pin_target (t, kind)
+    PERFORM set_config('proxiima_core.erased_pin_target_writer', target::text, true);
+    INSERT INTO proxiima_core.erased_pin_target (t, kind)
     VALUES (target, target_kind);
-    PERFORM set_config('proxima_core.erased_pin_target_writer', '', true);
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('proxiima_core.erased_pin_target_writer', '', true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
 END;
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.record_erased_pin_target(target uuid, target_kind proxima_core.pin_target_kind) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.record_erased_pin_target(target uuid, target_kind proxiima_core.pin_target_kind) FROM PUBLIC;
 
 -- Goal functions
 
-CREATE OR REPLACE FUNCTION proxima_core.goal_erase_witness()
+CREATE OR REPLACE FUNCTION proxiima_core.goal_erase_witness()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
-    PERFORM proxima_core.lock_pin_targets(ARRAY[OLD.t]);
-    PERFORM proxima_core.record_erased_pin_target(OLD.t, 'goal');
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
+    PERFORM proxiima_core.lock_pin_targets(ARRAY[OLD.t]);
+    PERFORM proxiima_core.record_erased_pin_target(OLD.t, 'goal');
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN OLD;
 END;
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.goal_erase_witness() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.goal_erase_witness() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.goal_head_t_only()
+CREATE OR REPLACE FUNCTION proxiima_core.goal_head_t_only()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
@@ -405,13 +405,13 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.goal_no_later_after_terminal()
+CREATE OR REPLACE FUNCTION proxiima_core.goal_no_later_after_terminal()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
 BEGIN
     IF EXISTS (
-        SELECT 1 FROM proxima_core.goal g
+        SELECT 1 FROM proxiima_core.goal g
          WHERE g.handle = NEW.handle
            AND g.state IN ('Achieved', 'Abandoned')
            AND g.t <> NEW.t
@@ -422,14 +422,14 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.goal_parent_fixed()
+CREATE OR REPLACE FUNCTION proxiima_core.goal_parent_fixed()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
 BEGIN
     -- #514: a series keeps the parent it was decomposed under.
     IF EXISTS (
-        SELECT 1 FROM proxima_core.goal g
+        SELECT 1 FROM proxiima_core.goal g
          WHERE g.handle = NEW.handle
            AND g.parent_handle IS DISTINCT FROM NEW.parent_handle
     ) THEN
@@ -440,25 +440,25 @@ END;
 $function$;
 
 -- FORGET-POLICY: includes-forgotten (pin integrity holds for forgotten targets) applies to every read in this function
-CREATE OR REPLACE FUNCTION proxima_core.goal_pin_target_checks()
+CREATE OR REPLACE FUNCTION proxiima_core.goal_pin_target_checks()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
     pin uuid;
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
-    PERFORM proxima_core.lock_pin_targets(
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
+    PERFORM proxiima_core.lock_pin_targets(
         array_remove(
             ARRAY[NEW.t, NEW.close_fact_t, NEW.assignment_t, NEW.write_act_t],
             NULL
         ) || NEW.dependency_t || NEW.evidence_t
     );
     SELECT e.t INTO pin
-      FROM proxima_core.erased_pin_target e
+      FROM proxiima_core.erased_pin_target e
      WHERE e.t = ANY (
          array_remove(
              ARRAY[NEW.close_fact_t, NEW.assignment_t, NEW.write_act_t], NULL
@@ -469,26 +469,26 @@ BEGIN
         RAISE EXCEPTION 'goal declaration names erased target %', pin
             USING ERRCODE = '23503';
     END IF;
-    IF EXISTS (SELECT 1 FROM proxima_core.erased_pin_target WHERE t = NEW.t)
-       OR EXISTS (SELECT 1 FROM proxima_core.memory WHERE t = NEW.t)
+    IF EXISTS (SELECT 1 FROM proxiima_core.erased_pin_target WHERE t = NEW.t)
+       OR EXISTS (SELECT 1 FROM proxiima_core.memory WHERE t = NEW.t)
     THEN
         RAISE EXCEPTION 'goal t % collides with an existing entity', NEW.t
             USING ERRCODE = '23505';
     END IF;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN NEW;
 END;
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.goal_pin_target_checks() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.goal_pin_target_checks() FROM PUBLIC;
 
 -- Group functions
 
 -- The platform gateway acquires all trees before these ordered kind and
 -- projection keys. Keep the key construction beside the membership writers.
-CREATE OR REPLACE FUNCTION proxima_core.lock_authority_targets(p_owners uuid[], p_subjects uuid[])
+CREATE OR REPLACE FUNCTION proxiima_core.lock_authority_targets(p_owners uuid[], p_subjects uuid[])
  RETURNS void
  LANGUAGE plpgsql VOLATILE SECURITY INVOKER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
     target uuid;
@@ -496,29 +496,29 @@ BEGIN
     FOR target IN SELECT DISTINCT id FROM unnest(p_owners) AS ids(id) ORDER BY id
     LOOP
         PERFORM pg_advisory_xact_lock(
-            hashtextextended('proxima-owner-kind:' || target::text, 0));
+            hashtextextended('proxiima-owner-kind:' || target::text, 0));
     END LOOP;
     FOR target IN SELECT DISTINCT id FROM unnest(p_subjects) AS ids(id) ORDER BY id
     LOOP
         PERFORM pg_advisory_xact_lock(
-            hashtextextended('proxima-group-projection:' || target::text, 0));
+            hashtextextended('proxiima-group-projection:' || target::text, 0));
     END LOOP;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.lock_authority_targets(uuid[], uuid[]) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.lock_authority_targets(uuid[], uuid[]) FROM PUBLIC;
 
 -- The authenticated subject's authority projection is distinct from memory
 -- owner reach. VOLATILE gives the query after a lock wait a fresh snapshot.
-CREATE OR REPLACE FUNCTION proxima_core.read_subject_authority(p_subject uuid)
- RETURNS TABLE(group_id uuid, read_ceiling proxima_core.access_ceiling,
-               write_ceiling proxima_core.access_ceiling, manage boolean)
+CREATE OR REPLACE FUNCTION proxiima_core.read_subject_authority(p_subject uuid)
+ RETURNS TABLE(group_id uuid, read_ceiling proxiima_core.access_ceiling,
+               write_ceiling proxiima_core.access_ceiling, manage boolean)
  LANGUAGE plpgsql VOLATILE SECURITY INVOKER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
     previous_subject text := current_setting('app.authority_subject', true);
 BEGIN
-    IF current_setting('app.proxima_scope', true) IS DISTINCT FROM 'owner'
+    IF current_setting('app.proxiima_scope', true) IS DISTINCT FROM 'owner'
        OR p_subject IS NULL
        OR NULLIF(current_setting('app.subject', true), '')::uuid IS DISTINCT FROM p_subject
     THEN
@@ -532,18 +532,18 @@ BEGIN
     -- Membership writers take owner-kind before rebuilding the projection.
     -- The latter fence covers an empty projection and inherited memberships.
     PERFORM pg_advisory_xact_lock_shared(
-        hashtextextended('proxima-owner-kind:' || p_subject::text, 0));
+        hashtextextended('proxiima-owner-kind:' || p_subject::text, 0));
     PERFORM pg_advisory_xact_lock_shared(
-        hashtextextended('proxima-group-projection:' || p_subject::text, 0));
+        hashtextextended('proxiima-group-projection:' || p_subject::text, 0));
     PERFORM set_config('app.authority_subject', p_subject::text, true);
-    IF EXISTS (SELECT 1 FROM proxima_core.owners o
+    IF EXISTS (SELECT 1 FROM proxiima_core.owners o
                 WHERE o.owner_id = p_subject AND o.kind = 'group') THEN
         RAISE EXCEPTION USING ERRCODE = '42501',
             MESSAGE = 'authority subject must be a person';
     END IF;
     RETURN QUERY
         SELECT m.group_id, m.read_ceiling, m.write_ceiling, m.manage
-          FROM proxima_core.group_role_projection m
+          FROM proxiima_core.group_role_projection m
          WHERE m.member_user_id = p_subject
          ORDER BY m.group_id;
     PERFORM set_config('app.authority_subject', COALESCE(previous_subject, ''), true);
@@ -553,33 +553,33 @@ EXCEPTION WHEN OTHERS THEN
 END
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.group_edge_before_write()
+CREATE OR REPLACE FUNCTION proxiima_core.group_edge_before_write()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     IF TG_OP = 'DELETE' THEN
-        PERFORM proxima_core.lock_group_tree(OLD.child_group_id);
+        PERFORM proxiima_core.lock_group_tree(OLD.child_group_id);
         PERFORM pg_advisory_xact_lock(
-            hashtextextended('proxima-owner-kind:' || OLD.child_group_id::text, 0));
-        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+            hashtextextended('proxiima-owner-kind:' || OLD.child_group_id::text, 0));
+        PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
         RETURN OLD;
     END IF;
     IF TG_OP = 'UPDATE' AND (NEW.child_group_id, NEW.parent_group_id) <> (OLD.child_group_id, OLD.parent_group_id) THEN
         RAISE EXCEPTION 'group edge identity is immutable';
     END IF;
-    PERFORM proxima_core.lock_group_trees(NEW.child_group_id, NEW.parent_group_id);
+    PERFORM proxiima_core.lock_group_trees(NEW.child_group_id, NEW.parent_group_id);
     IF NEW.child_group_id <= NEW.parent_group_id THEN
-        PERFORM pg_advisory_xact_lock(hashtextextended('proxima-owner-kind:' || NEW.child_group_id::text, 0));
-        PERFORM pg_advisory_xact_lock(hashtextextended('proxima-owner-kind:' || NEW.parent_group_id::text, 0));
+        PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-owner-kind:' || NEW.child_group_id::text, 0));
+        PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-owner-kind:' || NEW.parent_group_id::text, 0));
     ELSE
-        PERFORM pg_advisory_xact_lock(hashtextextended('proxima-owner-kind:' || NEW.parent_group_id::text, 0));
-        PERFORM pg_advisory_xact_lock(hashtextextended('proxima-owner-kind:' || NEW.child_group_id::text, 0));
+        PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-owner-kind:' || NEW.parent_group_id::text, 0));
+        PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-owner-kind:' || NEW.child_group_id::text, 0));
     END IF;
     IF NEW.child_group_id = NEW.parent_group_id THEN
         RAISE EXCEPTION 'a group cannot contain itself';
@@ -588,194 +588,194 @@ BEGIN
         WITH RECURSIVE descendants(group_id) AS (
             SELECT NEW.parent_group_id
           UNION ALL SELECT e.parent_group_id FROM descendants d
-            JOIN proxima_core.group_edges e ON e.child_group_id = d.group_id
+            JOIN proxiima_core.group_edges e ON e.child_group_id = d.group_id
         ) SELECT 1 FROM descendants WHERE group_id = NEW.child_group_id
     ) THEN
         RAISE EXCEPTION 'group edge would create a cycle';
     END IF;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN NEW;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.group_edge_before_write() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.group_edge_before_write() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.group_lock_request_cleanup()
+CREATE OR REPLACE FUNCTION proxiima_core.group_lock_request_cleanup()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
-    DELETE FROM proxima_core.group_lock_request WHERE request_id = NEW.request_id;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
+    DELETE FROM proxiima_core.group_lock_request WHERE request_id = NEW.request_id;
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN NULL;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.group_lock_request_cleanup() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.group_lock_request_cleanup() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.group_lock_request_trigger()
+CREATE OR REPLACE FUNCTION proxiima_core.group_lock_request_trigger()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     IF TG_OP = 'INSERT' THEN
         IF NEW.right_group_id IS NULL THEN
-            PERFORM proxima_core.lock_group_tree(NEW.left_group_id);
+            PERFORM proxiima_core.lock_group_tree(NEW.left_group_id);
         ELSE
-            PERFORM proxima_core.lock_group_trees(NEW.left_group_id, NEW.right_group_id);
+            PERFORM proxiima_core.lock_group_trees(NEW.left_group_id, NEW.right_group_id);
         END IF;
         IF NEW.right_group_id IS NULL THEN
             NEW.member_is_group := false;
         ELSE
             IF NEW.left_group_id <= NEW.right_group_id THEN
-                PERFORM pg_advisory_xact_lock(hashtextextended('proxima-owner-kind:' || NEW.left_group_id::text, 0));
-                PERFORM pg_advisory_xact_lock(hashtextextended('proxima-owner-kind:' || NEW.right_group_id::text, 0));
+                PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-owner-kind:' || NEW.left_group_id::text, 0));
+                PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-owner-kind:' || NEW.right_group_id::text, 0));
             ELSE
-                PERFORM pg_advisory_xact_lock(hashtextextended('proxima-owner-kind:' || NEW.right_group_id::text, 0));
-                PERFORM pg_advisory_xact_lock(hashtextextended('proxima-owner-kind:' || NEW.left_group_id::text, 0));
+                PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-owner-kind:' || NEW.right_group_id::text, 0));
+                PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-owner-kind:' || NEW.left_group_id::text, 0));
             END IF;
             SELECT EXISTS (
-                SELECT 1 FROM proxima_core.owners
+                SELECT 1 FROM proxiima_core.owners
                  WHERE owner_id = NEW.right_group_id AND kind = 'group'
             ) INTO NEW.member_is_group;
         END IF;
-        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
         RETURN NEW;
     END IF;
     RETURN OLD;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.group_lock_request_trigger() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.group_lock_request_trigger() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.group_membership_before_write()
+CREATE OR REPLACE FUNCTION proxiima_core.group_membership_before_write()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    member_kind proxima_core.owner_kind;
-    previous_scope text := current_setting('app.proxima_scope', true);
+    member_kind proxiima_core.owner_kind;
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
-    PERFORM proxima_core.lock_group_tree(COALESCE(NEW.group_id, OLD.group_id));
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
+    PERFORM proxiima_core.lock_group_tree(COALESCE(NEW.group_id, OLD.group_id));
     IF TG_OP = 'DELETE' THEN
         PERFORM pg_advisory_xact_lock(
-            hashtextextended('proxima-owner-kind:' || OLD.member_user_id::text, 0));
-        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+            hashtextextended('proxiima-owner-kind:' || OLD.member_user_id::text, 0));
+        PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
         RETURN OLD;
     END IF;
     IF TG_OP = 'UPDATE' AND (NEW.group_id, NEW.member_user_id) <> (OLD.group_id, OLD.member_user_id) THEN
         RAISE EXCEPTION 'membership identity is immutable';
     END IF;
     PERFORM pg_advisory_xact_lock(
-        hashtextextended('proxima-owner-kind:' || NEW.member_user_id::text, 0));
-    SELECT kind INTO member_kind FROM proxima_core.owners WHERE owner_id = NEW.member_user_id;
+        hashtextextended('proxiima-owner-kind:' || NEW.member_user_id::text, 0));
+    SELECT kind INTO member_kind FROM proxiima_core.owners WHERE owner_id = NEW.member_user_id;
     IF member_kind = 'group' THEN
         RAISE EXCEPTION 'owner % is a group; use the group edge write', NEW.member_user_id;
     END IF;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN NEW;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.group_membership_before_write() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.group_membership_before_write() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.group_projection_after_write()
+CREATE OR REPLACE FUNCTION proxiima_core.group_projection_after_write()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
     users uuid[];
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     IF TG_TABLE_NAME = 'group_memberships' THEN
         users := ARRAY[COALESCE(NEW.member_user_id, OLD.member_user_id)];
     ELSE
         WITH RECURSIVE descendants(group_id) AS (
             SELECT COALESCE(NEW.child_group_id, OLD.child_group_id)
           UNION ALL SELECT e.child_group_id FROM descendants d
-            JOIN proxima_core.group_edges e ON e.parent_group_id = d.group_id
+            JOIN proxiima_core.group_edges e ON e.parent_group_id = d.group_id
         )
         SELECT COALESCE(array_agg(DISTINCT m.member_user_id), '{}') INTO users
-          FROM descendants d JOIN proxima_core.group_memberships m ON m.group_id = d.group_id;
+          FROM descendants d JOIN proxiima_core.group_memberships m ON m.group_id = d.group_id;
     END IF;
-    IF cardinality(users) > 0 THEN PERFORM proxima_core.rebuild_group_role_projection(users); END IF;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    IF cardinality(users) > 0 THEN PERFORM proxiima_core.rebuild_group_role_projection(users); END IF;
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN NULL;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.group_projection_after_write() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.group_projection_after_write() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.group_projection_write_guard()
+CREATE OR REPLACE FUNCTION proxiima_core.group_projection_write_guard()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 BEGIN
-    IF current_setting('proxima.projection_maintenance', true) IS DISTINCT FROM 'on'
+    IF current_setting('proxiima.projection_maintenance', true) IS DISTINCT FROM 'on'
        OR pg_trigger_depth() < 2 THEN
         RAISE EXCEPTION 'group_role_projection is maintained by membership triggers';
     END IF;
     RETURN COALESCE(NEW, OLD);
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.group_projection_write_guard() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.group_projection_write_guard() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.group_tree_root(p_group uuid)
+CREATE OR REPLACE FUNCTION proxiima_core.group_tree_root(p_group uuid)
  RETURNS uuid
  LANGUAGE sql
  STABLE SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
     WITH RECURSIVE parents(group_id, depth) AS (
         SELECT p_group, 0
       UNION ALL
         SELECT e.parent_group_id, p.depth + 1
-          FROM parents p JOIN proxima_core.group_edges e
+          FROM parents p JOIN proxiima_core.group_edges e
             ON e.child_group_id = p.group_id
     )
     SELECT group_id FROM parents ORDER BY depth DESC LIMIT 1
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.group_tree_root(p_group uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.group_tree_root(p_group uuid) FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.group_truncate_guard()
+CREATE OR REPLACE FUNCTION proxiima_core.group_truncate_guard()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 BEGIN
     RAISE EXCEPTION '% cannot be truncated; membership projection requires row triggers', TG_TABLE_NAME;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.group_truncate_guard() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.group_truncate_guard() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.rebuild_group_role_projection(p_users uuid[])
+CREATE OR REPLACE FUNCTION proxiima_core.rebuild_group_role_projection(p_users uuid[])
  RETURNS void
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
     user_row record;
     user_id uuid;
-    previous_scope text := current_setting('app.proxima_scope', true);
-    previous_maintenance text := current_setting('proxima.projection_maintenance', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
+    previous_maintenance text := current_setting('proxiima.projection_maintenance', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
-    PERFORM set_config('proxima.projection_maintenance', 'on', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
+    PERFORM set_config('proxiima.projection_maintenance', 'on', true);
     FOR user_row IN
         SELECT DISTINCT u AS user_id
           FROM unnest(COALESCE(p_users, '{}')) AS u
@@ -783,19 +783,19 @@ BEGIN
     LOOP
         user_id := user_row.user_id;
         PERFORM pg_advisory_xact_lock(
-            hashtextextended('proxima-group-projection:' || user_id::text, 0));
-        DELETE FROM proxima_core.group_role_projection WHERE member_user_id = user_id;
-        INSERT INTO proxima_core.group_role_projection
+            hashtextextended('proxiima-group-projection:' || user_id::text, 0));
+        DELETE FROM proxiima_core.group_role_projection WHERE member_user_id = user_id;
+        INSERT INTO proxiima_core.group_role_projection
         (member_user_id, group_id, read_ceiling, write_ceiling, manage)
     WITH RECURSIVE relation_roles(relation, read_rank, write_rank, manages) AS (
-        VALUES ('admin'::proxima_core.membership_relation, 4, 4, true),
-               ('editor'::proxima_core.membership_relation, 4, 3, false),
-               ('viewer'::proxima_core.membership_relation, 4, 0, false),
-               ('ingest'::proxima_core.membership_relation, 1, 1, false)
+        VALUES ('admin'::proxiima_core.membership_relation, 4, 4, true),
+               ('editor'::proxiima_core.membership_relation, 4, 3, false),
+               ('viewer'::proxiima_core.membership_relation, 4, 0, false),
+               ('ingest'::proxiima_core.membership_relation, 1, 1, false)
     ), paths(member_user_id, group_id, read_rank, write_rank, manages) AS (
         SELECT m.member_user_id, m.group_id,
                r.read_rank, r.write_rank, r.manages
-          FROM proxima_core.group_memberships m
+          FROM proxiima_core.group_memberships m
           JOIN relation_roles r ON r.relation = m.relation
          WHERE m.member_user_id = user_id
         UNION ALL
@@ -803,7 +803,7 @@ BEGIN
                LEAST(p.read_rank, r.read_rank),
                LEAST(p.write_rank, r.write_rank),
                p.manages AND r.manages
-          FROM paths p JOIN proxima_core.group_edges e ON e.child_group_id = p.group_id
+          FROM paths p JOIN proxiima_core.group_edges e ON e.child_group_id = p.group_id
           JOIN relation_roles r ON r.relation = e.relation
     ), folded AS (
         SELECT member_user_id, group_id, max(read_rank) AS read_rank,
@@ -811,20 +811,20 @@ BEGIN
           FROM paths GROUP BY member_user_id, group_id
     )
     SELECT member_user_id, group_id,
-           (ARRAY['none','fact','abstraction','perspective','goal'])[read_rank + 1]::proxima_core.access_ceiling,
-           (ARRAY['none','fact','abstraction','perspective','goal'])[write_rank + 1]::proxima_core.access_ceiling,
+           (ARRAY['none','fact','abstraction','perspective','goal'])[read_rank + 1]::proxiima_core.access_ceiling,
+           (ARRAY['none','fact','abstraction','perspective','goal'])[write_rank + 1]::proxiima_core.access_ceiling,
            manages
       FROM folded;
     END LOOP;
-    PERFORM set_config('proxima.projection_maintenance', COALESCE(previous_maintenance, ''), true);
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('proxiima.projection_maintenance', COALESCE(previous_maintenance, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.rebuild_group_role_projection(p_users uuid[]) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.rebuild_group_role_projection(p_users uuid[]) FROM PUBLIC;
 
 -- Owner-RLS installation functions
 
-CREATE OR REPLACE FUNCTION proxima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[] DEFAULT '{}'::text[])
+CREATE OR REPLACE FUNCTION proxiima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[] DEFAULT '{}'::text[])
  RETURNS void
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
@@ -837,15 +837,15 @@ DECLARE
     parents jsonb := '{}';
     chain text;
     hops integer;
-    class proxima_core.owner_rls_class;
+    class proxiima_core.owner_rls_class;
     classes integer;
     installed integer := 0;
     follows text[];
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    IF target_schema IS NULL OR target_schema IN ('proxima_core', 'public', 'information_schema')
+    IF target_schema IS NULL OR target_schema IN ('proxiima_core', 'public', 'information_schema')
        OR target_schema LIKE 'pg\_%' THEN
-        RAISE EXCEPTION 'install_owner_rls: % is not a flavor schema', COALESCE(target_schema, 'NULL');
+        RAISE EXCEPTION 'install_owner_rls: % is not a spiice schema', COALESCE(target_schema, 'NULL');
     END IF;
     IF to_regnamespace(quote_ident(target_schema)) IS NULL THEN
         RAISE EXCEPTION 'install_owner_rls: schema % does not exist', target_schema;
@@ -853,12 +853,12 @@ BEGIN
     -- The host's Follows tables of this schema (sync_owner_follows): each
     -- gets the follows rule whatever class it is listed in, and needs no
     -- listing at all.
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     SELECT COALESCE(array_agg(substr(f.table_name, length(target_schema) + 2)), '{}')
       INTO follows
-      FROM proxima_core.owner_follows AS f
+      FROM proxiima_core.owner_follows AS f
      WHERE split_part(f.table_name, '.', 1) = target_schema;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     FOREACH listed IN ARRAY classified LOOP
         classes := (listed = ANY(COALESCE(owner_id_tables, '{}')))::integer
             + (listed = ANY(COALESCE(fk_parent_tables, '{}')))::integer
@@ -893,7 +893,7 @@ BEGIN
                 target_schema, relation.relname;
         END IF;
         parents := parents || jsonb_build_object(relation.relname,
-            proxima_core.owner_rls_parent_fk('install_owner_rls', target_schema, relation.relname));
+            proxiima_core.owner_rls_parent_fk('install_owner_rls', target_schema, relation.relname));
     END LOOP;
     FOR chain IN SELECT jsonb_object_keys(parents) LOOP
         listed := chain;
@@ -946,12 +946,12 @@ BEGIN
                 RAISE NOTICE 'install_owner_rls: %.% is a Follows table; the host installs Follows owner RLS, so its class % is superseded',
                     relation.schema_name, relation.relname, class;
             END IF;
-            PERFORM proxima_core.owner_rls_apply_follows(
+            PERFORM proxiima_core.owner_rls_apply_follows(
                 'install_owner_rls', relation.schema_name, relation.relname);
             installed := installed + 1;
             CONTINUE;
         END IF;
-        PERFORM proxima_core.owner_rls_apply_class(
+        PERFORM proxiima_core.owner_rls_apply_class(
             'install_owner_rls', 'in ' || class::text || '_tables',
             relation.schema_name, relation.relname, class, 'owner_id');
         installed := installed + 1;
@@ -961,13 +961,13 @@ BEGIN
         RAISE EXCEPTION 'install_owner_rls: schema % has no tables', target_schema;
     END IF;
 
-    PERFORM proxima_core.assert_owner_rls_census(target_schema);
+    PERFORM proxiima_core.assert_owner_rls_census(target_schema);
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[]) FROM PUBLIC;
-COMMENT ON FUNCTION proxima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[]) IS 'Owner-RLS policies for one flavor schema from its table classification; refuses an unclassified table. A table in proxima_core.owner_follows gets the host follows rule whatever class it is listed in, and may be left out (docs/build-a-flavor.md §2, docs/host-integration.md §Boot a composed host).';
+REVOKE ALL ON FUNCTION proxiima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[]) FROM PUBLIC;
+COMMENT ON FUNCTION proxiima_core.install_owner_rls(target_schema text, owner_id_tables text[], fk_parent_tables text[], ownerless_tables text[], memory_owner_tables text[]) IS 'Owner-RLS policies for one spiice schema from its table classification; refuses an unclassified table. A table in proxiima_core.owner_follows gets the host follows rule whatever class it is listed in, and may be left out (docs/build-a-spiice.md §2, docs/host-integration.md §Boot a composed host).';
 
-CREATE OR REPLACE FUNCTION proxima_core.install_owner_rls_table(target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text DEFAULT 'owner_id'::text)
+CREATE OR REPLACE FUNCTION proxiima_core.install_owner_rls_table(target_schema text, target_table text, class proxiima_core.owner_rls_class, owner_column text DEFAULT 'owner_id'::text)
  RETURNS void
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
@@ -980,11 +980,11 @@ DECLARE
     next_table text;
     visited text[];
     follows boolean;
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    IF target_schema IS NULL OR target_schema IN ('proxima_core', 'public', 'information_schema')
+    IF target_schema IS NULL OR target_schema IN ('proxiima_core', 'public', 'information_schema')
        OR target_schema LIKE 'pg\_%' THEN
-        RAISE EXCEPTION 'install_owner_rls_table: % is not a flavor schema', COALESCE(target_schema, 'NULL');
+        RAISE EXCEPTION 'install_owner_rls_table: % is not a spiice schema', COALESCE(target_schema, 'NULL');
     END IF;
     IF to_regnamespace(quote_ident(target_schema)) IS NULL THEN
         RAISE EXCEPTION 'install_owner_rls_table: schema % does not exist', target_schema;
@@ -1015,17 +1015,17 @@ BEGIN
         RAISE EXCEPTION 'install_owner_rls_table: %.% has an owner_id column but is class %; a table with owner_id is class owner_id or memory_owner',
             target_schema, target_table, class;
     END IF;
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     SELECT EXISTS (
-        SELECT 1 FROM proxima_core.owner_follows AS f
+        SELECT 1 FROM proxiima_core.owner_follows AS f
          WHERE f.table_name = target_schema || '.' || target_table
     ) INTO follows;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     IF follows THEN
         RAISE NOTICE 'install_owner_rls_table: %.% is a Follows table; the host installs Follows owner RLS, so its class % is superseded',
             target_schema, target_table, class;
-        PERFORM proxima_core.owner_rls_apply_follows('install_owner_rls_table', target_schema, target_table);
-        PERFORM proxima_core.owner_rls_census_table(target_schema, target_table);
+        PERFORM proxiima_core.owner_rls_apply_follows('install_owner_rls_table', target_schema, target_table);
+        PERFORM proxiima_core.owner_rls_census_table(target_schema, target_table);
         RETURN;
     END IF;
 
@@ -1040,16 +1040,16 @@ BEGIN
                     target_schema, target_table, owner_column;
             END IF;
             IF column_type <> 'uuid'::regtype THEN
-                RAISE EXCEPTION 'install_owner_rls_table: %.%.% is %, not uuid; an owner column holds a proxima_core.owners id, so store OwnerRef::stable_key_uuid() in a uuid column and keep the personal:<uuid> / group:<uuid> string at the edge',
+                RAISE EXCEPTION 'install_owner_rls_table: %.%.% is %, not uuid; an owner column holds a proxiima_core.owners id, so store OwnerRef::stable_key_uuid() in a uuid column and keep the personal:<uuid> / group:<uuid> string at the edge',
                     target_schema, target_table, owner_column, format_type(column_type, NULL);
             END IF;
         WHEN 'fk_parent' THEN
             -- The chain of parents must not return to this table: the
             -- policies would recurse on every read. Only the parents are
             -- known, so follow them through every in-schema table without an
-            -- owner_id column; proxima_core, a table with an owner column and
+            -- owner_id column; proxiima_core, a table with an owner column and
             -- a parent without a resolvable FK end the chain.
-            hop := proxima_core.owner_rls_parent_fk('install_owner_rls_table', target_schema, target_table);
+            hop := proxiima_core.owner_rls_parent_fk('install_owner_rls_table', target_schema, target_table);
             visited := ARRAY[target_table];
             WHILE hop ->> 'parent_schema' = target_schema LOOP
                 next_table := hop ->> 'parent_table';
@@ -1063,7 +1063,7 @@ BEGIN
                      WHERE a.attrelid = format('%I.%I', target_schema, next_table)::regclass
                        AND a.attname = 'owner_id' AND NOT a.attisdropped AND a.attnum > 0
                 );
-                hop := proxima_core.owner_rls_find_parent_fk(target_schema, next_table);
+                hop := proxiima_core.owner_rls_find_parent_fk(target_schema, next_table);
                 EXIT WHEN hop IS NULL OR (NOT (hop ->> 'on_key')::boolean AND (hop ->> 'candidates')::integer > 1);
             END LOOP;
         WHEN 'ownerless' THEN
@@ -1072,22 +1072,22 @@ BEGIN
             NULL;
     END CASE;
 
-    PERFORM proxima_core.owner_rls_apply_class(
+    PERFORM proxiima_core.owner_rls_apply_class(
         'install_owner_rls_table', format('class %s', class),
         target_schema, target_table, class, owner_column);
-    PERFORM proxima_core.owner_rls_census_table(target_schema, target_table);
+    PERFORM proxiima_core.owner_rls_census_table(target_schema, target_table);
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.install_owner_rls_table(target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) FROM PUBLIC;
-COMMENT ON FUNCTION proxima_core.install_owner_rls_table(target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) IS 'Owner-RLS policies for one table of a flavor or host schema; the per-table form of install_owner_rls. A table in proxima_core.owner_follows gets the host follows rule instead of class owner_id or memory_owner (docs/build-a-flavor.md §2, docs/host-integration.md §Boot a composed host).';
+REVOKE ALL ON FUNCTION proxiima_core.install_owner_rls_table(target_schema text, target_table text, class proxiima_core.owner_rls_class, owner_column text) FROM PUBLIC;
+COMMENT ON FUNCTION proxiima_core.install_owner_rls_table(target_schema text, target_table text, class proxiima_core.owner_rls_class, owner_column text) IS 'Owner-RLS policies for one table of a spiice or host schema; the per-table form of install_owner_rls. A table in proxiima_core.owner_follows gets the host follows rule instead of class owner_id or memory_owner (docs/build-a-spiice.md §2, docs/host-integration.md §Boot a composed host).';
 
 -- Host only: record the Follows tables of the schemas this binary composes
 -- and install their owner RLS. The host calls it from its Rust registry
 -- (pg_sidecar!(owner: follows)) in the migration lane: once before the
--- flavor sources, when a table may not exist yet and is only marked, and once
+-- spiice sources, when a table may not exist yet and is only marked, and once
 -- after them. Marks of other schemas are left alone, so binaries composing
 -- different bundles over one database do not undo each other.
-CREATE OR REPLACE FUNCTION proxima_core.sync_owner_follows(schemas text[], tables text[])
+CREATE OR REPLACE FUNCTION proxiima_core.sync_owner_follows(schemas text[], tables text[])
  RETURNS void
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
@@ -1100,16 +1100,16 @@ DECLARE
     owner_attnum smallint;
     index_name text;
 BEGIN
-    IF current_setting('app.proxima_scope', true) IS DISTINCT FROM 'platform' THEN
+    IF current_setting('app.proxiima_scope', true) IS DISTINCT FROM 'platform' THEN
         RAISE EXCEPTION 'sync_owner_follows: runs in platform scope only';
     END IF;
     IF schemas IS NULL OR tables IS NULL THEN
         RAISE EXCEPTION 'sync_owner_follows: schemas and tables must not be NULL';
     END IF;
     FOREACH rel_schema IN ARRAY schemas LOOP
-        IF rel_schema IS NULL OR rel_schema IN ('proxima_core', 'public', 'information_schema')
+        IF rel_schema IS NULL OR rel_schema IN ('proxiima_core', 'public', 'information_schema')
            OR rel_schema LIKE 'pg\_%' THEN
-            RAISE EXCEPTION 'sync_owner_follows: % is not a flavor schema', COALESCE(rel_schema, 'NULL');
+            RAISE EXCEPTION 'sync_owner_follows: % is not a spiice schema', COALESCE(rel_schema, 'NULL');
         END IF;
     END LOOP;
     FOREACH listed IN ARRAY tables LOOP
@@ -1121,10 +1121,10 @@ BEGIN
         END IF;
     END LOOP;
 
-    DELETE FROM proxima_core.owner_follows AS f
+    DELETE FROM proxiima_core.owner_follows AS f
      WHERE split_part(f.table_name, '.', 1) = ANY(schemas)
        AND f.table_name <> ALL(tables);
-    INSERT INTO proxima_core.owner_follows (table_name)
+    INSERT INTO proxiima_core.owner_follows (table_name)
     SELECT DISTINCT unnest(tables)
     ON CONFLICT DO NOTHING;
 
@@ -1134,11 +1134,11 @@ BEGIN
         SELECT c.oid INTO rel_oid
           FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace
          WHERE n.nspname = rel_schema AND c.relname = rel_name AND c.relkind IN ('r', 'p');
-        -- Not created yet: the flavor lane creates it, its installer run
+        -- Not created yet: the spiice lane creates it, its installer run
         -- applies the follows rule, and the post-lane sync adds the index.
         CONTINUE WHEN rel_oid IS NULL;
 
-        PERFORM proxima_core.owner_rls_apply_follows('sync_owner_follows', rel_schema, rel_name);
+        PERFORM proxiima_core.owner_rls_apply_follows('sync_owner_follows', rel_schema, rel_name);
 
         SELECT a.attnum INTO owner_attnum
           FROM pg_attribute AS a
@@ -1161,16 +1161,16 @@ BEGIN
             EXECUTE format('CREATE INDEX %I ON %I.%I (owner_id)', index_name, rel_schema, rel_name);
         END IF;
 
-        PERFORM proxima_core.owner_rls_census_table(rel_schema, rel_name);
+        PERFORM proxiima_core.owner_rls_census_table(rel_schema, rel_name);
     END LOOP;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.sync_owner_follows(schemas text[], tables text[]) FROM PUBLIC;
-COMMENT ON FUNCTION proxima_core.sync_owner_follows(schemas text[], tables text[]) IS 'Host only: replaces the owner_follows marks of the composed schemas with the registry Follows tables, and gives each existing one the follows owner RLS (owner_id AND EXISTS over its memory) and a btree index leading with owner_id.';
+REVOKE ALL ON FUNCTION proxiima_core.sync_owner_follows(schemas text[], tables text[]) FROM PUBLIC;
+COMMENT ON FUNCTION proxiima_core.sync_owner_follows(schemas text[], tables text[]) IS 'Host only: replaces the owner_follows marks of the composed schemas with the registry Follows tables, and gives each existing one the follows owner RLS (owner_id AND EXISTS over its memory) and a btree index leading with owner_id.';
 
 -- Lexical functions
 
-CREATE OR REPLACE FUNCTION proxima_core.lexical_language_forget(config_to_forget regconfig)
+CREATE OR REPLACE FUNCTION proxiima_core.lexical_language_forget(config_to_forget regconfig)
  RETURNS void
  LANGUAGE plpgsql
 AS $function$
@@ -1181,13 +1181,13 @@ BEGIN
     IF config_to_forget IS NULL THEN
         RAISE EXCEPTION 'lexical configuration must not be null';
     END IF;
-    IF config_to_forget = proxima_core.lexical_config() THEN
+    IF config_to_forget = proxiima_core.lexical_config() THEN
         RAISE EXCEPTION 'cannot forget %: it is the default lexical configuration',
             config_to_forget;
     END IF;
 
     BEGIN
-        DELETE FROM proxima_core.lexical_languages
+        DELETE FROM proxiima_core.lexical_languages
          WHERE config = config_to_forget;
         -- Zero rows deleted = not registered: nothing to forget.
     EXCEPTION
@@ -1201,13 +1201,13 @@ BEGIN
     END;
 END
 $function$;
-COMMENT ON FUNCTION proxima_core.lexical_language_forget(config_to_forget regconfig) IS 'Remove a configuration from the active-language set, refusing while any row still holds it in an FK-stamped lexical_language column. The FK checks serialize this against in-flight writes. Run this BEFORE dropping a custom text search configuration: PostgreSQL allows the drop with rows still referencing it, and those rows are then un-updatable (cache lookup failed on the dangling OID).';
+COMMENT ON FUNCTION proxiima_core.lexical_language_forget(config_to_forget regconfig) IS 'Remove a configuration from the active-language set, refusing while any row still holds it in an FK-stamped lexical_language column. The FK checks serialize this against in-flight writes. Run this BEFORE dropping a custom text search configuration: PostgreSQL allows the drop with rows still referencing it, and those rows are then un-updatable (cache lookup failed on the dangling OID).';
 
-CREATE OR REPLACE FUNCTION proxima_core.lexical_query_text(config regconfig, query_text text)
+CREATE OR REPLACE FUNCTION proxiima_core.lexical_query_text(config regconfig, query_text text)
  RETURNS text
  LANGUAGE sql
  STABLE PARALLEL SAFE
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
     WITH query_source AS MATERIALIZED (
         SELECT segment[1] AS token, ordinal
@@ -1224,9 +1224,9 @@ AS $function$
           FROM query_tokens
          WHERE token ~ '[[:alpha:]]'
     ), query_languages AS MATERIALIZED (
-        SELECT l.config FROM proxima_core.lexical_languages l
+        SELECT l.config FROM proxiima_core.lexical_languages l
         UNION ALL
-        SELECT config WHERE NOT EXISTS (SELECT 1 FROM proxima_core.lexical_languages)
+        SELECT config WHERE NOT EXISTS (SELECT 1 FROM proxiima_core.lexical_languages)
     ), query_stopwords AS MATERIALIZED (
         SELECT l.config, w.token
           FROM query_languages l
@@ -1251,10 +1251,10 @@ AS $function$
         -- A sentinel operand exposes parser state even for consecutive OR tokens.
         SELECT t.ordinal,
                websearch_to_tsquery('pg_catalog.simple'::regconfig,
-                   left(query_text, t.end_position::integer) || ' proximaoperatorprobe')::text AS with_or,
+                   left(query_text, t.end_position::integer) || ' proxiimaoperatorprobe')::text AS with_or,
                websearch_to_tsquery('pg_catalog.simple'::regconfig,
                    left(query_text, (t.end_position - length(t.token))::integer)
-                       || ' proximaoperatorprobe')::text AS without_or
+                       || ' proxiimaoperatorprobe')::text AS without_or
           FROM query_tokens t
          WHERE lower(t.token) = 'or' AND NOT t.in_phrase
            AND substr(query_text, (t.end_position + 1)::integer, 1) NOT IN ('-', '_')
@@ -1299,7 +1299,7 @@ AS $function$
                     WHERE removed.ordinal = t.ordinal + 1
                ) AND strpos(websearch_to_tsquery('pg_catalog.simple'::regconfig,
                    left(query_text, t.end_position::integer)
-                       || 'proximaoperatorprobe')::text, '!''proximaoperatorprobe''') > 0
+                       || 'proxiimaoperatorprobe')::text, '!''proxiimaoperatorprobe''') > 0
                THEN rtrim(t.token, '-')
                ELSE t.token END AS token
           FROM query_tokens t
@@ -1312,7 +1312,7 @@ AS $function$
                ) AND strpos(websearch_to_tsquery('pg_catalog.simple'::regconfig,
                    (SELECT string_agg(prefix.token, '' ORDER BY prefix.ordinal)
                       FROM query_rendered_tokens prefix WHERE prefix.ordinal <= t.ordinal)
-                       || 'proximaoperatorprobe')::text, '!''proximaoperatorprobe''') > 0
+                       || 'proxiimaoperatorprobe')::text, '!''proxiimaoperatorprobe''') > 0
                THEN ltrim(t.token, '-')
                ELSE t.token END,
                '' ORDER BY t.ordinal
@@ -1320,7 +1320,7 @@ AS $function$
       FROM query_rendered_tokens t
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.lexical_scrub(txt text)
+CREATE OR REPLACE FUNCTION proxiima_core.lexical_scrub(txt text)
  RETURNS text
  LANGUAGE sql
  IMMUTABLE PARALLEL SAFE STRICT
@@ -1328,116 +1328,116 @@ AS $function$ SELECT regexp_replace(
        regexp_replace(txt, '[[:punct:]]+', ' ', 'g'),
        '\m[[:alnum:]]{255}[[:alnum:]]+\M', ' ', 'g') $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.lexical_tsv(txt text)
+CREATE OR REPLACE FUNCTION proxiima_core.lexical_tsv(txt text)
  RETURNS tsvector
  LANGUAGE sql
  STABLE PARALLEL SAFE STRICT
-AS $function$ SELECT to_tsvector(proxima_core.lexical_config(), proxima_core.lexical_scrub(txt)) $function$;
+AS $function$ SELECT to_tsvector(proxiima_core.lexical_config(), proxiima_core.lexical_scrub(txt)) $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.lexical_tsv(config regconfig, txt text)
+CREATE OR REPLACE FUNCTION proxiima_core.lexical_tsv(config regconfig, txt text)
  RETURNS tsvector
  LANGUAGE sql
  IMMUTABLE PARALLEL SAFE STRICT
-AS $function$ SELECT to_tsvector(config, proxima_core.lexical_scrub(txt)) $function$;
+AS $function$ SELECT to_tsvector(config, proxiima_core.lexical_scrub(txt)) $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.remember_lexical_language()
+CREATE OR REPLACE FUNCTION proxiima_core.remember_lexical_language()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
 BEGIN
-    INSERT INTO proxima_core.lexical_languages (config)
+    INSERT INTO proxiima_core.lexical_languages (config)
     VALUES (NEW.lexical_language)
     ON CONFLICT DO NOTHING;
     RETURN NEW;
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.set_lexical_config(cfg text)
+CREATE OR REPLACE FUNCTION proxiima_core.set_lexical_config(cfg text)
  RETURNS void
  LANGUAGE sql
-AS $function$ INSERT INTO proxima_core.lexical_languages (config)
+AS $function$ INSERT INTO proxiima_core.lexical_languages (config)
    VALUES (cfg::regconfig)
    ON CONFLICT DO NOTHING;
-   INSERT INTO proxima_core.lexical_default (singleton, config)
+   INSERT INTO proxiima_core.lexical_default (singleton, config)
    VALUES (true, cfg::regconfig)
    ON CONFLICT (singleton) DO UPDATE
    SET config = EXCLUDED.config $function$;
 
 -- Lock functions
 
-CREATE OR REPLACE FUNCTION proxima_core.lock_group_tree(p_group uuid)
+CREATE OR REPLACE FUNCTION proxiima_core.lock_group_tree(p_group uuid)
  RETURNS void
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
     before_root uuid;
     after_root uuid;
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     IF current_setting('transaction_isolation') <> 'read committed' THEN
         RAISE EXCEPTION USING
             ERRCODE = '25001',
             MESSAGE = 'nested group membership writes require READ COMMITTED';
     END IF;
     LOOP
-        before_root := proxima_core.group_tree_root(p_group);
+        before_root := proxiima_core.group_tree_root(p_group);
         before_root := COALESCE(before_root, p_group);
         PERFORM pg_advisory_xact_lock(
-            hashtextextended('proxima-group-tree:' || before_root::text, 0));
-        after_root := proxima_core.group_tree_root(p_group);
+            hashtextextended('proxiima-group-tree:' || before_root::text, 0));
+        after_root := proxiima_core.group_tree_root(p_group);
         after_root := COALESCE(after_root, p_group);
         EXIT WHEN before_root = after_root;
     END LOOP;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.lock_group_tree(p_group uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.lock_group_tree(p_group uuid) FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.lock_group_trees(p_left uuid, p_right uuid)
+CREATE OR REPLACE FUNCTION proxiima_core.lock_group_trees(p_left uuid, p_right uuid)
  RETURNS void
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
     left_root uuid;
     right_root uuid;
     checked_left uuid;
     checked_right uuid;
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     IF current_setting('transaction_isolation') <> 'read committed' THEN
         RAISE EXCEPTION USING ERRCODE = '25001',
             MESSAGE = 'nested group membership writes require READ COMMITTED';
     END IF;
     LOOP
-        left_root := proxima_core.group_tree_root(p_left);
-        right_root := proxima_core.group_tree_root(p_right);
+        left_root := proxiima_core.group_tree_root(p_left);
+        right_root := proxiima_core.group_tree_root(p_right);
         left_root := COALESCE(left_root, p_left);
         right_root := COALESCE(right_root, p_right);
         IF left_root <= right_root THEN
-            PERFORM pg_advisory_xact_lock(hashtextextended('proxima-group-tree:' || left_root::text, 0));
+            PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-group-tree:' || left_root::text, 0));
             IF left_root <> right_root THEN
-                PERFORM pg_advisory_xact_lock(hashtextextended('proxima-group-tree:' || right_root::text, 0));
+                PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-group-tree:' || right_root::text, 0));
             END IF;
         ELSE
-            PERFORM pg_advisory_xact_lock(hashtextextended('proxima-group-tree:' || right_root::text, 0));
-            PERFORM pg_advisory_xact_lock(hashtextextended('proxima-group-tree:' || left_root::text, 0));
+            PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-group-tree:' || right_root::text, 0));
+            PERFORM pg_advisory_xact_lock(hashtextextended('proxiima-group-tree:' || left_root::text, 0));
         END IF;
-        checked_left := proxima_core.group_tree_root(p_left);
-        checked_right := proxima_core.group_tree_root(p_right);
+        checked_left := proxiima_core.group_tree_root(p_left);
+        checked_right := proxiima_core.group_tree_root(p_right);
         EXIT WHEN checked_left = left_root AND checked_right = right_root;
     END LOOP;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.lock_group_trees(p_left uuid, p_right uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.lock_group_trees(p_left uuid, p_right uuid) FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.lock_pin_targets(targets uuid[])
+CREATE OR REPLACE FUNCTION proxiima_core.lock_pin_targets(targets uuid[])
  RETURNS void
  LANGUAGE plpgsql
 AS $function$
@@ -1451,7 +1451,7 @@ BEGIN
          ORDER BY id
     LOOP
         PERFORM pg_advisory_xact_lock(
-            hashtextextended('proxima-forget:' || target::text, 0)
+            hashtextextended('proxiima-forget:' || target::text, 0)
         );
     END LOOP;
 END;
@@ -1459,17 +1459,17 @@ $function$;
 
 -- Memory functions
 
-CREATE OR REPLACE FUNCTION proxima_core.memory_align_head()
+CREATE OR REPLACE FUNCTION proxiima_core.memory_align_head()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
 DECLARE
-    head_kind proxima_core.memory_kind;
+    head_kind proxiima_core.memory_kind;
     head_owner uuid;
     head_schema text;
 BEGIN
     SELECT kind, owner_id, schema_id INTO head_kind, head_owner, head_schema
-      FROM proxima_core.memory_head
+      FROM proxiima_core.memory_head
      WHERE handle = NEW.handle;
     IF head_kind IS DISTINCT FROM NEW.kind
        OR head_owner IS DISTINCT FROM NEW.owner_id
@@ -1481,29 +1481,29 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.memory_erase_witness()
+CREATE OR REPLACE FUNCTION proxiima_core.memory_erase_witness()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
-    PERFORM proxima_core.lock_pin_targets(ARRAY[OLD.t]);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
+    PERFORM proxiima_core.lock_pin_targets(ARRAY[OLD.t]);
     -- Forget keeps the row (#488), so deleting a memory row is always an
     -- erase and always leaves a witness.
-    PERFORM proxima_core.record_erased_pin_target(
-        OLD.t, OLD.kind::text::proxima_core.pin_target_kind
+    PERFORM proxiima_core.record_erased_pin_target(
+        OLD.t, OLD.kind::text::proxiima_core.pin_target_kind
     );
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN OLD;
 END;
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.memory_erase_witness() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.memory_erase_witness() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.memory_head_t_only()
+CREATE OR REPLACE FUNCTION proxiima_core.memory_head_t_only()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
@@ -1522,7 +1522,7 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.memory_owner_or_append_only()
+CREATE OR REPLACE FUNCTION proxiima_core.memory_owner_or_append_only()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
@@ -1546,8 +1546,8 @@ BEGIN
     IF NEW.blob_id IS DISTINCT FROM OLD.blob_id
        AND NOT EXISTS (
                SELECT 1
-                 FROM proxima_core.blob old_blob
-                 JOIN proxima_core.blob new_blob
+                 FROM proxiima_core.blob old_blob
+                 JOIN proxiima_core.blob new_blob
                    ON new_blob.schema_id = old_blob.schema_id
                   AND new_blob.content_hash = old_blob.content_hash
                 WHERE old_blob.blob_id = OLD.blob_id
@@ -1563,21 +1563,21 @@ END;
 $function$;
 
 -- FORGET-POLICY: includes-forgotten (pin integrity holds for forgotten targets) applies to every read in this function
-CREATE OR REPLACE FUNCTION proxima_core.memory_pin_checks()
+CREATE OR REPLACE FUNCTION proxiima_core.memory_pin_checks()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
     pin uuid;
     pin_handle uuid;
     pin_targets uuid[] := ARRAY[NEW.t] || NEW.origins || NEW.refs || NEW.goal_refs;
-    pin_lock_mode text := current_setting('proxima_core.pin_lock_mode', true);
+    pin_lock_mode text := current_setting('proxiima_core.pin_lock_mode', true);
     pin_lock_count integer;
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     -- Until decided, the setting counts the target locks this transaction
     -- asked for here. Past 256, one pg_locks read decides the rest of the
     -- transaction; it scans the whole lock table, so a small write never pays
@@ -1600,38 +1600,38 @@ BEGIN
                AND l.pid = pg_catalog.pg_backend_pid()
                AND l.granted
                AND l.mode IN ('ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock')
-               AND l.relation IN ('proxima_core.memory'::regclass,
-                                  'proxima_core.goal'::regclass);
+               AND l.relation IN ('proxiima_core.memory'::regclass,
+                                  'proxiima_core.goal'::regclass);
         END IF;
-        PERFORM set_config('proxima_core.pin_lock_mode', pin_lock_mode, true);
+        PERFORM set_config('proxiima_core.pin_lock_mode', pin_lock_mode, true);
     END IF;
     -- Take the table locks again instead of trusting the setting: held, this
     -- is a local no-op; a setting bound without them acquires them before any
     -- check below reads.
     IF pin_lock_mode = 'coarse' THEN
-        LOCK TABLE proxima_core.memory, proxima_core.goal
+        LOCK TABLE proxiima_core.memory, proxiima_core.goal
             IN SHARE ROW EXCLUSIVE MODE;
     ELSE
-        PERFORM proxima_core.lock_pin_targets(pin_targets);
+        PERFORM proxiima_core.lock_pin_targets(pin_targets);
     END IF;
 
     IF NEW.origins <> '{}' OR NEW.refs <> '{}' THEN
         PERFORM 1
-          FROM proxima_core.memory
+          FROM proxiima_core.memory
          WHERE t = ANY (NEW.origins || NEW.refs)
          ORDER BY t
          FOR SHARE;
     END IF;
     IF NEW.goal_refs <> '{}' THEN
         PERFORM 1
-          FROM proxima_core.goal
+          FROM proxiima_core.goal
          WHERE t = ANY (NEW.goal_refs)
          ORDER BY t
          FOR SHARE;
     END IF;
 
-    IF EXISTS (SELECT 1 FROM proxima_core.goal WHERE t = NEW.t)
-       OR EXISTS (SELECT 1 FROM proxima_core.erased_pin_target WHERE t = NEW.t)
+    IF EXISTS (SELECT 1 FROM proxiima_core.goal WHERE t = NEW.t)
+       OR EXISTS (SELECT 1 FROM proxiima_core.erased_pin_target WHERE t = NEW.t)
     THEN
         RAISE EXCEPTION 'memory t % is already a Goal or erased target', NEW.t
             USING ERRCODE = '23505';
@@ -1642,13 +1642,13 @@ BEGIN
        AND NEW.refs = '{}'
        AND NEW.goal_refs = '{}'
     THEN
-        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
         RETURN NEW;
     END IF;
 
     -- Goal references never provide F/A/P grounding.
     IF NEW.kind <> 'fact'
-       AND NOT proxima_core.pins_have_grounding_support(
+       AND NOT proxiima_core.pins_have_grounding_support(
              NEW.origins || NEW.refs, NULL, NULL
            )
     THEN
@@ -1657,14 +1657,14 @@ BEGIN
     END IF;
 
     IF NEW.origins = '{}' AND NEW.refs = '{}' AND NEW.goal_refs = '{}' THEN
-        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
         RETURN NEW;
     END IF;
 
     -- Origins are always Memory targets; a witness never satisfies them.
     SELECT p.id INTO pin
       FROM unnest(NEW.origins) AS p(id)
-      LEFT JOIN proxima_core.memory m ON m.t = p.id
+      LEFT JOIN proxiima_core.memory m ON m.t = p.id
      WHERE m.t IS NULL
      LIMIT 1;
     IF FOUND THEN
@@ -1675,7 +1675,7 @@ BEGIN
     -- `refs` carries only Memory targets after the 0004 split.
     SELECT p.id INTO pin
       FROM unnest(NEW.refs) AS p(id)
-      LEFT JOIN proxima_core.memory m ON m.t = p.id
+      LEFT JOIN proxiima_core.memory m ON m.t = p.id
      WHERE m.t IS NULL
      LIMIT 1;
     IF FOUND THEN
@@ -1686,7 +1686,7 @@ BEGIN
     -- `goal_refs` carries only Goal targets.
     SELECT p.id INTO pin
       FROM unnest(NEW.goal_refs) AS p(id)
-      LEFT JOIN proxima_core.goal g ON g.t = p.id
+      LEFT JOIN proxiima_core.goal g ON g.t = p.id
      WHERE g.t IS NULL
      LIMIT 1;
     IF FOUND THEN
@@ -1695,8 +1695,8 @@ BEGIN
     END IF;
 
     SELECT m.handle INTO pin_handle
-      FROM proxima_core.memory m
-      JOIN proxima_core.closed_handle c ON c.handle = m.handle
+      FROM proxiima_core.memory m
+      JOIN proxiima_core.closed_handle c ON c.handle = m.handle
      WHERE m.t = ANY (NEW.origins || NEW.refs)
      LIMIT 1;
     IF FOUND THEN
@@ -1709,7 +1709,7 @@ BEGIN
             SELECT 1
               FROM unnest(NEW.origins) AS o(id)
              WHERE NOT EXISTS (
-                       SELECT 1 FROM proxima_core.memory m
+                       SELECT 1 FROM proxiima_core.memory m
                         WHERE m.t = o.id AND m.kind IN ('fact', 'abstraction')
                    )
         ) THEN
@@ -1721,7 +1721,7 @@ BEGIN
             SELECT 1
               FROM unnest(NEW.origins) AS o(id)
              WHERE NOT EXISTS (
-                       SELECT 1 FROM proxima_core.memory m
+                       SELECT 1 FROM proxiima_core.memory m
                         WHERE m.t = o.id AND m.kind = 'abstraction'
                    )
         ) THEN
@@ -1729,67 +1729,67 @@ BEGIN
                 USING ERRCODE = '23514';
         END IF;
     END IF;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN NEW;
 END;
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.memory_pin_checks() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.memory_pin_checks() FROM PUBLIC;
 
 -- Owner-RLS functions
 
-CREATE OR REPLACE FUNCTION proxima_core.owner_group_kind_guard()
+CREATE OR REPLACE FUNCTION proxiima_core.owner_group_kind_guard()
  RETURNS trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    previous_scope text := current_setting('app.proxima_scope', true);
-    existing_kind proxima_core.owner_kind;
+    previous_scope text := current_setting('app.proxiima_scope', true);
+    existing_kind proxiima_core.owner_kind;
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     -- Personal registration is the v0.0.30 first-seen path.  The owners
     -- primary key and immutable-owner trigger already serialize it; taking a
     -- per-owner advisory lock here would add one lock to every memory write.
     IF NEW.kind = 'personal' THEN
-        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
         RETURN NEW;
     END IF;
     IF NEW.kind = 'group' THEN
-        PERFORM proxima_core.lock_group_tree(NEW.owner_id);
+        PERFORM proxiima_core.lock_group_tree(NEW.owner_id);
     END IF;
     PERFORM pg_advisory_xact_lock(
-        hashtextextended('proxima-owner-kind:' || NEW.owner_id::text, 0));
+        hashtextextended('proxiima-owner-kind:' || NEW.owner_id::text, 0));
     SELECT kind INTO existing_kind
-      FROM proxima_core.owners
+      FROM proxiima_core.owners
      WHERE owner_id = NEW.owner_id;
     IF FOUND THEN
         -- Registration is idempotent.  The owners immutability trigger owns
         -- UPDATE rejection; INSERT ... ON CONFLICT DO NOTHING must be able
         -- to propose either kind without changing an existing registration.
-        PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+        PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
         RETURN NEW;
     END IF;
     IF NEW.kind = 'group' AND EXISTS (
-        SELECT 1 FROM proxima_core.group_memberships WHERE member_user_id = NEW.owner_id
+        SELECT 1 FROM proxiima_core.group_memberships WHERE member_user_id = NEW.owner_id
     ) THEN
         RAISE EXCEPTION 'owner % cannot become a group while it has person memberships', NEW.owner_id;
     END IF;
     IF NEW.kind = 'personal' AND EXISTS (
-        SELECT 1 FROM proxima_core.group_edges WHERE child_group_id = NEW.owner_id
+        SELECT 1 FROM proxiima_core.group_edges WHERE child_group_id = NEW.owner_id
     ) THEN
         RAISE EXCEPTION 'owner % cannot become a person while it is a group member', NEW.owner_id;
     END IF;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN NEW;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.owner_group_kind_guard() FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.owner_group_kind_guard() FROM PUBLIC;
 
 -- Generate SQL for an unaliased, schema-qualified target relation.
 -- Parent queries retain their ordinary RLS; generation does not bind a scope.
 -- FORGET-POLICY: live-only (policy subqueries run under owner RLS) applies to every read in this function
-CREATE OR REPLACE FUNCTION proxima_core.owner_rls_class_predicates(caller text, class_label text, target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text)
+CREATE OR REPLACE FUNCTION proxiima_core.owner_rls_class_predicates(caller text, class_label text, target_schema text, target_table text, class proxiima_core.owner_rls_class, owner_column text)
  RETURNS TABLE(read_expr text, write_expr text, select_expr text)
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
@@ -1818,7 +1818,7 @@ BEGIN
 
     CASE class
         WHEN 'owner_id' THEN
-            memory_key := CASE WHEN target_schema = 'proxima_core' THEN
+            memory_key := CASE WHEN target_schema = 'proxiima_core' THEN
                 CASE target_table
                     WHEN 'projection' THEN 'memory_id'
                     WHEN 'embeddings' THEN 'entity_id'
@@ -1848,7 +1848,7 @@ BEGIN
                         OR (
                             %1$I.%2$I.%3$I = ANY(%5$s)
                             AND EXISTS (
-                                SELECT 1 FROM proxima_core.memory AS parent
+                                SELECT 1 FROM proxiima_core.memory AS parent
                                  WHERE parent.t = %1$I.%2$I.%6$I
                                    AND parent.owner_id = ANY(%7$s)
                             )
@@ -1876,7 +1876,7 @@ BEGIN
               JOIN pg_attribute AS child_att ON child_att.attrelid = con.conrelid AND child_att.attnum = con.conkey[1]
               LEFT JOIN pg_constraint AS pk ON pk.conrelid = con.conrelid AND pk.contype = 'p'
              WHERE con.conrelid = rel_oid AND con.contype = 'f'
-               AND con.confrelid = 'proxima_core.memory'::regclass
+               AND con.confrelid = 'proxiima_core.memory'::regclass
                AND array_length(con.conkey, 1) = 1
              ORDER BY COALESCE(con.conkey[1] = pk.conkey[1], false) DESC, con.oid
              LIMIT 1;
@@ -1885,7 +1885,7 @@ BEGIN
                     SELECT 1 FROM pg_attribute
                      WHERE attrelid = rel_oid AND attname = 't' AND attnum > 0 AND NOT attisdropped)))
             THEN
-                RAISE EXCEPTION '%: %.% has % foreign key(s) to proxima_core.memory, none on its leading primary-key column, beside a t column or each other; its memory is ambiguous',
+                RAISE EXCEPTION '%: %.% has % foreign key(s) to proxiima_core.memory, none on its leading primary-key column, beside a t column or each other; its memory is ambiguous',
                     caller, target_schema, target_table, memory_keys;
             END IF;
             memory_key := COALESCE(memory_key, 't');
@@ -1906,7 +1906,7 @@ BEGIN
                            'app.' || direction || '_abstraction', '', '{}'),
                     format('(SELECT COALESCE(NULLIF(current_setting(%L, true), %L)::uuid[], %L::uuid[]))::uuid[]',
                            'app.' || direction || '_perspective', '', '{}'));
-                kind_of := format('EXISTS (SELECT 1 FROM proxima_core.memory AS parent WHERE parent.t = %I.%I.%I AND parent.owner_id = ANY(%s))',
+                kind_of := format('EXISTS (SELECT 1 FROM proxiima_core.memory AS parent WHERE parent.t = %I.%I.%I AND parent.owner_id = ANY(%s))',
                     target_schema, target_table, memory_key, kind_of);
                 IF direction = 'read' THEN
                     read_expr := kind_of;
@@ -1918,19 +1918,19 @@ BEGIN
             read_expr := 'false';
             write_expr := 'false';
         WHEN 'fk_parent' THEN
-            fk := proxima_core.owner_rls_parent_fk(caller, target_schema, target_table);
+            fk := proxiima_core.owner_rls_parent_fk(caller, target_schema, target_table);
             fk_child := fk ->> 'child_column';
             fk_schema := fk ->> 'parent_schema';
             fk_table := fk ->> 'parent_table';
             fk_column := fk ->> 'parent_column';
             SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = format('%I.%I', fk_schema, fk_table)::regclass AND attname = 't' AND attnum > 0 AND NOT attisdropped) INTO parent_has_t;
-            read_expr := format('EXISTS (SELECT 1 FROM %I.%I AS parent WHERE parent.%I = %I.%I.%I AND current_setting(''app.proxima_scope'', true) = ''owner'')', fk_schema, fk_table, fk_column, target_schema, target_table, fk_child);
-            IF fk_schema = 'proxima_core' AND fk_table = 'memory' THEN
-                write_expr := format('EXISTS (SELECT 1 FROM proxima_core.memory AS parent WHERE parent.%I = %I.%I.%I AND ((parent.kind = ''fact'' AND parent.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_owner'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[])) OR (parent.kind = ''abstraction'' AND parent.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_abstraction'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[])) OR (parent.kind = ''perspective'' AND parent.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_perspective'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[]))))', fk_column, target_schema, target_table, fk_child);
-            ELSIF fk_schema = 'proxima_core' AND fk_table = 'goal' THEN
-                write_expr := format('EXISTS (SELECT 1 FROM proxima_core.goal AS parent WHERE parent.%I = %I.%I.%I AND parent.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_goal'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[]))', fk_column, target_schema, target_table, fk_child);
+            read_expr := format('EXISTS (SELECT 1 FROM %I.%I AS parent WHERE parent.%I = %I.%I.%I AND current_setting(''app.proxiima_scope'', true) = ''owner'')', fk_schema, fk_table, fk_column, target_schema, target_table, fk_child);
+            IF fk_schema = 'proxiima_core' AND fk_table = 'memory' THEN
+                write_expr := format('EXISTS (SELECT 1 FROM proxiima_core.memory AS parent WHERE parent.%I = %I.%I.%I AND ((parent.kind = ''fact'' AND parent.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_owner'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[])) OR (parent.kind = ''abstraction'' AND parent.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_abstraction'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[])) OR (parent.kind = ''perspective'' AND parent.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_perspective'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[]))))', fk_column, target_schema, target_table, fk_child);
+            ELSIF fk_schema = 'proxiima_core' AND fk_table = 'goal' THEN
+                write_expr := format('EXISTS (SELECT 1 FROM proxiima_core.goal AS parent WHERE parent.%I = %I.%I.%I AND parent.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_goal'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[]))', fk_column, target_schema, target_table, fk_child);
             ELSIF parent_has_t THEN
-                write_expr := format('EXISTS (SELECT 1 FROM %I.%I AS parent JOIN proxima_core.memory AS owner_memory ON owner_memory.t = parent.t WHERE parent.%I = %I.%I.%I AND ((owner_memory.kind = ''fact'' AND owner_memory.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_owner'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[])) OR (owner_memory.kind = ''abstraction'' AND owner_memory.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_abstraction'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[])) OR (owner_memory.kind = ''perspective'' AND owner_memory.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_perspective'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[]))))', fk_schema, fk_table, fk_column, target_schema, target_table, fk_child);
+                write_expr := format('EXISTS (SELECT 1 FROM %I.%I AS parent JOIN proxiima_core.memory AS owner_memory ON owner_memory.t = parent.t WHERE parent.%I = %I.%I.%I AND ((owner_memory.kind = ''fact'' AND owner_memory.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_owner'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[])) OR (owner_memory.kind = ''abstraction'' AND owner_memory.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_abstraction'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[])) OR (owner_memory.kind = ''perspective'' AND owner_memory.owner_id = ANY((SELECT COALESCE(NULLIF(current_setting(''app.write_perspective'', true), '''')::uuid[], ''{}''::uuid[]))::uuid[]))))', fk_schema, fk_table, fk_column, target_schema, target_table, fk_child);
             ELSE
                 RAISE EXCEPTION 'owner RLS writable classification missing for %.%', target_schema, target_table;
             END IF;
@@ -1940,9 +1940,9 @@ BEGIN
     RETURN NEXT;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.owner_rls_class_predicates(caller text, class_label text, target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.owner_rls_class_predicates(caller text, class_label text, target_schema text, target_table text, class proxiima_core.owner_rls_class, owner_column text) FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.owner_rls_apply_class(caller text, class_label text, target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text)
+CREATE OR REPLACE FUNCTION proxiima_core.owner_rls_apply_class(caller text, class_label text, target_schema text, target_table text, class proxiima_core.owner_rls_class, owner_column text)
  RETURNS void
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
@@ -1953,17 +1953,17 @@ DECLARE
 BEGIN
     SELECT predicates.read_expr, predicates.write_expr
       INTO read_expr, write_expr
-      FROM proxima_core.owner_rls_class_predicates(
+      FROM proxiima_core.owner_rls_class_predicates(
           caller, class_label, target_schema, target_table, class, owner_column
       ) AS predicates;
-    PERFORM proxima_core.owner_rls_apply_policies(target_schema, target_table, read_expr, write_expr);
+    PERFORM proxiima_core.owner_rls_apply_policies(target_schema, target_table, read_expr, write_expr);
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.owner_rls_apply_class(caller text, class_label text, target_schema text, target_table text, class proxima_core.owner_rls_class, owner_column text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.owner_rls_apply_class(caller text, class_label text, target_schema text, target_table text, class proxiima_core.owner_rls_class, owner_column text) FROM PUBLIC;
 
 -- The three owner-RLS policies of one table from its read and write
 -- predicates, with ENABLE and FORCE: the one place they are created.
-CREATE OR REPLACE FUNCTION proxima_core.owner_rls_apply_policies(target_schema text, target_table text, read_expr text, write_expr text)
+CREATE OR REPLACE FUNCTION proxiima_core.owner_rls_apply_policies(target_schema text, target_table text, read_expr text, write_expr text)
  RETURNS void
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
@@ -1977,15 +1977,15 @@ BEGIN
 
     EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY', target_schema, target_table);
     EXECUTE format('ALTER TABLE %I.%I FORCE ROW LEVEL SECURITY', target_schema, target_table);
-    EXECUTE format('DROP POLICY IF EXISTS proxima_owner_read ON %I.%I', target_schema, target_table);
-    EXECUTE format('DROP POLICY IF EXISTS proxima_owner_write ON %I.%I', target_schema, target_table);
-    EXECUTE format('DROP POLICY IF EXISTS proxima_platform ON %I.%I', target_schema, target_table);
-    EXECUTE format('CREATE POLICY proxima_owner_read ON %I.%I FOR SELECT TO PUBLIC USING (%s)', target_schema, target_table, read_expr);
-    EXECUTE format('CREATE POLICY proxima_owner_write ON %I.%I FOR ALL TO PUBLIC USING (%s) WITH CHECK (%s)', target_schema, target_table, write_expr, write_expr);
-    EXECUTE format('CREATE POLICY proxima_platform ON %I.%I FOR ALL TO %I USING (current_setting(''app.proxima_scope'', true) = ''platform'') WITH CHECK (current_setting(''app.proxima_scope'', true) = ''platform'')', target_schema, target_table, rel_owner);
+    EXECUTE format('DROP POLICY IF EXISTS proxiima_owner_read ON %I.%I', target_schema, target_table);
+    EXECUTE format('DROP POLICY IF EXISTS proxiima_owner_write ON %I.%I', target_schema, target_table);
+    EXECUTE format('DROP POLICY IF EXISTS proxiima_platform ON %I.%I', target_schema, target_table);
+    EXECUTE format('CREATE POLICY proxiima_owner_read ON %I.%I FOR SELECT TO PUBLIC USING (%s)', target_schema, target_table, read_expr);
+    EXECUTE format('CREATE POLICY proxiima_owner_write ON %I.%I FOR ALL TO PUBLIC USING (%s) WITH CHECK (%s)', target_schema, target_table, write_expr, write_expr);
+    EXECUTE format('CREATE POLICY proxiima_platform ON %I.%I FOR ALL TO %I USING (current_setting(''app.proxiima_scope'', true) = ''platform'') WITH CHECK (current_setting(''app.proxiima_scope'', true) = ''platform'')', target_schema, target_table, rel_owner);
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.owner_rls_apply_policies(target_schema text, target_table text, read_expr text, write_expr text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.owner_rls_apply_policies(target_schema text, target_table text, read_expr text, write_expr text) FROM PUBLIC;
 
 -- The host's follows rule for a pg_sidecar!(owner: follows) table: the
 -- owner_id class predicate AND the memory_owner class predicate, read and
@@ -1994,7 +1994,7 @@ REVOKE ALL ON FUNCTION proxima_core.owner_rls_apply_policies(target_schema text,
 -- scopes and the lifecycle scope still reaches it; the owner_id half lets the
 -- planner use an owner_id index. Follows keeps owner_id equal to the
 -- memory's owner, so the AND admits exactly the rows memory_owner admits.
-CREATE OR REPLACE FUNCTION proxima_core.owner_rls_follows_predicates(caller text, target_schema text, target_table text)
+CREATE OR REPLACE FUNCTION proxiima_core.owner_rls_follows_predicates(caller text, target_schema text, target_table text)
  RETURNS TABLE(read_expr text, write_expr text)
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
@@ -2004,21 +2004,21 @@ DECLARE
     by_memory record;
 BEGIN
     SELECT * INTO by_owner
-      FROM proxima_core.owner_rls_class_predicates(
+      FROM proxiima_core.owner_rls_class_predicates(
           caller, 'a Follows table', target_schema, target_table, 'owner_id', 'owner_id');
     SELECT * INTO by_memory
-      FROM proxima_core.owner_rls_class_predicates(
+      FROM proxiima_core.owner_rls_class_predicates(
           caller, 'a Follows table', target_schema, target_table, 'memory_owner', 'owner_id');
     read_expr := format('(%s) AND (%s)', by_owner.read_expr, by_memory.read_expr);
     write_expr := format('(%s) AND (%s)', by_owner.write_expr, by_memory.write_expr);
     RETURN NEXT;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.owner_rls_follows_predicates(caller text, target_schema text, target_table text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.owner_rls_follows_predicates(caller text, target_schema text, target_table text) FROM PUBLIC;
 
--- Install the follows rule on one existing flavor table. The table must
+-- Install the follows rule on one existing spiice table. The table must
 -- carry a uuid owner_id column: freeze requires it of every Follows sidecar.
-CREATE OR REPLACE FUNCTION proxima_core.owner_rls_apply_follows(caller text, target_schema text, target_table text)
+CREATE OR REPLACE FUNCTION proxiima_core.owner_rls_apply_follows(caller text, target_schema text, target_table text)
  RETURNS void
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
@@ -2039,16 +2039,16 @@ BEGIN
     END IF;
     SELECT predicates.read_expr, predicates.write_expr
       INTO read_expr, write_expr
-      FROM proxima_core.owner_rls_follows_predicates(caller, target_schema, target_table) AS predicates;
-    PERFORM proxima_core.owner_rls_apply_policies(target_schema, target_table, read_expr, write_expr);
+      FROM proxiima_core.owner_rls_follows_predicates(caller, target_schema, target_table) AS predicates;
+    PERFORM proxiima_core.owner_rls_apply_policies(target_schema, target_table, read_expr, write_expr);
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.owner_rls_apply_follows(caller text, target_schema text, target_table text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.owner_rls_apply_follows(caller text, target_schema text, target_table text) FROM PUBLIC;
 
 -- Candidate policies are limited to derived projections, the local vector index
 -- and the core sidecars the substring candidate function reads through their
 -- trigram indexes.
-CREATE OR REPLACE FUNCTION proxima_core.is_search_candidate_relation(relation_id oid)
+CREATE OR REPLACE FUNCTION proxiima_core.is_search_candidate_relation(relation_id oid)
  RETURNS boolean
  LANGUAGE sql STABLE
  SET search_path TO 'pg_catalog'
@@ -2056,7 +2056,7 @@ AS $function$
     SELECT EXISTS (
         SELECT 1 FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
          WHERE relation.oid = relation_id AND relation.relkind IN ('r', 'p')
-           AND ((namespace.nspname = 'proxima_core' AND relation.relname IN (
+           AND ((namespace.nspname = 'proxiima_core' AND relation.relname IN (
                     'embeddings', 'embedding_heads',
                     'agent_derivation_v1', 'agent_note_v1', 'interpretation_v1', 'utterance_v1'))
              OR (EXISTS (
@@ -2067,14 +2067,14 @@ AS $function$
                    JOIN pg_attribute child ON child.attrelid = relation_id AND child.attname = 'memory_id'
                    JOIN pg_attribute parent ON parent.attrelid = fk.confrelid AND parent.attname = 't'
                   WHERE fk.conrelid = relation_id AND fk.contype = 'f'
-                    AND fk.confrelid = 'proxima_core.memory'::regclass
+                    AND fk.confrelid = 'proxiima_core.memory'::regclass
                     AND fk.conkey = ARRAY[child.attnum] AND fk.confkey = ARRAY[parent.attnum]
                     AND child.atttypid = 'uuid'::regtype AND NOT child.attisdropped
              )))
     )
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.owner_rls_census_table(target_schema text, target_table text)
+CREATE OR REPLACE FUNCTION proxiima_core.owner_rls_census_table(target_schema text, target_table text)
  RETURNS void
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
@@ -2093,11 +2093,11 @@ BEGIN
         RAISE EXCEPTION 'table %.% lacks ENABLE/FORCE RLS', relation.schema_name, relation.relname;
     END IF;
     SELECT * INTO candidate_policy FROM pg_policy
-     WHERE polrelid = relation.oid AND polname = 'proxima_search_candidates';
+     WHERE polrelid = relation.oid AND polname = 'proxiima_search_candidates';
     IF FOUND THEN
-        IF NOT proxima_core.is_search_candidate_relation(relation.oid)
+        IF NOT proxiima_core.is_search_candidate_relation(relation.oid)
            OR candidate_policy.polcmd <> 'r' OR NOT candidate_policy.polpermissive
-           OR candidate_policy.polroles IS DISTINCT FROM ARRAY[to_regrole('proxima_search')::oid]
+           OR candidate_policy.polroles IS DISTINCT FROM ARRAY[to_regrole('proxiima_search')::oid]
            OR pg_get_expr(candidate_policy.polqual, relation.oid) IS DISTINCT FROM 'true'
            OR candidate_policy.polwithcheck IS NOT NULL
         THEN
@@ -2112,14 +2112,14 @@ BEGIN
             RAISE EXCEPTION 'table %.% has unexpected search RLS policies', relation.schema_name, relation.relname;
         END IF;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = relation.oid AND polname = 'proxima_platform' AND polroles = ARRAY[relation.relowner] AND polcmd = '*') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = relation.oid AND polname = 'proxiima_platform' AND polroles = ARRAY[relation.relowner] AND polcmd = '*') THEN
         RAISE EXCEPTION 'table %.% platform policy is not owner-role limited', relation.schema_name, relation.relname;
     END IF;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.owner_rls_census_table(target_schema text, target_table text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.owner_rls_census_table(target_schema text, target_table text) FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.owner_rls_find_parent_fk(target_schema text, target_table text)
+CREATE OR REPLACE FUNCTION proxiima_core.owner_rls_find_parent_fk(target_schema text, target_table text)
  RETURNS jsonb
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
@@ -2146,14 +2146,14 @@ BEGIN
        AND child.relkind IN ('r', 'p') AND con.contype = 'f'
        AND array_length(con.conkey, 1) = 1 AND array_length(con.confkey, 1) = 1
        AND con.confrelid <> con.conrelid
-       AND parent_ns.nspname IN ('proxima_core', target_schema)
+       AND parent_ns.nspname IN ('proxiima_core', target_schema)
        -- An FK to a partitioned parent adds one row per referenced
        -- partition, each a clone of this table's own parent-level FK;
        -- one a partition inherits from its partitioned table stays.
        AND NOT EXISTS (SELECT 1 FROM pg_constraint AS clone_of
                         WHERE clone_of.oid = con.conparentid AND clone_of.conrelid = con.conrelid)
      ORDER BY COALESCE(con.conkey[1] = pk.conkey[1], false) DESC,
-              (parent_ns.nspname = 'proxima_core' AND parent.relname IN ('memory', 'goal')) DESC,
+              (parent_ns.nspname = 'proxiima_core' AND parent.relname IN ('memory', 'goal')) DESC,
               con.oid
      LIMIT 1;
     IF fk IS NULL THEN
@@ -2162,18 +2162,18 @@ BEGIN
     RETURN to_jsonb(fk);
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.owner_rls_find_parent_fk(target_schema text, target_table text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.owner_rls_find_parent_fk(target_schema text, target_table text) FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION proxima_core.owner_rls_parent_fk(caller text, target_schema text, target_table text)
+CREATE OR REPLACE FUNCTION proxiima_core.owner_rls_parent_fk(caller text, target_schema text, target_table text)
  RETURNS jsonb
  LANGUAGE plpgsql
  SET search_path TO 'pg_catalog'
 AS $function$
 DECLARE
-    fk jsonb := proxima_core.owner_rls_find_parent_fk(target_schema, target_table);
+    fk jsonb := proxiima_core.owner_rls_find_parent_fk(target_schema, target_table);
 BEGIN
     IF fk IS NULL THEN
-        RAISE EXCEPTION 'owner RLS classification missing for %.%: no single-column FK to proxima_core or %',
+        RAISE EXCEPTION 'owner RLS classification missing for %.%: no single-column FK to proxiima_core or %',
             target_schema, target_table, target_schema;
     END IF;
     IF NOT (fk ->> 'on_key')::boolean AND (fk ->> 'candidates')::integer > 1 THEN
@@ -2183,22 +2183,22 @@ BEGIN
     RETURN fk;
 END
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.owner_rls_parent_fk(caller text, target_schema text, target_table text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.owner_rls_parent_fk(caller text, target_schema text, target_table text) FROM PUBLIC;
 
 -- Pin functions
 
 -- FORGET-POLICY: includes-forgotten (grounding support counts forgotten sources) applies to every read in this function
-CREATE OR REPLACE FUNCTION proxima_core.pins_have_grounding_support(pins uuid[], cooling uuid, cooling_kind proxima_core.memory_kind)
+CREATE OR REPLACE FUNCTION proxiima_core.pins_have_grounding_support(pins uuid[], cooling uuid, cooling_kind proxiima_core.memory_kind)
  RETURNS boolean
  LANGUAGE plpgsql
  SECURITY DEFINER
- SET search_path TO 'pg_catalog', 'proxima_core', 'pg_temp'
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
 AS $function$
 DECLARE
-    previous_scope text := current_setting('app.proxima_scope', true);
+    previous_scope text := current_setting('app.proxiima_scope', true);
     supported boolean;
 BEGIN
-    PERFORM set_config('app.proxima_scope', 'platform', true);
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
     SELECT EXISTS (
         SELECT 1
           FROM unnest(pins) AS p(id)
@@ -2209,20 +2209,20 @@ BEGIN
                  ELSE
                    -- Any memory row grounds, forgotten or not.
                    EXISTS (
-                        SELECT 1 FROM proxima_core.memory h
+                        SELECT 1 FROM proxiima_core.memory h
                          WHERE h.t = p.id
                    )
                END
     ) INTO supported;
-    PERFORM set_config('app.proxima_scope', COALESCE(previous_scope, ''), true);
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
     RETURN supported;
 END;
 $function$;
-REVOKE ALL ON FUNCTION proxima_core.pins_have_grounding_support(pins uuid[], cooling uuid, cooling_kind proxima_core.memory_kind) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.pins_have_grounding_support(pins uuid[], cooling uuid, cooling_kind proxiima_core.memory_kind) FROM PUBLIC;
 
 -- Store identity functions
 
-CREATE OR REPLACE FUNCTION proxima_core.enforce_store_identity_immutable()
+CREATE OR REPLACE FUNCTION proxiima_core.enforce_store_identity_immutable()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION 'write-once: the store number cannot be changed or removed'
@@ -2230,7 +2230,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION proxima_core.memory_created_at(id uuid)
+CREATE OR REPLACE FUNCTION proxiima_core.memory_created_at(id uuid)
 RETURNS timestamptz LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
     SELECT TIMESTAMPTZ '1970-01-01 00:00:00+00'
         + (millis / 1000) * INTERVAL '1 second'
@@ -2246,7 +2246,7 @@ RETURNS timestamptz LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
 $$;
 
 -- The handle is frozen and the position never goes back.
-CREATE OR REPLACE FUNCTION proxima_core.publication_counter_forward_only() RETURNS trigger
+CREATE OR REPLACE FUNCTION proxiima_core.publication_counter_forward_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -2264,7 +2264,7 @@ $$;
 
 -- Aggregates
 
-CREATE OR REPLACE AGGREGATE proxima_core.tsquery_or_agg(tsquery) (
+CREATE OR REPLACE AGGREGATE proxiima_core.tsquery_or_agg(tsquery) (
     SFUNC = tsquery_or,
     STYPE = tsquery,
     COMBINEFUNC = tsquery_or,
@@ -2273,12 +2273,12 @@ CREATE OR REPLACE AGGREGATE proxima_core.tsquery_or_agg(tsquery) (
 
 -- Memory read/write policies both require their base owner set before kind checks.
 -- Candidates use that union; ordinary memory RLS remains the per-kind authority.
-CREATE OR REPLACE FUNCTION proxima_core.search_owner_ids()
+CREATE OR REPLACE FUNCTION proxiima_core.search_owner_ids()
  RETURNS uuid[]
  LANGUAGE sql STABLE
  SET search_path TO 'pg_catalog'
 AS $function$
-    SELECT CASE WHEN current_setting('app.proxima_scope', true) = 'owner'
+    SELECT CASE WHEN current_setting('app.proxiima_scope', true) = 'owner'
            THEN ARRAY(SELECT DISTINCT owner_id
                         FROM unnest(
                             COALESCE(NULLIF(current_setting('app.owner', true), '')::uuid[], '{}')
@@ -2287,17 +2287,17 @@ AS $function$
            ELSE '{}'::uuid[] END
 $function$;
 
-CREATE OR REPLACE FUNCTION proxima_core.assert_search_scope(requested_owners uuid[])
+CREATE OR REPLACE FUNCTION proxiima_core.assert_search_scope(requested_owners uuid[])
  RETURNS void
  LANGUAGE plpgsql STABLE
  SET search_path TO 'pg_catalog'
 AS $function$
 BEGIN
-    IF current_setting('app.proxima_scope', true) IS DISTINCT FROM 'owner'
+    IF current_setting('app.proxiima_scope', true) IS DISTINCT FROM 'owner'
        OR NULLIF(current_setting('app.owner', true), '') IS NULL
        OR requested_owners IS NULL
        OR array_position(requested_owners, NULL) IS NOT NULL
-       OR NOT requested_owners <@ proxima_core.search_owner_ids()
+       OR NOT requested_owners <@ proxiima_core.search_owner_ids()
     THEN
         RAISE EXCEPTION 'search requires an authenticated owner scope'
             USING ERRCODE = '42501';
@@ -2309,47 +2309,47 @@ $function$;
 DO $install_candidate$
 DECLARE original_role name := current_user;
 BEGIN
-GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
-GRANT SELECT ON proxima_core.agent_derivation_v1, proxima_core.agent_note_v1, proxima_core.interpretation_v1, proxima_core.lexical_default, proxima_core.lexical_languages, proxima_core.memory, proxima_core.memory_head, proxima_core.projection, proxima_core.utterance_v1 TO proxima_search;
-DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.projection;
-CREATE POLICY proxima_search_candidates ON proxima_core.projection FOR SELECT TO proxima_search USING (true);
-SET LOCAL ROLE proxima_search;
-EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxima_core.search_lexical_candidates(query_text text, candidate_limit bigint, requested_tags text[], since_time timestamptz, until_time timestamptz, before_id uuid, requested_owners uuid[], requested_schemas text[], rescue boolean, recency boolean, heads_only boolean, requested_kind text, tag_all boolean)
+GRANT USAGE, CREATE ON SCHEMA proxiima_core TO proxiima_search;
+GRANT SELECT ON proxiima_core.agent_derivation_v1, proxiima_core.agent_note_v1, proxiima_core.interpretation_v1, proxiima_core.lexical_default, proxiima_core.lexical_languages, proxiima_core.memory, proxiima_core.memory_head, proxiima_core.projection, proxiima_core.utterance_v1 TO proxiima_search;
+DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.projection;
+CREATE POLICY proxiima_search_candidates ON proxiima_core.projection FOR SELECT TO proxiima_search USING (true);
+SET LOCAL ROLE proxiima_search;
+EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxiima_core.search_lexical_candidates(query_text text, candidate_limit bigint, requested_tags text[], since_time timestamptz, until_time timestamptz, before_id uuid, requested_owners uuid[], requested_schemas text[], rescue boolean, recency boolean, heads_only boolean, requested_kind text, tag_all boolean)
 RETURNS TABLE(t uuid, schema_id text, lexical_score real)
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path TO pg_catalog, pg_temp
 AS $candidate_function$
 BEGIN
-PERFORM proxima_core.assert_search_scope(requested_owners);
+PERFORM proxiima_core.assert_search_scope(requested_owners);
 IF candidate_limit IS NULL OR candidate_limit < 1 OR candidate_limit > 1000 THEN
 RAISE EXCEPTION 'candidate limit must be between 1 and 1000' USING ERRCODE = '22023';
 END IF;
 IF recency THEN
 RETURN QUERY EXECUTE 'WITH analyzed_query AS MATERIALIZED (
-             SELECT proxima_core.lexical_scrub($1) AS scrubbed,
-                    proxima_core.lexical_query_text(proxima_core.lexical_config(),
-                        proxima_core.lexical_scrub($1)) AS analyzed
+             SELECT proxiima_core.lexical_scrub($1) AS scrubbed,
+                    proxiima_core.lexical_query_text(proxiima_core.lexical_config(),
+                        proxiima_core.lexical_scrub($1)) AS analyzed
          ), q AS MATERIALIZED (
              SELECT s.scrubbed, s.analyzed,
                     COALESCE(
-                        (SELECT proxima_core.tsquery_or_agg(
+                        (SELECT proxiima_core.tsquery_or_agg(
                                     websearch_to_tsquery(l.config, s.analyzed)
                                     ORDER BY l.config)
-                           FROM proxima_core.lexical_languages l),
-                        websearch_to_tsquery(proxima_core.lexical_config(), s.analyzed)
+                           FROM proxiima_core.lexical_languages l),
+                        websearch_to_tsquery(proxiima_core.lexical_config(), s.analyzed)
                     ) AS tsq,
                     COALESCE(
-                        (SELECT proxima_core.tsquery_or_agg(
+                        (SELECT proxiima_core.tsquery_or_agg(
                                     NULLIF(
                                         replace(
                                             plainto_tsquery(l.config, s.analyzed)::text,
                                             '' & '', '' | ''),
                                         '''')::tsquery
                                     ORDER BY l.config)
-                           FROM proxima_core.lexical_languages l),
+                           FROM proxiima_core.lexical_languages l),
                         NULLIF(
                             replace(
-                                plainto_tsquery(proxima_core.lexical_config(), s.analyzed)::text,
+                                plainto_tsquery(proxiima_core.lexical_config(), s.analyzed)::text,
                                 '' & '', '' | ''),
                             '''')::tsquery
                     ) AS any_tsq
@@ -2365,44 +2365,44 @@ RETURN QUERY EXECUTE 'WITH analyzed_query AS MATERIALIZED (
                     ELSE 0.0 END,
                     0.0
                 )::real AS lexical_score
-           FROM proxima_core.projection p, q
+           FROM proxiima_core.projection p, q
           WHERE p.owner_id = ANY($7::uuid[])
             AND p.schema_id = ANY($8::text[])
             AND (p.search_tsv @@ q.tsq OR ($9::boolean AND q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq))
-             AND p.owner_id = ANY(proxima_core.search_owner_ids()) AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN p.tag @> $3::text[] ELSE p.tag && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = p.memory_id AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+             AND p.owner_id = ANY(proxiima_core.search_owner_ids()) AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN p.tag @> $3::text[] ELSE p.tag && $3::text[] END) AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = p.memory_id AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(p.memory_id) >= $4)
+                 OR proxiima_core.memory_created_at(p.memory_id) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(p.memory_id) <= $5)
+                 OR proxiima_core.memory_created_at(p.memory_id) <= $5)
             AND ($6::uuid IS NULL OR p.memory_id < $6)
           ORDER BY p.memory_id DESC
           LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
 ELSE
 RETURN QUERY EXECUTE 'WITH analyzed_query AS MATERIALIZED (
-             SELECT proxima_core.lexical_scrub($1) AS scrubbed,
-                    proxima_core.lexical_query_text(proxima_core.lexical_config(),
-                        proxima_core.lexical_scrub($1)) AS analyzed
+             SELECT proxiima_core.lexical_scrub($1) AS scrubbed,
+                    proxiima_core.lexical_query_text(proxiima_core.lexical_config(),
+                        proxiima_core.lexical_scrub($1)) AS analyzed
          ), q AS MATERIALIZED (
              SELECT s.scrubbed, s.analyzed,
                     COALESCE(
-                        (SELECT proxima_core.tsquery_or_agg(
+                        (SELECT proxiima_core.tsquery_or_agg(
                                     websearch_to_tsquery(l.config, s.analyzed)
                                     ORDER BY l.config)
-                           FROM proxima_core.lexical_languages l),
-                        websearch_to_tsquery(proxima_core.lexical_config(), s.analyzed)
+                           FROM proxiima_core.lexical_languages l),
+                        websearch_to_tsquery(proxiima_core.lexical_config(), s.analyzed)
                     ) AS tsq,
                     COALESCE(
-                        (SELECT proxima_core.tsquery_or_agg(
+                        (SELECT proxiima_core.tsquery_or_agg(
                                     NULLIF(
                                         replace(
                                             plainto_tsquery(l.config, s.analyzed)::text,
                                             '' & '', '' | ''),
                                         '''')::tsquery
                                     ORDER BY l.config)
-                           FROM proxima_core.lexical_languages l),
+                           FROM proxiima_core.lexical_languages l),
                         NULLIF(
                             replace(
-                                plainto_tsquery(proxima_core.lexical_config(), s.analyzed)::text,
+                                plainto_tsquery(proxiima_core.lexical_config(), s.analyzed)::text,
                                 '' & '', '' | ''),
                             '''')::tsquery
                     ) AS any_tsq
@@ -2418,50 +2418,50 @@ RETURN QUERY EXECUTE 'WITH analyzed_query AS MATERIALIZED (
                     ELSE 0.0 END,
                     0.0
                 )::real AS lexical_score
-           FROM proxima_core.projection p, q
+           FROM proxiima_core.projection p, q
           WHERE p.owner_id = ANY($7::uuid[])
             AND p.schema_id = ANY($8::text[])
             AND (p.search_tsv @@ q.tsq OR ($9::boolean AND q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq))
-             AND p.owner_id = ANY(proxima_core.search_owner_ids()) AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN p.tag @> $3::text[] ELSE p.tag && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = p.memory_id AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
+             AND p.owner_id = ANY(proxiima_core.search_owner_ids()) AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN p.tag @> $3::text[] ELSE p.tag && $3::text[] END) AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = p.memory_id AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(p.memory_id) >= $4)
+                 OR proxiima_core.memory_created_at(p.memory_id) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(p.memory_id) <= $5)
+                 OR proxiima_core.memory_created_at(p.memory_id) <= $5)
             AND ($6::uuid IS NULL OR p.memory_id < $6)
           ORDER BY lexical_score DESC, p.memory_id DESC
           LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
 END IF;
 END
 $candidate_function$;$generated_function$;
-REVOKE ALL ON FUNCTION proxima_core.search_lexical_candidates(text, bigint, text[], timestamp with time zone, timestamp with time zone, uuid, uuid[], text[], boolean, boolean, boolean, text, boolean) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.search_lexical_candidates(text, bigint, text[], timestamp with time zone, timestamp with time zone, uuid, uuid[], text[], boolean, boolean, boolean, text, boolean) FROM PUBLIC;
 EXECUTE format('SET LOCAL ROLE %I', original_role);
-REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search;
+REVOKE CREATE ON SCHEMA proxiima_core FROM proxiima_search;
 END
 $install_candidate$;
 
 DO $install_candidate$
 DECLARE original_role name := current_user;
 BEGIN
-GRANT USAGE, CREATE ON SCHEMA proxima_core TO proxima_search;
-GRANT SELECT ON proxima_core.agent_derivation_v1, proxima_core.agent_note_v1, proxima_core.interpretation_v1, proxima_core.lexical_default, proxima_core.lexical_languages, proxima_core.memory, proxima_core.memory_head, proxima_core.projection, proxima_core.utterance_v1 TO proxima_search;
-DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.projection;
-CREATE POLICY proxima_search_candidates ON proxima_core.projection FOR SELECT TO proxima_search USING (true);
-DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.agent_derivation_v1;
-CREATE POLICY proxima_search_candidates ON proxima_core.agent_derivation_v1 FOR SELECT TO proxima_search USING (true);
-DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.agent_note_v1;
-CREATE POLICY proxima_search_candidates ON proxima_core.agent_note_v1 FOR SELECT TO proxima_search USING (true);
-DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.interpretation_v1;
-CREATE POLICY proxima_search_candidates ON proxima_core.interpretation_v1 FOR SELECT TO proxima_search USING (true);
-DROP POLICY IF EXISTS proxima_search_candidates ON proxima_core.utterance_v1;
-CREATE POLICY proxima_search_candidates ON proxima_core.utterance_v1 FOR SELECT TO proxima_search USING (true);
-SET LOCAL ROLE proxima_search;
-EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxima_core.search_substring_candidates(query_text text, candidate_limit bigint, requested_tags text[], since_time timestamptz, until_time timestamptz, before_id uuid, requested_owners uuid[], requested_schemas text[], rescue boolean, recency boolean, heads_only boolean, requested_kind text, tag_all boolean)
+GRANT USAGE, CREATE ON SCHEMA proxiima_core TO proxiima_search;
+GRANT SELECT ON proxiima_core.agent_derivation_v1, proxiima_core.agent_note_v1, proxiima_core.interpretation_v1, proxiima_core.lexical_default, proxiima_core.lexical_languages, proxiima_core.memory, proxiima_core.memory_head, proxiima_core.projection, proxiima_core.utterance_v1 TO proxiima_search;
+DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.projection;
+CREATE POLICY proxiima_search_candidates ON proxiima_core.projection FOR SELECT TO proxiima_search USING (true);
+DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.agent_derivation_v1;
+CREATE POLICY proxiima_search_candidates ON proxiima_core.agent_derivation_v1 FOR SELECT TO proxiima_search USING (true);
+DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.agent_note_v1;
+CREATE POLICY proxiima_search_candidates ON proxiima_core.agent_note_v1 FOR SELECT TO proxiima_search USING (true);
+DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.interpretation_v1;
+CREATE POLICY proxiima_search_candidates ON proxiima_core.interpretation_v1 FOR SELECT TO proxiima_search USING (true);
+DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.utterance_v1;
+CREATE POLICY proxiima_search_candidates ON proxiima_core.utterance_v1 FOR SELECT TO proxiima_search USING (true);
+SET LOCAL ROLE proxiima_search;
+EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxiima_core.search_substring_candidates(query_text text, candidate_limit bigint, requested_tags text[], since_time timestamptz, until_time timestamptz, before_id uuid, requested_owners uuid[], requested_schemas text[], rescue boolean, recency boolean, heads_only boolean, requested_kind text, tag_all boolean)
 RETURNS TABLE(t uuid, lexical_score real)
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path TO pg_catalog, pg_temp
 AS $candidate_function$
 BEGIN
-PERFORM proxima_core.assert_search_scope(requested_owners);
+PERFORM proxiima_core.assert_search_scope(requested_owners);
 IF candidate_limit IS NULL OR candidate_limit < 1 OR candidate_limit > 1000 THEN
 RAISE EXCEPTION 'candidate limit must be between 1 and 1000' USING ERRCODE = '22023';
 END IF;
@@ -2470,59 +2470,59 @@ DECLARE legs text[] := ARRAY[]::text[];
 BEGIN
 IF requested_schemas && ARRAY['core/agent-derivation-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
-           FROM proxima_core.agent_derivation_v1 c
-           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+           FROM proxiima_core.agent_derivation_v1 c
+           JOIN proxiima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND m.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[])
-            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
-             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[]))))
+            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxiima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) >= $4)
+                 OR proxiima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) <= $5)
+                 OR proxiima_core.memory_created_at(c.t) <= $5)
             AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
 IF requested_schemas && ARRAY['core/agent-note-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
-           FROM proxima_core.agent_note_v1 c
-           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+           FROM proxiima_core.agent_note_v1 c
+           JOIN proxiima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND m.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[])
-            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
-             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[]))))
+            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxiima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) >= $4)
+                 OR proxiima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) <= $5)
+                 OR proxiima_core.memory_created_at(c.t) <= $5)
             AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
 IF requested_schemas && ARRAY['core/interpretation-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
-           FROM proxima_core.interpretation_v1 c
-           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+           FROM proxiima_core.interpretation_v1 c
+           JOIN proxiima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND m.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[])
-            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.claim, '''')])) LIKE $1 ESCAPE ''\'')
-             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[]))))
+            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.claim, '''')])) LIKE $1 ESCAPE ''\'')
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) >= $4)
+                 OR proxiima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) <= $5)
+                 OR proxiima_core.memory_created_at(c.t) <= $5)
             AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
 IF requested_schemas && ARRAY['core/utterance-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
-           FROM proxima_core.utterance_v1 c
-           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+           FROM proxiima_core.utterance_v1 c
+           JOIN proxiima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND m.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[])
-            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '''')])) LIKE $1 ESCAPE ''\'')
-             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[]))))
+            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '''')])) LIKE $1 ESCAPE ''\'')
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) >= $4)
+                 OR proxiima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) <= $5)
+                 OR proxiima_core.memory_created_at(c.t) <= $5)
             AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
 IF cardinality(legs) = 0 THEN RETURN; END IF;
 RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (' || array_to_string(legs, ' UNION ALL ') || ') s ORDER BY s.t DESC LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
@@ -2532,59 +2532,59 @@ DECLARE legs text[] := ARRAY[]::text[];
 BEGIN
 IF requested_schemas && ARRAY['core/agent-derivation-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
-           FROM proxima_core.agent_derivation_v1 c
-           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+           FROM proxiima_core.agent_derivation_v1 c
+           JOIN proxiima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND m.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[])
-            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
-             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[]))))
+            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxiima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) >= $4)
+                 OR proxiima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) <= $5)
+                 OR proxiima_core.memory_created_at(c.t) <= $5)
             AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
 IF requested_schemas && ARRAY['core/agent-note-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
-           FROM proxima_core.agent_note_v1 c
-           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+           FROM proxiima_core.agent_note_v1 c
+           JOIN proxiima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND m.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[])
-            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
-             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[]))))
+            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxiima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
+             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END) AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) >= $4)
+                 OR proxiima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) <= $5)
+                 OR proxiima_core.memory_created_at(c.t) <= $5)
             AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
 IF requested_schemas && ARRAY['core/interpretation-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
-           FROM proxima_core.interpretation_v1 c
-           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+           FROM proxiima_core.interpretation_v1 c
+           JOIN proxiima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND m.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[])
-            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.claim, '''')])) LIKE $1 ESCAPE ''\'')
-             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[]))))
+            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.claim, '''')])) LIKE $1 ESCAPE ''\'')
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) >= $4)
+                 OR proxiima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) <= $5)
+                 OR proxiima_core.memory_created_at(c.t) <= $5)
             AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
 IF requested_schemas && ARRAY['core/utterance-v1']::text[] THEN legs := legs || 'SELECT c.t AS t,
                 0.25::real AS lexical_score
-           FROM proxima_core.utterance_v1 c
-           JOIN proxima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+           FROM proxiima_core.utterance_v1 c
+           JOIN proxiima_core.memory m ON m.t = c.t /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND m.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[])
-            AND (lower(proxima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '''')])) LIKE $1 ESCAPE ''\'')
-             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[]))))
+            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '''')])) LIKE $1 ESCAPE ''\'')
+             AND $3::text[] IS NULL AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND authorized_memory.owner_id = ANY($7::uuid[]) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[]))))
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) >= $4)
+                 OR proxiima_core.memory_created_at(c.t) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.t) <= $5)
+                 OR proxiima_core.memory_created_at(c.t) <= $5)
             AND ($6::uuid IS NULL OR c.t < $6)'::text; END IF;
 IF cardinality(legs) = 0 THEN RETURN; END IF;
 RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (' || array_to_string(legs, ' UNION ALL ') || ') s ORDER BY s.lexical_score DESC, s.t DESC LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
@@ -2592,8 +2592,8 @@ END;
 END IF;
 END
 $candidate_function$;$generated_function$;
-REVOKE ALL ON FUNCTION proxima_core.search_substring_candidates(text, bigint, text[], timestamp with time zone, timestamp with time zone, uuid, uuid[], text[], boolean, boolean, boolean, text, boolean) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.search_substring_candidates(text, bigint, text[], timestamp with time zone, timestamp with time zone, uuid, uuid[], text[], boolean, boolean, boolean, text, boolean) FROM PUBLIC;
 EXECUTE format('SET LOCAL ROLE %I', original_role);
-REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search;
+REVOKE CREATE ON SCHEMA proxiima_core FROM proxiima_search;
 END
 $install_candidate$;

@@ -12,15 +12,15 @@
 use super::{DerivedDraft, DerivedOutcome};
 use crate::PgStorage;
 use crate::test_fixtures::create_core_db;
-use proxima_core::MemoryKind;
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{
+use proxiima_core::MemoryKind;
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::storage_ports::OwnerWritePermit;
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::{
     AccessKind, EdgeEndpoint, EntityKind, MemoryOperatorKind, OwnerId, SchemaId, SchemaVersion,
     StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
+use proxiima_pg_testkit::{db_url, drop_db};
 use uuid::Uuid;
 
 fn draft(kind: MemoryKind) -> FactWriteCommand {
@@ -125,7 +125,7 @@ fn assert_kind_mismatch(err: StorageError) {
 
 #[tokio::test]
 async fn declared_fact_on_perspective_origin_is_rejected() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -245,7 +245,7 @@ async fn declared_fact_on_perspective_origin_is_rejected() {
 /// replay of an existing version still answers.
 #[tokio::test]
 async fn a_reference_to_no_readable_live_row_is_refused() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -281,7 +281,7 @@ async fn a_reference_to_no_readable_live_row_is_refused() {
         };
         for (what, id) in [
             ("foreign", foreign.memory_id),
-            ("nonexistent", proxima_core::MemoryId::new(Uuid::now_v7())),
+            ("nonexistent", proxiima_core::MemoryId::new(Uuid::now_v7())),
         ] {
             let err = validate(
                 vec![EdgeEndpoint::memory(EntityKind::Fact, id)],

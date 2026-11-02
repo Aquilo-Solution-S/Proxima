@@ -1,7 +1,7 @@
-//! Flavor-owned lifecycle scopes — a scope the substrate can see because
-//! the flavor DECLARED it.
+//! Spiice-owned lifecycle scopes — a scope the substrate can see because
+//! the spiice DECLARED it.
 //!
-//! A repository, a book, a project, a revision: a flavor owns a registry
+//! A repository, a book, a project, a revision: a spiice owns a registry
 //! table of them, files rows under a bare `<scope>_id uuid` on its sidecars,
 //! and erases one scope at a time. The substrate cannot infer any of that.
 //! Every repo-scoped sidecar carries no foreign key into its registry, so
@@ -17,7 +17,7 @@
 //! 1. A payload type says which scope its rows belong to
 //!    ([`FactPayload::SCOPE_KIND`](crate::FactPayload::SCOPE_KIND) plus
 //!    `scope_id`, read back as [`ScopeRef`]).
-//! 2. A flavor contract says, once per [`ScopeKind`], where that scope's
+//! 2. A spiice contract says, once per [`ScopeKind`], where that scope's
 //!    registry lives ([`ScopeDecl`]).
 //!
 //! From the pair, storage GENERATES both the fence key and the liveness
@@ -26,19 +26,19 @@
 //! declare, so neither half can go missing without failing the build.
 //!
 //! There is no runtime registration path, and never a generic scope erase:
-//! what "one scope's rows" means is the flavor's knowledge, and the
+//! what "one scope's rows" means is the spiice's knowledge, and the
 //! substrate's job is only to make sure no admission of a scoped payload
 //! slips past the fence that erase holds.
 
 use uuid::Uuid;
 
-/// The name of a flavor-owned lifecycle scope, e.g. `notebook`.
+/// The name of a spiice-owned lifecycle scope, e.g. `notebook`.
 ///
 /// `&'static str` rather than an enum: the closed vocabulary lives in the
-/// linked flavors, not in core, and a core enum would have to be edited to
-/// add a scope to an out-of-tree flavor. The string is namespaced by
-/// convention (`<flavor>-<scope>`) and hashed into the fence key, so two
-/// flavors that pick the same name share a lane — which freeze refuses as a
+/// linked spiices, not in core, and a core enum would have to be edited to
+/// add a scope to an out-of-tree spiice. The string is namespaced by
+/// convention (`<spiice>-<scope>`) and hashed into the fence key, so two
+/// spiices that pick the same name share a lane — which freeze refuses as a
 /// duplicate declaration rather than letting it become a silent collision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ScopeKind(&'static str);
@@ -91,7 +91,7 @@ impl std::fmt::Display for ScopeRef {
     }
 }
 
-/// Where one [`ScopeKind`]'s registry lives, declared once by the flavor
+/// Where one [`ScopeKind`]'s registry lives, declared once by the spiice
 /// that owns it.
 ///
 /// Every name storage needs is here, and storage spells none of its own:
@@ -108,7 +108,7 @@ impl std::fmt::Display for ScopeRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeDecl {
     pub kind: ScopeKind,
-    /// Schema-qualified registry table, e.g. `proxima_notes.notebooks`.
+    /// Schema-qualified registry table, e.g. `proxiima_notes.notebooks`.
     pub registry_table: &'static str,
     /// Column holding the scope id.
     pub id_column: &'static str,
@@ -187,7 +187,7 @@ mod tests {
         );
         assert!(
             ScopeDecl {
-                registry_table: "proxima_notes.notebooks",
+                registry_table: "proxiima_notes.notebooks",
                 ..decl
             }
             .shape_error()
@@ -199,7 +199,7 @@ mod tests {
     fn a_declaration_must_name_every_column() {
         let decl = ScopeDecl {
             kind: KIND,
-            registry_table: "proxima_notes.notebooks",
+            registry_table: "proxiima_notes.notebooks",
             id_column: "",
             owner_id_column: "owner_id",
         };

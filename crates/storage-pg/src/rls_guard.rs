@@ -1,16 +1,16 @@
 //! Fail-closed boot checks for runtime and platform `PostgreSQL` roles.
 //!
-//! This module checks the structural part of the Proxima RLS contract.  It is
+//! This module checks the structural part of the Proxiima RLS contract.  It is
 //! deliberately catalog-only: scope construction and the semantics of the
 //! owner predicates belong to the request transaction and migration tests.
 
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 use sqlx::{PgConnection, PgPool};
 
 const REQUIRED_POLICIES: [&str; 3] = [
-    "proxima_owner_read",
-    "proxima_owner_write",
-    "proxima_platform",
+    "proxiima_owner_read",
+    "proxiima_owner_write",
+    "proxiima_platform",
 ];
 
 #[derive(Debug, sqlx::FromRow)]
@@ -127,22 +127,24 @@ async fn assert_candidate_role(
                                         'INSERT,UPDATE,REFERENCES')))) AS can_write,
                 pg_has_role(current_user, r.oid, 'USAGE') AS owner_usage,
                 pg_has_role(current_user, r.oid, 'SET') AS owner_set
-           FROM pg_roles r WHERE r.rolname = 'proxima_search'",
+           FROM pg_roles r WHERE r.rolname = 'proxiima_search'",
     )
     .bind(schemas)
     .fetch_optional(&mut *conn)
     .await
     .map_err(|error| refused(format!("inspect candidate role: {error}")))?;
     let Some(role) = role else {
-        return Err(refused("candidate functions require proxima_search"));
+        return Err(refused("candidate functions require proxiima_search"));
     };
     if !role.safe_flags || role.unsafe_memberships || role.owns_objects || role.can_write {
         return Err(refused(
-            "proxima_search must be an isolated NOLOGIN read-only role",
+            "proxiima_search must be an isolated NOLOGIN read-only role",
         ));
     }
     if role.owner_usage || (!platform && role.owner_set) {
-        return Err(refused("runtime must not inherit or assume proxima_search"));
+        return Err(refused(
+            "runtime must not inherit or assume proxiima_search",
+        ));
     }
     Ok(())
 }
@@ -185,7 +187,7 @@ async fn assert_policy_structure(
                     ((SELECT oid FROM pg_roles WHERE rolname = current_user) = ANY(p.polroles))
                         AS platform_targets_runtime,
                     COALESCE(p.polroles = ARRAY[(SELECT oid FROM pg_roles
-                        WHERE rolname = 'proxima_search')], false) AS candidate_role
+                        WHERE rolname = 'proxiima_search')], false) AS candidate_role
                FROM pg_policy AS p JOIN pg_class AS c ON c.oid = p.polrelid
               WHERE p.polrelid::bigint = $1",
         )
@@ -195,12 +197,12 @@ async fn assert_policy_structure(
         .map_err(|error| refused(format!("inspect policies on {relation_name}: {error}")))?;
         let candidate_policy = policies
             .iter()
-            .any(|policy| policy.name == "proxima_search_candidates");
+            .any(|policy| policy.name == "proxiima_search_candidates");
         has_candidate_policy |= candidate_policy;
         if policies.len() != REQUIRED_POLICIES.len() + usize::from(candidate_policy)
             || policies.iter().any(|policy| {
                 (!REQUIRED_POLICIES.contains(&policy.name.as_str())
-                    && policy.name != "proxima_search_candidates")
+                    && policy.name != "proxiima_search_candidates")
                     || !policy.permissive
             })
         {
@@ -210,14 +212,14 @@ async fn assert_policy_structure(
         }
         for policy in &policies {
             match policy.name.as_str() {
-                "proxima_owner_read"
+                "proxiima_owner_read"
                     if policy.command == "r"
                         && predicate_is_nontrivial(policy.using_expr.as_deref()) => {}
-                "proxima_owner_write"
+                "proxiima_owner_write"
                     if policy.command == "*"
                         && predicate_is_nontrivial(policy.using_expr.as_deref())
                         && predicate_is_nontrivial(policy.check_expr.as_deref()) => {}
-                "proxima_platform"
+                "proxiima_platform"
                     if policy.command == "*"
                         && predicate_is_nontrivial(policy.using_expr.as_deref())
                         && predicate_is_nontrivial(policy.check_expr.as_deref())
@@ -225,7 +227,7 @@ async fn assert_policy_structure(
                         && !policy.platform_role_is_public
                         && (!reject_current_user_platform_policy
                             || !policy.platform_targets_runtime) => {}
-                "proxima_search_candidates"
+                "proxiima_search_candidates"
                     if relation.candidate_relation
                         && policy.command == "r"
                         && policy.candidate_role
@@ -297,7 +299,7 @@ async fn relations(
                        AND (target.rolsuper OR target.rolbypassrls)
                        AND pg_has_role(current_user, target.oid, 'SET')
                 ) AS dangerous_set_role,
-                ((n.nspname = 'proxima_core' AND c.relname IN (
+                ((n.nspname = 'proxiima_core' AND c.relname IN (
                     'embeddings', 'embedding_heads',
                     'agent_derivation_v1', 'agent_note_v1', 'interpretation_v1', 'utterance_v1'))
                  OR (EXISTS (SELECT 1 FROM pg_attribute a
@@ -311,7 +313,7 @@ async fn relations(
                          JOIN pg_attribute parent ON parent.attrelid = fk.confrelid
                               AND parent.attnum = fk.confkey[1]
                           WHERE fk.conrelid = c.oid AND fk.contype = 'f'
-                            AND fk.confrelid = to_regclass('proxima_core.memory')
+                            AND fk.confrelid = to_regclass('proxiima_core.memory')
                             AND cardinality(fk.conkey) = 1
                             AND child.attname = 'memory_id'
                             AND child.atttypid = 'uuid'::regtype
@@ -458,7 +460,7 @@ async fn definers(
     conn: &mut PgConnection,
     schemas: &[String],
 ) -> Result<Vec<DefinerRow>, StorageError> {
-    let vector_names: Vec<_> = proxima_core::EmbeddingDim::ALL
+    let vector_names: Vec<_> = proxiima_core::EmbeddingDim::ALL
         .into_iter()
         .map(|dim| format!("vector_candidates_d{}", dim.width()))
         .collect();
@@ -506,7 +508,7 @@ async fn definers(
                      AND shape.output_types = ARRAY['uuid'::regtype::oid, 'real'::regtype::oid]
                      AND shape.output_names = ARRAY['t', 'lexical_score']::text[]
                     THEN 'substring'
-                    WHEN n.nspname = 'proxima_core' AND p.proname = ANY($3::text[])
+                    WHEN n.nspname = 'proxiima_core' AND p.proname = ANY($3::text[])
                      AND p.pronargs = 4
                      AND p.proargtypes[0] = 'uuid[]'::regtype
                      AND p.proargtypes[1] = 'text'::regtype
@@ -606,13 +608,13 @@ async fn assert_definers(
     }
     let namespaces = definer_namespaces(&mut *conn, &functions).await?;
     if functions.iter().any(|function| {
-        function.candidate_kind.is_some() || function.owner_name == "proxima_search"
+        function.candidate_kind.is_some() || function.owner_name == "proxiima_search"
     }) {
         assert_candidate_role(&mut *conn, schemas, platform).await?;
     }
     for function in &functions {
         if function.candidate_kind.is_some() {
-            if function.owner_name != "proxima_search"
+            if function.owner_name != "proxiima_search"
                 || function.owner_superuser
                 || function.owner_bypass_rls
                 || function.public_execute
@@ -620,7 +622,7 @@ async fn assert_definers(
                 || (!platform && function.owner_set)
             {
                 return Err(refused(format!(
-                    "{} must use isolated proxima_search authority with no PUBLIC EXECUTE",
+                    "{} must use isolated proxiima_search authority with no PUBLIC EXECUTE",
                     function.name
                 )));
             }

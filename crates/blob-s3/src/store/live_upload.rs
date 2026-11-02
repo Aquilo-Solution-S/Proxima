@@ -10,7 +10,7 @@ macro_rules! with_live_blob_upload {
             $prefix,
             " LATERAL (
                 SELECT candidate.*
-                  FROM proxima_core.blob_uploads candidate
+                  FROM proxiima_core.blob_uploads candidate
                  WHERE candidate.blob_id = b.blob_id
                    AND candidate.owner_id = b.owner_id
                    AND candidate.status = 'completed'

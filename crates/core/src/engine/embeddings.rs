@@ -223,7 +223,7 @@ impl Engine {
         let embedding = client
             .embed(&text)
             .instrument(
-                tracing::debug_span!(target: "proxima::stage_timing", "embedding_index",
+                tracing::debug_span!(target: "proxiima::stage_timing", "embedding_index",
                 work = "index"),
             )
             .await
@@ -248,7 +248,7 @@ impl Engine {
     /// embedding in a space `owner`'s route names.
     ///
     /// Covers Facts *and* derived memories. Derived rows matter because a
-    /// flavor can materialize Abstractions through its own sidecar path with
+    /// spiice can materialize Abstractions through its own sidecar path with
     /// no embedding client in scope (bulk ingest can), leaving them
     /// semantically invisible until someone ran a global reconcile. Only
     /// the kinds up to the caller's write limit are queued.
@@ -480,7 +480,7 @@ impl Engine {
             };
             self.embed_claim_batch(client, space_batch, outcome)
                 .instrument(
-                    tracing::debug_span!(target: "proxima::stage_timing", "embedding_index",
+                    tracing::debug_span!(target: "proxiima::stage_timing", "embedding_index",
                     batch = %uuid::Uuid::now_v7(), work = "index"),
                 )
                 .await?;

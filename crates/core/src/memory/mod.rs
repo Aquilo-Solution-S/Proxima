@@ -8,11 +8,11 @@ pub use payloads::{
     UtteranceV1, WriteActV1,
 };
 
-use crate::FlavorRegistry;
+use crate::SpiiceRegistry;
 
 pub(crate) fn register_all(
-    registry: &mut FlavorRegistry,
-) -> Result<(), crate::FlavorRegistryError> {
+    registry: &mut SpiiceRegistry,
+) -> Result<(), crate::SpiiceRegistryError> {
     registry.try_add_fact_schema::<WriteActV1>()?;
     registry.try_add_fact_schema::<GoalChangeV1>()?;
     registry.try_add_fact_schema::<AgentNoteV1>()?;

@@ -12,7 +12,7 @@ behaviour. A principle change starts in the kernel, then code and tests follow.
 This keeps the kernel meaningful without treating it as an executable claim
 about every implementation detail.
 
-Source: [Lean principles](https://github.com/Aquilo-Solution-S/Proxima/blob/main/docs/lean/Causa/Principles.lean).
+Source: [Lean principles](https://github.com/Aquilo-Solution-S/proxiima/blob/main/docs/lean/Causa/Principles.lean).
 
 ## One owner per fact
 
@@ -20,7 +20,7 @@ Source: [Lean principles](https://github.com/Aquilo-Solution-S/Proxima/blob/main
 |---|---|
 | Settings | [Configuration](configuration.md) and its completeness check |
 | Types, defaults, limits | Rustdoc |
-| Tool and resource schemas | Live catalog: `tools/list`, `proxima://tools`, OpenAPI |
+| Tool and resource schemas | Live catalog: `tools/list`, `proxiima://tools`, OpenAPI |
 | Tables | SQL migrations |
 | Core functions, triggers, policies | `crates/storage-pg/definitions/` |
 | Invariants | Lean kernel |
@@ -29,12 +29,12 @@ Source: [Lean principles](https://github.com/Aquilo-Solution-S/Proxima/blob/main
 When a description is needed elsewhere, link to its owner. Do not copy the
 table, schema, or default.
 
-## Build-time flavor composition
+## Build-time spiice composition
 
-A flavor is a vocabulary crate linked into a host at build time. A host reads
+A spiice is a vocabulary crate linked into a host at build time. A host reads
 remote stores through `OtherStores`. This makes composition visible to the
 compiler and keeps storage ownership at the host boundary. See [Build a
-flavor](build-a-flavor.md) for the current integration surface.
+spiice](build-a-spiice.md) for the current integration surface.
 
 ## The catalog is the contract
 

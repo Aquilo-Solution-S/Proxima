@@ -3,15 +3,15 @@
 //! before the closure expands them.
 //!
 //! Both read the schema's declared sidecar joined on its declared memory key
-//! to `proxima_core.memory`, under `m.owner_id = $1 AND m.schema_id = $2`.
-//! The owner comes off the permit and the schema off the flavor contract, so
+//! to `proxiima_core.memory`, under `m.owner_id = $1 AND m.schema_id = $2`.
+//! The owner comes off the permit and the schema off the spiice contract, so
 //! a caller's column can only narrow them. Every column a selection names is
 //! looked up in the catalog before a statement splices it: a column the
 //! sidecar does not have, or a `DeclaredBefore` column that is not
 //! `timestamptz`, is refused before any lock or delete.
 
-use proxima_core::verbs::query::SidecarAtom;
-use proxima_core::{SchemaId, StorageError};
+use proxiima_core::verbs::query::SidecarAtom;
+use proxiima_core::{SchemaId, StorageError};
 use sqlx::{Postgres, QueryBuilder, Transaction};
 use uuid::Uuid;
 
@@ -123,7 +123,7 @@ pub(super) async fn sidecar_equals_seeds(
         QueryBuilder::<Postgres>::new("SELECT t FROM (SELECT DISTINCT ON (m.handle) m.t FROM ");
     // SQL-POLICY: PgIdent — the registered sidecar and its declared key.
     builder.push(sidecar.table.as_str());
-    builder.push(" s JOIN proxima_core.memory m ON m.t = s.");
+    builder.push(" s JOIN proxiima_core.memory m ON m.t = s.");
     builder.push(sidecar.key.as_str());
     // SQL-POLICY: fixed-fragment — the owner and schema scope, before
     // anything the caller asked for.
@@ -182,7 +182,7 @@ pub(super) async fn declared_before_seeds(
         concat!(
             newest_versions_cte!(),
             "SELECT n.t FROM newest n
-  JOIN proxima_core.memory m ON m.t = n.t
+  JOIN proxiima_core.memory m ON m.t = n.t
   JOIN {tbl} s ON s.{key} = n.t
  WHERE m.owner_id = $1 AND m.schema_id = $2 AND s.{col} < $3
  ORDER BY s.{col}, n.t

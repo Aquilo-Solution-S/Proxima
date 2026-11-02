@@ -10,20 +10,20 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use proxima_core::authz::{
+use proxiima_core::authz::{
     AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, MembershipChange,
 };
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     MembershipWritePermit, OwnerMembershipAdminPort, OwnerWritePermit,
 };
-use proxima_core::test_fixtures::authenticated_context;
-use proxima_core::{
-    AccessCeiling, AccessKind, AuthPath, AuthzContext, Engine, ErrorCode, FlavorRegistry, GroupId,
-    OwnerId, Relation, Role, StorageError, UserId,
+use proxiima_core::test_fixtures::authenticated_context;
+use proxiima_core::{
+    AccessCeiling, AccessKind, AuthPath, AuthzContext, Engine, ErrorCode, GroupId, OwnerId,
+    Relation, Role, SpiiceRegistry, StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{PgStorage, group_role};
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{PgStorage, group_role};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
@@ -80,7 +80,7 @@ struct Harness {
 
 impl Harness {
     async fn new(veto: Option<(MembershipChange, Relation)>) -> Self {
-        let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+        let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
         if let Err(error) = create_core_db(&db_name).await {
             panic!("PG required for tests but admin connect failed: {error}");
         }
@@ -94,7 +94,7 @@ impl Harness {
             .expect("observer pool");
 
         let seen = Seen::default();
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         registry.add_authorization_hook(Arc::new(Recorder {
             veto,
             seen: seen.clone(),
@@ -149,7 +149,7 @@ impl Harness {
     /// `membership_relation` enum order (Admin, Editor, Viewer, Ingest).
     async fn relations(&self, member: OwnerId) -> Vec<Relation> {
         sqlx::query_scalar(
-            "SELECT relation FROM proxima_core.group_memberships
+            "SELECT relation FROM proxiima_core.group_memberships
               WHERE group_id = $1 AND member_user_id = $2 ORDER BY relation",
         )
         .bind(self.group.into_inner())
@@ -531,7 +531,7 @@ async fn a_failed_insert_rolls_the_delete_back() {
         "CREATE FUNCTION public.refuse_viewer_insert() RETURNS trigger
          LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'viewer refused'; END $$;
          CREATE TRIGGER refuse_viewer_insert
-         BEFORE INSERT ON proxima_core.group_memberships
+         BEFORE INSERT ON proxiima_core.group_memberships
          FOR EACH ROW WHEN (NEW.relation = 'viewer')
          EXECUTE FUNCTION public.refuse_viewer_insert();",
     )
@@ -580,9 +580,9 @@ async fn no_reader_sees_the_member_without_a_role_mid_replacement() {
              RETURN NEW;
          END
          $$;
-         DROP TRIGGER IF EXISTS zz_pause_membership_viewer_insert ON proxima_core.group_memberships;
+         DROP TRIGGER IF EXISTS zz_pause_membership_viewer_insert ON proxiima_core.group_memberships;
          CREATE TRIGGER zz_pause_membership_viewer_insert
-         BEFORE INSERT ON proxima_core.group_memberships
+         BEFORE INSERT ON proxiima_core.group_memberships
          FOR EACH ROW EXECUTE FUNCTION public.zz_pause_membership_viewer_insert();",
     )
     .execute(h.pg.pool_for_tests())
@@ -667,7 +667,7 @@ async fn replacement_waits_on_the_groups_membership_lock() {
 
     let mut holder = h.observer.begin().await.expect("holder");
     sqlx::query(
-        "INSERT INTO proxima_core.group_lock_request (request_id, left_group_id)
+        "INSERT INTO proxiima_core.group_lock_request (request_id, left_group_id)
          VALUES ($1, $2)",
     )
     .bind(Uuid::now_v7())

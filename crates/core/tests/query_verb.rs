@@ -1,4 +1,4 @@
-use proxima_core::verbs::query::{
+use proxiima_core::verbs::query::{
     GoalAssignmentFilter, QueryPage, QueryRequest, SupersessionStatus,
 };
 
@@ -23,7 +23,7 @@ fn query_request_defaults_to_heads_only_without_dead_tombstone_axis() {
 
 #[test]
 fn goal_selectors_decode_as_typed_sets_and_series_handles() {
-    use proxima_core::verbs::goal_write::GoalState;
+    use proxiima_core::verbs::goal_write::GoalState;
 
     let handle = uuid::Uuid::now_v7();
     let mut value = serde_json::to_value(QueryRequest::readable()).unwrap();

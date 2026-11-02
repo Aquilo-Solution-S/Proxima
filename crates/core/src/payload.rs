@@ -1,4 +1,4 @@
-//! Payload traits per docs/build-a-flavor.md — typing layer required for
+//! Payload traits per docs/build-a-spiice.md — typing layer required for
 //! every Memory kind.
 //!
 //! `SCHEMA_ID` is `&'static str` (not `SchemaId`) so it can be a
@@ -509,7 +509,7 @@ pub trait FactPayload:
     ///   (the bare UUID), not the series handle, the receipt or a content hash,
     ///   and a replayed admission writes no second record.
     /// - **The snapshot is this payload's serde JSON**, captured once. A
-    ///   later flavor upgrade never reinterprets an already-captured event.
+    ///   later spiice upgrade never reinterprets an already-captured event.
     ///
     /// What it does NOT turn on: delivery. Whether anything drains the
     /// captured records is a host concern, and a deployment with no
@@ -538,14 +538,14 @@ pub trait FactPayload:
     fn references(&self) -> Vec<PayloadReference> {
         Vec::new()
     }
-    /// The flavor-owned lifecycle scope this schema's rows belong to
-    /// (docs/build-a-flavor.md). `None` — the default — means the rows
+    /// The spiice-owned lifecycle scope this schema's rows belong to
+    /// (docs/build-a-spiice.md). `None` — the default — means the rows
     /// are unscoped and no scope fence is taken for them.
     ///
     /// A property of the TYPE, so freeze can read it off the registration
-    /// and refuse a kind no linked `FlavorContract` declares. The
+    /// and refuse a kind no linked `SpiiceContract` declares. The
     /// per-`ScopeKind` half — the registry table, its id column and its
-    /// owner columns — is [`crate::ScopeDecl`], declared once by the flavor
+    /// owner columns — is [`crate::ScopeDecl`], declared once by the spiice
     /// that owns the scope.
     const SCOPE_KIND: Option<ScopeKind> = None;
     /// The scope id THIS row carries, read out of the payload's own field.
@@ -583,7 +583,7 @@ pub trait FactPayload:
     /// Natural-key columns on the sidecar table for stateful Fact
     /// schemas. Default empty = stateless (every observation is a
     /// distinct head). When non-empty, the schema participates in
-    /// head-by-natural-key queries (docs/build-a-flavor.md).
+    /// head-by-natural-key queries (docs/build-a-spiice.md).
     #[must_use]
     fn natural_key_columns() -> &'static [&'static str] {
         &[]
@@ -620,14 +620,14 @@ pub trait AbstractionPayload:
     fn references(&self) -> Vec<PayloadReference> {
         Vec::new()
     }
-    /// The flavor-owned lifecycle scope this schema's rows belong to
-    /// (docs/build-a-flavor.md). `None` — the default — means the rows
+    /// The spiice-owned lifecycle scope this schema's rows belong to
+    /// (docs/build-a-spiice.md). `None` — the default — means the rows
     /// are unscoped and no scope fence is taken for them.
     ///
     /// A property of the TYPE, so freeze can read it off the registration
-    /// and refuse a kind no linked `FlavorContract` declares. The
+    /// and refuse a kind no linked `SpiiceContract` declares. The
     /// per-`ScopeKind` half — the registry table, its id column and its
-    /// owner columns — is [`crate::ScopeDecl`], declared once by the flavor
+    /// owner columns — is [`crate::ScopeDecl`], declared once by the spiice
     /// that owns the scope.
     const SCOPE_KIND: Option<ScopeKind> = None;
     /// The scope id THIS row carries, read out of the payload's own field.
@@ -680,14 +680,14 @@ pub trait PerspectivePayload:
     fn references(&self) -> Vec<PayloadReference> {
         Vec::new()
     }
-    /// The flavor-owned lifecycle scope this schema's rows belong to
-    /// (docs/build-a-flavor.md). `None` — the default — means the rows
+    /// The spiice-owned lifecycle scope this schema's rows belong to
+    /// (docs/build-a-spiice.md). `None` — the default — means the rows
     /// are unscoped and no scope fence is taken for them.
     ///
     /// A property of the TYPE, so freeze can read it off the registration
-    /// and refuse a kind no linked `FlavorContract` declares. The
+    /// and refuse a kind no linked `SpiiceContract` declares. The
     /// per-`ScopeKind` half — the registry table, its id column and its
-    /// owner columns — is [`crate::ScopeDecl`], declared once by the flavor
+    /// owner columns — is [`crate::ScopeDecl`], declared once by the spiice
     /// that owns the scope.
     const SCOPE_KIND: Option<ScopeKind> = None;
     /// The scope id THIS row carries, read out of the payload's own field.
@@ -725,7 +725,7 @@ pub trait PerspectivePayload:
     }
 }
 
-/// Typed payload for a Goal row in `proxima_core.goal`.
+/// Typed payload for a Goal row in `proxiima_core.goal`.
 /// Mirrors `FactPayload` / `AbstractionPayload` for the Goal layer.
 ///
 /// See docs/concepts.md
@@ -749,7 +749,7 @@ pub trait GoalPayload:
     }
     /// Per-schema typed Goal sidecar table, or `None` when the Goal's
     /// typed payload has no schema-specific storage beyond
-    /// `proxima_core.goal` sidecar payload.
+    /// `proxiima_core.goal` sidecar payload.
     #[must_use]
     fn sidecar_table() -> Option<&'static str> {
         None

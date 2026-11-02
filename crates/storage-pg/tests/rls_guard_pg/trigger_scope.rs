@@ -1,9 +1,9 @@
 //! Falsifier for the owner-RLS trigger scope bridge: each platform-scoped
-//! integrity routine hands the runtime caller its own `app.proxima_scope` back,
+//! integrity routine hands the runtime caller its own `app.proxiima_scope` back,
 //! both on normal return and after a refusal caught by a savepoint.
 
-use proxima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
-use proxima_storage_pg::begin_owner_transaction;
+use proxiima_core::{Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId};
+use proxiima_storage_pg::begin_owner_transaction;
 use sqlx::postgres::PgQueryResult;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
@@ -19,7 +19,7 @@ const BRIDGED_ROUTINES: [&str; 7] = [
 ];
 
 async fn scope(connection: &mut PgConnection) -> Option<String> {
-    sqlx::query_scalar("SELECT current_setting('app.proxima_scope', true)")
+    sqlx::query_scalar("SELECT current_setting('app.proxiima_scope', true)")
         .fetch_one(connection)
         .await
         .unwrap()
@@ -74,7 +74,7 @@ async fn insert_memory(
     } else {
         let content_id = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.content(content_id, owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.content(content_id, owner_id, schema_id, content_hash)
              VALUES ($1, $2, 'core/test', $3)",
         )
         .bind(content_id)
@@ -85,8 +85,8 @@ async fn insert_memory(
         Some(content_id)
     };
     sqlx::query(
-        "INSERT INTO proxima_core.memory_head(handle, schema_id, kind, owner_id, t)
-         VALUES ($1, 'core/test', $2::text::proxima_core.memory_kind, $3, $4)",
+        "INSERT INTO proxiima_core.memory_head(handle, schema_id, kind, owner_id, t)
+         VALUES ($1, 'core/test', $2::text::proxiima_core.memory_kind, $3, $4)",
     )
     .bind(handle)
     .bind(kind)
@@ -95,8 +95,8 @@ async fn insert_memory(
     .execute(&mut *connection)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.memory(handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at, \"by\", via)
-         VALUES ($1, $2, $3::text::proxima_core.memory_kind, $4, 'core/test', $5, $6, CASE WHEN $3::text::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+        "INSERT INTO proxiima_core.memory(handle, t, kind, owner_id, schema_id, content_id, origins, occurred_at, \"by\", via)
+         VALUES ($1, $2, $3::text::proxiima_core.memory_kind, $4, 'core/test', $5, $6, CASE WHEN $3::text::proxiima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
     .bind(t)
@@ -114,12 +114,12 @@ async fn insert_memory(
 /// lifecycle scope is crate-private; RLS is not what this file tests.
 async fn forget(admin: &PgPool, t: Uuid, path: &str) {
     let mut tx = admin.begin().await.unwrap();
-    sqlx::query("SELECT set_config('app.proxima_scope', 'owner', true)")
+    sqlx::query("SELECT set_config('app.proxiima_scope', 'owner', true)")
         .execute(&mut *tx)
         .await
         .unwrap();
     let forgotten = sqlx::query(
-        "UPDATE proxima_core.memory SET forgotten_at = now()
+        "UPDATE proxiima_core.memory SET forgotten_at = now()
           WHERE t = $1 AND forgotten_at IS NULL",
     )
     .bind(t)
@@ -138,7 +138,7 @@ async fn insert_goal(
 ) -> Result<PgQueryResult, sqlx::Error> {
     let handle = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO proxima_core.goal_head(handle, schema_id, owner_id, t)
+        "INSERT INTO proxiima_core.goal_head(handle, schema_id, owner_id, t)
          VALUES ($1, 'core/task-goal-v1', $2, $3)",
     )
     .bind(handle)
@@ -147,7 +147,7 @@ async fn insert_goal(
     .execute(&mut *connection)
     .await?;
     sqlx::query(
-        "INSERT INTO proxima_core.goal(handle, t, owner_id, title, state, request_id, \"by\", via)
+        "INSERT INTO proxiima_core.goal(handle, t, owner_id, title, state, request_id, \"by\", via)
          VALUES ($1, $2, $3, 'scope bridge', 'Active', $4, '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
     )
     .bind(handle)
@@ -162,7 +162,7 @@ async fn insert_goal(
 /// routine fails inside its body, after it has bound platform scope.
 async fn contend(connection: &mut PgConnection, holder: &mut PgConnection, t: Uuid) {
     let held: bool = sqlx::query_scalar(
-        "SELECT pg_try_advisory_lock(hashtextextended('proxima-forget:' || $1::text, 0))",
+        "SELECT pg_try_advisory_lock(hashtextextended('proxiima-forget:' || $1::text, 0))",
     )
     .bind(t)
     .fetch_one(holder)
@@ -192,7 +192,7 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
     let (database, admin, runtime, platform, platform_role, runtime_role, _password) =
         super::setup_full_schema().await;
     let owner = Uuid::now_v7();
-    sqlx::query("INSERT INTO proxima_core.owners(owner_id, kind) VALUES ($1, 'group')")
+    sqlx::query("INSERT INTO proxiima_core.owners(owner_id, kind) VALUES ($1, 'group')")
         .bind(owner)
         .execute(&admin)
         .await
@@ -207,13 +207,13 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
     let unbridged: Vec<String> = sqlx::query_scalar(
         r"SELECT p.proname::text
            FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-          WHERE n.nspname = 'proxima_core' AND p.proname = ANY($1::text[])
+          WHERE n.nspname = 'proxiima_core' AND p.proname = ANY($1::text[])
             AND (NOT p.prosecdef
-                 OR p.proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, proxima_core, pg_temp']
+                 OR p.proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, proxiima_core, pg_temp']
                  OR has_function_privilege($2, p.oid, 'EXECUTE')
-                 OR regexp_count(p.prosrc, 'set_config\(''app\.proxima_scope'', ''platform'', true\)') <> 1
+                 OR regexp_count(p.prosrc, 'set_config\(''app\.proxiima_scope'', ''platform'', true\)') <> 1
                  OR regexp_count(p.prosrc, '\mRETURN\M')
-                    <> regexp_count(p.prosrc, 'set_config\(''app\.proxima_scope'', COALESCE\(previous_scope, ''''\), true\);\s+RETURN\M'))",
+                    <> regexp_count(p.prosrc, 'set_config\(''app\.proxiima_scope'', COALESCE\(previous_scope, ''''\), true\);\s+RETURN\M'))",
     )
     .bind(BRIDGED_ROUTINES.to_vec())
     .bind(&runtime_role)
@@ -248,7 +248,7 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
         )
         .unwrap(),
     };
-    let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("scope".into()))
+    let authz = proxiima_core::authenticate(&verifier, &Credentials::Bearer("scope".into()))
         .await
         .unwrap();
     let mut tx = begin_owner_transaction(&runtime, authz.owner_scope().unwrap())
@@ -311,12 +311,12 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
     for (routine, statement, target) in [
         (
             "memory_erase_witness",
-            "DELETE FROM proxima_core.memory WHERE t = $1",
+            "DELETE FROM proxiima_core.memory WHERE t = $1",
             hard_erase,
         ),
         (
             "goal_erase_witness",
-            "DELETE FROM proxima_core.goal WHERE t = $1",
+            "DELETE FROM proxiima_core.goal WHERE t = $1",
             erase_goal,
         ),
     ] {
@@ -340,7 +340,7 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
     // assert_erased_pin_target_insert: a direct witness write is refused.
     savepoint(&mut tx).await;
     let outcome =
-        sqlx::query("INSERT INTO proxima_core.erased_pin_target(t, kind) VALUES ($1, 'fact')")
+        sqlx::query("INSERT INTO proxiima_core.erased_pin_target(t, kind) VALUES ($1, 'fact')")
             .bind(Uuid::now_v7())
             .execute(&mut *tx)
             .await;
@@ -358,7 +358,7 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
     // directly under owner scope to observe its own restore.
     let mut runtime_tx = runtime.begin().await.unwrap();
     let refused = sqlx::query(
-        "SELECT proxima_core.pins_have_grounding_support(ARRAY[$1]::uuid[], NULL, NULL)",
+        "SELECT proxiima_core.pins_have_grounding_support(ARRAY[$1]::uuid[], NULL, NULL)",
     )
     .bind(fact)
     .execute(&mut *runtime_tx)
@@ -373,12 +373,12 @@ async fn trigger_bridge_restores_caller_scope_on_return_and_refusal() {
     );
     runtime_tx.rollback().await.unwrap();
     let mut platform_tx = platform.begin().await.unwrap();
-    sqlx::query("SELECT set_config('app.proxima_scope', 'owner', true)")
+    sqlx::query("SELECT set_config('app.proxiima_scope', 'owner', true)")
         .execute(&mut *platform_tx)
         .await
         .unwrap();
     let supported: bool = sqlx::query_scalar(
-        "SELECT proxima_core.pins_have_grounding_support(ARRAY[$1]::uuid[], NULL, NULL)",
+        "SELECT proxiima_core.pins_have_grounding_support(ARRAY[$1]::uuid[], NULL, NULL)",
     )
     .bind(fact)
     .fetch_one(&mut *platform_tx)

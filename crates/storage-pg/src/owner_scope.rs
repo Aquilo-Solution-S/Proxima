@@ -1,6 +1,6 @@
 //! Storage is the only writer of the transaction-local owner scope.
 
-use proxima_core::{AccessKind, OwnerId, OwnerScope, StorageError};
+use proxiima_core::{AccessKind, OwnerId, OwnerScope, StorageError};
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -65,7 +65,7 @@ pub(crate) async fn bind_owner_scope(
     // PostgreSQL serializes the bound UUID arrays. No header, owner text, or
     // caller-supplied role can enter this function in place of the witness.
     sqlx::query(
-        "SELECT set_config('app.proxima_scope', 'owner', true),
+        "SELECT set_config('app.proxiima_scope', 'owner', true),
                 set_config('app.owner', $1::uuid[]::text, true),
                 set_config('app.read_abstraction', $2::uuid[]::text, true),
                 set_config('app.read_perspective', $3::uuid[]::text, true),

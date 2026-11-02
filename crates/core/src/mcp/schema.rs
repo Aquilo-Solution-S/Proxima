@@ -350,13 +350,13 @@ fn ceiling_keyword(spec: &serde_json::Value) -> Option<&'static str> {
 /// being refused. `#[schemars(length(max = 240))]` emits `maxLength` on a
 /// string and `maxItems` on a `Vec`.
 ///
-/// In-tree suites run this over the core registry; a flavor can call it on its own frozen registry to get the
+/// In-tree suites run this over the core registry; a spiice can call it on its own frozen registry to get the
 /// same guarantee. This deliberately is *not* enforced in `try_freeze` —
 /// unlike an undeclared `EFFECT`, which stops a gate from working, a
 /// bound stated only in prose is a documentation defect and should not stop
 /// an existing deployment from booting.
 #[must_use]
-pub fn schema_bound_mismatches(registry: &crate::FlavorRegistryFrozen) -> Vec<String> {
+pub fn schema_bound_mismatches(registry: &crate::SpiiceRegistryFrozen) -> Vec<String> {
     let mut offenders = Vec::new();
     for tool in registry.list_mcp_tools() {
         let Some(properties) = tool
@@ -1965,7 +1965,7 @@ mod tests {
     }
 
     /// A dispatcher whose discriminator tag is `kind`, not `action` — the
-    /// out-of-tree flavor shape (e.g. working-hero's query tool). The flattener
+    /// out-of-tree spiice shape (e.g. working-hero's query tool). The flattener
     /// must honor the actual serde tag rather than assuming `action`.
     #[derive(Deserialize, JsonSchema)]
     #[allow(dead_code)]
@@ -2380,7 +2380,7 @@ mod tests {
         use crate::mcp::core_tools::goal::{CoreGoalArgs, CoreGoalTool};
         use crate::mcp::{McpTool, validate_action_args};
 
-        let registry = crate::FlavorRegistry::default().freeze_or_panic_for_tests();
+        let registry = crate::SpiiceRegistry::default().freeze_or_panic_for_tests();
         let descriptor = registry
             .list_mcp_tools()
             .iter()
@@ -2439,7 +2439,7 @@ mod tests {
             let mut map = map.clone();
             for_each_subschema_mut(&mut map, &mut |child| keywords(child, out));
         }
-        let registry = crate::FlavorRegistry::default().freeze_or_panic_for_tests();
+        let registry = crate::SpiiceRegistry::default().freeze_or_panic_for_tests();
         for tool in registry.list_mcp_tools() {
             let mut found = Vec::new();
             keywords(&tool.args_schema, &mut found);

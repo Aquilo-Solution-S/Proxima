@@ -20,9 +20,9 @@
 
 use std::time::Duration;
 
-use proxima_pg_testkit::{DbGuard, admin_url, split_role_urls};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
+use proxiima_pg_testkit::{DbGuard, admin_url, split_role_urls};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgStorage, PgTuning};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
@@ -50,7 +50,7 @@ async fn backends(admin: &sqlx::PgPool, database: &str) -> Vec<(String, i64)> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_serving_boot_validates_on_one_connection_per_pool() {
-    let name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_core_db(&name).await.expect("PG required for tests");
     let _guard = DbGuard::adopt(name.clone());
     let (runtime_url, platform_url) = split_role_urls(&name).await.expect("split roles");
@@ -97,7 +97,7 @@ async fn a_serving_boot_validates_on_one_connection_per_pool() {
         .connect(&platform_url)
         .await
         .expect("platform connection");
-    let scope = PgPlatformScope::new(platform_pool, &["proxima_core"])
+    let scope = PgPlatformScope::new(platform_pool, &["proxiima_core"])
         .await
         .expect("the platform scope validates within the cap");
     let storage = PgStorage::connect_with_config(

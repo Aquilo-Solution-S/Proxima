@@ -82,7 +82,7 @@ pub const CORE_GOAL_ACTIONS: &[CoreActionMeta] = &[
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct GoalPayloadArgs {
     #[schemars(
-        description = "Goal-payload schema id, e.g. `core/simple-text-v1`. The `proxima://schemas?kind=Goal` resource lists every registered id."
+        description = "Goal-payload schema id, e.g. `core/simple-text-v1`. The `proxiima://schemas?kind=Goal` resource lists every registered id."
     )]
     pub schema_id: String,
     #[schemars(description = "Version of `schema_id`. Omit for 1.")]
@@ -722,7 +722,7 @@ mod tests {
     use crate::engine::MembershipStorage;
     use crate::mcp::McpAuthorContext;
     use crate::{
-        AuthPath, AuthzContext, FlavorRegistry, FlavorServices, MemoryId, OwnerId, UserId,
+        AuthPath, AuthzContext, MemoryId, OwnerId, SpiiceRegistry, SpiiceServices, UserId,
     };
     use std::sync::Arc;
 
@@ -731,7 +731,7 @@ mod tests {
         McpToolCtx {
             owner,
             authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer),
-            registry: Arc::new(FlavorRegistry::new().freeze_or_panic_for_tests()),
+            registry: Arc::new(SpiiceRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "m".into(),
                 trusted_model_id: None,
@@ -740,9 +740,9 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         }
     }
 
@@ -776,7 +776,7 @@ mod tests {
         let ctx = McpToolCtx {
             owner,
             authz,
-            registry: std::sync::Arc::new(crate::FlavorRegistry::new().freeze_or_panic_for_tests()),
+            registry: std::sync::Arc::new(crate::SpiiceRegistry::new().freeze_or_panic_for_tests()),
             author: McpAuthorContext {
                 model_id: "test-model".into(),
                 trusted_model_id: None,
@@ -785,9 +785,9 @@ mod tests {
                 caller_self_perspective: Some(target),
             },
             caller_self_perspective: Some(target),
-            services: crate::FlavorServices::default(),
+            services: crate::SpiiceServices::default(),
             engine: Some(engine),
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         };
         (ctx, observed, target)
     }

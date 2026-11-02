@@ -1,9 +1,9 @@
 # Host integration
 > Status: current.
 
-An embedded host composes Proxima with its own authentication, HTTP router,
-extra stores, publication intake, and lifecycle policy. The `proxima` facade
-is the host boundary. A flavor receives typed services; it does not receive
+An embedded host composes Proxiima with its own authentication, HTTP router,
+extra stores, publication intake, and lifecycle policy. The `proxiima` facade
+is the host boundary. A spiice receives typed services; it does not receive
 raw core tables or resolve owners itself. See [concepts](concepts.md) for the
 boundary and [configuration](configuration.md) for the settings inventory.
 
@@ -18,22 +18,22 @@ empty, including when marking a goal achieved. HTTP routes are listed in
 
 ## Boot a composed host
 
-Implement `FlavorApp` for the application bundle. Defaults are applied first;
+Implement `SpiiceApp` for the application bundle. Defaults are applied first;
 environment and explicit builder calls then overlay them.
 
 ```rust
-use proxima::{AppInfo, FlavorApp, RuntimeBuilder};
-use proxima::flavor::{FlavorBundle, FlavorRegistry, FlavorRegistryError, NamedMigrator};
+use proxiima::{AppInfo, SpiiceApp, RuntimeBuilder};
+use proxiima::spiice::{SpiiceBundle, SpiiceRegistry, SpiiceRegistryError, NamedMigrator};
 use std::net::SocketAddr;
 
 struct MyApp;
 
-impl FlavorBundle for MyApp {
-    fn register(_: &mut FlavorRegistry) -> Result<(), FlavorRegistryError> { Ok(()) }
+impl SpiiceBundle for MyApp {
+    fn register(_: &mut SpiiceRegistry) -> Result<(), SpiiceRegistryError> { Ok(()) }
     fn migrators() -> Vec<NamedMigrator> { Vec::new() }
 }
 
-impl FlavorApp for MyApp {
+impl SpiiceApp for MyApp {
     fn app_info() -> AppInfo {
         AppInfo { id: "my-app", title: "My App", version: env!("CARGO_PKG_VERSION") }
     }
@@ -44,14 +44,14 @@ impl FlavorApp for MyApp {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), proxima::ProximaError> {
-    proxima::run::<MyApp>().await?;
+async fn main() -> Result<(), proxiima::ProxiimaError> {
+    proxiima::run::<MyApp>().await?;
     Ok(())
 }
 ```
 
-The host normally implements `FlavorBundle` and links one or more flavors;
-the tuple `FlavorApp` implementation folds configuration, services, and HTTP
+The host normally implements `SpiiceBundle` and links one or more spiices;
+the tuple `SpiiceApp` implementation folds configuration, services, and HTTP
 mounts left to right. `build()` gives a booted runtime for embedding; `run()`
 also starts configured listeners and background workers. Authenticated MCP
 requests carry a server-resolved `AuthzContext`; callers never supply a
@@ -71,7 +71,7 @@ With an object store configured, the runtime sweeps expired uploads and drains
 object-purge debt itself (`RuntimeBuilder::object_purge_interval`, default 60
 seconds, zero turns it off); a host built on the runtime writes no code for it.
 A library host that composes `PgStorage` and `CitedBlobStore` without the
-runtime calls `proxima::object_maintenance_pass` on a cadence no longer than
+runtime calls `proxiima::object_maintenance_pass` on a cadence no longer than
 the upload TTL. The pass takes the same storage maintenance lease as the
 runtime and `maintain-storage`, and skips when another pass holds it. Both
 the runtime's boot and the pass refuse while the purge queue holds debt for
@@ -87,7 +87,7 @@ require a reset; there is no copy-cutover compatibility path.
 A host that deliberately shares a database between releases can explicitly set
 `RuntimeBuilder::missing_migration_policy(MissingMigrationPolicy::Allow)`.
 The deployable host and its maintenance commands read the same choice from
-`PROXIMA_MISSING_MIGRATION_POLICY`, as does `tools/dev-migrate`. The same
+`PROXIIMA_MISSING_MIGRATION_POLICY`, as does `tools/dev-migrate`. The same
 policy applies when boot skips migrations. Standalone migration and
 planning callers use the corresponding `_with_policy` functions; the ordinary
 functions reject missing versions. Allowing missing versions still rejects
@@ -99,25 +99,25 @@ validate between source commits. They fail after a five-second lock wait.
 Complete the out-of-band migration job before starting pods that skip
 migrations; allowing missing versions does not bypass this serialization.
 
-Standalone migration and preflight callers freeze the same core/flavor PG
+Standalone migration and preflight callers freeze the same core/spiice PG
 sidecars as boot. Register core sidecars and the bundle's sidecars in a
 `PgSidecarRegistry`, then call `freeze_against(&registry)` with the frozen
-flavor registry. Pass `&sidecars` as the third argument to
-`run_core_and_flavor_migrations` and `preflight_without_migrations`; their
+spiice registry. Pass `&sidecars` as the third argument to
+`run_core_and_spiice_migrations` and `preflight_without_migrations`; their
 `_with_policy` forms take it before the policy. `HostTemplate::new` takes the
 owned frozen sidecars as its fourth argument and includes the composition in
 its template identity. These types and migration operations are available
-through `proxima`; test templates use `proxima::testkit`.
+through `proxiima`; test templates use `proxiima::testkit`.
 
 The runner derives Follows owner RLS from this registry before and after the
-flavor migration lanes, including runs with no pending SQL. Skip-migration
+spiice migration lanes, including runs with no pending SQL. Skip-migration
 preflight checks the generated marks and owner indexes without changing them.
 Normal boot supplies this registry automatically. See
-[sidecar owner modes](build-a-flavor.md#2-persist-the-typed-payload).
+[sidecar owner modes](build-a-spiice.md#2-persist-the-typed-payload).
 
 When a host first runs this runner on an existing database, three
 things change. A Follows table gets the host rule (its `owner_id` AND its
-memory) whatever class the flavor's SQL gave it, so owner reads stop
+memory) whatever class the spiice's SQL gave it, so owner reads stop
 returning rows of forgotten memories. A Follows table without an index
 leading with `owner_id` gets `<table>_owner_follows_idx`, built inside the
 migration transaction with a plain (non-concurrent) `CREATE INDEX`, which
@@ -132,14 +132,14 @@ not `PgSidecarRegistryFrozen::default()`.
 Provide an `Authenticator` through `RuntimeBuilder::authenticator`, or use the
 OIDC adapter from `auth-oidc`. The authenticator validates the bearer, maps
 `(iss, sub)` to a `UserId`, and produces owner access for the request. The
-`X-Proxima-Owner` value is a raw owner UUID selected from that authorized
+`X-Proxiima-Owner` value is a raw owner UUID selected from that authorized
 scope. It is not an authorization proof.
 
 The stock `OidcAuthenticator` and `OidcBindingSet` retain the verified token
-payload on that request's `AuthzContext`. A Flavor handler reads it through
+payload on that request's `AuthzContext`. A Spiice handler reads it through
 `ctx.authz().verified_claims()`, which borrows an immutable JSON claim map
 without exposing the bearer. The map includes registered claims; the host or
-Flavor interprets its application-specific fields. Owner selection and
+Spiice interprets its application-specific fields. Owner selection and
 narrowing preserve the map, while each authentication supplies its own values.
 Custom authenticators may attach their already verified payload with
 `AuthzContext::with_verified_claims`; contexts without one return `None`.
@@ -153,7 +153,7 @@ exchange requests, because Zitadel grants an exchange only scopes the subject
 token already holds:
 
 ```rust
-use proxima::{
+use proxiima::{
     AuthorizationServers, ResourceServerMetadata, RuntimeBuilder, ScopeToken, ScopeTokenError,
 };
 
@@ -236,16 +236,16 @@ own.
 
 An embedded host may install an `OwnerAccessPort` and an optional forwarder
 policy. Reads are set-based and owner-scoped; writes pass through the engine's
-authorization and command ports. Do not recreate owner predicates in a flavor
+authorization and command ports. Do not recreate owner predicates in a spiice
 or add a caller-controlled ACL/share set.
 
-For subjects in `PROXIMA_FORWARDER_SUBJECTS`, the signed token must carry an
+For subjects in `PROXIIMA_FORWARDER_SUBJECTS`, the signed token must carry an
 `owner` UUID claim, a `by` principal UUID and an explicitly present `via`
 claim containing a session UUID or `null` for a direct principal call.
 Missing or malformed writer claims refuse authentication. The forwarder
 remains the authenticated subject; its
-`PROXIMA_FORWARDER_ROLE` applies only to that registered personal or group
-owner. An absent owner header uses the claim. A present `X-Proxima-Owner`
+`PROXIIMA_FORWARDER_ROLE` applies only to that registered personal or group
+owner. An absent owner header uses the claim. A present `X-Proxiima-Owner`
 header and any live session must agree with it before the target is resolved.
 An unknown owner grants no role. Ordinary subjects ignore the claim.
 
@@ -267,7 +267,7 @@ with `OwnerRegistry::is_registered_owner` when upgrading.
 Each memory or Goal revision records the writer captured in its sealed
 `OwnerScope`, separately from its owner, credential subject, payload author
 or grounding sources. A custom authenticator binds `WriterAttribution` with
-`AuthzContext::with_attested_writer` before `proxima::authenticate` seals the
+`AuthzContext::with_attested_writer` before `proxiima::authenticate` seals the
 context. For a forwarder it supplies the verified pair to
 `AuthzContext::from_verified_forwarded_owner(subject, owner, writer)`.
 Ordinary OIDC calls record their mapped principal with `via: null`.
@@ -313,31 +313,31 @@ group stay separate entries instead of folding into a role (`group_role` gives
 that). It takes no lock, so it never waits for another connection's membership
 edit, and it sees the caller's own uncommitted rows.
 
-Inside an authenticated Proxima write callback, use
+Inside an authenticated Proxiima write callback, use
 `PgHostStateSession::authority_memberships` for the current subject's effective
 memberships instead. That session derives its subject from the sealed write
 permit; it does not accept the platform gateway's caller-selected footprint.
 
 ## Other stores and HTTP
 
-Use `FlavorApp::services` to expose a typed service, and
-`FlavorApp::mount_http` to add host-owned routes. The host accessor provides a
+Use `SpiiceApp::services` to expose a typed service, and
+`SpiiceApp::mount_http` to add host-owned routes. The host accessor provides a
 pool and the resolved query policy:
 
 ```rust
-fn services(ctx: &AppContext) -> Result<FlavorServices, FlavorServiceError> {
+fn services(ctx: &AppContext) -> Result<SpiiceServices, SpiiceServiceError> {
     let store = MyStore::new(ctx.host().clone_pool_for_host());
-    Ok(FlavorServices::with(store))
+    Ok(SpiiceServices::with(store))
 }
 ```
 
 Every memory handle is a bare UUID. The host assigns each store a unique
 16-bit number among the stores it routes between; configure it with
-`RuntimeBuilder::store_number` or `PROXIMA_STORE_NUMBER`. First boot persists
+`RuntimeBuilder::store_number` or `PROXIIMA_STORE_NUMBER`. First boot persists
 the number; a later mismatch refuses startup. UUIDv8 handles carry that number
 and sort by timestamp and counter. Start fresh stores for this release.
 
-For a store accessed by flavor workers, register an `OtherStores` port with
+For a store accessed by spiice workers, register an `OtherStores` port with
 `RuntimeBuilder::other_stores`; the facade wraps it as a typed service with the
 configured timeout. `OtherStores::read` takes a `ReadAt`: `Version` answers
 the exact memory asked for, `SeriesHead` the newest version of its series the
@@ -346,9 +346,9 @@ names a remote memory through the same owner-authorized read. The adapter also
 supplies the stored owner, payload and occurrence time; display text and writer
 attribution do not establish ownership. A Fact carries its occurrence time,
 including a backdated observation. Single and batch reads preserve these fields.
-The extra-store transaction is separate from a Proxima
+The extra-store transaction is separate from a Proxiima
 `UnitOfWork`; use host-state participation when the change must be atomic with
-a Fact write. A flavor never queries `proxima_core` directly.
+a Fact write. A spiice never queries `proxiima_core` directly.
 
 ## Vector index
 
@@ -368,7 +368,7 @@ let index = VectorIndexClient::new("https://index.internal", store_number, &plai
 let builder = RuntimeBuilder::default().vector_index(std::sync::Arc::new(index));
 ```
 
-`proxima::vector_index_http` is the network form: `VectorIndexClient` is a
+`proxiima::vector_index_http` is the network form: `VectorIndexClient` is a
 `VectorIndex` over HTTP, and `vector_index_router` serves any `VectorIndex` to
 the stores it names, under the host's own authentication. Its rustdoc lists the
 wire. The client speaks plaintext only to loopback or a named plaintext host.
@@ -400,7 +400,7 @@ Derivation reads all foreign origins within one call-wide deadline and refuses
 before writing if they cannot all be read. Lineage deduplicates foreign origins
 across the page, bounds distinct reads, and renders unread origins as unavailable
 with a reason. The limits and concurrency contract live in
-[`other_stores` rustdoc](https://github.com/Aquilo-Solution-S/Proxima/blob/main/crates/core/src/storage_ports/other_stores.rs).
+[`other_stores` rustdoc](https://github.com/Aquilo-Solution-S/proxiima/blob/main/crates/core/src/storage_ports/other_stores.rs).
 
 ## Fact publication outbox
 
@@ -418,7 +418,7 @@ Erase and lease takeover are checked twice: just before `accept`, and again
 when the record is marked published, under the lane lock and in the marking
 transaction. A record erased or reclaimed by another process before `accept`
 is not handed over. If that happens while `accept` is running, your intake
-already has the event: Proxima cannot take it back, and it does not record the
+already has the event: Proxiima cannot take it back, and it does not record the
 record as published. Treat that as at-least-once delivery.
 
 ```rust
@@ -433,9 +433,9 @@ actor attribution. The typed `PublicationRecord`, `DurableIntake`, and delivery 
 CloudEvents envelope and retry contract in rustdoc. Scheduling, execution, and
 call logging belong to the host; the outbox is its change channel.
 
-The built-in HTTP sink reads `PROXIMA_OUTBOX_HTTP_URL` and delivers each event
+The built-in HTTP sink reads `PROXIIMA_OUTBOX_HTTP_URL` and delivers each event
 to that receiver without following redirects. Plaintext HTTP requires loopback
-or an exact host entry in `PROXIMA_PLAINTEXT_HOSTS`, whether or not a token is
+or an exact host entry in `PROXIIMA_PLAINTEXT_HOSTS`, whether or not a token is
 configured. See [configuration](configuration.md) for the token-file and CA
 settings.
 
@@ -483,7 +483,7 @@ for the declared tables. Each declared host-state surface names the column
 that carries its rows' owner (`Surface.owner_column`; freeze refuses one
 without), and a host-state command writes only rows of the owner it is stamped
 with. Whole-owner, source,
-flavor-scoped, and exact-physical-Fact scopes remain distinct. Export is a
+spiice-scoped, and exact-physical-Fact scopes remain distinct. Export is a
 read path under the caller's authorization; it does not grant erase authority.
 
 An erase commits core inverse work and the participant callback atomically. A

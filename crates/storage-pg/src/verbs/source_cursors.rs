@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::{Cursor, OwnerId, StorageError};
+use proxiima_core::storage_ports::OwnerWritePermit;
+use proxiima_core::{Cursor, OwnerId, StorageError};
 
 use crate::error::map_err;
 
@@ -21,7 +21,7 @@ pub(crate) async fn load_source_cursor<'e>(
     // (`PostgreSQL` has no index strategy for DistinctExpr).
     let row: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT cursor
-           FROM proxima_core.source_cursors
+           FROM proxiima_core.source_cursors
           WHERE owner_id = $1
             AND source = $2",
     )
@@ -47,7 +47,7 @@ pub(crate) async fn store_source_cursor<'e>(
     let owner = permit.owner();
     let owner_id = owner.into_inner();
     sqlx::query(
-        "INSERT INTO proxima_core.source_cursors
+        "INSERT INTO proxiima_core.source_cursors
             (owner_id, source, cursor)
          VALUES ($1, $2, $3)
          ON CONFLICT (owner_id, source)
@@ -77,7 +77,7 @@ pub(crate) async fn source_cursor_age<'e>(
     let owner_id = owner.into_inner();
     let updated_at: Option<time::OffsetDateTime> = sqlx::query_scalar(
         "SELECT updated_at
-           FROM proxima_core.source_cursors
+           FROM proxiima_core.source_cursors
           WHERE owner_id = $1
             AND source = $2",
     )

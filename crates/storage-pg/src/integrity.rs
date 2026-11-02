@@ -5,7 +5,7 @@
 //! `PostgreSQL` has no syntax for takes three statements to say (and four
 //! trigger families to enforce, since the third is guarded at both ends):
 //!
-//! 1. **stamp ⊆ registry** — a stamp names only tables some flavor
+//! 1. **stamp ⊆ registry** — a stamp names only tables some spiice
 //!    declares. `assert_sidecar_stamp_declared` (`definitions/functions.sql`).
 //! 2. **row ⊆ stamp** — a row in a registered memory-sidecar table exists
 //!    only for a memory row whose `sidecar_tables` declares that table.
@@ -66,13 +66,13 @@
 //!    [`key_repoint_trigger`] emits the `BEFORE UPDATE OF <key>` guard that
 //!    closes the same direction against a re-pointed key column,
 //!    [`presence_trigger`] emits direction 3's deferred constraint trigger on
-//!    `proxima_core.memory`, and [`delete_guard_trigger`] emits direction 3's
+//!    `proxiima_core.memory`, and [`delete_guard_trigger`] emits direction 3's
 //!    other end — the deferred `AFTER DELETE` guard on the sidecar table
 //!    itself. Each carries its own `DROP`. All of it is pasted
 //!    verbatim into migrations — the declaration lane
-//!    (`definitions/triggers.sql` and each flavor's own) for the
+//!    (`definitions/triggers.sql` and each spiice's own) for the
 //!    first family, the presence lane
-//!    (`definitions/triggers.sql` and each flavor's own) for the
+//!    (`definitions/triggers.sql` and each spiice's own) for the
 //!    other three — and pinned by
 //!    `generated_declaration_triggers_are_the_migration_text` and
 //!    `generated_presence_triggers_are_the_migration_text`, so the migration
@@ -87,7 +87,7 @@
 //!    `DEFERRABLE` shows up in the argument list. It issues no DDL: in the split-role topology (docs/operate.md) an
 //!    init container or `tools/dev-migrate` migrates under a DDL role and the
 //!    app boots under a DML-only role that could not create a trigger if it
-//!    tried. A flavor whose migrations have not been applied therefore fails
+//!    tried. A spiice whose migrations have not been applied therefore fails
 //!    at boot, the same way and in the same place a missing projection table
 //!    does.
 //!
@@ -98,14 +98,14 @@
 //! [`PgSidecarRegistryFrozen::integrity_check`]: crate::sidecars::PgSidecarRegistryFrozen::integrity_check
 //! [`PgSidecarRegistryFrozen::rebuild_projection_for_table`]: crate::sidecars::PgSidecarRegistryFrozen::rebuild_projection_for_table
 
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 
 use crate::pg_ident::PgIdent;
 use crate::projection::Artifact;
 use crate::sidecars::PgSidecarRegistryFrozen;
 
 /// The qualified name of the one function every declaration trigger runs.
-pub const DECLARATION_TRIGGER_FUNCTION_NAME: &str = "proxima_core.assert_memory_declares_sidecar";
+pub const DECLARATION_TRIGGER_FUNCTION_NAME: &str = "proxiima_core.assert_memory_declares_sidecar";
 
 /// What a generated trigger is called: the relation's own name, suffixed.
 const DECLARATION_TRIGGER_SUFFIX: &str = "declared_by_memory";
@@ -125,7 +125,7 @@ const DECLARATION_TRIGGER_SUFFIX: &str = "declared_by_memory";
 /// costs 4.2 µs and reading the column dynamically costs a further 1.8.
 /// The 1.8 buys ONE function body in the tree instead of one per
 /// registered sidecar table — twenty-six of them today, and one more for
-/// every sidecar any flavor ever adds — and it buys that the logic has a
+/// every sidecar any spiice ever adds — and it buys that the logic has a
 /// single place to be read and a single place to be wrong. Against a real
 /// fact ingest (admission, receipt, ledger, embedding enqueue) neither
 /// number is visible; against the DDL it is the difference between a
@@ -135,7 +135,7 @@ const DECLARATION_TRIGGER_SUFFIX: &str = "declared_by_memory";
 /// `ERRCODE 23503` is `foreign_key_violation`, the same code
 /// `assert_sidecar_stamp_declared` raises. They are two directions of one
 /// array foreign key, so they report as one kind of thing.
-pub const DECLARATION_TRIGGER_FUNCTION: &str = r"CREATE OR REPLACE FUNCTION proxima_core.assert_memory_declares_sidecar() RETURNS trigger
+pub const DECLARATION_TRIGGER_FUNCTION: &str = r"CREATE OR REPLACE FUNCTION proxiima_core.assert_memory_declares_sidecar() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -144,7 +144,7 @@ DECLARE
 BEGIN
     IF NOT EXISTS (
         SELECT 1
-          FROM proxima_core.memory m
+          FROM proxiima_core.memory m
          WHERE m.t = memory_t
            AND m.sidecar_tables @> ARRAY[surface]
     ) THEN
@@ -192,7 +192,7 @@ fn sidecar_trigger_name(sidecar_table: &str, suffix: &str) -> Result<String, Sto
 }
 
 /// The name of the presence constraint trigger guarding `sidecar_table`.
-/// It lives on `proxima_core.memory`, so the name carries the schema.
+/// It lives on `proxiima_core.memory`, so the name carries the schema.
 ///
 /// # Errors
 ///
@@ -211,7 +211,7 @@ fn presence_trigger_name(sidecar_table: &str) -> Result<String, StorageError> {
 ///
 /// `CREATE OR REPLACE TRIGGER` rather than `DROP … IF EXISTS` + `CREATE`:
 /// the baselines already require `uuidv7()`
-/// (`proxima_core.memory.t DEFAULT uuidv7()`), which is `PostgreSQL` 18, and
+/// (`proxiima_core.memory.t DEFAULT uuidv7()`), which is `PostgreSQL` 18, and
 /// replace-a-trigger has been available since 14. One statement per table
 /// instead of two is half the generated DDL for the same idempotence.
 ///
@@ -255,16 +255,16 @@ pub fn declaration_trigger(
 }
 
 /// The one relation every presence trigger is installed on.
-const MEMORY_TABLE: &str = "proxima_core.memory";
+const MEMORY_TABLE: &str = "proxiima_core.memory";
 
 /// The qualified name of the one function every presence trigger runs.
-pub const PRESENCE_TRIGGER_FUNCTION_NAME: &str = "proxima_core.assert_declared_sidecar_present";
+pub const PRESENCE_TRIGGER_FUNCTION_NAME: &str = "proxiima_core.assert_declared_sidecar_present";
 
 /// What a generated presence trigger is called: the guarded surface, with
 /// its dot flattened, under one prefix. Every one of them lives on
-/// `proxima_core.memory`, so the relation cannot disambiguate them and the
-/// name has to carry the schema — `proxima_core.chunk_v1` and
-/// `proxima_notes.chunk_v1` are two tables and must be two triggers.
+/// `proxiima_core.memory`, so the relation cannot disambiguate them and the
+/// name has to carry the schema — `proxiima_core.chunk_v1` and
+/// `proxiima_notes.chunk_v1` are two tables and must be two triggers.
 const PRESENCE_TRIGGER_PREFIX: &str = "memory_declares";
 
 /// What the `UPDATE` half of the declaration guard is called.
@@ -276,7 +276,7 @@ const KEY_REPOINT_TRIGGER_SUFFIX: &str = "declared_by_memory_on_update";
 const DELETE_GUARD_TRIGGER_SUFFIX: &str = "declared_by_memory_on_delete";
 
 /// The qualified name of the one function every orphan guard runs.
-pub const DELETE_GUARD_FUNCTION_NAME: &str = "proxima_core.assert_row_not_still_declared";
+pub const DELETE_GUARD_FUNCTION_NAME: &str = "proxiima_core.assert_row_not_still_declared";
 
 /// Direction 3, at the other end: a stamped sidecar row may not be deleted
 /// out from under its stamp.
@@ -290,7 +290,7 @@ pub const DELETE_GUARD_FUNCTION_NAME: &str = "proxima_core.assert_row_not_still_
 /// the `DELETE` rather than reporting it.
 ///
 /// `DEFERRABLE INITIALLY DEFERRED`, and it has to be: the sidecar's own
-/// foreign key to `proxima_core.memory` has no `ON DELETE CASCADE`
+/// foreign key to `proxiima_core.memory` has no `ON DELETE CASCADE`
 /// (the baseline), so a legitimate delete of both rows must take the
 /// sidecar row FIRST. An immediate check would see the memory row still
 /// standing and refuse every forget and every owner erase. Deferred to
@@ -314,7 +314,7 @@ pub const DELETE_GUARD_FUNCTION_NAME: &str = "proxima_core.assert_row_not_still_
 /// The key column is read as `to_jsonb(OLD) ->> TG_ARGV[1]` rather than
 /// `OLD.t`, so one function serves a table keyed on anything — the same move
 /// [`DECLARATION_TRIGGER_FUNCTION`] makes on `NEW`.
-pub const DELETE_GUARD_FUNCTION: &str = r"CREATE OR REPLACE FUNCTION proxima_core.assert_row_not_still_declared() RETURNS trigger
+pub const DELETE_GUARD_FUNCTION: &str = r"CREATE OR REPLACE FUNCTION proxiima_core.assert_row_not_still_declared() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -323,7 +323,7 @@ DECLARE
 BEGIN
     IF EXISTS (
         SELECT 1
-          FROM proxima_core.memory m
+          FROM proxiima_core.memory m
          WHERE m.t = memory_t
            AND m.sidecar_tables @> ARRAY[surface]
     ) THEN
@@ -388,7 +388,7 @@ CREATE CONSTRAINT TRIGGER {trigger}
 /// catalog: the guarded surface as `TG_ARGV[0]` and its memory-key column as
 /// `TG_ARGV[1]`. The surface cannot be read off the trigger's own relation
 /// the way [`DECLARATION_TRIGGER_FUNCTION`] reads it, because every one of
-/// these triggers is installed on `proxima_core.memory` and the surface is
+/// these triggers is installed on `proxiima_core.memory` and the surface is
 /// the thing that varies.
 ///
 /// **Measured, PG 18.4, 200k memory rows inserted and stamped in one
@@ -418,7 +418,7 @@ CREATE CONSTRAINT TRIGGER {trigger}
 /// not stamp the table. With the test in the body, both are merely slow or
 /// merely safe rather than wrong. The array scan is over a stamp with a
 /// handful of elements and does not appear against the `EXECUTE` below.
-pub const PRESENCE_TRIGGER_FUNCTION: &str = r"CREATE OR REPLACE FUNCTION proxima_core.assert_declared_sidecar_present() RETURNS trigger
+pub const PRESENCE_TRIGGER_FUNCTION: &str = r"CREATE OR REPLACE FUNCTION proxiima_core.assert_declared_sidecar_present() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -451,7 +451,7 @@ $$;";
 ///
 /// A `CONSTRAINT TRIGGER`, `DEFERRABLE INITIALLY DEFERRED`, because the
 /// memory row is inserted before the sidecar rows it stamps — the sidecar's
-/// own foreign key to `proxima_core.memory` requires exactly that order — so
+/// own foreign key to `proxiima_core.memory` requires exactly that order — so
 /// an immediate check would refuse every legitimate write. Deferred to
 /// `COMMIT`, the two rows are both there or the transaction is not.
 ///
@@ -643,16 +643,16 @@ fn expected_declaration_triggers(
     Ok(declared)
 }
 
-/// Every declaration trigger the linked flavors expect, as `pg_trigger` sees
+/// Every declaration trigger the linked spiices expect, as `pg_trigger` sees
 /// it — and nothing else.
 ///
 /// All four families at once (see the module docs): row ⊆ stamp on `INSERT`
 /// and on an `UPDATE` of the key column, both on the sidecar table, and
 /// stamp ⊆ rows at both ends — the presence trigger on
-/// `proxima_core.memory` and the orphan guard on the sidecar's own `DELETE`.
+/// `proxiima_core.memory` and the orphan guard on the sidecar's own `DELETE`.
 /// The last two are skipped for an owner-pinned sidecar, and that is not an
 /// oversight: an owner-pinned row
-/// carries its own `owner_id` and no foreign key to `proxima_core.memory`
+/// carries its own `owner_id` and no foreign key to `proxiima_core.memory`
 /// precisely so a source-scoped erase can take it while the Memory it
 /// records — which may since have transferred to another owner — stays. Its
 /// stamp is a record of what was written, not a claim about what is still
@@ -661,7 +661,7 @@ fn expected_declaration_triggers(
 ///
 /// Bidirectional, like [`crate::projection::ensure_projection_schema`]: a
 /// registered sidecar table with no trigger is a table any statement can
-/// write undeclared rows into, and a trigger on a table no linked flavor
+/// write undeclared rows into, and a trigger on a table no linked spiice
 /// registers is a guard nobody maintains. Both are the same drift as a
 /// missing migration, so both fail here, at boot, before a write.
 ///
@@ -687,7 +687,7 @@ pub async fn ensure_declaration_triggers(
     // session settings as well as of the trigger.
     //
     // `search_path` — PG omits the schema of anything the path already
-    // resolves, so a session with `proxima_core` on its path gets back
+    // resolves, so a session with `proxiima_core` on its path gets back
     // `EXECUTE FUNCTION assert_row_not_still_declared(...)`.
     // `quote_all_identifiers` — with it on, every identifier comes back
     // double-quoted, down to `("new"."sidecar_tables")` inside the `WHEN`.
@@ -719,7 +719,7 @@ pub async fn ensure_declaration_triggers(
            JOIN pg_proc p ON p.oid = t.tgfoid
            JOIN pg_namespace f ON f.oid = p.pronamespace
           WHERE NOT t.tgisinternal
-            AND f.nspname = 'proxima_core'
+            AND f.nspname = 'proxiima_core'
             AND p.proname IN ('assert_memory_declares_sidecar',
                               'assert_declared_sidecar_present',
                               'assert_row_not_still_declared')
@@ -745,7 +745,7 @@ pub async fn ensure_declaration_triggers(
             "declaration triggers in the database do not match the registered memory sidecars: \
              registered {declared_names:?}, found {found_names:?}; apply migrations before \
              boot, and give every registered memory sidecar the triggers \
-             `proxima_storage_pg::integrity`'s generators emit for it"
+             `proxiima_storage_pg::integrity`'s generators emit for it"
         )));
     }
 
@@ -754,7 +754,7 @@ pub async fn ensure_declaration_triggers(
             return Err(StorageError::Internal(format!(
                 "the trigger {} on {} is not the guard its registration declares;\n  \
                  registered: {}\n  found:      {definition}\nre-apply the trigger \
-                 `proxima_storage_pg::integrity`'s generator emits for it",
+                 `proxiima_storage_pg::integrity`'s generator emits for it",
                 expected.name, expected.relation, expected.definition
             )));
         }
@@ -781,7 +781,7 @@ pub struct IntegrityReport {
     /// Registered memory-sidecar tables checked against
     /// `memory.sidecar_tables`, in name order.
     pub declared_tables: Vec<String>,
-    /// Projected schemas checked against their flavor's projection table,
+    /// Projected schemas checked against their spiice's projection table,
     /// in `(table, schema)` order.
     pub projected_schemas: Vec<ProjectedSchema>,
 }
@@ -890,7 +890,7 @@ pub(crate) fn unprojected_rows_sql(
     Ok(format!(
         "SELECT count(*)
   FROM {sidecar} c
-  JOIN proxima_core.memory m ON m.t = c.{key}
+  JOIN proxiima_core.memory m ON m.t = c.{key}
  WHERE m.schema_id = $1
    AND NOT EXISTS (
            SELECT 1
@@ -922,7 +922,7 @@ pub(crate) fn undeclared_rows_sql(
   FROM {sidecar} c
  WHERE NOT EXISTS (
            SELECT 1
-             FROM proxima_core.memory m
+             FROM proxiima_core.memory m
             WHERE m.t = c.{key}
               AND m.sidecar_tables @> ARRAY[$1::text]
        )",
@@ -954,7 +954,7 @@ pub(crate) fn missing_stamped_rows_sql(
     // SQL-POLICY: PgIdent
     Ok(format!(
         "SELECT count(*)
-  FROM proxima_core.memory m
+  FROM proxiima_core.memory m
  WHERE m.sidecar_tables @> ARRAY[$1::text]
    AND NOT EXISTS (
            SELECT 1

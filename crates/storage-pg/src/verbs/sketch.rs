@@ -1,6 +1,6 @@
 //! Persisted recall/think one-liners. Rebuildable plumbing (not Lean).
 
-use proxima_core::{EntityKind, MemoryId, OwnerId, SidecarPayload, StorageError};
+use proxiima_core::{EntityKind, MemoryId, OwnerId, SidecarPayload, StorageError};
 use sqlx::PgConnection;
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -69,8 +69,8 @@ pub async fn upsert_sketch(
 ) -> Result<(), StorageError> {
     let text = truncate_sketch(text);
     sqlx::query(
-        "INSERT INTO proxima_core.sketch (t, owner_id, kind, text)
-         VALUES ($1, $2, $3::proxima_core.sketch_kind, $4)
+        "INSERT INTO proxiima_core.sketch (t, owner_id, kind, text)
+         VALUES ($1, $2, $3::proxiima_core.sketch_kind, $4)
          ON CONFLICT (t) DO UPDATE
            SET owner_id = EXCLUDED.owner_id,
                kind = EXCLUDED.kind,
@@ -94,9 +94,9 @@ pub async fn upsert_sketch(
 /// `goal` decides what the reader may see at all.
 macro_rules! sketch_parent_readable {
     () => {
-        "(EXISTS (SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: live-only (a forgotten memory's sketch is not readable) */ \
+        "(EXISTS (SELECT 1 FROM proxiima_core.memory m /* FORGET-POLICY: live-only (a forgotten memory's sketch is not readable) */ \
            WHERE m.t = s.t AND m.forgotten_at IS NULL) \
-          OR EXISTS (SELECT 1 FROM proxima_core.goal g WHERE g.t = s.t))"
+          OR EXISTS (SELECT 1 FROM proxiima_core.goal g WHERE g.t = s.t))"
     };
 }
 
@@ -112,7 +112,7 @@ pub async fn load_sketch_texts_on_connection(
         return Ok(std::collections::HashMap::new());
     }
     let rows: Vec<(Uuid, String)> = sqlx::query_as(concat!(
-        "SELECT s.t, s.text FROM proxima_core.sketch s WHERE s.t = ANY($1::uuid[]) AND ",
+        "SELECT s.t, s.text FROM proxiima_core.sketch s WHERE s.t = ANY($1::uuid[]) AND ",
         sketch_parent_readable!(),
     ))
     .bind(ids)
@@ -137,7 +137,7 @@ pub async fn load_sketches_on_connection(
         .map(OwnerId::into_inner)
         .collect();
     let rows: Vec<(Uuid, Uuid, PgSketchKind, String)> = sqlx::query_as(concat!(
-        "SELECT s.t, s.owner_id, s.kind, s.text FROM proxima_core.sketch s JOIN proxima_core.owners o ON o.owner_id = s.owner_id WHERE s.t = ANY($1::uuid[]) AND s.owner_id = ANY($2::uuid[]) AND ",
+        "SELECT s.t, s.owner_id, s.kind, s.text FROM proxiima_core.sketch s JOIN proxiima_core.owners o ON o.owner_id = s.owner_id WHERE s.t = ANY($1::uuid[]) AND s.owner_id = ANY($2::uuid[]) AND ",
         sketch_parent_readable!(),
     )).bind(&ts).bind(&owners).fetch_all(&mut *connection).await.map_err(map_err)?;
     Ok(rows

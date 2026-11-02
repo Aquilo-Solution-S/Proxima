@@ -8,7 +8,7 @@ pub use authority::{
 };
 
 use async_trait::async_trait;
-use proxima_core::{
+use proxiima_core::{
     AccessError, GroupId, OwnerAccessPort, OwnerId, OwnerRoles, Role, StorageError, UserId,
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
@@ -161,20 +161,20 @@ async fn resolve_subject_roles(
 /// ```no_run
 /// # async fn probe(
 /// #     conn: &mut sqlx::PgConnection,
-/// #     user: proxima_core::UserId,
-/// #     group: proxima_core::GroupId,
+/// #     user: proxiima_core::UserId,
+/// #     group: proxiima_core::GroupId,
 /// # ) {
-/// let _ = proxima_storage_pg::group_role(conn, user, group).await;
+/// let _ = proxiima_storage_pg::group_role(conn, user, group).await;
 /// # }
 /// ```
 ///
 /// ```compile_fail
 /// # async fn probe(
 /// #     conn: &mut sqlx::PgConnection,
-/// #     user: proxima_core::UserId,
+/// #     user: proxiima_core::UserId,
 /// # ) {
 /// let personal = OwnerId::from(user);
-/// let _ = proxima_storage_pg::group_role(conn, user, personal).await;
+/// let _ = proxiima_storage_pg::group_role(conn, user, personal).await;
 /// # }
 /// ```
 ///

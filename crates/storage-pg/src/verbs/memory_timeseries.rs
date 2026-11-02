@@ -14,10 +14,10 @@
 
 #![allow(clippy::missing_errors_doc, clippy::doc_markdown)]
 
-use proxima_core::edge::EdgeEndpoint;
-use proxima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
-use proxima_core::verbs::query::SidecarAtom;
-use proxima_core::{MemoryId, OwnerId, ReplayDrift, SidecarPayload, StorageError};
+use proxiima_core::edge::EdgeEndpoint;
+use proxiima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
+use proxiima_core::verbs::query::SidecarAtom;
+use proxiima_core::{MemoryId, OwnerId, ReplayDrift, SidecarPayload, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -43,21 +43,21 @@ pub struct MemoryRow {
 
 /// The admission a write asks the timeseries to prepare: its owner and
 /// authenticated writer, what it says and pins, its declared sidecars, and
-/// its flavor-owned lifecycle scopes. These inputs travel together from the
+/// its spiice-owned lifecycle scopes. These inputs travel together from the
 /// authorizing verb to [`prepare_memory_admission_at`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MemoryAdmissionDraft<'a> {
     pub(crate) store_number: u16,
     pub(crate) natural_key: Option<&'a MemoryNaturalKey>,
     pub(crate) owner: &'a OwnerId,
-    pub(crate) writer: proxima_core::WriterAttribution,
+    pub(crate) writer: proxiima_core::WriterAttribution,
     pub(crate) draft: &'a FactWriteCommand,
     pub(crate) origins: &'a [EdgeEndpoint],
     pub(crate) references: &'a [EdgeEndpoint],
     /// The declared set forget will dump/delete — tables actually inserted
     /// for this `t`, never the global registry.
     pub(crate) sidecar_tables: &'a [String],
-    /// The flavor-owned lifecycle scopes this admission's payloads declare,
+    /// The spiice-owned lifecycle scopes this admission's payloads declare,
     /// already sorted and deduplicated
     /// ([`crate::access::scope_surfaces::ScopeSurfaces::targets_for_payloads`]).
     /// Empty for a payload-less write; a write whose payload declares a
@@ -95,7 +95,7 @@ pub(crate) enum PreparedMemoryAdmission {
 pub(crate) struct PreparedMemoryAdmissionNew {
     owner: OwnerId,
     owner_id: Uuid,
-    writer: proxima_core::WriterAttribution,
+    writer: proxiima_core::WriterAttribution,
     draft: FactWriteCommand,
     /// The kind the draft's text names, validated once in preparation.
     kind: PgMemoryKind,
@@ -195,7 +195,7 @@ pub(crate) async fn prepare_memory_admission_with_extra_targets(
 pub(crate) async fn ingest_unpinned_fact_at(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
-    writer: proxima_core::WriterAttribution,
+    writer: proxiima_core::WriterAttribution,
     draft: &FactWriteCommand,
     identity: (Uuid, Uuid),
     sidecar_tables: &[String],
@@ -203,7 +203,7 @@ pub(crate) async fn ingest_unpinned_fact_at(
     let prepared = prepare_memory_admission_at(
         tx,
         MemoryAdmissionDraft {
-            store_number: proxima_core::memory_store_number(identity.1),
+            store_number: proxiima_core::memory_store_number(identity.1),
             natural_key: None,
             owner,
             writer,
@@ -239,9 +239,9 @@ pub(crate) async fn ingest_unpinned_fact_at(
 /// Take every declared scope's fence shared, then run each scope's
 /// generated liveness probe under it.
 ///
-/// The probe is the flavor's declaration made executable — `SELECT
+/// The probe is the spiice's declaration made executable — `SELECT
 /// EXISTS(...)` over the registry table, id column and owner columns the
-/// [`proxima_core::ScopeDecl`] names, and nothing storage spelled itself.
+/// [`proxiima_core::ScopeDecl`] names, and nothing storage spelled itself.
 /// It runs IN THIS TRANSACTION, under the fence, which is what turns a
 /// vanished registry row from a race into a settled refusal.
 ///
@@ -300,7 +300,7 @@ async fn decide_admission_replay(
     if let Some(request) = draft.request.as_ref() {
         return Ok(
             match super::request_keys::judge_request(tx, owner, request).await? {
-                proxima_core::verbs::idempotency::KeyVerdict::Replay(replay) => {
+                proxiima_core::verbs::idempotency::KeyVerdict::Replay(replay) => {
                     AdmissionReplay::Replay(FactIngestOutcome {
                         receipt_id: None,
                         memory_id: MemoryId::new(replay.memory_id),
@@ -310,7 +310,7 @@ async fn decide_admission_replay(
                         forgotten: replay.forgotten,
                     })
                 }
-                proxima_core::verbs::idempotency::KeyVerdict::Fresh => AdmissionReplay::Admit,
+                proxiima_core::verbs::idempotency::KeyVerdict::Fresh => AdmissionReplay::Admit,
             },
         );
     }
@@ -362,7 +362,7 @@ async fn prepare_memory_admission_at(
     if let Some(source_id) = draft.source_id.as_deref() {
         crate::access::owner_columns::lock_source_fence_shared_tx(tx, owner, source_id).await?;
     }
-    // Then the flavor-declared lifecycle scopes, shared, BEFORE the handle
+    // Then the spiice-declared lifecycle scopes, shared, BEFORE the handle
     // and `t` locks below. That order — owner fence, source fence, scope
     // fence, handle, lifecycle `t`, rows — is what makes a racing scope
     // erase queue behind this write instead of closing a lock cycle with it.
@@ -385,7 +385,7 @@ async fn prepare_memory_admission_at(
     // away from `expected_head_t`, and `validate_prepared_memory_head`
     // sends this write back to retry with a fresh `t`.
     let expected_head_t: Option<Uuid> =
-        sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+        sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
             .bind(handle)
             .fetch_optional(tx.as_mut())
             .await
@@ -393,11 +393,11 @@ async fn prepare_memory_admission_at(
     let t: Uuid = if let Some((_, t)) = options.identity {
         t
     } else if let Some(head_t) = expected_head_t {
-        proxima_core::new_memory_uuid_after(admission.store_number, head_t).ok_or_else(|| {
+        proxiima_core::new_memory_uuid_after(admission.store_number, head_t).ok_or_else(|| {
             StorageError::ConstraintViolation("memory UUID timestamp range exhausted".into())
         })?
     } else {
-        proxima_core::new_memory_uuid(admission.store_number)
+        proxiima_core::new_memory_uuid(admission.store_number)
     };
     #[cfg(test)]
     crate::pause_point::reach(crate::pause_point::AFTER_SERIES_MINT, handle).await;
@@ -484,14 +484,14 @@ async fn admission_handle(
         return Ok((handle, reserved.is_some()));
     }
     let Some(key) = admission.natural_key else {
-        return Ok((proxima_core::new_memory_uuid(admission.store_number), true));
+        return Ok((proxiima_core::new_memory_uuid(admission.store_number), true));
     };
     Ok(
         match resolve_natural_series_handle(tx, admission.owner, &admission.draft.schema_id, key)
             .await?
         {
             Some(handle) => (handle, false),
-            None => (proxima_core::new_memory_uuid(admission.store_number), true),
+            None => (proxiima_core::new_memory_uuid(admission.store_number), true),
         },
     )
 }
@@ -500,7 +500,7 @@ async fn admission_handle(
 async fn resolve_natural_series_handle(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
-    schema_id: &proxima_core::SchemaId,
+    schema_id: &proxiima_core::SchemaId,
     key: &MemoryNaturalKey,
 ) -> Result<Option<Uuid>, StorageError> {
     let lock = natural_key_lock(owner, schema_id, key);
@@ -535,7 +535,7 @@ async fn resolve_natural_series_handle(
 /// Stable, domain-separated lock key only; never a stored memory or series ID.
 fn natural_key_lock(
     owner: &OwnerId,
-    schema_id: &proxima_core::SchemaId,
+    schema_id: &proxiima_core::SchemaId,
     key: &MemoryNaturalKey,
 ) -> i64 {
     fn part(hash: &mut blake3::Hasher, bytes: &[u8]) {
@@ -543,7 +543,7 @@ fn natural_key_lock(
         hash.update(bytes);
     }
     let mut hash = blake3::Hasher::new();
-    part(&mut hash, b"proxima-natural-series-lock-v1");
+    part(&mut hash, b"proxiima-natural-series-lock-v1");
     part(&mut hash, owner.into_inner().as_bytes());
     part(&mut hash, schema_id.as_str().as_bytes());
     part(&mut hash, key.sidecar_table.as_bytes());
@@ -588,7 +588,7 @@ async fn load_ingest_replay(
     goal_refs: &[Uuid],
 ) -> Result<Option<FactIngestOutcome>, StorageError> {
     let Some(replay_t): Option<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.ingest_keys
+        "SELECT t FROM proxiima_core.ingest_keys
           WHERE owner_id = $1 AND source_id = $2 AND ingest_key = $3",
     )
     .bind(owner_id)
@@ -608,7 +608,7 @@ async fn load_ingest_replay(
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
     let replay_row: Result<Option<ReplayRow>, StorageError> = sqlx::query_as(
         "SELECT handle, refs, goal_refs, forgotten_at IS NOT NULL
-           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a re-delivered admission replays as forgotten) */ WHERE t = $1 AND owner_id = $2",
+           FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (a re-delivered admission replays as forgotten) */ WHERE t = $1 AND owner_id = $2",
     )
     .bind(replay_t)
     .bind(owner_id)
@@ -733,8 +733,8 @@ async fn latest_observation(
         let displaced: bool = sqlx::query_scalar(
             "SELECT EXISTS (
                  SELECT 1
-                   FROM proxima_core.memory_head h
-                   JOIN proxima_core.memory m /* FORGET-POLICY: live-only (a forgotten memory displaces no head) */
+                   FROM proxiima_core.memory_head h
+                   JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (a forgotten memory displaces no head) */
                      ON m.t = $2 AND m.owner_id = $3 AND m.forgotten_at IS NULL
                   WHERE h.handle = $1 AND h.t <> $2
              )",
@@ -758,7 +758,7 @@ async fn latest_observation(
 /// §Idempotency-key constraint).
 fn reobservation_key(key: &str, n: u64) -> String {
     let mut hash = blake3::Hasher::new();
-    hash.update(b"proxima-reobservation-v1");
+    hash.update(b"proxiima-reobservation-v1");
     hash.update(&(key.len() as u64).to_be_bytes());
     hash.update(key.as_bytes());
     hash.update(&n.to_be_bytes());
@@ -781,8 +781,8 @@ pub(crate) async fn claim_prepared_memory_admission(
     };
     if let Some(request) = prepared.draft.request.as_ref() {
         match super::request_keys::claim_request(tx, &prepared.owner, request, prepared.t).await? {
-            proxima_core::verbs::idempotency::KeyVerdict::Fresh => {}
-            proxima_core::verbs::idempotency::KeyVerdict::Replay(replay) => {
+            proxiima_core::verbs::idempotency::KeyVerdict::Fresh => {}
+            proxiima_core::verbs::idempotency::KeyVerdict::Replay(replay) => {
                 return Ok(PreparedMemoryAdmission::Replay(FactIngestOutcome {
                     receipt_id: None,
                     memory_id: MemoryId::new(replay.memory_id),
@@ -803,7 +803,7 @@ pub(crate) async fn claim_prepared_memory_admission(
         prepared.draft.ingest_key.as_deref(),
     ) {
         let claimed = sqlx::query(
-            "INSERT INTO proxima_core.ingest_keys (owner_id, source_id, ingest_key, t)
+            "INSERT INTO proxiima_core.ingest_keys (owner_id, source_id, ingest_key, t)
              VALUES ($1, $2, $3, $4)
              ON CONFLICT (owner_id, source_id, ingest_key) DO NOTHING",
         )
@@ -875,7 +875,7 @@ async fn validate_prepared_memory_head(
     prepared: &PreparedMemoryAdmissionNew,
 ) -> Result<(), StorageError> {
     let current_head: Option<Uuid> =
-        sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1 FOR UPDATE")
+        sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1 FOR UPDATE")
             .bind(prepared.handle)
             .fetch_optional(tx.as_mut())
             .await
@@ -979,7 +979,7 @@ async fn advance_memory_head(
     let kind = prepared.kind;
     if prepared.fresh_handle {
         sqlx::query(
-            "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t) VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)",
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t) VALUES ($1, $2::proxiima_core.memory_kind, $3, $4, $5)",
         )
         .bind(prepared.handle)
         .bind(kind)
@@ -996,12 +996,12 @@ async fn advance_memory_head(
     // fresh handles. A successful admission therefore becomes the head even
     // when another process minted its predecessor with a clock ahead of ours.
     let head = sqlx::query(
-        "INSERT INTO proxima_core.memory_head (handle, kind, schema_id, owner_id, t)
-         VALUES ($1, $2::proxima_core.memory_kind, $3, $4, $5)
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, $2::proxiima_core.memory_kind, $3, $4, $5)
          ON CONFLICT (handle) DO UPDATE SET t = EXCLUDED.t
-         WHERE proxima_core.memory_head.kind = EXCLUDED.kind
-           AND proxima_core.memory_head.schema_id = EXCLUDED.schema_id
-           AND proxima_core.memory_head.owner_id = EXCLUDED.owner_id
+         WHERE proxiima_core.memory_head.kind = EXCLUDED.kind
+           AND proxiima_core.memory_head.schema_id = EXCLUDED.schema_id
+           AND proxiima_core.memory_head.owner_id = EXCLUDED.owner_id
          RETURNING handle",
     )
     .bind(prepared.handle)
@@ -1026,7 +1026,7 @@ async fn advance_memory_head(
 /// draft, so a rebuild from the Memory row projects the words alike.
 fn stamped_language(draft_language: Option<&str>) -> Option<&str> {
     draft_language.filter(|language| {
-        *language != proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT
+        *language != proxiima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT
     })
 }
 
@@ -1039,13 +1039,13 @@ async fn insert_memory_revision(
     let draft = &prepared.draft;
     let kind = prepared.kind;
     sqlx::query(
-        "INSERT INTO proxima_core.memory /* FORGET-POLICY: includes-forgotten (a new row is live; the insert reads no other row) */
+        "INSERT INTO proxiima_core.memory /* FORGET-POLICY: includes-forgotten (a new row is live; the insert reads no other row) */
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
              content_id, origins, refs, goal_refs, sidecar_tables, occurred_at, \"by\", via,
              lexical_language)
-         VALUES ($1, $2, $3::proxima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+         VALUES ($1, $2, $3::proxiima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                  $13, $14, $15, $16,
-                 COALESCE($17::regconfig, proxima_core.lexical_config()))",
+                 COALESCE($17::regconfig, proxiima_core.lexical_config()))",
     )
     .bind(prepared.handle)
     .bind(prepared.t)
@@ -1119,7 +1119,7 @@ pub(crate) fn pin_reference_ids(pins: &[EdgeEndpoint]) -> (Vec<Uuid>, Vec<Uuid>)
     let mut goal_ids = Vec::new();
     for pin in pins {
         let id = pin.entity_id();
-        let column = if matches!(pin.entity, proxima_core::EntityRef::Goal(_)) {
+        let column = if matches!(pin.entity, proxiima_core::EntityRef::Goal(_)) {
             &mut goal_ids
         } else {
             &mut memory_ids
@@ -1145,7 +1145,7 @@ pub(crate) async fn read_memory_by_t(
     sqlx::query_as::<_, MemoryRow>(
         "SELECT handle, t, kind::text, owner_id, \"by\", via, source_id, ingest_key, origins, refs, goal_refs,
                 occurred_at
-           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (test helper: the row the test just wrote) */
+           FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (test helper: the row the test just wrote) */
           WHERE t = $1",
     )
     .bind(t)
@@ -1164,8 +1164,8 @@ pub(crate) async fn read_memory_head(
     sqlx::query_as::<_, MemoryRow>(
         "SELECT m.handle, m.t, m.kind::text, m.owner_id, m.\"by\", m.via, m.source_id, m.ingest_key,
                 m.origins, m.refs, m.goal_refs, m.occurred_at
-           FROM proxima_core.memory_head h
-           JOIN proxima_core.memory m /* FORGET-POLICY: includes-forgotten (test helper: the head the test just wrote) */ ON m.handle = h.handle AND m.t = h.t
+           FROM proxiima_core.memory_head h
+           JOIN proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (test helper: the head the test just wrote) */ ON m.handle = h.handle AND m.t = h.t
           WHERE h.handle = $1",
     )
     .bind(handle)

@@ -207,8 +207,8 @@ fn search_mode_and_supersession_accept_mixed_case() {
 }
 
 #[test]
-fn score_based_flavor_warning_keeps_its_existing_contract() {
-    // The public flavor helper retains its score heuristic. Served memory
+fn score_based_spiice_warning_keeps_its_existing_contract() {
+    // The public spiice helper retains its score heuristic. Served memory
     // search instead observes route availability, covered by its PG test.
     assert!(degraded_to_lexical(SearchMode::Hybrid, false, false));
     // Hybrid with a real semantic score → healthy.
@@ -588,7 +588,7 @@ mod other_stores {
             Vec::new(),
         );
         ctx.engine = Some(Arc::new(crate::Engine::new(ctx.registry.as_ref().clone())));
-        ctx.services = crate::FlavorServices::with(OtherStoresService::new(port.clone()));
+        ctx.services = crate::SpiiceServices::with(OtherStoresService::new(port.clone()));
         ctx
     }
 
@@ -799,7 +799,7 @@ mod other_stores {
             Vec::new(),
         );
         ctx.engine = Some(Arc::new(crate::Engine::new(ctx.registry.as_ref().clone())));
-        ctx.services = crate::FlavorServices::with(OtherStoresService::new(Arc::new(TwoStores)));
+        ctx.services = crate::SpiiceServices::with(OtherStoresService::new(Arc::new(TwoStores)));
         let schema = caller_input_schema(&ctx, static_schema())
             .await
             .expect("valid inventory");

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 use sqlx::{AssertSqlSafe, PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
@@ -47,11 +47,11 @@ impl PgPlatformScope {
     #[must_use]
     pub fn for_tests() -> Self {
         Self {
-            pool: PgPool::connect_lazy("postgres://invalid/proxima")
+            pool: PgPool::connect_lazy("postgres://invalid/proxiima")
                 .expect("test platform pool URL is syntactically valid"),
             database_oid: 0,
             role_oid: 0,
-            schemas: std::sync::Arc::from([String::from("proxima_core")]),
+            schemas: std::sync::Arc::from([String::from("proxiima_core")]),
             fence_lock_timeout_ms: Arc::new(AtomicU64::new(millis(
                 EXPORT_ERASE_FENCE_LOCK_TIMEOUT,
             ))),
@@ -112,7 +112,7 @@ impl PgPlatformScope {
             .store(millis(timeout), Ordering::Relaxed);
     }
 
-    /// Union composed schemas with stored flavor surfaces for runtime
+    /// Union composed schemas with stored spiice surfaces for runtime
     /// checks, and the persisted store number, read in one platform
     /// transaction so a boot takes one platform connection for both.
     pub(crate) async fn boot_catalog(&self) -> Result<(Vec<String>, Option<i32>), StorageError> {
@@ -120,13 +120,13 @@ impl PgPlatformScope {
         let mut schemas = self.schemas.to_vec();
         let registered: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT split_part(table_name, '.', 1)
-               FROM proxima_core.flavor_surface",
+               FROM proxiima_core.spiice_surface",
         )
         .fetch_all(&mut *transaction)
         .await
         .map_err(map_err)?;
         let store_number: Option<i32> = sqlx::query_scalar(
-            "SELECT store_number FROM proxima_core.store_identity WHERE singleton",
+            "SELECT store_number FROM proxiima_core.store_identity WHERE singleton",
         )
         .fetch_optional(&mut *transaction)
         .await
@@ -207,7 +207,7 @@ impl PgPlatformScope {
             .map_err(map_err)?;
         let fence_wait = self.fence_lock_timeout();
         set_local_lock_timeout(transaction.as_mut(), fence_wait).await?;
-        sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN SHARE MODE")
+        sqlx::query("LOCK TABLE proxiima_core.export_erase_fence IN SHARE MODE")
             .execute(&mut *transaction)
             .await
             .map_err(|error| match &error {
@@ -239,7 +239,7 @@ impl PgPlatformScope {
         let valid: bool = sqlx::query_scalar(
             "SELECT d.oid::bigint = $1 AND r.oid::bigint = $2
                     AND NOT r.rolsuper AND NOT r.rolbypassrls,
-                    set_config('app.proxima_scope', 'platform', true),
+                    set_config('app.proxiima_scope', 'platform', true),
                     set_config('app.owner', '{}', true),
                     set_config('app.read_abstraction', '{}', true),
                     set_config('app.read_perspective', '{}', true),
@@ -322,18 +322,19 @@ pub async fn begin_migration_transaction(
     let (enforcing, safe, ownership_mismatch): (bool, bool, Option<String>) = sqlx::query_as(
         "SELECT EXISTS (
             SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-             WHERE left(n.nspname,8) = 'proxima_'
+             WHERE (starts_with(n.nspname, 'proxiima_') OR starts_with(n.nspname, $1))
                AND (c.relname='owner_rls_epoch'
                     OR (c.relkind IN ('r','p') AND (c.relrowsecurity OR c.relforcerowsecurity)))
          ), NOT r.rolsuper AND NOT r.rolbypassrls, (
             SELECT format('%I.%I', n.nspname, c.relname)
               FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-             WHERE left(n.nspname,8) = 'proxima_'
+             WHERE (starts_with(n.nspname, 'proxiima_') OR starts_with(n.nspname, $1))
                AND c.relkind IN ('r','p','v','m','f')
                AND NOT pg_has_role(current_user,c.relowner,'USAGE')
              ORDER BY n.nspname, c.relname LIMIT 1
          ) FROM pg_roles r WHERE r.rolname=current_user",
     )
+    .bind(crate::rename_bootstrap::historical_namespace_prefix())
     .fetch_one(&mut *tx)
     .await
     .map_err(map_err)?;
@@ -345,17 +346,18 @@ pub async fn begin_migration_transaction(
     if enforcing && let Some(relation) = ownership_mismatch {
         return Err(refused(&format!("migration role does not own {relation}")));
     }
-    sqlx::query("SELECT set_config('app.proxima_scope', 'platform', true)")
+    sqlx::query("SELECT set_config('app.proxiima_scope', 'platform', true)")
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+    crate::rename_bootstrap::configure_history_scope(&mut tx).await?;
     Ok(tx)
 }
 
 pub(crate) async fn begin_owner_lifecycle_transaction(
     pool: &PgPool,
     platform: &PgPlatformScope,
-    permit: &proxima_core::storage_ports::OwnerWritePermit,
+    permit: &proxiima_core::storage_ports::OwnerWritePermit,
 ) -> Result<Transaction<'static, Postgres>, StorageError> {
     if let Some(scope) = permit.owner_scope() {
         if !scope.may_write(permit.owner(), permit.access_kind()) {
@@ -409,7 +411,7 @@ mod tests {
         assert_eq!(isolation, "repeatable read");
         assert_eq!(read_only, "on");
         drop(pg);
-        proxima_pg_testkit::drop_db(&database)
+        proxiima_pg_testkit::drop_db(&database)
             .await
             .expect("drop task database");
     }

@@ -13,7 +13,7 @@ use super::{
     validate_goal_transition,
 };
 use crate::error::with_bounded_retry;
-use proxima_core::GoalAssignmentTarget;
+use proxiima_core::GoalAssignmentTarget;
 
 // The goal `*_atomic` verbs are pool-scoped write transactions. Each wraps
 // its `_in_pool` body in `with_bounded_retry` so a transient deadlock /
@@ -129,7 +129,7 @@ pub(crate) async fn create_goal_in_tx(
             store_number,
             writer,
             text: Some(&req.draft.text),
-            write_act_t: req.write_act_t.map(proxima_core::MemoryId::into_inner),
+            write_act_t: req.write_act_t.map(proxiima_core::MemoryId::into_inner),
         },
         PostLockGuard::None,
     )
@@ -225,7 +225,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         // lifecycle lock on the parent head t, which a decompose child also
         // takes through its dependency_t, whatever the prior (Active or Paused).
         // Pause and resume keep the goal open.
-        if req.transition == proxima_core::verbs::goal_write::GoalTransitionKind::Abandon {
+        if req.transition == proxiima_core::verbs::goal_write::GoalTransitionKind::Abandon {
             PostLockGuard::NoOpenChildren
         } else {
             PostLockGuard::None
@@ -339,7 +339,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
 }
 
 /// Dependency ids a draft declares, in the shape the topology writer wants.
-fn draft_dependency_ids(draft: &proxima_core::verbs::goal_write::GoalDraft) -> Vec<GoalId> {
+fn draft_dependency_ids(draft: &proxiima_core::verbs::goal_write::GoalDraft) -> Vec<GoalId> {
     draft
         .topology
         .dependencies()
@@ -555,19 +555,19 @@ mod lifecycle_lock_tests {
     use crate::PgStorage;
     use crate::test_fixtures::create_core_db;
     use crate::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
-    use proxima_core::GoalPayload;
-    use proxima_core::storage_ports::FactIngestPort;
-    use proxima_core::storage_ports::OwnerWritePermit;
-    use proxima_core::verbs::fact_ingest::FactWriteCommand;
-    use proxima_core::verbs::goal_write::{
+    use proxiima_core::GoalPayload;
+    use proxiima_core::storage_ports::FactIngestPort;
+    use proxiima_core::storage_ports::OwnerWritePermit;
+    use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+    use proxiima_core::verbs::goal_write::{
         GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalState,
         GoalTopologyWrite,
     };
-    use proxima_core::{
-        AccessKind, EdgeEndpoint, EntityKind, FlavorRegistry, OwnerId, SchemaId, SchemaVersion,
-        SimpleTextGoalV1, StorageError, UserId,
+    use proxiima_core::{
+        AccessKind, EdgeEndpoint, EntityKind, OwnerId, SchemaId, SchemaVersion, SimpleTextGoalV1,
+        SpiiceRegistry, StorageError, UserId,
     };
-    use proxima_pg_testkit::{db_url, drop_db};
+    use proxiima_pg_testkit::{db_url, drop_db};
     use uuid::Uuid;
 
     fn fact() -> FactWriteCommand {
@@ -586,7 +586,7 @@ mod lifecycle_lock_tests {
             additional_references: Vec::new(),
             refs: Vec::new(),
             blob_id: None,
-            kind: proxima_core::MemoryKind::Fact,
+            kind: proxiima_core::MemoryKind::Fact,
             request: None,
         }
     }
@@ -594,15 +594,15 @@ mod lifecycle_lock_tests {
     async fn grounded_perspective(
         pg: &PgStorage,
         permit: &OwnerWritePermit,
-    ) -> Result<proxima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
+    ) -> Result<proxiima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
         let fact_out = pg.ingest_fact_atomic(permit, &fact(), None).await?;
         let mut abstraction = fact();
-        abstraction.kind = proxima_core::MemoryKind::Abstraction;
+        abstraction.kind = proxiima_core::MemoryKind::Abstraction;
         abstraction.additional_references =
             vec![EdgeEndpoint::memory(EntityKind::Fact, fact_out.memory_id)];
         let abstraction = pg.ingest_fact_atomic(permit, &abstraction, None).await?;
         let mut perspective = fact();
-        perspective.kind = proxima_core::MemoryKind::Perspective;
+        perspective.kind = proxiima_core::MemoryKind::Perspective;
         perspective.additional_references = vec![EdgeEndpoint::memory(
             EntityKind::Abstraction,
             abstraction.memory_id,
@@ -616,7 +616,7 @@ mod lifecycle_lock_tests {
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "SELECT pg_advisory_xact_lock(
-                 hashtextextended('proxima-forget:' || $1::text, 0)
+                 hashtextextended('proxiima-forget:' || $1::text, 0)
              )",
         )
         .bind(t)
@@ -634,7 +634,7 @@ mod lifecycle_lock_tests {
     ) -> Result<(), sqlx::Error> {
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*)::bigint FROM proxima_core.goal
+                "SELECT count(*)::bigint FROM proxiima_core.goal
                  WHERE request_id = $1",
             )
             .bind(request_id)
@@ -645,7 +645,7 @@ mod lifecycle_lock_tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*)::bigint FROM proxima_core.memory WHERE t = $1",
+                "SELECT count(*)::bigint FROM proxiima_core.memory WHERE t = $1",
             )
             .bind(write_act_t)
             .fetch_one(pool)
@@ -654,7 +654,7 @@ mod lifecycle_lock_tests {
             "stale successor must not persist its reserved lifecycle Fact"
         );
         let head_t: Uuid =
-            sqlx::query_scalar("SELECT t FROM proxima_core.goal_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.goal_head WHERE handle = $1")
                 .bind(handle)
                 .fetch_one(pool)
                 .await?;
@@ -747,7 +747,7 @@ mod lifecycle_lock_tests {
 
     #[tokio::test]
     async fn decomposition_locks_the_union_before_first_goal_persist() {
-        let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+        let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
         if let Err(e) = create_core_db(&db_name).await {
             panic!("PG required for tests but admin connect failed: {e}");
         }
@@ -811,7 +811,7 @@ mod lifecycle_lock_tests {
                 "union acquisition must wait on a target held by another lifecycle"
             );
             let before: i64 = sqlx::query_scalar(
-                "SELECT count(*)::bigint FROM proxima_core.goal
+                "SELECT count(*)::bigint FROM proxiima_core.goal
                  WHERE request_id IN ('union-first', 'union-second')",
             )
             .fetch_one(pool)
@@ -821,7 +821,7 @@ mod lifecycle_lock_tests {
             lock.await?;
             assert_eq!(
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT count(*)::bigint FROM proxima_core.goal
+                    "SELECT count(*)::bigint FROM proxiima_core.goal
                      WHERE request_id IN ('union-first', 'union-second')",
                 )
                 .fetch_one(pool)
@@ -837,7 +837,7 @@ mod lifecycle_lock_tests {
             }
             tx.commit().await?;
             let after: i64 = sqlx::query_scalar(
-                "SELECT count(*)::bigint FROM proxima_core.goal
+                "SELECT count(*)::bigint FROM proxiima_core.goal
                  WHERE request_id IN ('union-first', 'union-second')",
             )
             .fetch_one(pool)
@@ -852,7 +852,7 @@ mod lifecycle_lock_tests {
 
     #[tokio::test]
     async fn concurrent_successors_classify_stale_head_before_persisting() {
-        let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+        let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
         if let Err(e) = create_core_db(&db_name).await {
             panic!("PG required for tests but admin connect failed: {e}");
         }
@@ -919,7 +919,7 @@ mod lifecycle_lock_tests {
 
     #[tokio::test]
     async fn low_level_write_act_is_reserved_until_union_lock_release() {
-        let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+        let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
         if let Err(e) = create_core_db(&db_name).await {
             panic!("PG required for tests but admin connect failed: {e}");
         }
@@ -962,7 +962,7 @@ mod lifecycle_lock_tests {
                 .expect("reserved write-act t");
             assert_eq!(
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT count(*) FROM proxima_core.memory WHERE t = $1",
+                    "SELECT count(*) FROM proxiima_core.memory WHERE t = $1",
                 )
                 .bind(write_act_t)
                 .fetch_one(&mut *tx)
@@ -985,7 +985,7 @@ mod lifecycle_lock_tests {
             tx.commit().await?;
             assert_eq!(
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT count(*) FROM proxima_core.memory WHERE t = $1",
+                    "SELECT count(*) FROM proxiima_core.memory WHERE t = $1",
                 )
                 .bind(write_act_t)
                 .fetch_one(pool)
@@ -1002,7 +1002,7 @@ mod lifecycle_lock_tests {
 
     #[tokio::test]
     async fn terminal_close_fact_is_reserved_until_union_lock_release() {
-        let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+        let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
         if let Err(e) = create_core_db(&db_name).await {
             panic!("PG required for tests but admin connect failed: {e}");
         }
@@ -1012,7 +1012,7 @@ mod lifecycle_lock_tests {
             let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
             let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
             let assignment = grounded_perspective(&pg, &permit).await?;
-            let registry = FlavorRegistry::new().freeze_or_panic_for_tests();
+            let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
             let draft = GoalDraft {
                 owner,
                 schema_id: SchemaId::new(SimpleTextGoalV1::SCHEMA_ID.into()),
@@ -1059,7 +1059,7 @@ mod lifecycle_lock_tests {
                 .expect("terminal Goal reserves a close Fact t");
             assert_eq!(
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT count(*) FROM proxima_core.memory WHERE t = $1",
+                    "SELECT count(*) FROM proxiima_core.memory WHERE t = $1",
                 )
                 .bind(close_fact_t)
                 .fetch_one(&mut *tx)
@@ -1082,7 +1082,7 @@ mod lifecycle_lock_tests {
             tx.commit().await?;
             assert_eq!(
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT count(*) FROM proxima_core.memory WHERE t = $1",
+                    "SELECT count(*) FROM proxiima_core.memory WHERE t = $1",
                 )
                 .bind(close_fact_t)
                 .fetch_one(pool)

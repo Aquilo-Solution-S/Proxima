@@ -1,11 +1,11 @@
 //! Server self-documentation: the profile-aware `instructions` string
-//! returned at `initialize` and the `proxima://how-to` resource body.
+//! returned at `initialize` and the `proxiima://how-to` resource body.
 //!
 //! Both are generated from the *resolved* tool/resource set — the same
 //! caller- and deployment-filtered descriptor lists that
 //! `list_tools`, `resources/list`, and `resources/templates/list` advertise —
 //! so the How-To never references a surface a given deployment profile
-//! (`PROXIMA_TOOL_PROFILE` plus allow/deny) does not expose. A `memory`
+//! (`PROXIIMA_TOOL_PROFILE` plus allow/deny) does not expose. A `memory`
 //! deployment that drops the goal tools drops their guidance
 //! too, automatically.
 //!
@@ -16,23 +16,23 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use proxima_core::mcp::McpTool;
-use proxima_core::mcp::core_tools::{
+use proxiima_core::mcp::McpTool;
+use proxiima_core::mcp::core_tools::{
     CoreGoalTool, DeriveTool, InterpretTool, MemorySpacesTool, RecallTool, RecordUtteranceTool,
     RememberTool, SearchMemoriesTool, ThinkTool,
 };
-use proxima_core::protocol::resource as protocol_resource;
+use proxiima_core::protocol::resource as protocol_resource;
 
 use crate::host_tools::MAX_HOST_INSTRUCTIONS_CHARS;
 
 /// Canonical URI of the on-demand How-To resource.
-pub const HOW_TO_URI: &str = "proxima://how-to";
+pub const HOW_TO_URI: &str = "proxiima://how-to";
 /// Machine name of the How-To resource (used in `resources/list`).
-pub const HOW_TO_NAME: &str = "proxima-how-to";
+pub const HOW_TO_NAME: &str = "proxiima-how-to";
 /// Human title of the How-To resource.
-pub const HOW_TO_TITLE: &str = "Proxima shared-brain: how to use it";
+pub const HOW_TO_TITLE: &str = "Proxiima shared-brain: how to use it";
 /// One-line description of the How-To resource.
-pub const HOW_TO_DESCRIPTION: &str = "The Proxima memory contract in depth: the Fact/Abstraction/Perspective \
+pub const HOW_TO_DESCRIPTION: &str = "The Proxiima memory contract in depth: the Fact/Abstraction/Perspective \
      layering law, remember-vs-derive-vs-interpret, worked examples, the edge-kind \
      table, and the read-resource decision guide.";
 /// MIME type of the How-To resource body.
@@ -98,9 +98,9 @@ fn space_key_guidance(s: Surface) -> String {
     .into_iter()
     .filter_map(|(advertised, name)| advertised.then_some(name))
     .collect();
-    let hydrate = "hydrate a memory by reading `proxima://memory/{id}`";
+    let hydrate = "hydrate a memory by reading `proxiima://memory/{id}`";
     if accepting.is_empty() {
-        return "Hydrate a memory by reading `proxima://memory/{id}`.".to_owned();
+        return "Hydrate a memory by reading `proxiima://memory/{id}`.".to_owned();
     }
     format!(
         "Use a returned `space` key in {}; {hydrate}.",
@@ -137,7 +137,7 @@ pub fn build_instructions(
 
     let mut out = String::new();
     out.push_str(
-        "Proxima is a shared-memory substrate, not an agent. It stores memory in three layers \
+        "Proxiima is a shared-memory substrate, not an agent. It stores memory in three layers \
          — Facts (immutable observations) → Abstractions (conclusions over Facts or Abstractions) \
          → Perspectives \
          (stances / self-models) — and YOU are the cognition that moves between them: nothing \
@@ -212,7 +212,7 @@ pub fn build_instructions(
         out.push_str(
             " Full playbook with worked \
          examples, the edge-kind table, and the read-resource decision guide: read the \
-         `proxima://how-to` resource.",
+         `proxiima://how-to` resource.",
         );
     }
 
@@ -225,7 +225,7 @@ pub fn build_instructions(
 ///
 /// A contribution longer than [`MAX_HOST_INSTRUCTIONS_CHARS`] is omitted with
 /// a warning, as an invalid host tool is: it is host text, and an unbounded
-/// one would push Proxima's own guidance out of the client's context.
+/// one would push Proxiima's own guidance out of the client's context.
 #[must_use]
 pub(crate) fn compose_instructions(generated: &str, host: Option<&str>) -> Option<String> {
     let host = host.filter(|text| !text.trim().is_empty());
@@ -268,14 +268,14 @@ fn push_retrieval_instructions(out: &mut String, s: Surface) {
     out.push_str("`core_search_memories` is precision search (tags/schema/words)");
     if s.get_memory {
         out.push_str(
-            "; hydrate one entity from `proxima://memory/{id}` (add \
+            "; hydrate one entity from `proxiima://memory/{id}` (add \
              `?expand_neighbors=true` for edges)",
         );
     }
     out.push_str(". ");
     if s.lineage {
         out.push_str(
-            "Walk lineage via `proxima://memory/{id}/lineage?direction=ancestors`; use it \
+            "Walk lineage via `proxiima://memory/{id}/lineage?direction=ancestors`; use it \
              only when provenance is the question. ",
         );
     }
@@ -286,7 +286,7 @@ fn push_retrieval_instructions(out: &mut String, s: Surface) {
     );
 }
 
-/// Build the fuller How-To playbook (the `proxima://how-to` resource body),
+/// Build the fuller How-To playbook (the `proxiima://how-to` resource body),
 /// profile-trimmed to the advertised tool/resource set.
 #[must_use]
 pub fn how_to_markdown(
@@ -296,9 +296,9 @@ pub fn how_to_markdown(
     let s = Surface::from_advertised(advertised_tools, advertised_resources);
     let mut out = String::new();
 
-    out.push_str("# Proxima shared-brain — how to use it\n\n");
+    out.push_str("# Proxiima shared-brain — how to use it\n\n");
     out.push_str(
-        "Proxima is the **substrate**: storage, embeddings, the \
+        "Proxiima is the **substrate**: storage, embeddings, the \
          Fact → Abstraction → Perspective structure, goals, retrieval. **You are the \
          cognition.** There is no autonomous engine deriving things for you — when you remember, \
          abstract, or reflect, *you* are the operator. The brain only helps if you query it \
@@ -424,7 +424,7 @@ fn push_capture_table(out: &mut String, s: Surface) {
     if s.search {
         out.push_str("| Precision search (tags/schema/words) | `core_search_memories`");
         if s.get_memory {
-            out.push_str(" → `proxima://memory/{id}` (`?expand_neighbors=true`)");
+            out.push_str(" → `proxiima://memory/{id}` (`?expand_neighbors=true`)");
         }
         out.push_str(" |\n");
     }
@@ -545,7 +545,7 @@ fn push_reading(out: &mut String, s: Surface) {
     if s.get_memory {
         let _ = writeln!(
             out,
-            "{n}. `proxima://memory/{{id}}` — fetch one entity after search locates it; add \
+            "{n}. `proxiima://memory/{{id}}` — fetch one entity after search locates it; add \
              `?expand_neighbors=true` for immediate edges."
         );
         n += 1;
@@ -562,7 +562,7 @@ fn push_reading(out: &mut String, s: Surface) {
         }
         let _ = writeln!(
             out,
-            "{n}. `proxima://memory/{{id}}/lineage?direction=ancestors` — walk provenance/deep \
+            "{n}. `proxiima://memory/{{id}}/lineage?direction=ancestors` — walk provenance/deep \
              lineage only when you specifically need it."
         );
     }
@@ -671,7 +671,7 @@ mod tests {
 
     const SPACES_CLAUSE_FULL: &str = "Use a returned `space` key in `core_remember`, \
         `core_record_utterance`, `core_search_memories`, `core_derive`, and \
-        `core_interpret`; hydrate a memory by reading `proxima://memory/{id}`.";
+        `core_interpret`; hydrate a memory by reading `proxiima://memory/{id}`.";
 
     /// With the whole surface the memory-spaces clause is the one the docs
     /// quote (docs/15 §MCP, docs/agent/quickstart.md), word for word.
@@ -725,7 +725,7 @@ mod tests {
             ),
             (
                 vec!["core_memory_spaces", "core_recall", "core_think"],
-                "durable memory writes. Hydrate a memory by reading `proxima://memory/{id}`. \
+                "durable memory writes. Hydrate a memory by reading `proxiima://memory/{id}`. \
                  Omitted",
             ),
         ] {
@@ -737,7 +737,7 @@ mod tests {
 
     /// The instructions and how-to for a core-only host, byte for byte. A
     /// change to the generated guidance must update these snapshots on
-    /// purpose; dropping a flavor's gated text must leave them alone.
+    /// purpose; dropping a spiice's gated text must leave them alone.
     #[test]
     fn core_only_surface_instructions_are_unchanged() {
         let tools: BTreeSet<&str> = NAMEABLE_TOOLS
@@ -779,12 +779,12 @@ mod tests {
     #[test]
     fn host_instructions_follow_the_generated_text() {
         assert_eq!(
-            compose_instructions("Proxima text.", Some("Host text.")).as_deref(),
-            Some("Proxima text.\n\nHost text.")
+            compose_instructions("Proxiima text.", Some("Host text.")).as_deref(),
+            Some("Proxiima text.\n\nHost text.")
         );
         assert_eq!(
-            compose_instructions("Proxima text.", None).as_deref(),
-            Some("Proxima text.")
+            compose_instructions("Proxiima text.", None).as_deref(),
+            Some("Proxiima text.")
         );
     }
 
@@ -801,8 +801,8 @@ mod tests {
     fn blank_host_instructions_add_nothing() {
         assert_eq!(compose_instructions("", Some(" \n")), None);
         assert_eq!(
-            compose_instructions("Proxima text.", Some("")).as_deref(),
-            Some("Proxima text.")
+            compose_instructions("Proxiima text.", Some("")).as_deref(),
+            Some("Proxiima text.")
         );
     }
 
@@ -818,8 +818,8 @@ mod tests {
         let over = "é".repeat(MAX_HOST_INSTRUCTIONS_CHARS + 1);
         assert_eq!(compose_instructions("", Some(&over)), None);
         assert_eq!(
-            compose_instructions("Proxima text.", Some(&over)).as_deref(),
-            Some("Proxima text.")
+            compose_instructions("Proxiima text.", Some(&over)).as_deref(),
+            Some("Proxiima text.")
         );
     }
 

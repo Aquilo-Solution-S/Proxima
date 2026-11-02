@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     HostStateParticipantDescriptor, HostStateReply, HostStateRequest, HostStateWritePermit,
     OwnerWritePermit, SidecarSessionRead, WriteSession, WriteSessionFactory,
 };
-use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
-use proxima_core::verbs::goal_write::{
+use proxiima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactIngestOutcome};
+use proxiima_core::verbs::goal_write::{
     CreateGoalAtomicRequest, GoalReplayOutcome, GoalReplayRequest, GoalWriteOutcome,
 };
-use proxima_core::verbs::query::SidecarAtom;
-use proxima_core::{
+use proxiima_core::verbs::query::SidecarAtom;
+use proxiima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, ColdObjectStore, GroupId, MembershipRow, MemoryId,
     Role, StorageError, UserId,
 };
@@ -30,13 +30,13 @@ use crate::{PgStorage, verbs};
 /// [`Self::transaction`] and continues to stamp the permit's owner.
 ///
 /// ```
-/// use proxima_storage_pg::PgHostStateSession;
+/// use proxiima_storage_pg::PgHostStateSession;
 /// fn inspect(session: &PgHostStateSession<'_, '_>) { let _ = session; }
 /// ```
 ///
 /// ```compile_fail
-/// # use proxima_core::storage_ports::HostStateWritePermit;
-/// # use proxima_storage_pg::PgHostStateSession;
+/// # use proxiima_core::storage_ports::HostStateWritePermit;
+/// # use proxiima_storage_pg::PgHostStateSession;
 /// # use sqlx::{Postgres, Transaction};
 /// # fn forge<'session, 'connection>(tx: &'session mut Transaction<'connection, Postgres>, permit: &'session HostStateWritePermit) {
 /// PgHostStateSession { tx, permit };
@@ -79,7 +79,7 @@ impl<'connection> PgHostStateSession<'_, 'connection> {
         let subject = scope.subject();
         let rows = sqlx::query_as::<_, (uuid::Uuid, PgAccessCeiling, PgAccessCeiling, bool)>(
             "SELECT group_id, read_ceiling, write_ceiling, manage
-               FROM proxima_core.read_subject_authority($1)",
+               FROM proxiima_core.read_subject_authority($1)",
         )
         .bind(subject.into_inner())
         .fetch_all(&mut **self.tx)
@@ -139,8 +139,8 @@ struct PgWriteSession {
     store_number: u16,
     tx: Transaction<'static, Postgres>,
     sidecars: PgSidecarRegistryFrozen,
-    surfaces: proxima_core::owner_inverse::OwnerSurfaces,
-    /// The flavor-declared lifecycle scopes, so this session can resolve a
+    surfaces: proxiima_core::owner_inverse::OwnerSurfaces,
+    /// The spiice-declared lifecycle scopes, so this session can resolve a
     /// payload's `ScopeRef` into the fence key and liveness probe without
     /// reaching back through the storage handle mid-transaction.
     scopes: crate::access::scope_surfaces::ScopeSurfaces,
@@ -155,7 +155,7 @@ struct PgWriteSession {
 /// ran — the cold debt `commit` settles.
 struct SeriesEraseState {
     context: crate::PgHostStateEraseContext,
-    owner: proxima_core::OwnerId,
+    owner: proxiima_core::OwnerId,
     pool: sqlx::PgPool,
     platform: crate::PgPlatformScope,
     /// Where the erased vectors live; `commit` pays their debt first.
@@ -174,7 +174,7 @@ impl WriteSessionFactory for PgStorage {
 
     async fn begin(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
     ) -> Result<Box<dyn WriteSession>, StorageError> {
         let tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
@@ -189,17 +189,17 @@ impl WriteSessionFactory for PgStorage {
         permit: &HostStateWritePermit,
     ) -> Result<Box<dyn WriteSession>, StorageError> {
         let descriptor = self.host_state_descriptor().ok_or_else(|| {
-            proxima_core::StorageError::ConstraintViolation(
+            proxiima_core::StorageError::ConstraintViolation(
                 "host-state participant is not registered".into(),
             )
         })?;
         if !matches!(
             permit.origin(),
-            proxima_core::storage_ports::HostStateWriteOrigin::Maintenance
+            proxiima_core::storage_ports::HostStateWriteOrigin::Maintenance
         ) || permit.participant_id() != descriptor.participant_id()
             || permit.tables() != descriptor.tables()
         {
-            return Err(proxima_core::StorageError::ConstraintViolation(
+            return Err(proxiima_core::StorageError::ConstraintViolation(
                 "host-state maintenance scope mismatch".into(),
             ));
         }
@@ -211,7 +211,7 @@ impl WriteSessionFactory for PgStorage {
         &self,
         permit: &OwnerWritePermit,
     ) -> Result<Box<dyn WriteSession>, StorageError> {
-        if permit.access_kind() != proxima_core::AccessKind::Goal {
+        if permit.access_kind() != proxiima_core::AccessKind::Goal {
             return Err(StorageError::ConstraintViolation(
                 "a series erase requires an Admin-level owner permit".into(),
             ));
@@ -312,7 +312,7 @@ impl WriteSession for PgWriteSession {
     async fn owned_series_head_memory_id(
         &mut self,
         permit: &OwnerWritePermit,
-        schema_id: &proxima_core::SchemaId,
+        schema_id: &proxiima_core::SchemaId,
         sidecar_table: &str,
         columns: &[(&str, SidecarAtom)],
     ) -> Result<Option<MemoryId>, StorageError> {
@@ -340,7 +340,7 @@ impl WriteSession for PgWriteSession {
     async fn ingest_fact_with_typed_sidecar(
         &mut self,
         authorized: &AuthorizedFactWrite,
-        embedding_spaces: &[proxima_core::EmbeddingSpace],
+        embedding_spaces: &[proxiima_core::EmbeddingSpace],
     ) -> Result<FactIngestOutcome, StorageError> {
         let sidecar_payloads = authorized.sidecar_payloads();
         let fact_sidecars = self.sidecars.writing(authorized.draft());
@@ -358,7 +358,7 @@ impl WriteSession for PgWriteSession {
         )?;
         // The declared scopes come off the PAYLOADS, not off the caller: a
         // host writing a scoped payload straight through `Engine` reaches
-        // this same line, and the fence it takes is the one the flavor's
+        // this same line, and the fence it takes is the one the spiice's
         // erase holds.
         let scopes = self.scopes.targets_for_payloads(sidecar_payloads)?;
         let outcome = verbs::fact_ingest::ingest_fact_with_sidecar_in_tx(
@@ -582,7 +582,7 @@ impl WriteSession for PgWriteSession {
         // enters the lifecycle scope, so it reads live rows only: forgetting
         // a forgotten memory is NotFound here.
         sqlx::query_scalar::<_, uuid::Uuid>(
-            "SELECT handle FROM proxima_core.memory /* FORGET-POLICY: live-only (owner-scope precondition; a forgotten t is NotFound) */
+            "SELECT handle FROM proxiima_core.memory /* FORGET-POLICY: live-only (owner-scope precondition; a forgotten t is NotFound) */
               WHERE t = $1 AND owner_id = $2 AND kind::text = ANY($3) AND forgotten_at IS NULL",
         )
         .bind(t)
@@ -601,8 +601,8 @@ impl WriteSession for PgWriteSession {
     async fn erase_series(
         &mut self,
         permit: &OwnerWritePermit,
-        request: &proxima_core::verbs::own_erase::SeriesEraseRequest<'_>,
-    ) -> Result<proxima_core::verbs::own_erase::SeriesEraseOutcome, StorageError> {
+        request: &proxiima_core::verbs::own_erase::SeriesEraseRequest<'_>,
+    ) -> Result<proxiima_core::verbs::own_erase::SeriesEraseOutcome, StorageError> {
         let Some(state) = self.series_erase.as_mut() else {
             return Err(StorageError::ConstraintViolation(
                 "a series erase runs only on a session from begin_series_erase".into(),

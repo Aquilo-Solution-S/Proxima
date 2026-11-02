@@ -8,21 +8,21 @@
 //! sketch, and the embedding enqueue together with the Fact. A second
 //! entry point that skipped any of those would make them optional.
 //!
-//! This module has no flavor-facing items. Flavors implement
+//! This module has no spiice-facing items. Spiices implement
 //! `PgMemorySidecar` (normally via `pg_sidecar!`), reached through
-//! `proxima::flavor`; they cannot invoke it — see
+//! `proxiima::spiice`; they cannot invoke it — see
 //! [`crate::sidecars::SidecarInsertPermit`].
 
 use crate::access::owner_columns::UploadStatus;
 use std::future::Future;
 use std::pin::Pin;
 
-use proxima_core::verbs::fact_ingest::{
+use proxiima_core::verbs::fact_ingest::{
     AuthorizedInlineCitedObject, AuthorizedNodeLinks, FactIngestOutcome, FactWriteCommand,
 };
-use proxima_core::verbs::query::SidecarAtom;
-use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{
+use proxiima_core::verbs::query::SidecarAtom;
+use proxiima_core::verbs::schema::PayloadKind;
+use proxiima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, MemoryId,
     OwnerId, SidecarPayload, StorageError,
 };
@@ -40,7 +40,7 @@ pub type FactIngestSidecarFuture<'t> =
 /// spaces to enqueue and how the draft's citation resolves to a `blob_id`.
 #[derive(Debug, Clone, Copy)]
 struct IngestCoreOptions<'a> {
-    embedding_spaces: &'a [proxima_core::EmbeddingSpace],
+    embedding_spaces: &'a [proxiima_core::EmbeddingSpace],
     citation_plan: CitationPlan<'a>,
 }
 
@@ -70,8 +70,8 @@ pub(crate) struct FactAdmissionInput<'a> {
     /// nothing to it and, in particular, holds no limits of its own: the
     /// engine's [`PublicationConfig`] is the single authority.
     ///
-    /// [`PublicationConfig`]: proxima_core::publication::PublicationConfig
-    pub(crate) publication: Option<&'a proxima_core::publication::PublicationPlan>,
+    /// [`PublicationConfig`]: proxiima_core::publication::PublicationConfig
+    pub(crate) publication: Option<&'a proxiima_core::publication::PublicationPlan>,
 }
 
 pub(crate) fn fact_natural_key(
@@ -142,14 +142,14 @@ pub(crate) fn fact_natural_key(
 #[derive(Debug, Clone, Copy)]
 struct AuthorizedFactInput<'a> {
     owner: &'a OwnerId,
-    writer: proxima_core::WriterAttribution,
+    writer: proxiima_core::WriterAttribution,
     draft: &'a FactWriteCommand,
     links: &'a AuthorizedNodeLinks,
 }
 
 impl<'a> AuthorizedFactInput<'a> {
     fn new(
-        permit: &'a proxima_core::storage_ports::OwnerWritePermit,
+        permit: &'a proxiima_core::storage_ports::OwnerWritePermit,
         draft: &'a FactWriteCommand,
         links: &'a AuthorizedNodeLinks,
     ) -> Result<Self, StorageError> {
@@ -184,7 +184,7 @@ enum CitationPlan<'a> {
 pub(crate) async fn ingest_authorized_fact_atomic(
     pool: &PgPool,
     authorized: &AuthorizedFactWrite,
-    embedding_spaces: &[proxima_core::EmbeddingSpace],
+    embedding_spaces: &[proxiima_core::EmbeddingSpace],
     store_number: u16,
 ) -> Result<FactIngestOutcome, StorageError> {
     // Retry the whole transaction on transient deadlock/serialization.
@@ -206,7 +206,7 @@ pub(crate) async fn ingest_authorized_fact_atomic(
 /// caller owns `tx` and is responsible for committing or rolling back.
 ///
 /// Crate-private transaction body for the authorized Fact write. External
-/// flavors bundle sidecars via the `FactIngestContext`-based helpers.
+/// spiices bundle sidecars via the `FactIngestContext`-based helpers.
 ///
 /// # Errors
 ///
@@ -215,7 +215,7 @@ pub(crate) async fn ingest_authorized_fact_atomic(
 pub(crate) async fn ingest_fact_command_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWrite,
-    embedding_spaces: &[proxima_core::EmbeddingSpace],
+    embedding_spaces: &[proxiima_core::EmbeddingSpace],
     store_number: u16,
 ) -> Result<FactIngestOutcome, StorageError> {
     if !authorized.sidecar_payloads().is_empty() {
@@ -229,7 +229,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
     // port directly.
     if authorized.publication().is_some() {
         return Err(StorageError::from(
-            proxima_core::publication::PublicationError::UntypedListenableWrite {
+            proxiima_core::publication::PublicationError::UntypedListenableWrite {
                 schema_id: authorized.draft().schema_id.as_str().to_owned(),
             },
         ));
@@ -269,7 +269,7 @@ pub(crate) async fn ingest_fact_command_in_tx(
 /// Run gated Fact ingest plus its inline cited object inside an
 /// already-open transaction.
 ///
-/// The cited object is one `proxima_core.blob` row, upserted on
+/// The cited object is one `proxiima_core.blob` row, upserted on
 /// `(owner, schema, content_hash)`; the Fact's `blob_id` points at it.
 ///
 /// # Errors
@@ -281,7 +281,7 @@ pub(crate) async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitation,
-    embedding_spaces: &[proxima_core::EmbeddingSpace],
+    embedding_spaces: &[proxiima_core::EmbeddingSpace],
     input: FactAdmissionInput<'_>,
     fact_sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
@@ -328,7 +328,7 @@ pub(crate) async fn ingest_fact_with_citation_ref_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
     authorized: &AuthorizedFactWithCitationRef,
-    embedding_spaces: &[proxima_core::EmbeddingSpace],
+    embedding_spaces: &[proxiima_core::EmbeddingSpace],
     input: FactAdmissionInput<'_>,
     fact_sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>
@@ -405,11 +405,11 @@ async fn upsert_blob(
     content_hash: &[u8; 32],
 ) -> Result<uuid::Uuid, StorageError> {
     let owner_id = crate::access::owner_columns::ensure_owner_row(tx.as_mut(), owner).await?;
-    if schema_id == proxima_core::UPLOADED_BLOB_SCHEMA_ID {
+    if schema_id == proxiima_core::UPLOADED_BLOB_SCHEMA_ID {
         require_staged_upload(tx, owner_id, content_hash).await?;
     }
     sqlx::query_scalar(
-        "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, $2, $3)
          ON CONFLICT (owner_id, schema_id, content_hash)
          DO UPDATE SET schema_id = EXCLUDED.schema_id
@@ -434,7 +434,7 @@ async fn require_staged_upload(
     content_hash: &[u8; 32],
 ) -> Result<(), StorageError> {
     let status: Option<UploadStatus> = sqlx::query_scalar(
-        "SELECT status FROM proxima_core.blob_uploads
+        "SELECT status FROM proxiima_core.blob_uploads
           WHERE owner_id = $1 AND content_hash = $2
           ORDER BY status IN ('pending', 'completed') DESC
           LIMIT 1
@@ -486,7 +486,7 @@ async fn citation_object_for_t(
     // A replay may answer a forgotten Fact; its citation is still its own.
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
     let blob_id: Result<Option<Option<uuid::Uuid>>, StorageError> = sqlx::query_scalar(
-        "SELECT blob_id FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (a replay may answer a forgotten Fact with its own citation) */ WHERE t = $1 AND owner_id = $2",
+        "SELECT blob_id FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (a replay may answer a forgotten Fact with its own citation) */ WHERE t = $1 AND owner_id = $2",
     )
     .bind(memory_id.into_inner())
     .bind(owner_id)
@@ -508,7 +508,7 @@ async fn verify_cited_object_ref_in_tx(
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
-               FROM proxima_core.blob
+               FROM proxiima_core.blob
               WHERE blob_id = $1
                 AND owner_id = $2
          )",
@@ -541,7 +541,7 @@ async fn verify_cited_object_ref_in_tx(
 pub(crate) async fn ingest_fact_with_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWrite,
-    embedding_spaces: &[proxima_core::EmbeddingSpace],
+    embedding_spaces: &[proxiima_core::EmbeddingSpace],
     input: FactAdmissionInput<'_>,
     sidecar: F,
 ) -> Result<FactIngestOutcome, StorageError>

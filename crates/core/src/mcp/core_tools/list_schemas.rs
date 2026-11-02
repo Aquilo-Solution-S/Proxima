@@ -1,4 +1,4 @@
-//! `core/list_schemas` — project `FlavorRegistryFrozen` schemas.
+//! `core/list_schemas` — project `SpiiceRegistryFrozen` schemas.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -67,7 +67,7 @@ pub struct GetSchemaOutput {
     pub json_schema: serde_json::Value,
 }
 
-/// Read one registered schema, backing `proxima://schema/{id}/{version}`.
+/// Read one registered schema, backing `proxiima://schema/{id}/{version}`.
 ///
 /// A registered schema with no `json_schema()` — the opaque
 /// cited-object lane — is reported as missing rather
@@ -112,7 +112,7 @@ mod tests {
     use super::get_schema;
     use crate::mcp::{McpAuthorContext, McpToolCtx, McpToolError};
 
-    use crate::{AuthPath, AuthzContext, FlavorServices, OwnerId, UserId};
+    use crate::{AuthPath, AuthzContext, OwnerId, SpiiceServices, UserId};
 
     fn ctx_with_probes() -> McpToolCtx {
         let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
@@ -128,9 +128,9 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
             engine: None,
-            judged: proxima_core::mcp::JudgedKey::default(),
+            judged: proxiima_core::mcp::JudgedKey::default(),
         }
     }
 

@@ -1,14 +1,14 @@
 //! The narrowly scoped candidate authority is the only runtime definer exception.
 
-use proxima_storage_pg::assert_runtime_rls;
-use proxima_storage_pg::search_candidates::ARGUMENT_TYPES;
-use proxima_storage_pg::test_fixtures::fresh_pg;
+use proxiima_storage_pg::assert_runtime_rls;
+use proxiima_storage_pg::search_candidates::ARGUMENT_TYPES;
+use proxiima_storage_pg::test_fixtures::fresh_pg;
 use sqlx::{AssertSqlSafe, PgPool};
 
 use super::{assert_rls_refusal, execute, quoted_ident};
 
 async fn assert_refused(runtime: &PgPool, reason: &str) {
-    let error = assert_runtime_rls(runtime, &["proxima_core"])
+    let error = assert_runtime_rls(runtime, &["proxiima_core"])
         .await
         .expect_err("unsafe candidate authority must fail boot")
         .to_string();
@@ -20,34 +20,34 @@ async fn runtime_cannot_assume_or_replace_candidate_authority() {
     let (pg, _database) = fresh_pg("candidate_runtime_authority").await;
     let admin = pg.pool_for_tests();
     let runtime = pg.clone_pool_for_backend();
-    assert_runtime_rls(&runtime, &["proxima_core"])
+    assert_runtime_rls(&runtime, &["proxiima_core"])
         .await
         .unwrap();
-    execute(admin, "CREATE FUNCTION proxima_core.search_lexical_candidates(integer) RETURNS integer LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT $1'").await;
+    execute(admin, "CREATE FUNCTION proxiima_core.search_lexical_candidates(integer) RETURNS integer LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT $1'").await;
     execute(
         admin,
-        "REVOKE ALL ON FUNCTION proxima_core.search_lexical_candidates(integer) FROM PUBLIC",
+        "REVOKE ALL ON FUNCTION proxiima_core.search_lexical_candidates(integer) FROM PUBLIC",
     )
     .await;
     execute(
         admin,
-        "ALTER FUNCTION proxima_core.search_lexical_candidates(integer) OWNER TO proxima_search",
+        "ALTER FUNCTION proxiima_core.search_lexical_candidates(integer) OWNER TO proxiima_search",
     )
     .await;
     assert_refused(&runtime, "search_lexical_candidates").await;
     execute(
         admin,
-        "DROP FUNCTION proxima_core.search_lexical_candidates(integer)",
+        "DROP FUNCTION proxiima_core.search_lexical_candidates(integer)",
     )
     .await;
-    let error = sqlx::query("SET ROLE proxima_search")
+    let error = sqlx::query("SET ROLE proxiima_search")
         .execute(&runtime)
         .await
         .expect_err("runtime cannot assume the candidate role");
     assert_rls_refusal(&error);
     // SQL-POLICY: fixed-fragment — the signature is the fixed candidate contract.
     let replacement = format!(
-        "CREATE OR REPLACE FUNCTION proxima_core.search_lexical_candidates({ARGUMENT_TYPES}) \
+        "CREATE OR REPLACE FUNCTION proxiima_core.search_lexical_candidates({ARGUMENT_TYPES}) \
          RETURNS TABLE(t uuid, schema_id text, lexical_score real) \
          LANGUAGE sql AS 'SELECT NULL::uuid, NULL::text, NULL::real WHERE false'"
     );
@@ -64,7 +64,7 @@ async fn candidate_definers_reject_public_execution_and_hijacked_paths() {
     let (pg, _database) = fresh_pg("candidate_definer_catalog").await;
     let admin = pg.pool_for_tests();
     let runtime = pg.clone_pool_for_backend();
-    let signature = format!("proxima_core.search_lexical_candidates({ARGUMENT_TYPES})");
+    let signature = format!("proxiima_core.search_lexical_candidates({ARGUMENT_TYPES})");
     // SQL-POLICY: fixed-fragment — fixed function name and identity arguments.
     execute(
         admin,
@@ -91,7 +91,7 @@ async fn candidate_definers_reject_public_execution_and_hijacked_paths() {
         &format!("ALTER FUNCTION {signature} SET search_path = pg_catalog, pg_temp"),
     )
     .await;
-    assert_runtime_rls(&runtime, &["proxima_core"])
+    assert_runtime_rls(&runtime, &["proxiima_core"])
         .await
         .unwrap();
 }
@@ -102,73 +102,73 @@ async fn candidate_policy_is_read_only_and_requires_a_projection_shape() {
     let admin = pg.pool_for_tests();
     let runtime = pg.clone_pool_for_backend();
     let platform: String = sqlx::query_scalar(
-        "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'proxima_core.memory'::regclass",
+        "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'proxiima_core.memory'::regclass",
     ).fetch_one(admin).await.unwrap();
-    execute(admin, "CREATE TABLE proxima_core.document_search(memory_id uuid PRIMARY KEY REFERENCES proxima_core.memory(t), search_tsv tsvector NOT NULL)").await;
+    execute(admin, "CREATE TABLE proxiima_core.document_search(memory_id uuid PRIMARY KEY REFERENCES proxiima_core.memory(t), search_tsv tsvector NOT NULL)").await;
     // SQL-POLICY: fixed-fragment — quoted catalog role name is the existing table owner.
     execute(
         admin,
         &format!(
-            "ALTER TABLE proxima_core.document_search OWNER TO {}",
+            "ALTER TABLE proxiima_core.document_search OWNER TO {}",
             quoted_ident(&platform)
         ),
     )
     .await;
-    execute(admin, "SELECT proxima_core.owner_rls_apply_class('test', 'memory_owner', 'proxima_core', 'document_search', 'memory_owner', NULL)").await;
-    execute(admin, "CREATE POLICY proxima_search_candidates ON proxima_core.document_search FOR SELECT TO proxima_search USING (true)").await;
-    assert_runtime_rls(&runtime, &["proxima_core"])
+    execute(admin, "SELECT proxiima_core.owner_rls_apply_class('test', 'memory_owner', 'proxiima_core', 'document_search', 'memory_owner', NULL)").await;
+    execute(admin, "CREATE POLICY proxiima_search_candidates ON proxiima_core.document_search FOR SELECT TO proxiima_search USING (true)").await;
+    assert_runtime_rls(&runtime, &["proxiima_core"])
         .await
         .unwrap();
-    execute(admin, "CREATE POLICY proxima_search_candidates ON proxima_core.memory FOR SELECT TO proxima_search USING (true)").await;
+    execute(admin, "CREATE POLICY proxiima_search_candidates ON proxiima_core.memory FOR SELECT TO proxiima_search USING (true)").await;
     assert_refused(
         &runtime,
-        "proxima_core.memory has an invalid proxima_search_candidates",
+        "proxiima_core.memory has an invalid proxiima_search_candidates",
     )
     .await;
     execute(
         admin,
-        "DROP POLICY proxima_search_candidates ON proxima_core.memory",
+        "DROP POLICY proxiima_search_candidates ON proxiima_core.memory",
     )
     .await;
     execute(
         admin,
-        "DROP POLICY proxima_search_candidates ON proxima_core.document_search",
+        "DROP POLICY proxiima_search_candidates ON proxiima_core.document_search",
     )
     .await;
-    execute(admin, "CREATE POLICY proxima_search_candidates ON proxima_core.document_search FOR ALL TO proxima_search USING (true) WITH CHECK (true)").await;
+    execute(admin, "CREATE POLICY proxiima_search_candidates ON proxiima_core.document_search FOR ALL TO proxiima_search USING (true) WITH CHECK (true)").await;
     assert_refused(
         &runtime,
-        "document_search has an invalid proxima_search_candidates",
+        "document_search has an invalid proxiima_search_candidates",
     )
     .await;
     execute(
         admin,
-        "DROP POLICY proxima_search_candidates ON proxima_core.document_search",
+        "DROP POLICY proxiima_search_candidates ON proxiima_core.document_search",
     )
     .await;
     execute(
         admin,
-        "GRANT UPDATE ON proxima_core.memory TO proxima_search",
+        "GRANT UPDATE ON proxiima_core.memory TO proxiima_search",
     )
     .await;
     assert_refused(&runtime, "read-only role").await;
     execute(
         admin,
-        "REVOKE UPDATE ON proxima_core.memory FROM proxima_search",
+        "REVOKE UPDATE ON proxiima_core.memory FROM proxiima_search",
     )
     .await;
     execute(
         admin,
-        "GRANT CREATE ON SCHEMA proxima_core TO proxima_search",
+        "GRANT CREATE ON SCHEMA proxiima_core TO proxiima_search",
     )
     .await;
     assert_refused(&runtime, "read-only role").await;
     execute(
         admin,
-        "REVOKE CREATE ON SCHEMA proxima_core FROM proxima_search",
+        "REVOKE CREATE ON SCHEMA proxiima_core FROM proxiima_search",
     )
     .await;
-    assert_runtime_rls(&runtime, &["proxima_core"])
+    assert_runtime_rls(&runtime, &["proxiima_core"])
         .await
         .unwrap();
 }

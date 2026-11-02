@@ -1,15 +1,15 @@
 //! `core_search_memories` — projection-first content search.
 //!
-//! **ONE ranked statement per participating flavor.** Not one per schema:
+//! **ONE ranked statement per participating spiice.** Not one per schema:
 //! the projection row is keyed `(memory_id, schema_id)` and carries the
-//! vector, the tags and the language, so the whole of a flavor's lexical
+//! vector, the tags and the language, so the whole of a spiice's lexical
 //! surface is one composite-index scan with `schema_id` as a row predicate.
 //!
-//! 1. **ranked** — one statement over `<flavor>.projection`. The owner is
+//! 1. **ranked** — one statement over `<spiice>.projection`. The owner is
 //!    an Index Cond on the composite `gin(owner_id, search_tsv)`,
 //!    `schema_id = ANY(..)` narrows to the participating schemas, the score
-//!    windows come from the flavor's DECLARATION, and the candidate budget
-//!    is the flavor's declared `overfetch_k`.
+//!    windows come from the spiice's DECLARATION, and the candidate budget
+//!    is the spiice's declared `overfetch_k`.
 //! 2. **substring** — at most ONE more statement, over exactly the schemas
 //!    the ranked arm returned nothing for, and only where the schema
 //!    declares an arm. `SubstringArm::Off` contributes no statement and no
@@ -31,11 +31,11 @@
 //!
 //! Every eligible declared projection participates in unscoped search.
 //! Tags narrow rows and require the schema to declare a `tag_column`.
-//! Participating flavors declare `BandComparability::CoreBands` and
+//! Participating spiices declare `BandComparability::CoreBands` and
 //! `RankSource::Projection` — a score this merge cannot compare and a shape
 //! this renderer cannot serve are both exclusions the contract states. The
 //! semantic arm honours the same scope: its candidate scan requires one
-//! of those flavors' projection rows to satisfy the schema set and the
+//! of those spiices' projection rows to satisfy the schema set and the
 //! request's optional tag predicate before a candidate is accepted.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -46,13 +46,13 @@ use crate::pg_ident::PgIdent;
 use crate::pgvector::set_hnsw_search_sql;
 use crate::projection::{projection_key_ident, sidecar_text_sql};
 use crate::tuning::PgTuning;
-use proxima_core::flavor::{BandComparability, LanguagePolicy, SubstringArm};
-use proxima_core::verbs::query::{
+use proxiima_core::spiice::{BandComparability, LanguagePolicy, SubstringArm};
+use proxiima_core::verbs::query::{
     EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage, MemorySearchRequest, MemorySearchResult,
     SearchCursor, SearchMode, SearchOrder, SupersessionStatus, TagMatch, like_pattern,
 };
-use proxima_core::verbs::schema::{MemorySearchProjection, PayloadKind, RenderBands};
-use proxima_core::{MemoryId, OwnerId, SchemaId, StorageError};
+use proxiima_core::verbs::schema::{MemorySearchProjection, PayloadKind, RenderBands};
+use proxiima_core::{MemoryId, OwnerId, SchemaId, StorageError};
 use sqlx::{PgConnection, Postgres, Transaction};
 
 use super::embedding_candidates::{SEMANTIC_SCAN_CAP, next_candidate_window};
@@ -64,15 +64,15 @@ use hybrid::{HYBRID_CANDIDATE_WINDOW, apply_hybrid_fusion, uses_hybrid_fusion};
 
 /// How far past the caller's `limit` one statement fetches before the merge
 /// trims. The CAP is declared — [`ProjectionSpec::overfetch_k`], a
-/// shard-level property and therefore the flavor's — but the request
+/// shard-level property and therefore the spiice's — but the request
 /// scaling has no contract home, because it is a function of the request
 /// rather than of the shard.
 const REQUEST_OVERFETCH_FACTOR: u32 = 20;
 
 /// The tagged semantic scan's tag-array bind…
 const SEMANTIC_TAGS_BIND: usize = 7;
-/// …and the first of its per-flavor schema-set binds, one per participating
-/// flavor in `flavors` order.
+/// …and the first of its per-spiice schema-set binds, one per participating
+/// spiice in `spiices` order.
 const SEMANTIC_SCHEMA_BIND_BASE: usize = 8;
 
 #[derive(Debug, Clone)]
@@ -84,8 +84,8 @@ struct Hit {
 }
 
 /// The ranked arm's row. `schema_id` rides along because the substring arm's
-/// trigger is per-SCHEMA: one statement per flavor has no per-projection
-/// signal, and reading the trigger as "the flavor's ranked arm returned
+/// trigger is per-SCHEMA: one statement per spiice has no per-projection
+/// signal, and reading the trigger as "the spiice's ranked arm returned
 /// nothing" would LOSE rows — a query matching a note by lexeme and an
 /// utterance only by substring must still return the utterance. One extra
 /// column in the select list buys that.
@@ -136,19 +136,19 @@ pub(crate) async fn search_memories_on_connection(
         ));
     }
     let limit = req.limit.min(MAX_SEARCH_PAGE_LIMIT);
-    let flavors = core_search_flavors(req, projections);
+    let spiices = core_search_spiices(req, projections);
     let mut hits = BTreeMap::<uuid::Uuid, Hit>::new();
     match req.mode {
         SearchMode::Lexical => merge_hits(
             &mut hits,
-            scan_flavors_on_connection(connection.as_mut(), req, &flavors, limit, true).await?,
+            scan_spiices_on_connection(connection.as_mut(), req, &spiices, limit, true).await?,
         ),
         SearchMode::Semantic => merge_hits(
             &mut hits,
             scan_embeddings_on_connection(
                 connection,
                 req,
-                &flavors,
+                &spiices,
                 tuning,
                 candidate_overfetch(req, limit, SEMANTIC_SCAN_CAP),
                 vectors,
@@ -159,7 +159,7 @@ pub(crate) async fn search_memories_on_connection(
             if req.semantic.is_some() {
                 merge_hits(
                     &mut hits,
-                    scan_flavors_on_connection(connection.as_mut(), req, &flavors, limit, true)
+                    scan_spiices_on_connection(connection.as_mut(), req, &spiices, limit, true)
                         .await?,
                 );
                 merge_hits(
@@ -167,7 +167,7 @@ pub(crate) async fn search_memories_on_connection(
                     scan_embeddings_on_connection(
                         connection,
                         req,
-                        &flavors,
+                        &spiices,
                         tuning,
                         candidate_overfetch(req, limit, SEMANTIC_SCAN_CAP),
                         vectors,
@@ -177,7 +177,7 @@ pub(crate) async fn search_memories_on_connection(
             } else {
                 merge_hits(
                     &mut hits,
-                    scan_flavors_on_connection(connection.as_mut(), req, &flavors, limit, true)
+                    scan_spiices_on_connection(connection.as_mut(), req, &spiices, limit, true)
                         .await?,
                 );
             }
@@ -193,9 +193,9 @@ pub(crate) async fn search_memories_on_connection(
 }
 
 /// The candidate budget for one statement: the request-scaling rule,
-/// clamped to what the flavor DECLARES.
+/// clamped to what the spiice DECLARES.
 ///
-/// One statement per flavor hands `merge_hits` at most `overfetch_k`.
+/// One statement per spiice hands `merge_hits` at most `overfetch_k`.
 ///
 /// For `Lexical` and `Relevance` the returned page cannot move — but the
 /// candidate-superset argument alone does not establish that. "The global
@@ -240,17 +240,17 @@ fn candidate_order(req: &MemorySearchRequest) -> SearchOrder {
     }
 }
 
-/// One flavor's participating schemas, grouped for the ONE statement that
+/// One spiice's participating schemas, grouped for the ONE statement that
 /// serves them.
 ///
 /// Every property that statement can spell only once — the lexical
 /// configuration, the score windows, the weight array — is read off
-/// [`Self::head`], and freeze is what makes that legal: a flavor declaring
+/// [`Self::head`], and freeze is what makes that legal: a spiice declaring
 /// `RankSource::Projection` whose schemas disagree about any of them is a
 /// registry error, not a query-build-time `StorageError` on a hot path.
-struct FlavorScan<'a> {
+struct SpiiceScan<'a> {
     schemas: Vec<&'a MemorySearchProjection>,
-    /// The windows this flavor's statements render, taken off the head.
+    /// The windows this spiice's statements render, taken off the head.
     ///
     /// Held rather than looked up: [`Self::new`] is the only way to build a
     /// scan and it refuses a head with no render bands, so every renderer
@@ -259,30 +259,30 @@ struct FlavorScan<'a> {
     bands: RenderBands,
 }
 
-impl<'a> FlavorScan<'a> {
+impl<'a> SpiiceScan<'a> {
     /// A scan over schemas the selection has already admitted.
     ///
     /// `None` for an empty set or a head that declares no render bands —
-    /// both of which `core_search_flavors` filters out before it gets here,
+    /// both of which `core_search_spiices` filters out before it gets here,
     /// which is what makes [`Self::bands`] total.
     fn new(schemas: Vec<&'a MemorySearchProjection>) -> Option<Self> {
         let bands = schemas.first()?.render_bands?;
         Some(Self { schemas, bands })
     }
 
-    /// The schema whose declaration the flavor-wide statement renders.
+    /// The schema whose declaration the spiice-wide statement renders.
     fn head(&self) -> &'a MemorySearchProjection {
         self.schemas[0]
     }
 }
 
-fn core_search_flavors<'a>(
+fn core_search_spiices<'a>(
     req: &MemorySearchRequest,
     projections: &'a [MemorySearchProjection],
-) -> Vec<FlavorScan<'a>> {
+) -> Vec<SpiiceScan<'a>> {
     let mut by_schema = BTreeMap::<&str, &MemorySearchProjection>::new();
     for projection in projections {
-        // A flavor's score enters this merge only if its flavor
+        // A spiice's score enters this merge only if its spiice
         // says the score is comparable, and only if its read shape is one
         // this renderer can serve.
         if !matches!(projection.band_comparability, BandComparability::CoreBands) {
@@ -312,18 +312,18 @@ fn core_search_flavors<'a>(
             .entry(projection.schema_id.as_str())
             .or_insert(projection);
     }
-    // `projection_table` IS the flavor: `ProjectionSpec::table`, one per
-    // flavor by construction, in the flavor's own schema.
-    let mut by_flavor = BTreeMap::<&str, Vec<&MemorySearchProjection>>::new();
+    // `projection_table` IS the spiice: `ProjectionSpec::table`, one per
+    // spiice by construction, in the spiice's own schema.
+    let mut by_spiice = BTreeMap::<&str, Vec<&MemorySearchProjection>>::new();
     for projection in by_schema.into_values() {
-        by_flavor
+        by_spiice
             .entry(projection.projection_table.as_str())
             .or_default()
             .push(projection);
     }
-    by_flavor
+    by_spiice
         .into_values()
-        .filter_map(FlavorScan::new)
+        .filter_map(SpiiceScan::new)
         .collect()
 }
 
@@ -358,30 +358,30 @@ fn maximum_present(left: Option<f32>, right: Option<f32>) -> Option<f32> {
     }
 }
 
-/// One job per participating FLAVOR, not one per schema.
+/// One job per participating SPIICE, not one per schema.
 ///
-/// A flavor's ranked arm is one statement against its own shard, plus at
+/// A spiice's ranked arm is one statement against its own shard, plus at
 /// most one substring statement over the schemas that arm returned nothing
-/// for. A request that reaches a second flavor runs the same
-/// again against that flavor's shard.
-async fn scan_flavors_on_connection(
+/// for. A request that reaches a second spiice runs the same
+/// again against that spiice's shard.
+async fn scan_spiices_on_connection(
     connection: &mut PgConnection,
     req: &MemorySearchRequest,
-    flavors: &[FlavorScan<'_>],
+    spiices: &[SpiiceScan<'_>],
     limit: u32,
     rescue: bool,
 ) -> Result<Vec<Hit>, StorageError> {
     let mut hits = Vec::new();
-    for flavor in flavors {
-        hits.extend(scan_one_flavor_on_connection(connection, req, flavor, limit, rescue).await?);
+    for spiice in spiices {
+        hits.extend(scan_one_spiice_on_connection(connection, req, spiice, limit, rescue).await?);
     }
     Ok(hits)
 }
 
-async fn scan_one_flavor_on_connection(
+async fn scan_one_spiice_on_connection(
     connection: &mut PgConnection,
     req: &MemorySearchRequest,
-    flavor: &FlavorScan<'_>,
+    spiice: &SpiiceScan<'_>,
     limit: u32,
     rescue: bool,
 ) -> Result<Vec<Hit>, StorageError> {
@@ -397,15 +397,15 @@ async fn scan_one_flavor_on_connection(
         .copied()
         .map(OwnerId::into_inner)
         .collect();
-    let schema_ids: Vec<&str> = flavor
+    let schema_ids: Vec<&str> = spiice
         .schemas
         .iter()
         .map(|projection| projection.schema_id.as_str())
         .collect();
-    let budget = candidate_overfetch(req, limit, flavor.head().overfetch_k);
+    let budget = candidate_overfetch(req, limit, spiice.head().overfetch_k);
     let overfetch = i64::from(budget);
     let tags = (!req.tags.is_empty()).then_some(req.tags.as_slice());
-    let sql = crate::search_candidates::call_sql(&flavor.head().projection_table, false)?;
+    let sql = crate::search_candidates::call_sql(&spiice.head().projection_table, false)?;
     // SQL-POLICY: PgIdent
     let rows: Vec<RankedRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(&req.query)
@@ -433,7 +433,7 @@ async fn scan_one_flavor_on_connection(
             similarity_score: None,
         })
         .collect();
-    let missing: Vec<&MemorySearchProjection> = flavor
+    let missing: Vec<&MemorySearchProjection> = spiice
         .schemas
         .iter()
         .copied()
@@ -444,7 +444,7 @@ async fn scan_one_flavor_on_connection(
         .collect();
     if !missing.is_empty() {
         let missing_ids: Vec<&str> = missing.iter().map(|p| p.schema_id.as_str()).collect();
-        let sql = crate::search_candidates::call_sql(&flavor.head().projection_table, true)?;
+        let sql = crate::search_candidates::call_sql(&spiice.head().projection_table, true)?;
         // SQL-POLICY: PgIdent
         let rows: Vec<SubstringRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(like_pattern(&req.query))
@@ -470,7 +470,7 @@ async fn scan_one_flavor_on_connection(
         }));
     }
     if uses_hybrid_fusion(req) {
-        // Ranked and optional substring statements share the flavor's cap.
+        // Ranked and optional substring statements share the spiice's cap.
         hits.sort_by(|a, b| {
             b.lexical_score
                 .unwrap_or_default()
@@ -531,7 +531,7 @@ fn sidecar_legs<'a>(
 ///
 /// The shape is `MemoryFirstNestedLoop`, unchanged and deliberately NOT
 /// routed at the composite index (probe-measured regression, recorded on
-/// the declaration): drive `proxima_core.memory` on the owner index, probe
+/// the declaration): drive `proxiima_core.memory` on the owner index, probe
 /// the sidecar by `t`, filter `LIKE` on an already-fetched row.
 ///
 /// One leg per distinct sidecar, `UNION ALL`ed under one `ORDER BY` and one
@@ -640,29 +640,29 @@ fn substring_leg_sql_parts(
     // `c.{key}` is the sidecar's DECLARED memory-key column and `m.t` the
     // kernel memory table's own; the leg aliases its projection back to `t`
     // so the row shape and the union's ordering are one spelling whatever
-    // a flavor names its column.
+    // a spiice names its column.
     Ok(format!(
         "SELECT c.{key} AS t,
                 {floor}::real AS lexical_score
            FROM {table} c
-           JOIN proxima_core.memory m ON m.t = c.{key} /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+           JOIN proxiima_core.memory m ON m.t = c.{key} /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
           WHERE m.owner_id = ANY($7::uuid[])
             AND m.schema_id = ANY($8::text[])
             AND m.schema_id = ANY(ARRAY[{own_schemas}]::text[])
             AND (lower({search_text}) LIKE $1 ESCAPE '\\')
             {tag_pred}{admit_pred}
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.{key}) >= $4)
+                 OR proxiima_core.memory_created_at(c.{key}) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(c.{key}) <= $5)
+                 OR proxiima_core.memory_created_at(c.{key}) <= $5)
             AND ($6::uuid IS NULL OR c.{key} < $6)",
         table = table.as_str(),
         key = key.as_str(),
     ))
 }
 
-/// The ranked arm: `<flavor>.projection` ALONE, one statement for the whole
-/// flavor.
+/// The ranked arm: `<spiice>.projection` ALONE, one statement for the whole
+/// spiice.
 ///
 /// "Alone" is literal and load-bearing, in two ways.
 ///
@@ -677,7 +677,7 @@ fn substring_leg_sql_parts(
 /// `TransferLeg::Rehomed` like every other followed table).
 ///
 /// And there is no sidecar join at all. `{sidecar}` is a per-SCHEMA value;
-/// one statement over a flavor's five projected schemas cannot name it, so
+/// one statement over a spiice's five projected schemas cannot name it, so
 /// the snippet is fetched after paging instead. The arm therefore binds no
 /// `LIKE` pattern, and `every_bind_is_where_the_scan_binds_it` pins the
 /// emitted placeholder numbering against the order the scan binds.
@@ -691,7 +691,7 @@ fn substring_leg_sql_parts(
 /// function.
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 fn ranked_projection_sql(
-    flavor: &FlavorScan<'_>,
+    spiice: &SpiiceScan<'_>,
     req: &MemorySearchRequest,
     rescue: bool,
 ) -> Result<String, StorageError> {
@@ -699,17 +699,17 @@ fn ranked_projection_sql(
         String::new()
     } else {
         // Every participating schema declares a `tag_column` when the
-        // request carries tags — `core_search_flavors` drops the ones that
+        // request carries tags — `core_search_spiices` drops the ones that
         // do not — and the predicate reads `p.tag`, a column every
         // projection row has (default `'{}'`). So it is uniform across the
-        // flavor and only the SCHEMA SET narrows.
+        // spiice and only the SCHEMA SET narrows.
         format!(
             " AND p.tag {op} $3::text[]",
             op = tag_operator(req.tag_match)
         )
     };
     ranked_projection_sql_parts(
-        flavor,
+        spiice,
         rescue,
         &tag_pred,
         &admit_side_restriction(req, RANKED_MEMORY_ID),
@@ -719,14 +719,14 @@ fn ranked_projection_sql(
 }
 
 fn ranked_projection_sql_parts(
-    flavor: &FlavorScan<'_>,
+    spiice: &SpiiceScan<'_>,
     rescue: bool,
     tag_pred: &str,
     admit_pred: &str,
     order: SearchOrder,
     rescue_switch: Option<&str>,
 ) -> Result<String, StorageError> {
-    let head = flavor.head();
+    let head = spiice.head();
     let table = PgIdent::table(&head.projection_table)?;
     let tsv = "p.search_tsv";
     let rescue_guard = rescue_switch.map_or_else(String::new, |flag| format!("{flag} AND "));
@@ -735,11 +735,11 @@ fn ranked_projection_sql_parts(
     let weights = rank_weight_array(head);
     // The score windows and the `ts_rank` normalization flags are READ OFF
     // the declaration, resolved by name. Raw `ts_rank` is not comparable
-    // across corpora; a band is, which is what makes a cross-flavor merge
+    // across corpora; a band is, which is what makes a cross-spiice merge
     // meaningful — and a band whose normalization is undeclared is a window
     // two renderers can fill differently while claiming the same number.
-    let exact = flavor.bands.exact;
-    let rescue_band = flavor.bands.rescue;
+    let exact = spiice.bands.exact;
+    let rescue_band = spiice.bands.rescue;
     let (rescue_floor, rescue_width) = rescue_band.parts();
     let rescue_norm = rescue_band.normalization_arg();
     let rescue_score = if rescue {
@@ -782,9 +782,9 @@ fn ranked_projection_sql_parts(
             AND ({tsv} @@ q.tsq{rescue_where})
             {tag_pred}{admit_pred}
             AND ($4::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(p.memory_id) >= $4)
+                 OR proxiima_core.memory_created_at(p.memory_id) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(p.memory_id) <= $5)
+                 OR proxiima_core.memory_created_at(p.memory_id) <= $5)
             AND ($6::uuid IS NULL OR p.memory_id < $6)
           ORDER BY {order_by}
           LIMIT $2",
@@ -796,7 +796,7 @@ fn ranked_projection_sql_parts(
 /// The candidate-side spelling of "this row's memory" in the ranked arm.
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 const RANKED_MEMORY_ID: &str = "p.memory_id";
-/// …and in a substring leg, which already drives `proxima_core.memory m`.
+/// …and in a substring leg, which already drives `proxiima_core.memory m`.
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 const SUBSTRING_MEMORY_ID: &str = "m.t";
 
@@ -811,15 +811,15 @@ pub(crate) fn projection_candidate_statements(
         return Ok(projection_substring_candidates(projections, recency)?
             .map(|candidates| candidates.statement(candidates.legs.iter())));
     }
-    let Some(flavor) = core_band_scan(projections) else {
+    let Some(spiice) = core_band_scan(projections) else {
         return Ok(None);
     };
     let admit = candidate_authorization("p.memory_id", "");
     ranked_projection_sql_parts(
-        &flavor,
+        &spiice,
         true,
         &format!(
-            " AND p.owner_id = ANY(proxima_core.search_owner_ids()){}",
+            " AND p.owner_id = ANY(proxiima_core.search_owner_ids()){}",
             candidate_tags("p.tag")
         ),
         &admit,
@@ -831,8 +831,8 @@ pub(crate) fn projection_candidate_statements(
 
 /// The participating schemas the candidate functions render: those on core
 /// bands, which the merge can compare.
-fn core_band_scan(projections: &[MemorySearchProjection]) -> Option<FlavorScan<'_>> {
-    FlavorScan::new(
+fn core_band_scan(projections: &[MemorySearchProjection]) -> Option<SpiiceScan<'_>> {
+    SpiiceScan::new(
         projections
             .iter()
             .filter(|projection| {
@@ -892,18 +892,18 @@ pub(crate) fn projection_substring_candidates(
     projections: &[MemorySearchProjection],
     recency: bool,
 ) -> Result<Option<SubstringCandidates>, StorageError> {
-    let Some(flavor) = core_band_scan(projections) else {
+    let Some(spiice) = core_band_scan(projections) else {
         return Ok(None);
     };
-    substring_candidate_legs(&flavor, candidate_order_of(recency))
+    substring_candidate_legs(&spiice, candidate_order_of(recency))
 }
 
 fn substring_candidate_legs(
-    flavor: &FlavorScan<'_>,
+    spiice: &SpiiceScan<'_>,
     order: SearchOrder,
 ) -> Result<Option<SubstringCandidates>, StorageError> {
     let legs = sidecar_legs(
-        flavor
+        spiice
             .schemas
             .iter()
             .copied()
@@ -927,7 +927,7 @@ fn substring_candidate_legs(
         );
         let sql = substring_leg_sql_parts(
             leg,
-            flavor.bands,
+            spiice.bands,
             &tags,
             &candidate_authorization("m.t", &heads_of_leg),
         )?;
@@ -963,12 +963,12 @@ fn candidate_tags(column: &str) -> String {
 /// an extra predicate on `authorized_head`, or empty.
 fn candidate_authorization(memory_id: &str, head_filter: &str) -> String {
     format!(
-        " AND EXISTS (SELECT 1 FROM proxima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ \
+        " AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ \
          WHERE authorized_memory.t = {memory_id} \
          AND authorized_memory.owner_id = ANY($7::uuid[]) \
          AND authorized_memory.forgotten_at IS NULL \
          AND ($11::text IS NULL OR authorized_memory.kind::text = $11) \
-         AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxima_core.memory_head authorized_head \
+         AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head \
          WHERE authorized_head.handle = authorized_memory.handle \
          AND authorized_head.t = authorized_memory.t{head_filter})))"
     )
@@ -979,7 +979,7 @@ fn candidate_authorization(memory_id: &str, head_filter: &str) -> String {
 /// ONE author, used by the candidate statements AND by [`admit_hits`], so
 /// the two cannot drift: a filter the admit side applies and the candidate
 /// side does not know about is a starved window. `EntityKind::Goal` selects
-/// nothing — `proxima_core.memory_kind` has exactly three values and goals
+/// nothing — `proxiima_core.memory_kind` has exactly three values and goals
 /// are not among them — which is also why the admit side's `parse_kind` can
 /// never drop an admitted row for being unrecognised.
 ///
@@ -996,7 +996,7 @@ fn kind_literal(kind: Option<EntityKind>) -> Option<&'static str> {
 /// candidate window already paid for, so a window spent on rows this step
 /// will drop is a window that admits fewer than `limit` results while
 /// admissible rows sat just below the cut. With ONE global top-`overfetch`
-/// per flavor it is reachable at `limit = 1` (`overfetch` =
+/// per spiice it is reachable at `limit = 1` (`overfetch` =
 /// 20): twenty-five doomed rows of one schema starve another schema's live
 /// row out of the window entirely, the starved schema is then reported
 /// "missing", and the substring arm re-finds it at its FLAT floor — a real
@@ -1011,7 +1011,7 @@ fn kind_literal(kind: Option<EntityKind>) -> Option<&'static str> {
 ///    `0.545455` (its exact band) with it.
 /// 2. **Kind.** `kind` does NOT narrow the participating schema set the way
 ///    `schema_id` does, because ONE schema id may register under two kinds —
-///    flavor #0's `core/agent-derivation-v1` is both an `Abstraction` and a
+///    spiice #0's `core/agent-derivation-v1` is both an `Abstraction` and a
 ///    `Perspective`. The projection carries no kind column, so under
 ///    `kind = Perspective` the abstraction-kind rows of that same schema id
 ///    enter the window and admit drops them after. Measured on the same
@@ -1025,14 +1025,14 @@ fn kind_literal(kind: Option<EntityKind>) -> Option<&'static str> {
 /// its own top-`overfetch` whenever `overfetch >= limit`, which
 /// [`overfetch`] guarantees. owner, `since` and `until` are already row
 /// predicates on the candidate side, and `schema_id` narrows the
-/// participating schema set in `core_search_flavors` before a statement is
+/// participating schema set in `core_search_spiices` before a statement is
 /// rendered. That the list is complete is checked mechanically by
 /// `every_admit_filter_is_mirrored_on_the_candidate_side`, not asserted
 /// here.
 ///
 /// # Cost
 ///
-/// One index probe into `proxima_core.memory` (`UNIQUE (t)`) per MATCHING
+/// One index probe into `proxiima_core.memory` (`UNIQUE (t)`) per MATCHING
 /// row — not per RETURNED candidate. `ORDER BY lexical_score DESC` has no
 /// index to walk, so the sort is fed by every row the `@@` matches and
 /// `overfetch_k` bounds only what comes back out; the EXISTS is evaluated
@@ -1052,7 +1052,7 @@ fn admit_side_restriction(req: &MemorySearchRequest, memory_id: &str) -> String 
         return String::new();
     }
     if memory_id == SUBSTRING_MEMORY_ID {
-        // The leg already drives `proxima_core.memory m`, so the kind is a
+        // The leg already drives `proxiima_core.memory m`, so the kind is a
         // column predicate on a row it has already fetched and only the head
         // lookup needs a probe.
         let kind_pred = kind.map_or_else(String::new, |kind| {
@@ -1061,7 +1061,7 @@ fn admit_side_restriction(req: &MemorySearchRequest, memory_id: &str) -> String 
         let head_pred = if heads_only {
             "
             AND EXISTS (SELECT 1
-                          FROM proxima_core.memory_head hh
+                          FROM proxiima_core.memory_head hh
                          WHERE hh.handle = m.handle AND hh.t = m.t)"
         } else {
             ""
@@ -1070,7 +1070,7 @@ fn admit_side_restriction(req: &MemorySearchRequest, memory_id: &str) -> String 
     }
     let head_join = if heads_only {
         "
-                          JOIN proxima_core.memory_head hh
+                          JOIN proxiima_core.memory_head hh
                             ON hh.handle = hm.handle AND hh.t = hm.t"
     } else {
         ""
@@ -1081,7 +1081,7 @@ fn admit_side_restriction(req: &MemorySearchRequest, memory_id: &str) -> String 
     format!(
         "
             AND EXISTS (SELECT 1
-                          FROM proxima_core.memory hm{head_join}
+                          FROM proxiima_core.memory hm{head_join}
                          WHERE hm.t = {memory_id}{kind_pred})"
     )
 }
@@ -1164,16 +1164,16 @@ fn rank_weight_array(projection: &MemorySearchProjection) -> String {
 
 fn search_admit_sql(heads_only: bool) -> String {
     let from = if heads_only {
-        "FROM proxima_core.memory_head h \
-         JOIN proxima_core.memory m ON m.handle = h.handle AND m.t = h.t"
+        "FROM proxiima_core.memory_head h \
+         JOIN proxiima_core.memory m ON m.handle = h.handle AND m.t = h.t"
     } else {
-        "FROM proxima_core.memory m"
+        "FROM proxiima_core.memory m"
     };
     format!(
         "SELECT m.t,
                 m.kind,
                 m.schema_id,
-                proxima_core.memory_created_at(m.t) AS created_at,
+                proxiima_core.memory_created_at(m.t) AS created_at,
                 m.occurred_at, m.\"by\", m.via
            {from}
           WHERE m.t = ANY($1::uuid[])
@@ -1181,9 +1181,9 @@ fn search_admit_sql(heads_only: bool) -> String {
             AND ($3::text IS NULL OR m.kind::text = $3)
             AND ($4::text IS NULL OR m.schema_id = $4)
             AND ($5::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(m.t) >= $5)
+                 OR proxiima_core.memory_created_at(m.t) >= $5)
             AND ($6::timestamptz IS NULL
-                 OR proxima_core.memory_created_at(m.t) <= $6)"
+                 OR proxiima_core.memory_created_at(m.t) <= $6)"
     )
 }
 
@@ -1194,30 +1194,30 @@ fn search_admit_sql(heads_only: bool) -> String {
 fn query_side_cte(multilingual: bool) -> &'static str {
     if multilingual {
         "WITH analyzed_query AS MATERIALIZED (
-             SELECT proxima_core.lexical_scrub($1) AS scrubbed,
-                    proxima_core.lexical_query_text(proxima_core.lexical_config(),
-                        proxima_core.lexical_scrub($1)) AS analyzed
+             SELECT proxiima_core.lexical_scrub($1) AS scrubbed,
+                    proxiima_core.lexical_query_text(proxiima_core.lexical_config(),
+                        proxiima_core.lexical_scrub($1)) AS analyzed
          ), q AS MATERIALIZED (
              SELECT s.scrubbed, s.analyzed,
                     COALESCE(
-                        (SELECT proxima_core.tsquery_or_agg(
+                        (SELECT proxiima_core.tsquery_or_agg(
                                     websearch_to_tsquery(l.config, s.analyzed)
                                     ORDER BY l.config)
-                           FROM proxima_core.lexical_languages l),
-                        websearch_to_tsquery(proxima_core.lexical_config(), s.analyzed)
+                           FROM proxiima_core.lexical_languages l),
+                        websearch_to_tsquery(proxiima_core.lexical_config(), s.analyzed)
                     ) AS tsq,
                     COALESCE(
-                        (SELECT proxima_core.tsquery_or_agg(
+                        (SELECT proxiima_core.tsquery_or_agg(
                                     NULLIF(
                                         replace(
                                             plainto_tsquery(l.config, s.analyzed)::text,
                                             ' & ', ' | '),
                                         '')::tsquery
                                     ORDER BY l.config)
-                           FROM proxima_core.lexical_languages l),
+                           FROM proxiima_core.lexical_languages l),
                         NULLIF(
                             replace(
-                                plainto_tsquery(proxima_core.lexical_config(), s.analyzed)::text,
+                                plainto_tsquery(proxiima_core.lexical_config(), s.analyzed)::text,
                                 ' & ', ' | '),
                             '')::tsquery
                     ) AS any_tsq
@@ -1225,13 +1225,13 @@ fn query_side_cte(multilingual: bool) -> &'static str {
          )"
     } else {
         "WITH q AS MATERIALIZED (
-             SELECT proxima_core.lexical_scrub($1) AS scrubbed,
-                    websearch_to_tsquery(proxima_core.lexical_config(),
-                        proxima_core.lexical_scrub($1)) AS tsq,
+             SELECT proxiima_core.lexical_scrub($1) AS scrubbed,
+                    websearch_to_tsquery(proxiima_core.lexical_config(),
+                        proxiima_core.lexical_scrub($1)) AS tsq,
                     NULLIF(
                         replace(
-                            plainto_tsquery(proxima_core.lexical_config(),
-                                proxima_core.lexical_scrub($1))::text,
+                            plainto_tsquery(proxiima_core.lexical_config(),
+                                proxiima_core.lexical_scrub($1))::text,
                             ' & ', ' | '),
                         '')::tsquery AS any_tsq
          )"
@@ -1250,7 +1250,7 @@ fn rank_tsquery_expr(multilingual: bool) -> &'static str {
 /// participating projections. The same memory predicate is used for final
 /// admission, so authorization and request filters have one author.
 fn semantic_candidate_admission_sql(
-    flavors: &[FlavorScan<'_>],
+    spiices: &[SpiiceScan<'_>],
     req: &MemorySearchRequest,
 ) -> Result<String, StorageError> {
     let op = tag_operator(req.tag_match);
@@ -1259,11 +1259,11 @@ fn semantic_candidate_admission_sql(
     } else {
         SEMANTIC_SCHEMA_BIND_BASE
     };
-    let probes = flavors
+    let probes = spiices
         .iter()
         .enumerate()
-        .map(|(index, flavor)| {
-            let table = PgIdent::table(&flavor.head().projection_table)?;
+        .map(|(index, spiice)| {
+            let table = PgIdent::table(&spiice.head().projection_table)?;
             let tag_pred = if req.tags.is_empty() {
                 String::new()
             } else {
@@ -1295,7 +1295,7 @@ fn semantic_candidate_admission_sql(
 async fn scan_embeddings_on_connection(
     connection: &mut Transaction<'static, Postgres>,
     req: &MemorySearchRequest,
-    flavors: &[FlavorScan<'_>],
+    spiices: &[SpiiceScan<'_>],
     tuning: &PgTuning,
     overfetch: u32,
     vectors: &crate::vector_index::StoreVectors,
@@ -1305,7 +1305,7 @@ async fn scan_embeddings_on_connection(
             "semantic search requires a query embedding".into(),
         ));
     };
-    if flavors.is_empty() {
+    if spiices.is_empty() {
         return Ok(Vec::new());
     }
     let owner_ids: Vec<uuid::Uuid> = req
@@ -1314,11 +1314,11 @@ async fn scan_embeddings_on_connection(
         .copied()
         .map(OwnerId::into_inner)
         .collect();
-    let schema_sets: Vec<Vec<&str>> = flavors
+    let schema_sets: Vec<Vec<&str>> = spiices
         .iter()
         .map(|f| f.schemas.iter().map(|p| p.schema_id.as_str()).collect())
         .collect();
-    let sql = semantic_candidate_admission_sql(flavors, req)?;
+    let sql = semantic_candidate_admission_sql(spiices, req)?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(set_hnsw_search_sql(tuning)))
         .execute(connection.as_mut())
         .await
@@ -1420,7 +1420,7 @@ async fn admit_hits_on_connection(
             };
             Some(MemorySearchResult {
                 memory_id: MemoryId::new(row.t),
-                writer: proxima_core::WriterAttribution {
+                writer: proxiima_core::WriterAttribution {
                     by: row.by,
                     via: row.via,
                 },
@@ -1492,7 +1492,7 @@ fn ranks_after_cursor(result: &MemorySearchResult, after: SearchCursor) -> bool 
 
 /// The ranked arm, for the plan pins.
 ///
-/// It takes the flavor's participating schemas rather than one projection,
+/// It takes the spiice's participating schemas rather than one projection,
 /// because that is what one statement serves.
 ///
 /// # Errors
@@ -1507,7 +1507,7 @@ pub fn ranked_projection_sql_for_tests(
     rescue: bool,
 ) -> Result<String, StorageError> {
     ranked_projection_sql(
-        &FlavorScan::new(schemas.to_vec())
+        &SpiiceScan::new(schemas.to_vec())
             .ok_or_else(|| StorageError::Internal("no render bands on head".into()))?,
         req,
         rescue,
@@ -1559,7 +1559,7 @@ pub fn semantic_candidate_admission_sql_for_tests(
     req: &MemorySearchRequest,
     projections: &[MemorySearchProjection],
 ) -> Result<String, StorageError> {
-    semantic_candidate_admission_sql(&core_search_flavors(req, projections), req)
+    semantic_candidate_admission_sql(&core_search_spiices(req, projections), req)
 }
 
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
@@ -1581,7 +1581,7 @@ mod tests {
         let src = include_str!("search.rs");
         let join = format!(
             "{}{}",
-            "JOIN proxima_core.memory_head h ON h.handle = ", "m.handle\""
+            "JOIN proxiima_core.memory_head h ON h.handle = ", "m.handle\""
         );
         assert!(
             !src.contains(&join),
@@ -1598,11 +1598,11 @@ mod tests {
         let src = include_str!("search.rs");
         let prod = src.split("mod tests").next().expect("production");
         assert!(
-            prod.contains("search_candidates::call_sql(&flavor.head().projection_table, false)"),
+            prod.contains("search_candidates::call_sql(&spiice.head().projection_table, false)"),
             "the ranked scan must call the fixed candidate function"
         );
         assert!(
-            prod.contains("search_candidates::call_sql(&flavor.head().projection_table, true)"),
+            prod.contains("search_candidates::call_sql(&spiice.head().projection_table, true)"),
             "the substring scan must call the fixed candidate function"
         );
         let admit = format!("{}{}", "search_admit_sql(matches!(", "");
@@ -1610,43 +1610,43 @@ mod tests {
     }
 
     /// The core contract's own projected sidecars stay declared alongside
-    /// the other flavors an unscoped request can reach.
+    /// the other spiices an unscoped request can reach.
     #[test]
     fn the_core_contract_declares_its_projected_sidecars() {
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         for projection in registry.search_projections().iter().filter(|projection| {
-            proxima_core::FLAVOR_0.declares_sidecar_table(&projection.sidecar_table)
+            proxiima_core::SPIICE_0.declares_sidecar_table(&projection.sidecar_table)
         }) {
             assert!(
                 matches!(
                     projection.band_comparability,
-                    proxima_core::flavor::BandComparability::CoreBands
+                    proxiima_core::spiice::BandComparability::CoreBands
                 ) && projection.rank_source.is_projection(),
-                "flavor #0's own schemas must pass the gate they define"
+                "spiice #0's own schemas must pass the gate they define"
             );
         }
         let mut by_contract = registry
             .search_projections()
             .iter()
             .map(|projection| projection.sidecar_table.as_str())
-            .filter(|table| proxima_core::FLAVOR_0.declares_sidecar_table(table))
+            .filter(|table| proxiima_core::SPIICE_0.declares_sidecar_table(table))
             .collect::<Vec<_>>();
         by_contract.sort_unstable();
         by_contract.dedup();
         assert_eq!(
             by_contract,
             vec![
-                "proxima_core.agent_derivation_v1",
-                "proxima_core.agent_note_v1",
-                "proxima_core.interpretation_v1",
-                "proxima_core.utterance_v1",
+                "proxiima_core.agent_derivation_v1",
+                "proxiima_core.agent_note_v1",
+                "proxiima_core.interpretation_v1",
+                "proxiima_core.utterance_v1",
             ],
         );
         let mut by_prefix = registry
             .search_projections()
             .iter()
             .map(|projection| projection.sidecar_table.as_str())
-            .filter(|table| table.starts_with("proxima_core."))
+            .filter(|table| table.starts_with("proxiima_core."))
             .collect::<Vec<_>>();
         by_prefix.sort_unstable();
         by_prefix.dedup();
@@ -1672,7 +1672,7 @@ mod tests {
     /// fails here.
     #[test]
     fn every_bind_is_where_the_scan_binds_it() {
-        let note = proxima_core::FlavorRegistry::new()
+        let note = proxiima_core::SpiiceRegistry::new()
             .freeze_or_panic_for_tests()
             .search_projections()
             .iter()
@@ -1680,10 +1680,10 @@ mod tests {
             .expect("core/agent-note-v1 is a search surface")
             .clone();
         let mut req = request_with_tags();
-        let flavor =
-            super::FlavorScan::new(vec![&note]).expect("fixture head declares render bands");
+        let spiice =
+            super::SpiiceScan::new(vec![&note]).expect("fixture head declares render bands");
 
-        let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+        let ranked = super::ranked_projection_sql(&spiice, &req, true).expect("ranked");
         assert!(ranked.contains("lexical_scrub($1)"), "$1 is the query");
         assert!(ranked.contains("LIMIT $2"), "$2 is the overfetch budget");
         assert!(
@@ -1695,11 +1695,11 @@ mod tests {
         // tells `since` from `until`, and swapping them leaves every other
         // test in the workspace green.
         assert!(
-            ranked.contains("proxima_core.memory_created_at(p.memory_id) >= $4"),
+            ranked.contains("proxiima_core.memory_created_at(p.memory_id) >= $4"),
             "$4 is `since` — a LOWER bound"
         );
         assert!(
-            ranked.contains("proxima_core.memory_created_at(p.memory_id) <= $5"),
+            ranked.contains("proxiima_core.memory_created_at(p.memory_id) <= $5"),
             "$5 is `until` — an UPPER bound"
         );
         assert!(
@@ -1726,13 +1726,13 @@ mod tests {
         // the composite `gin(owner_id, search_tsv)` needs. The head
         // restriction names `memory` and `memory_head` in an EXISTS, so the
         // property is asserted directly rather than by a blanket string
-        // test for `proxima_core.memory`.
+        // test for `proxiima_core.memory`.
         assert!(
             !ranked.contains("m.owner_id"),
             "the ranked arm's owner is on the projection, never reached through memory"
         );
         assert!(
-            ranked.contains("FROM proxima_core.projection p, q"),
+            ranked.contains("FROM proxiima_core.projection p, q"),
             "the projection is the driving relation"
         );
 
@@ -1741,11 +1741,11 @@ mod tests {
         assert!(substring.contains("LIMIT $2"), "$2 is the overfetch budget");
         assert!(substring.contains("c.tags && $3::text[]"), "$3 is the tags");
         assert!(
-            substring.contains("proxima_core.memory_created_at(c.t) >= $4"),
+            substring.contains("proxiima_core.memory_created_at(c.t) >= $4"),
             "$4 is `since` — a LOWER bound"
         );
         assert!(
-            substring.contains("proxima_core.memory_created_at(c.t) <= $5"),
+            substring.contains("proxiima_core.memory_created_at(c.t) <= $5"),
             "$5 is `until` — an UPPER bound"
         );
         assert!(
@@ -1753,7 +1753,7 @@ mod tests {
             "$6 is the recency cursor, and it pages DOWNWARD"
         );
         assert!(
-            substring.contains("JOIN proxima_core.memory m ON m.t = c.t"),
+            substring.contains("JOIN proxiima_core.memory m ON m.t = c.t"),
             "a sidecar carries no owner; the leg must drive from memory"
         );
         assert!(
@@ -1776,17 +1776,17 @@ mod tests {
         // Without tags the tag predicate is absent from both, and nothing
         // else moves: `$3` simply goes unmentioned.
         req.tags.clear();
-        let untagged = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+        let untagged = super::ranked_projection_sql(&spiice, &req, true).expect("ranked");
         assert!(!untagged.contains("p.tag"));
         assert!(untagged.contains("p.owner_id = ANY($7::uuid[])"));
     }
 
-    /// One `EXISTS` probe per participating flavor, against THAT flavor's
-    /// projection table with THAT flavor's schema set, OR'ed — and no
+    /// One `EXISTS` probe per participating spiice, against THAT spiice's
+    /// projection table with THAT spiice's schema set, OR'ed — and no
     /// table name reaches the SQL except through `PgIdent`.
     #[test]
-    fn the_semantic_arm_probes_each_participating_flavor() {
-        let note = proxima_core::FlavorRegistry::new()
+    fn the_semantic_arm_probes_each_participating_spiice() {
+        let note = proxiima_core::SpiiceRegistry::new()
             .freeze_or_panic_for_tests()
             .search_projections()
             .iter()
@@ -1795,50 +1795,50 @@ mod tests {
             .clone();
         let mut req = request_with_tags();
 
-        // Two flavors: one probe each, OR'ed, each with its own schema set.
+        // Two spiices: one probe each, OR'ed, each with its own schema set.
         let mut docs = note.clone();
-        docs.projection_table = "proxima_docs.projection".into();
-        let flavors = [
-            super::FlavorScan::new(vec![&note]).expect("fixture head declares render bands"),
-            super::FlavorScan::new(vec![&docs]).expect("fixture head declares render bands"),
+        docs.projection_table = "proxiima_docs.projection".into();
+        let spiices = [
+            super::SpiiceScan::new(vec![&note]).expect("fixture head declares render bands"),
+            super::SpiiceScan::new(vec![&docs]).expect("fixture head declares render bands"),
         ];
-        let two = super::semantic_candidate_admission_sql(&flavors, &req).expect("semantic");
+        let two = super::semantic_candidate_admission_sql(&spiices, &req).expect("semantic");
         let core = two
-            .find("FROM proxima_core.projection p")
+            .find("FROM proxiima_core.projection p")
             .expect("core probe");
         let foreign = two
-            .find("FROM proxima_docs.projection p")
+            .find("FROM proxiima_docs.projection p")
             .expect("docs probe");
-        assert!(core < foreign, "probes render in `flavors` order");
-        assert!(two.contains(") OR EXISTS ("), "one probe per flavor, OR'ed");
+        assert!(core < foreign, "probes render in `spiices` order");
+        assert!(two.contains(") OR EXISTS ("), "one probe per spiice, OR'ed");
         let first = two.find("p.schema_id = ANY($8::text[])").expect("$8");
         let second = two.find("p.schema_id = ANY($9::text[])").expect("$9");
         assert!(
             core < first && first < foreign && foreign < second,
-            "$8 and $9 are the schema sets of the first and second flavor, in that order"
+            "$8 and $9 are the schema sets of the first and second spiice, in that order"
         );
         assert!(
             !two.contains("$10"),
-            "two flavors bind nine parameters; a tenth is a shift"
+            "two spiices bind nine parameters; a tenth is a shift"
         );
 
         // The table name reaches the SQL only through `PgIdent`.
         let mut spliced = note.clone();
-        spliced.projection_table = "proxima_docs.projection p; DROP TABLE x".into();
+        spliced.projection_table = "proxiima_docs.projection p; DROP TABLE x".into();
         let hostile =
-            [super::FlavorScan::new(vec![&spliced]).expect("fixture head declares render bands")];
+            [super::SpiiceScan::new(vec![&spliced]).expect("fixture head declares render bands")];
         assert!(
             super::semantic_candidate_admission_sql(&hostile, &req).is_err(),
             "an invalid projection table identifier is refused, not spliced"
         );
 
-        // Without tags the same per-flavor probes remain, with schema sets
+        // Without tags the same per-spiice probes remain, with schema sets
         // starting at `$7`.
         req.tags.clear();
-        let untagged = super::semantic_candidate_admission_sql(&flavors, &req).expect("semantic");
-        assert!(untagged.contains("FROM proxima_core.projection p"));
+        let untagged = super::semantic_candidate_admission_sql(&spiices, &req).expect("semantic");
+        assert!(untagged.contains("FROM proxiima_core.projection p"));
         assert!(untagged.contains("p.schema_id = ANY($7::text[])"));
-        assert!(untagged.contains("FROM proxima_docs.projection p"));
+        assert!(untagged.contains("FROM proxiima_docs.projection p"));
         assert!(untagged.contains("p.schema_id = ANY($8::text[])"));
         assert!(!untagged.contains("p.tag"));
         assert!(super::semantic_candidate_admission_sql(&hostile, &req).is_err());
@@ -1857,7 +1857,7 @@ mod tests {
     /// kind mirror.
     #[test]
     fn the_candidate_window_is_not_spent_on_rows_admit_will_drop() {
-        let note = proxima_core::FlavorRegistry::new()
+        let note = proxiima_core::SpiiceRegistry::new()
             .freeze_or_panic_for_tests()
             .search_projections()
             .iter()
@@ -1865,12 +1865,12 @@ mod tests {
             .expect("core/agent-note-v1 is a search surface")
             .clone();
         let mut req = request_with_tags();
-        let flavor =
-            super::FlavorScan::new(vec![&note]).expect("fixture head declares render bands");
+        let spiice =
+            super::SpiiceScan::new(vec![&note]).expect("fixture head declares render bands");
 
-        let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+        let ranked = super::ranked_projection_sql(&spiice, &req, true).expect("ranked");
         assert!(
-            ranked.contains("JOIN proxima_core.memory_head hh")
+            ranked.contains("JOIN proxiima_core.memory_head hh")
                 && ranked.contains("ON hh.handle = hm.handle AND hh.t = hm.t")
                 && ranked.contains("WHERE hm.t = p.memory_id"),
             "HeadsOnly must reach the head through the memory row's handle, \
@@ -1878,7 +1878,7 @@ mod tests {
         );
         let substring = super::substring_sql_for_tests(&[&note], &req).expect("substring");
         assert!(
-            substring.contains("FROM proxima_core.memory_head hh")
+            substring.contains("FROM proxiima_core.memory_head hh")
                 && substring.contains("WHERE hh.handle = m.handle AND hh.t = m.t"),
             "the substring window is shared across the missing schemas now; \
              it must not be spent on superseded revisions either"
@@ -1896,7 +1896,7 @@ mod tests {
         );
 
         req.supersession = SupersessionStatus::IncludeSuperseded;
-        let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+        let ranked = super::ranked_projection_sql(&spiice, &req, true).expect("ranked");
         assert!(
             !ranked.contains("memory_head"),
             "IncludeSuperseded keeps the unfiltered window"
@@ -1913,11 +1913,11 @@ mod tests {
         );
 
         req.kind = None;
-        let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+        let ranked = super::ranked_projection_sql(&spiice, &req, true).expect("ranked");
         assert!(
             !ranked
                 .split_whitespace()
-                .any(|token| token == "proxima_core.memory"),
+                .any(|token| token == "proxiima_core.memory"),
             "with neither filter the ranked arm reads the projection ALONE, \
              as it always did"
         );
@@ -1926,9 +1926,9 @@ mod tests {
         // narrow it away, so only the kind predicate keeps the doomed rows
         // out of the window.
         req.kind = Some(EntityKind::Perspective);
-        let ranked = super::ranked_projection_sql(&flavor, &req, true).expect("ranked");
+        let ranked = super::ranked_projection_sql(&spiice, &req, true).expect("ranked");
         assert!(
-            ranked.contains("FROM proxima_core.memory hm\n") && !ranked.contains("memory_head"),
+            ranked.contains("FROM proxiima_core.memory hm\n") && !ranked.contains("memory_head"),
             "a kind-only restriction probes the memory row and nothing else"
         );
         assert!(
@@ -1976,11 +1976,11 @@ mod tests {
             ("$4", "schema_id — `p.schema_id = ANY($8::text[])`"),
             (
                 "$5",
-                "since — a `proxima_core.memory_created_at(...) >= $4` row predicate",
+                "since — a `proxiima_core.memory_created_at(...) >= $4` row predicate",
             ),
             (
                 "$6",
-                "until — a `proxima_core.memory_created_at(...) <= $5` row predicate",
+                "until — a `proxiima_core.memory_created_at(...) <= $5` row predicate",
             ),
         ];
         for heads_only in [false, true] {
@@ -2018,7 +2018,7 @@ mod tests {
             "supersession is admit's seventh filter, spelled as a FROM clause"
         );
         assert!(
-            super::search_admit_sql(true).contains("proxima_core.memory_head h"),
+            super::search_admit_sql(true).contains("proxiima_core.memory_head h"),
             "…and that is the shape `admit_side_restriction` mirrors"
         );
     }
@@ -2026,8 +2026,8 @@ mod tests {
     /// A request the builders can render every clause of.
     pub(super) fn request_with_tags() -> MemorySearchRequest {
         MemorySearchRequest {
-            owner: OwnerId::from(proxima_core::UserId::new(uuid::Uuid::nil())),
-            read_owners: vec![OwnerId::from(proxima_core::UserId::new(uuid::Uuid::nil()))],
+            owner: OwnerId::from(proxiima_core::UserId::new(uuid::Uuid::nil())),
+            read_owners: vec![OwnerId::from(proxiima_core::UserId::new(uuid::Uuid::nil()))],
             query: "needle".into(),
             mode: SearchMode::Lexical,
             supersession: SupersessionStatus::HeadsOnly,
@@ -2049,8 +2049,8 @@ mod tests {
     /// Reachability follows the projection contract, including without tags.
     /// Comparable scores and the supported renderer remain separate gates.
     #[test]
-    fn the_merge_admits_only_flavors_that_declare_a_comparable_shape() {
-        let frozen = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+    fn the_merge_admits_only_spiices_that_declare_a_comparable_shape() {
+        let frozen = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let note = frozen
             .search_projections()
             .iter()
@@ -2058,27 +2058,27 @@ mod tests {
             .expect("the core note projection")
             .clone();
         let mut foreign = note.clone();
-        foreign.schema_id = proxima_core::SchemaId::new("search-notes/note-v1".into());
+        foreign.schema_id = proxiima_core::SchemaId::new("search-notes/note-v1".into());
         foreign.sidecar_table = "search_notes.note_v1".into();
         foreign.projection_table = "search_notes.projection".into();
         foreign.tag_column = None;
         let mut divergent = foreign.clone();
-        divergent.band_comparability = proxima_core::flavor::BandComparability::Divergent {
+        divergent.band_comparability = proxiima_core::spiice::BandComparability::Divergent {
             why: "scores have another scale",
         };
         let mut divergent_core = note.clone();
         divergent_core.band_comparability = divergent.band_comparability;
         let mut unsupported = foreign.clone();
-        unsupported.rank_source = proxima_core::flavor::RankSource::SidecarWithProjectionOwner {
-            why: "the flavor supplies its own renderer",
+        unsupported.rank_source = proxiima_core::spiice::RankSource::SidecarWithProjectionOwner {
+            why: "the spiice supplies its own renderer",
         };
         unsupported.render_bands = None;
         let mut request = request_with_tags();
         request.tags.clear();
         let reaches =
             |request: &MemorySearchRequest,
-             projection: &proxima_core::verbs::schema::MemorySearchProjection| {
-                !super::core_search_flavors(request, std::slice::from_ref(projection)).is_empty()
+             projection: &proxiima_core::verbs::schema::MemorySearchProjection| {
+                !super::core_search_spiices(request, std::slice::from_ref(projection)).is_empty()
             };
         for (shape, projection, expected) in [
             ("core", &note, true),
@@ -2090,7 +2090,7 @@ mod tests {
             assert_eq!(reaches(&request, projection), expected, "{shape}");
         }
         let projections = [note.clone(), foreign.clone()];
-        assert_eq!(super::core_search_flavors(&request, &projections).len(), 2);
+        assert_eq!(super::core_search_spiices(&request, &projections).len(), 2);
         request.schema_id = Some(foreign.schema_id.clone());
         assert!(reaches(&request, &foreign));
         request.schema_id = Some(note.schema_id.clone());

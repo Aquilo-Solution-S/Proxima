@@ -11,11 +11,11 @@ use crate::access::owner_columns::{ensure_owner_row, register_group};
 use crate::test_fixtures::create_core_db;
 use crate::verbs::forget::{lock_lifecycle_targets_tx, lock_memory_handles_tx};
 use crate::verbs::memory_timeseries::{read_memory_by_t, read_memory_head};
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::OwnerWritePermit;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{AccessKind, GroupId, OwnerId, SchemaId, SchemaVersion, StorageError, UserId};
-use proxima_pg_testkit::{db_url, drop_db};
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::storage_ports::OwnerWritePermit;
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::{AccessKind, GroupId, OwnerId, SchemaId, SchemaVersion, StorageError, UserId};
+use proxiima_pg_testkit::{db_url, drop_db};
 use uuid::Uuid;
 
 fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
@@ -34,14 +34,14 @@ fn draft(source: Option<(&str, &str)>) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
 
 #[tokio::test]
 async fn a_batched_lock_set_acquires_every_id_not_just_the_first() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -73,7 +73,7 @@ async fn a_batched_lock_set_acquires_every_id_not_just_the_first() {
         .fetch_all(holder.as_mut())
         .await?;
         let expected: Vec<i64> = sqlx::query_scalar(
-            "SELECT hashtextextended('proxima-forget:' || id::text, 0)
+            "SELECT hashtextextended('proxiima-forget:' || id::text, 0)
                FROM unnest($1::uuid[]) AS id",
         )
         .bind(&ids[..])
@@ -97,7 +97,7 @@ async fn a_batched_lock_set_acquires_every_id_not_just_the_first() {
 
 #[tokio::test]
 async fn memory_handle_and_lifecycle_namespaces_are_distinct() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -129,7 +129,7 @@ async fn memory_handle_and_lifecycle_namespaces_are_distinct() {
 
 #[tokio::test]
 async fn memory_timeseries_keyless_and_ingest_key_replay() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -177,7 +177,7 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
         assert_eq!((by_head.by, by_head.via), (writer.by, writer.via));
 
         let head_t: Uuid =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(a.handle)
                 .fetch_one(pg.pool_for_tests())
                 .await?;
@@ -188,12 +188,12 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
         );
 
         let row_schema: String =
-            sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT schema_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(a.memory_id.into_inner())
                 .fetch_one(pg.pool_for_tests())
                 .await?;
         let head_schema: String =
-            sqlx::query_scalar("SELECT schema_id FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT schema_id FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(a.handle)
                 .fetch_one(pg.pool_for_tests())
                 .await?;
@@ -227,7 +227,7 @@ async fn memory_timeseries_keyless_and_ingest_key_replay() {
 
 #[tokio::test]
 async fn a_revision_after_a_future_head_becomes_the_new_head() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_core_db(&db_name).await.expect("create database");
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect_for_tests(db_url(&db_name)).await?;
@@ -246,12 +246,12 @@ async fn a_revision_after_a_future_head_becomes_the_new_head() {
         bytes[6..8].copy_from_slice(&0x8fff_u16.to_be_bytes());
         let future_t = Uuid::from_bytes(bytes);
         assert!(
-            proxima_core::MemoryId::new(future_t).created_at() > time::OffsetDateTime::now_utc()
+            proxiima_core::MemoryId::new(future_t).created_at() > time::OffsetDateTime::now_utc()
         );
         let mut seed = pool.begin().await?;
         sqlx::query(
-            "INSERT INTO proxima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
-             VALUES ($1, $2, 'fact', $3, $4, proxima_core.memory_created_at($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+            "INSERT INTO proxiima_core.memory (handle, t, kind, owner_id, schema_id, occurred_at, \"by\", via)
+             VALUES ($1, $2, 'fact', $3, $4, proxiima_core.memory_created_at($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
         )
         .bind(first.handle)
         .bind(future_t)
@@ -259,7 +259,7 @@ async fn a_revision_after_a_future_head_becomes_the_new_head() {
         .bind("core/test-fact-v1")
         .execute(seed.as_mut())
         .await?;
-        sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+        sqlx::query("UPDATE proxiima_core.memory_head SET t = $2 WHERE handle = $1")
             .bind(first.handle)
             .bind(future_t)
             .execute(seed.as_mut())
@@ -272,7 +272,7 @@ async fn a_revision_after_a_future_head_becomes_the_new_head() {
         assert!(revision.memory_id.into_inner() > future_t);
         assert_eq!(revision.memory_id.into_inner().get_version_num(), 8);
         assert_eq!(
-            proxima_core::memory_store_number(revision.memory_id.into_inner()),
+            proxiima_core::memory_store_number(revision.memory_id.into_inner()),
             pg.store_number()
         );
         let mut read = pool.begin().await?;
@@ -282,7 +282,7 @@ async fn a_revision_after_a_future_head_becomes_the_new_head() {
         assert_eq!(head.t, revision.memory_id.into_inner());
         assert_eq!(head.occurred_at, Some(revision.memory_id.created_at()));
         let revisions: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE handle = $1")
+            sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory WHERE handle = $1")
                 .bind(first.handle)
                 .fetch_one(read.as_mut())
                 .await?;
@@ -297,7 +297,7 @@ async fn a_revision_after_a_future_head_becomes_the_new_head() {
 
 #[tokio::test]
 async fn memory_timeseries_pins_blob_and_closed_handle() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -349,7 +349,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             "got: {err}"
         );
 
-        sqlx::query("INSERT INTO proxima_core.closed_handle (handle) VALUES ($1)")
+        sqlx::query("INSERT INTO proxiima_core.closed_handle (handle) VALUES ($1)")
             .bind(file.handle)
             .execute(pool)
             .await?;
@@ -366,7 +366,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 
         let hash = vec![7u8; 32];
         let blob_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/bytes-v1', $2)
              RETURNING blob_id",
         )
@@ -378,7 +378,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
         cited.blob_id = Some(blob_id);
         let cited_out = pg.ingest_fact_atomic(&permit, &cited, None).await?;
         let stored: Option<Uuid> =
-            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(cited_out.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -386,16 +386,16 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 
         let edges: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint FROM information_schema.tables
-              WHERE table_schema = 'proxima_core' AND table_name = 'edges'",
+              WHERE table_schema = 'proxiima_core' AND table_name = 'edges'",
         )
         .fetch_one(pool)
         .await?;
         assert_eq!(edges, 0, "no edges table");
 
         let mut abs = draft(None);
-        abs.kind = proxima_core::MemoryKind::Abstraction;
-        abs.additional_references = vec![proxima_core::EdgeEndpoint::memory(
-            proxima_core::EntityKind::Fact,
+        abs.kind = proxiima_core::MemoryKind::Abstraction;
+        abs.additional_references = vec![proxiima_core::EdgeEndpoint::memory(
+            proxiima_core::EntityKind::Fact,
             chunk_out.memory_id,
         )];
         let abs_out = pg
@@ -404,19 +404,22 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             .expect("A origins Fact t");
 
         let mut abs_many = draft(None);
-        abs_many.kind = proxima_core::MemoryKind::Abstraction;
+        abs_many.kind = proxiima_core::MemoryKind::Abstraction;
         abs_many.additional_references = vec![
-            proxima_core::EdgeEndpoint::memory(proxima_core::EntityKind::Fact, chunk_out.memory_id),
-            proxima_core::EdgeEndpoint::memory(proxima_core::EntityKind::Fact, other.memory_id),
+            proxiima_core::EdgeEndpoint::memory(
+                proxiima_core::EntityKind::Fact,
+                chunk_out.memory_id,
+            ),
+            proxiima_core::EdgeEndpoint::memory(proxiima_core::EntityKind::Fact, other.memory_id),
         ];
         pg.ingest_fact_atomic(&permit, &abs_many, None)
             .await
             .expect("A origins many Facts");
 
         let mut abs_from_abs = draft(None);
-        abs_from_abs.kind = proxima_core::MemoryKind::Abstraction;
-        abs_from_abs.additional_references = vec![proxima_core::EdgeEndpoint::memory(
-            proxima_core::EntityKind::Abstraction,
+        abs_from_abs.kind = proxiima_core::MemoryKind::Abstraction;
+        abs_from_abs.additional_references = vec![proxiima_core::EdgeEndpoint::memory(
+            proxiima_core::EntityKind::Abstraction,
             abs_out.memory_id,
         )];
         pg.ingest_fact_atomic(&permit, &abs_from_abs, None)
@@ -424,9 +427,9 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             .expect("A origins Abstraction t");
 
         let mut persp_from_fact = draft(None);
-        persp_from_fact.kind = proxima_core::MemoryKind::Perspective;
-        persp_from_fact.additional_references = vec![proxima_core::EdgeEndpoint::memory(
-            proxima_core::EntityKind::Fact,
+        persp_from_fact.kind = proxiima_core::MemoryKind::Perspective;
+        persp_from_fact.additional_references = vec![proxiima_core::EdgeEndpoint::memory(
+            proxiima_core::EntityKind::Fact,
             chunk_out.memory_id,
         )];
         let err = pg
@@ -439,9 +442,9 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
         );
 
         let mut persp_ok = draft(None);
-        persp_ok.kind = proxima_core::MemoryKind::Perspective;
-        persp_ok.additional_references = vec![proxima_core::EdgeEndpoint::memory(
-            proxima_core::EntityKind::Abstraction,
+        persp_ok.kind = proxiima_core::MemoryKind::Perspective;
+        persp_ok.additional_references = vec![proxiima_core::EdgeEndpoint::memory(
+            proxiima_core::EntityKind::Abstraction,
             abs_out.memory_id,
         )];
         let persp_out = pg
@@ -450,9 +453,9 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
             .expect("P origins A");
 
         let mut abs_from_p = draft(None);
-        abs_from_p.kind = proxima_core::MemoryKind::Abstraction;
-        abs_from_p.additional_references = vec![proxima_core::EdgeEndpoint::memory(
-            proxima_core::EntityKind::Perspective,
+        abs_from_p.kind = proxiima_core::MemoryKind::Abstraction;
+        abs_from_p.additional_references = vec![proxiima_core::EdgeEndpoint::memory(
+            proxiima_core::EntityKind::Perspective,
             persp_out.memory_id,
         )];
         let err = pg
@@ -465,23 +468,23 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
         );
 
         sqlx::query(
-            "CREATE TABLE proxima_core.sidecar_sum (
-                 t uuid PRIMARY KEY REFERENCES proxima_core.memory (t),
+            "CREATE TABLE proxiima_core.sidecar_sum (
+                 t uuid PRIMARY KEY REFERENCES proxiima_core.memory (t),
                  text text NOT NULL,
                  lexical_language regconfig NOT NULL DEFAULT 'simple'
              )",
         )
         .execute(pool)
         .await?;
-        sqlx::query("INSERT INTO proxima_core.sidecar_sum (t, text) VALUES ($1, 'summary')")
+        sqlx::query("INSERT INTO proxiima_core.sidecar_sum (t, text) VALUES ($1, 'summary')")
             .bind(abs_out.memory_id.into_inner())
             .execute(pool)
             .await?;
 
         let mut persp = draft(None);
-        persp.kind = proxima_core::MemoryKind::Perspective;
-        persp.additional_references = vec![proxima_core::EdgeEndpoint::memory(
-            proxima_core::EntityKind::Abstraction,
+        persp.kind = proxiima_core::MemoryKind::Perspective;
+        persp.additional_references = vec![proxiima_core::EdgeEndpoint::memory(
+            proxiima_core::EntityKind::Abstraction,
             abs_out.memory_id,
         )];
         persp.blob_id = Some(blob_id);
@@ -506,7 +509,7 @@ async fn memory_timeseries_pins_blob_and_closed_handle() {
 /// kind, group registration, refuses an id already registered as a user.
 #[tokio::test]
 async fn an_id_first_seen_as_a_user_is_never_registered_as_a_group() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -523,7 +526,7 @@ async fn an_id_first_seen_as_a_user_is_never_registered_as_a_group() {
         ensure_owner_row(&mut conn, &owner).await?;
         ensure_owner_row(&mut conn, &OwnerId::from(GroupId::new(id))).await?;
         let kind: String =
-            sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
+            sqlx::query_scalar("SELECT kind::text FROM proxiima_core.owners WHERE owner_id = $1")
                 .bind(id)
                 .fetch_one(&mut *conn)
                 .await?;
@@ -541,7 +544,7 @@ async fn an_id_first_seen_as_a_user_is_never_registered_as_a_group() {
 
 #[tokio::test]
 async fn ensure_owner_row_returns_under_concurrent_first_insert() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -570,7 +573,7 @@ async fn ensure_owner_row_returns_under_concurrent_first_insert() {
         }
         let owner_rows: (i64, String) = sqlx::query_as(
             "SELECT count(*)::bigint, coalesce(min(kind::text), '')
-               FROM proxima_core.owners
+               FROM proxiima_core.owners
               WHERE owner_id = $1",
         )
         .bind(owner.into_inner())
@@ -588,7 +591,7 @@ async fn ensure_owner_row_returns_under_concurrent_first_insert() {
 fn memory_pin_checks_is_set_based() {
     let src = include_str!("../../definitions/functions.sql");
     let start = src
-        .find("CREATE OR REPLACE FUNCTION proxima_core.memory_pin_checks")
+        .find("CREATE OR REPLACE FUNCTION proxiima_core.memory_pin_checks")
         .expect("memory_pin_checks");
     let next = src[start + 1..]
         .find("CREATE OR REPLACE FUNCTION")

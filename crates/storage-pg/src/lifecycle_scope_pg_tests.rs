@@ -1,10 +1,10 @@
 //! #488 S5: owner reads exclude forgotten memories; the lifecycle scope sees
 //! them. `forgotten_at` is set by raw SQL here — no verb sets it yet.
 
-use proxima_core::storage_ports::{MemoryInspectPort, MemoryReadPort, OwnerWritePermit};
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};
-use proxima_core::{AccessKind, OwnerId, UserId};
+use proxiima_core::storage_ports::{MemoryInspectPort, MemoryReadPort, OwnerWritePermit};
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};
+use proxiima_core::{AccessKind, OwnerId, UserId};
 use sqlx::Connection;
 use uuid::Uuid;
 
@@ -13,18 +13,18 @@ use crate::owner_scope::bind_owner_scope;
 use crate::test_fixtures::fresh_pg;
 use crate::verbs::forget::forget_pg_tests::{draft, ingest_stamped};
 
-const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
+const AGENT_NOTE: &str = "proxiima_core.agent_note_v1";
 
-fn schemas() -> Vec<proxima_core::read_models::MemorySchemaSpec> {
+fn schemas() -> Vec<proxiima_core::read_models::MemorySchemaSpec> {
     [
-        proxima_core::EntityKind::Fact,
-        proxima_core::EntityKind::Abstraction,
+        proxiima_core::EntityKind::Fact,
+        proxiima_core::EntityKind::Abstraction,
     ]
     .into_iter()
-    .map(|kind| proxima_core::read_models::MemorySchemaSpec {
+    .map(|kind| proxiima_core::read_models::MemorySchemaSpec {
         kind,
-        schema_id: proxima_core::SchemaId::new("core/test-fact-v1".to_owned()),
-        schema_version: proxima_core::SchemaVersion::new(1),
+        schema_id: proxiima_core::SchemaId::new("core/test-fact-v1".to_owned()),
+        schema_version: proxiima_core::SchemaVersion::new(1),
         sidecar_table: None,
         body_field: None,
         tag_field: None,
@@ -46,10 +46,10 @@ async fn seed(pg: &crate::PgStorage, permit: &OwnerWritePermit) -> Seeded {
         .into_inner();
     // Lineage runs on origins: an Abstraction derived from the parent.
     let mut cites = draft(None);
-    cites.kind = proxima_core::MemoryKind::Abstraction;
-    cites.additional_references = vec![proxima_core::EdgeEndpoint::memory(
-        proxima_core::EntityKind::Fact,
-        proxima_core::MemoryId::new(parent),
+    cites.kind = proxiima_core::MemoryKind::Abstraction;
+    cites.additional_references = vec![proxiima_core::EdgeEndpoint::memory(
+        proxiima_core::EntityKind::Fact,
+        proxiima_core::MemoryId::new(parent),
     )];
     let derive = OwnerWritePermit::new_for_tests(*permit.owner(), AccessKind::Abstraction);
     let child = ingest_stamped(
@@ -58,7 +58,7 @@ async fn seed(pg: &crate::PgStorage, permit: &OwnerWritePermit) -> Seeded {
         &cites,
         &[AGENT_NOTE.to_owned()],
         &[
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+            "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
            VALUES ($1, $1, 'n', 'kept', ARRAY['tag'])",
         ],
     )
@@ -70,7 +70,7 @@ async fn seed(pg: &crate::PgStorage, permit: &OwnerWritePermit) -> Seeded {
 }
 
 async fn forget_by_hand(pg: &crate::PgStorage, t: Uuid) {
-    sqlx::query("UPDATE proxima_core.memory SET forgotten_at = now() WHERE t = $1")
+    sqlx::query("UPDATE proxiima_core.memory SET forgotten_at = now() WHERE t = $1")
         .bind(t)
         .execute(pg.pool_for_tests())
         .await
@@ -79,13 +79,13 @@ async fn forget_by_hand(pg: &crate::PgStorage, t: Uuid) {
 
 /// What one transaction sees of a memory: its row and its agent notes.
 async fn sees(connection: &mut sqlx::PgConnection, t: Uuid) -> (i64, i64) {
-    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE t = $1")
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory WHERE t = $1")
         .bind(t)
         .fetch_one(&mut *connection)
         .await
         .expect("memory read");
     let notes: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM proxima_core.agent_note_v1 WHERE t = $1")
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.agent_note_v1 WHERE t = $1")
             .bind(t)
             .fetch_one(&mut *connection)
             .await
@@ -95,7 +95,7 @@ async fn sees(connection: &mut sqlx::PgConnection, t: Uuid) -> (i64, i64) {
 
 async fn walk_from(
     pg: &crate::PgStorage,
-    scope: &proxima_core::OwnerScope,
+    scope: &proxiima_core::OwnerScope,
     owner: OwnerId,
     start: Uuid,
 ) -> Vec<Uuid> {
@@ -105,7 +105,7 @@ async fn walk_from(
             &[owner],
             &MemoryLineageRequest {
                 owner,
-                start_memory_id: proxima_core::MemoryId::new(start),
+                start_memory_id: proxiima_core::MemoryId::new(start),
                 direction: MemoryLineageDirection::Descendants,
                 depth: 2,
                 limit: 50,
@@ -131,20 +131,28 @@ async fn a_forgotten_memory_is_absent_from_owner_reads() {
 
     // Control: before the flag, every read sees the child.
     assert!(
-        pg.load_memory_by_id(Some(&scope), proxima_core::MemoryId::new(child), &schemas())
-            .await
-            .expect("by id")
-            .is_some()
+        pg.load_memory_by_id(
+            Some(&scope),
+            proxiima_core::MemoryId::new(child),
+            &schemas()
+        )
+        .await
+        .expect("by id")
+        .is_some()
     );
     assert!(walk_from(&pg, &scope, owner, parent).await.contains(&child));
 
     forget_by_hand(&pg, child).await;
 
     assert!(
-        pg.load_memory_by_id(Some(&scope), proxima_core::MemoryId::new(child), &schemas())
-            .await
-            .expect("by id")
-            .is_none(),
+        pg.load_memory_by_id(
+            Some(&scope),
+            proxiima_core::MemoryId::new(child),
+            &schemas()
+        )
+        .await
+        .expect("by id")
+        .is_none(),
         "by-id read must not find a forgotten memory"
     );
     assert!(
@@ -233,7 +241,7 @@ async fn forgotten_note(pg: &crate::PgStorage, owner: OwnerId) -> Uuid {
         &draft(None),
         &[AGENT_NOTE.to_owned()],
         &[
-            "INSERT INTO proxima_core.agent_note_v1 (t, note_id, title, body, tags)
+            "INSERT INTO proxiima_core.agent_note_v1 (t, note_id, title, body, tags)
            VALUES ($1, $1, 'n', 'forgotten', ARRAY['tag'])",
         ],
     )
@@ -251,16 +259,16 @@ async fn stored(pg: &crate::PgStorage, t: Uuid) -> (i64, i64) {
     sees(&mut connection, t).await
 }
 
-fn surfaces() -> proxima_core::owner_inverse::OwnerSurfaces {
-    proxima_core::owner_inverse::OwnerSurfaces::for_registry(
-        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+fn surfaces() -> proxiima_core::owner_inverse::OwnerSurfaces {
+    proxiima_core::owner_inverse::OwnerSurfaces::for_registry(
+        &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
     )
 }
 
 #[tokio::test]
 async fn an_owner_erase_removes_a_forgotten_memory_and_its_sidecar() {
-    use proxima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
-    use proxima_core::storage_ports::OwnerInversePort;
+    use proxiima_core::owner_inverse::{EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget};
+    use proxiima_core::storage_ports::OwnerInversePort;
     let (pg, _guard) = fresh_pg("s7_owner_erase").await;
     let user = UserId::new(Uuid::now_v7());
     let t = forgotten_note(&pg, OwnerId::from(user)).await;
@@ -307,11 +315,11 @@ async fn a_series_erase_selects_a_forgotten_version() {
 
 #[tokio::test]
 async fn a_transfer_moves_a_forgotten_memory_and_keeps_the_flag() {
-    use proxima_core::storage_ports::OwnerTransferPort;
+    use proxiima_core::storage_ports::OwnerTransferPort;
     let (pg, _guard) = fresh_pg("s7_transfer").await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let dest = OwnerId::from(UserId::new(Uuid::now_v7()));
-    sqlx::query("INSERT INTO proxima_core.owners (owner_id, kind) VALUES ($1, 'personal') ON CONFLICT DO NOTHING")
+    sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal') ON CONFLICT DO NOTHING")
         .bind(dest.into_inner())
         .execute(pg.pool_for_tests())
         .await
@@ -321,7 +329,7 @@ async fn a_transfer_moves_a_forgotten_memory_and_keeps_the_flag() {
     assert!(
         pg.transfer_to_owner(
             &permit,
-            proxima_core::EntityId::Memory(proxima_core::MemoryId::new(t)),
+            proxiima_core::EntityId::Memory(proxiima_core::MemoryId::new(t)),
             dest,
             &surfaces(),
             &[],
@@ -331,7 +339,7 @@ async fn a_transfer_moves_a_forgotten_memory_and_keeps_the_flag() {
         "the forgotten memory is moved"
     );
     let (moved_to, still_forgotten): (Uuid, bool) = sqlx::query_as(
-        "SELECT owner_id, forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+        "SELECT owner_id, forgotten_at IS NOT NULL FROM proxiima_core.memory WHERE t = $1",
     )
     .bind(t)
     .fetch_one(pg.pool_for_tests())
@@ -346,8 +354,8 @@ async fn a_transfer_moves_a_forgotten_memory_and_keeps_the_flag() {
 
 #[tokio::test]
 async fn export_lists_a_forgotten_memory_with_its_forgotten_at() {
-    use proxima_core::owner_inverse::{ExportAuthorization, OwnerExportTarget};
-    use proxima_core::storage_ports::OwnerInversePort;
+    use proxiima_core::owner_inverse::{ExportAuthorization, OwnerExportTarget};
+    use proxiima_core::storage_ports::OwnerInversePort;
     let (pg, _guard) = fresh_pg("s8_export").await;
     let user = UserId::new(Uuid::now_v7());
     let owner = OwnerId::from(user);
@@ -371,7 +379,7 @@ async fn export_lists_a_forgotten_memory_with_its_forgotten_at() {
         .expect("export");
     let row = |t: Uuid| {
         bundle
-            .table("proxima_core.memory")
+            .table("proxiima_core.memory")
             .iter()
             .find(|row| row["t"].as_str() == Some(t.to_string().as_str()))
             .cloned()
@@ -398,7 +406,7 @@ async fn export_lists_a_forgotten_memory_with_its_forgotten_at() {
 
 #[tokio::test]
 async fn replaying_a_forgotten_write_answers_its_handle_and_writes_nothing() {
-    use proxima_core::storage_ports::FactIngestPort;
+    use proxiima_core::storage_ports::FactIngestPort;
     let (pg, _guard) = fresh_pg("s8_replay").await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
@@ -420,7 +428,7 @@ async fn replaying_a_forgotten_write_answers_its_handle_and_writes_nothing() {
     assert_eq!(replay.handle, first.handle);
     let (rows, still_forgotten): (i64, bool) = sqlx::query_as(
         "SELECT count(*), bool_and(forgotten_at IS NOT NULL)
-           FROM proxima_core.memory WHERE owner_id = $1",
+           FROM proxiima_core.memory WHERE owner_id = $1",
     )
     .bind(owner.into_inner())
     .fetch_one(pg.pool_for_tests())
@@ -472,7 +480,7 @@ async fn a_forget_that_loses_the_race_leaves_the_scope() {
     )
     .await;
     assert!(
-        matches!(lost, Err(proxima_core::StorageError::NotFound)),
+        matches!(lost, Err(proxiima_core::StorageError::NotFound)),
         "{lost:?}"
     );
     assert_eq!(
@@ -514,7 +522,7 @@ async fn a_failed_restore_leaves_the_scope() {
     )
     .await;
     assert!(
-        matches!(failed, Err(proxima_core::StorageError::NotFound)),
+        matches!(failed, Err(proxiima_core::StorageError::NotFound)),
         "{failed:?}"
     );
     assert_eq!(
@@ -538,7 +546,7 @@ async fn a_failed_erase_leaves_the_scope() {
     )
     .await;
     assert!(
-        matches!(failed, Err(proxima_core::StorageError::NotFound)),
+        matches!(failed, Err(proxiima_core::StorageError::NotFound)),
         "{failed:?}"
     );
     assert_eq!(

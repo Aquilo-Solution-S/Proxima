@@ -58,7 +58,7 @@ pub(super) fn stage_locator_decision(
 }
 
 #[cfg(test)]
-pub(super) use proxima_storage_pg::access::owner_columns::FinishTransitionDecision;
+pub(super) use proxiima_storage_pg::access::owner_columns::FinishTransitionDecision;
 
 #[cfg(test)]
 /// Shared publication classification, mapped into the blob error vocabulary.
@@ -68,7 +68,7 @@ pub(super) fn finish_transition_decision(
     cited_object_id: Uuid,
     rows_affected: u64,
 ) -> Result<FinishTransitionDecision, BlobError> {
-    proxima_storage_pg::access::owner_columns::finish_transition_decision(
+    proxiima_storage_pg::access::owner_columns::finish_transition_decision(
         observed_status,
         observed_cited_object_id,
         cited_object_id,
@@ -128,12 +128,12 @@ mod tests {
         // first is final, so a late finish is a conflict, never a completion.
         assert!(matches!(
             finish_transition_decision(UploadStatus::Aborted, None, object, 0),
-            Err(BlobError::Storage(proxima_core::StorageError::Conflict(message)))
+            Err(BlobError::Storage(proxiima_core::StorageError::Conflict(message)))
                 if message.contains("aborted")
         ));
         assert!(matches!(
             finish_transition_decision(UploadStatus::Expired, None, object, 0),
-            Err(BlobError::Storage(proxima_core::StorageError::Conflict(message)))
+            Err(BlobError::Storage(proxiima_core::StorageError::Conflict(message)))
                 if message.contains("expired")
         ));
         assert!(matches!(

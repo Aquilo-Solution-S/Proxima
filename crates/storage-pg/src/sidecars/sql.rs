@@ -37,7 +37,7 @@ pub fn int_to_u64(value: i64, column: &str) -> Result<u64, StorageError> {
 /// Build a memory sidecar insert statement.
 ///
 /// `stamp_owner` stamps the row with the owner that WROTE it, read out of
-/// `proxima_core.memory` in the same statement — so the value is the acting
+/// `proxiima_core.memory` in the same statement — so the value is the acting
 /// owner at write time and no caller can supply it. Both [`super::SidecarOwnerMode::Pinned`]
 /// and [`super::SidecarOwnerMode::Follows`] pass `true` and share this SELECT
 /// arm: Pinned rows then stay with that owner across transfer, while Follows
@@ -78,13 +78,13 @@ pub fn memory_insert_sql(
         if let Some(pg_type) = cast {
             // The cast target is a (possibly schema-qualified) Postgres type
             // name supplied via `pg_sidecar_cast!`; validate it as an identifier
-            // so a flavor author cannot splice arbitrary SQL through `$pg_type`.
+            // so a spiice author cannot splice arbitrary SQL through `$pg_type`.
             let pg_type = PgIdent::table(pg_type)?.as_str();
             write!(&mut sql, "::{pg_type}").expect("writing SQL into String cannot fail");
         }
     }
     if stamp_owner {
-        sql.push_str(" FROM proxima_core.memory m WHERE m.t = $1");
+        sql.push_str(" FROM proxiima_core.memory m WHERE m.t = $1");
     } else {
         sql.push(')');
     }
@@ -155,7 +155,7 @@ pub fn memory_select_batch_owner_pinned_sql(
     write!(
         &mut sql,
         " FROM {table} s \
-           JOIN proxima_core.memory m \
+           JOIN proxiima_core.memory m \
              ON m.t = s.{key_column} AND m.owner_id = s.owner_id \
           WHERE s.{key_column} = ANY($1)"
     )
@@ -166,7 +166,7 @@ pub fn memory_select_batch_owner_pinned_sql(
 #[cfg(test)]
 mod tests {
     use super::{int_to_u32, int_to_u64};
-    use proxima_core::StorageError;
+    use proxiima_core::StorageError;
 
     /// `count(*)` arrives as a signed `bigint`; a negative one is refused as
     /// a backend fault, naming the column, rather than wrapped or clamped.

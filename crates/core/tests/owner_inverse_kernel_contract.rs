@@ -1,4 +1,4 @@
-use proxima_core::{OwnerEraseOutcome, OwnerId, UserId};
+use proxiima_core::{OwnerEraseOutcome, OwnerId, UserId};
 
 #[test]
 fn public_api_does_not_expose_forgeable_abandoned_owner_constructor() {

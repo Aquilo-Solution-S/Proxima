@@ -4,34 +4,34 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use proxima_core::MemoryKind;
-use proxima_core::flavor::{
-    CounterRule, EraseRule, ExportRule, FlavorContract, FlavorDescriptor, FlavorProvenance,
-    ForgetRule, KeyShape, ProjectionDecl, Surface, TransferRule,
-};
-use proxima_core::owner_inverse::{
+use proxiima_core::MemoryKind;
+use proxiima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget,
     OwnerExportTarget, OwnerSurfaces,
 };
-use proxima_core::storage_ports::publication::{
+use proxiima_core::spiice::{
+    CounterRule, EraseRule, ExportRule, ForgetRule, KeyShape, ProjectionDecl, SpiiceContract,
+    SpiiceDescriptor, SpiiceProvenance, Surface, TransferRule,
+};
+use proxiima_core::storage_ports::publication::{
     PublicationOriginEligibility, PublicationOriginEligibilityPort,
 };
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     FactIngestPort, HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope,
     HostStateEraseTableCount, HostStateExportReceipt, HostStateExportRequest, HostStateExportTable,
     HostStateParticipantId, HostStateReply, HostStateRequest, HostStateWritePermit,
     MemoryAuthoringPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit, StateSurfaceName,
     WriteSessionFactory,
 };
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::fact_ingest::FactWriteCommand;
-use proxima_core::{
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::fact_ingest::FactWriteCommand;
+use proxiima_core::{
     AccessKind, EntityId, GroupId, MemoryId, OwnerId, SchemaId, SchemaVersion, SourceId,
     StorageError, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db};
-use proxima_storage_pg::test_fixtures::create_core_db;
-use proxima_storage_pg::{
+use proxiima_pg_testkit::{db_url, drop_db};
+use proxiima_storage_pg::test_fixtures::create_core_db;
+use proxiima_storage_pg::{
     PgHostStateLifecyclePort, PgHostStateParticipant, PgPoolConfig, PgStorage,
 };
 use serde_json::{Value, json};
@@ -39,11 +39,11 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-const FLAVOR_ID: &str = "test-host-lifecycle";
+const SPIICE_ID: &str = "test-host-lifecycle";
 const PARTICIPANT_ID: HostStateParticipantId = HostStateParticipantId::new("host_lifecycle_test");
-const FACTS_TABLE: &str = "proxima_core.test_host_lifecycle_facts";
-const METADATA_TABLE: &str = "proxima_core.test_host_lifecycle_metadata";
-const GENERIC_COUNT_TABLE: &str = "proxima_core.test_host_lifecycle_generic_rows";
+const FACTS_TABLE: &str = "proxiima_core.test_host_lifecycle_facts";
+const METADATA_TABLE: &str = "proxiima_core.test_host_lifecycle_metadata";
+const GENERIC_COUNT_TABLE: &str = "proxiima_core.test_host_lifecycle_generic_rows";
 const PARTICIPANT_TABLES: &[StateSurfaceName] = &[
     StateSurfaceName::new(FACTS_TABLE),
     StateSurfaceName::new(METADATA_TABLE),
@@ -51,12 +51,12 @@ const PARTICIPANT_TABLES: &[StateSurfaceName] = &[
 const FACT_EXPORT_FIELDS: &[&str] = &["fact_id", "owner_id", "source_id", "payload"];
 const ERASE_CORE_DELETE_GATE_LOCK: i64 = 871_922;
 const WRONG_PARTICIPANT_TABLES: &[StateSurfaceName] = &[StateSurfaceName::new(
-    "proxima_core.test_host_lifecycle_facts",
+    "proxiima_core.test_host_lifecycle_facts",
 )];
 const UNDECLARED_PARTICIPANT_TABLES: &[StateSurfaceName] = &[
     StateSurfaceName::new(FACTS_TABLE),
     StateSurfaceName::new(METADATA_TABLE),
-    StateSurfaceName::new("proxima_core.undeclared_host_state"),
+    StateSurfaceName::new("proxiima_core.undeclared_host_state"),
 ];
 
 const FACTS_SURFACE: Surface = Surface {
@@ -67,9 +67,9 @@ const FACTS_SURFACE: Surface = Surface {
         why: "the host state belongs to the publishing owner",
     },
     erase: EraseRule::HostState {
-        whole_owner: proxima_core::flavor::HostStateEraseDisposition::Erase,
-        source: proxima_core::flavor::HostStateEraseDisposition::Erase,
-        exact_fact: proxima_core::flavor::HostStateEraseDisposition::Erase,
+        whole_owner: proxiima_core::spiice::HostStateEraseDisposition::Erase,
+        source: proxiima_core::spiice::HostStateEraseDisposition::Erase,
+        exact_fact: proxiima_core::spiice::HostStateEraseDisposition::Erase,
     },
     export: ExportRule::Allowlist(FACT_EXPORT_FIELDS),
     forget: ForgetRule::Keep {
@@ -88,14 +88,14 @@ const METADATA_SURFACE: Surface = Surface {
         why: "the host state belongs to the publishing owner",
     },
     erase: EraseRule::HostState {
-        whole_owner: proxima_core::flavor::HostStateEraseDisposition::Erase,
-        source: proxima_core::flavor::HostStateEraseDisposition::Retain,
-        exact_fact: proxima_core::flavor::HostStateEraseDisposition::Retain,
+        whole_owner: proxiima_core::spiice::HostStateEraseDisposition::Erase,
+        source: proxiima_core::spiice::HostStateEraseDisposition::Retain,
+        exact_fact: proxiima_core::spiice::HostStateEraseDisposition::Retain,
     },
     // Erased by the host lifecycle, so the export must carry it or name what
     // it derives from (#478).
     export: ExportRule::DerivedFrom {
-        source: "proxima_core.memory",
+        source: "proxiima_core.memory",
         why: "internal lifecycle metadata over memories the bundle carries",
     },
     forget: ForgetRule::Keep {
@@ -113,7 +113,7 @@ const GENERIC_COUNT_SURFACE: Surface = Surface {
     transfer: TransferRule::StaysOnKey,
     erase: EraseRule::ByOwner,
     export: ExportRule::DerivedFrom {
-        source: "proxima_core.memory",
+        source: "proxiima_core.memory",
         why: "the fixture row exists only to test shared erase counters",
     },
     forget: ForgetRule::Keep {
@@ -124,8 +124,8 @@ const GENERIC_COUNT_SURFACE: Surface = Surface {
     completeness: None,
 };
 
-static CONTRACT: FlavorContract = FlavorContract {
-    flavor_id: FLAVOR_ID,
+static CONTRACT: SpiiceContract = SpiiceContract {
+    spiice_id: SPIICE_ID,
     ordinal: 88,
     schemas: &[],
     state_surfaces: &[FACTS_SURFACE, METADATA_SURFACE, GENERIC_COUNT_SURFACE],
@@ -145,15 +145,15 @@ const GENERIC_FACTS_SURFACE: Surface = Surface {
     ..FACTS_SURFACE
 };
 
-static DUPLICATE_CONTRACT: FlavorContract = FlavorContract {
-    flavor_id: "test-host-lifecycle-duplicate",
+static DUPLICATE_CONTRACT: SpiiceContract = SpiiceContract {
+    spiice_id: "test-host-lifecycle-duplicate",
     ordinal: 89,
     state_surfaces: &[FACTS_SURFACE],
     ..CONTRACT
 };
 
-static OVERLAP_CONTRACT: FlavorContract = FlavorContract {
-    flavor_id: "test-host-lifecycle-overlap",
+static OVERLAP_CONTRACT: SpiiceContract = SpiiceContract {
+    spiice_id: "test-host-lifecycle-overlap",
     ordinal: 89,
     state_surfaces: &[GENERIC_FACTS_SURFACE],
     ..CONTRACT
@@ -293,7 +293,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
         {
             HostStateEraseScope::WholeOwner => {
                 let facts = sqlx::query(
-                    "DELETE FROM proxima_core.test_host_lifecycle_facts f
+                    "DELETE FROM proxiima_core.test_host_lifecycle_facts f
                           WHERE f.owner_id = $1
                              OR f.fact_id = ANY($2)
                              OR EXISTS (
@@ -312,7 +312,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                 .map_err(|error| pg_error(&error))?
                 .rows_affected();
                 let metadata = sqlx::query(
-                    "DELETE FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
+                    "DELETE FROM proxiima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
                 )
                 .bind(owner_id)
                 .execute(&mut **tx)
@@ -324,7 +324,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
             HostStateEraseScope::Source(source) => {
                 let (facts, scrubbed_facts) = if fault == EraseFault::ScrubFacts {
                     let scrubbed = sqlx::query(
-                        "UPDATE proxima_core.test_host_lifecycle_facts f
+                        "UPDATE proxiima_core.test_host_lifecycle_facts f
                             SET payload = decode('', 'hex')
                           WHERE (f.owner_id = $1 AND f.source_id = $2)
                              OR f.fact_id = ANY($3)
@@ -347,7 +347,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                     (0, scrubbed)
                 } else {
                     let deleted = sqlx::query(
-                            "DELETE FROM proxima_core.test_host_lifecycle_facts f
+                            "DELETE FROM proxiima_core.test_host_lifecycle_facts f
                               WHERE (f.owner_id = $1 AND f.source_id = $2)
                                  OR f.fact_id = ANY($3)
                                  OR EXISTS (
@@ -370,7 +370,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                 };
                 let metadata = if fault == EraseFault::RetainedCount {
                     sqlx::query(
-                        "DELETE FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
+                        "DELETE FROM proxiima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
                     )
                     .bind(owner_id)
                     .execute(&mut **tx)
@@ -382,7 +382,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                 };
                 let scrubbed_metadata = if fault == EraseFault::RetainedScrubbedCount {
                     sqlx::query(
-                        "UPDATE proxima_core.test_host_lifecycle_metadata
+                        "UPDATE proxiima_core.test_host_lifecycle_metadata
                             SET payload = decode('', 'hex')
                           WHERE owner_id = $1 AND source_id = $2",
                     )
@@ -399,7 +399,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
             }
             HostStateEraseScope::ExactFacts => {
                 let facts = sqlx::query(
-                    "DELETE FROM proxima_core.test_host_lifecycle_facts
+                    "DELETE FROM proxiima_core.test_host_lifecycle_facts
                           WHERE fact_id = ANY($1)",
                 )
                 .bind(&selected_ids)
@@ -409,7 +409,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                 .rows_affected();
                 let metadata_deleted = if fault == EraseFault::ExactRetainedCount {
                     sqlx::query(
-                        "DELETE FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
+                        "DELETE FROM proxiima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
                     )
                     .bind(owner_id)
                     .execute(&mut **tx)
@@ -421,7 +421,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                 };
                 let metadata_scrubbed = if fault == EraseFault::ExactRetainedScrubbedCount {
                     sqlx::query(
-                        "UPDATE proxima_core.test_host_lifecycle_metadata
+                        "UPDATE proxiima_core.test_host_lifecycle_metadata
                             SET payload = decode('', 'hex')
                           WHERE owner_id = $1",
                     )
@@ -438,7 +438,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
         };
         if fault == EraseFault::DeferredCommitFailure {
             sqlx::query(
-                "INSERT INTO proxima_core.test_host_lifecycle_facts
+                "INSERT INTO proxiima_core.test_host_lifecycle_facts
                     (fact_id, owner_id, source_id, payload)
                  VALUES ($1, $2, 'invalid', decode('01', 'hex'))",
             )
@@ -486,7 +486,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                 receipt.scope = HostStateEraseScope::WholeOwner;
             }
             EraseFault::ForeignPhysicalSelection => {
-                receipt.selection = proxima_core::storage_ports::HostStateEraseSelection::new(
+                receipt.selection = proxiima_core::storage_ports::HostStateEraseSelection::new(
                     vec![MemoryId::new(Uuid::now_v7())],
                     request.selection().original_copies().to_vec(),
                 );
@@ -496,7 +496,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                 if let Some(locator) = copies.first_mut() {
                     locator.original_owner = OwnerId::new(Uuid::now_v7());
                 }
-                receipt.selection = proxima_core::storage_ports::HostStateEraseSelection::new(
+                receipt.selection = proxiima_core::storage_ports::HostStateEraseSelection::new(
                     request.selection().physical_facts().to_vec(),
                     copies,
                 );
@@ -506,7 +506,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                 if let Some(locator) = copies.first_mut() {
                     locator.fact_id = MemoryId::new(Uuid::now_v7());
                 }
-                receipt.selection = proxima_core::storage_ports::HostStateEraseSelection::new(
+                receipt.selection = proxiima_core::storage_ports::HostStateEraseSelection::new(
                     request.selection().physical_facts().to_vec(),
                     copies,
                 );
@@ -516,7 +516,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
             }
             EraseFault::DuplicateTable => receipt.counts.push(receipt.counts[0].clone()),
             EraseFault::ForeignTable => {
-                receipt.counts[1].table = StateSurfaceName::new("proxima_core.unknown_table");
+                receipt.counts[1].table = StateSurfaceName::new("proxiima_core.unknown_table");
             }
             EraseFault::RetainedCount | EraseFault::ExactRetainedCount => {
                 receipt.counts[1].deleted = metadata_deleted;
@@ -541,7 +541,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
         let fault = *self.export_fault.lock().expect("export fault mutex");
         if fault == ExportFault::PersistentWrite {
             sqlx::query(
-                "INSERT INTO proxima_core.test_host_lifecycle_facts
+                "INSERT INTO proxiima_core.test_host_lifecycle_facts
                     (fact_id, owner_id, source_id, payload)
                  VALUES ($1, $2, 'export-write', decode('01', 'hex'))",
             )
@@ -568,7 +568,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                     'source_id', source_id,
                     'payload', payload
                  )
-                   FROM proxima_core.test_host_lifecycle_facts
+                   FROM proxiima_core.test_host_lifecycle_facts
                   WHERE owner_id = $1
                   ORDER BY fact_id",
             )
@@ -606,7 +606,7 @@ impl PgHostStateLifecyclePort for Lifecycle {
                 receipt.tables.push(receipt.tables[0].clone());
             }
             ExportFault::ForeignTable => {
-                receipt.tables[0].table = StateSurfaceName::new("proxima_core.unknown_table");
+                receipt.tables[0].table = StateSurfaceName::new("proxiima_core.unknown_table");
             }
             ExportFault::None | ExportFault::ExtraField | ExportFault::PersistentWrite => {}
         }
@@ -636,7 +636,7 @@ impl PgHostStateParticipant for HostParticipant {
 
     async fn apply(
         &self,
-        _session: &mut proxima_storage_pg::PgHostStateSession<'_, '_>,
+        _session: &mut proxiima_storage_pg::PgHostStateSession<'_, '_>,
         _permit: &HostStateWritePermit,
         _request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError> {
@@ -667,7 +667,7 @@ impl PgHostStateParticipant for TableParticipant {
 
     async fn apply(
         &self,
-        _session: &mut proxima_storage_pg::PgHostStateSession<'_, '_>,
+        _session: &mut proxiima_storage_pg::PgHostStateSession<'_, '_>,
         _permit: &HostStateWritePermit,
         _request: HostStateRequest,
     ) -> Result<HostStateReply, StorageError> {
@@ -676,16 +676,16 @@ impl PgHostStateParticipant for TableParticipant {
 }
 
 fn frozen_registry_with(
-    extra: Option<&'static FlavorContract>,
-) -> proxima_core::FlavorRegistryFrozen {
-    let mut registry = proxima_core::FlavorRegistry::new();
+    extra: Option<&'static SpiiceContract>,
+) -> proxiima_core::SpiiceRegistryFrozen {
+    let mut registry = proxiima_core::SpiiceRegistry::new();
     registry
-        .try_add_flavor(FlavorDescriptor {
-            flavor_id: FLAVOR_ID.to_owned(),
+        .try_add_spiice(SpiiceDescriptor {
+            spiice_id: SPIICE_ID.to_owned(),
             display_name: "Host lifecycle test".to_owned(),
             package_version: "0.1.0".to_owned(),
             author: None,
-            provenance: FlavorProvenance::Builtin,
+            provenance: SpiiceProvenance::Builtin,
         })
         .expect("test descriptor accepted");
     registry
@@ -693,12 +693,12 @@ fn frozen_registry_with(
         .expect("test contract accepted");
     if let Some(contract) = extra {
         registry
-            .try_add_flavor(FlavorDescriptor {
-                flavor_id: contract.flavor_id.to_owned(),
+            .try_add_spiice(SpiiceDescriptor {
+                spiice_id: contract.spiice_id.to_owned(),
                 display_name: "Extra host lifecycle test".to_owned(),
                 package_version: "0.1.0".to_owned(),
                 author: None,
-                provenance: FlavorProvenance::Builtin,
+                provenance: SpiiceProvenance::Builtin,
             })
             .expect("extra test descriptor accepted");
         registry
@@ -708,7 +708,7 @@ fn frozen_registry_with(
     registry.try_freeze().expect("test registry freezes")
 }
 
-fn frozen_registry() -> proxima_core::FlavorRegistryFrozen {
+fn frozen_registry() -> proxiima_core::SpiiceRegistryFrozen {
     frozen_registry_with(None)
 }
 
@@ -727,7 +727,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 async fn fresh_pg(max_connections: u32) -> (String, Arc<PgStorage>, Arc<Lifecycle>) {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_core_db(&db_name)
         .await
         .expect("PG required for host lifecycle tests");
@@ -744,28 +744,28 @@ async fn fresh_pg(max_connections: u32) -> (String, Arc<PgStorage>, Arc<Lifecycl
             lifecycle: lifecycle.clone(),
             lifecycle_enabled: true,
         }))
-        .try_with_flavors(&registry)
+        .try_with_spiices(&registry)
         .expect("managed descriptor and callback are exact");
     let pool = pg.pool_for_tests();
     sqlx::raw_sql(
-        "CREATE TABLE proxima_core.test_host_lifecycle_facts (
+        "CREATE TABLE proxiima_core.test_host_lifecycle_facts (
              fact_id uuid NOT NULL,
              owner_id uuid NOT NULL,
              source_id text NOT NULL,
              payload bytea NOT NULL,
              storage_secret text NOT NULL DEFAULT 'private',
              CONSTRAINT test_host_lifecycle_owner_fk
-                 FOREIGN KEY (owner_id) REFERENCES proxima_core.owners(owner_id)
+                 FOREIGN KEY (owner_id) REFERENCES proxiima_core.owners(owner_id)
                  DEFERRABLE INITIALLY DEFERRED
          );
-         CREATE TABLE proxima_core.test_host_lifecycle_metadata (
-             owner_id uuid NOT NULL REFERENCES proxima_core.owners(owner_id),
+         CREATE TABLE proxiima_core.test_host_lifecycle_metadata (
+             owner_id uuid NOT NULL REFERENCES proxiima_core.owners(owner_id),
              source_id text NOT NULL DEFAULT 'source-a',
              metadata text NOT NULL,
              payload bytea NOT NULL DEFAULT decode('aa', 'hex')
          );
-         CREATE TABLE proxima_core.test_host_lifecycle_generic_rows (
-             owner_id uuid NOT NULL REFERENCES proxima_core.owners(owner_id),
+         CREATE TABLE proxiima_core.test_host_lifecycle_generic_rows (
+             owner_id uuid NOT NULL REFERENCES proxiima_core.owners(owner_id),
              value text NOT NULL
          );",
     )
@@ -773,36 +773,36 @@ async fn fresh_pg(max_connections: u32) -> (String, Arc<PgStorage>, Arc<Lifecycl
     .await
     .expect("test host tables created");
     sqlx::raw_sql(
-        "GRANT USAGE ON SCHEMA proxima_core TO proxima_test_runtime, proxima_test_platform;
+        "GRANT USAGE ON SCHEMA proxiima_core TO proxiima_test_runtime, proxiima_test_platform;
          GRANT SELECT, INSERT, UPDATE, DELETE ON
-           proxima_core.test_host_lifecycle_facts,
-           proxima_core.test_host_lifecycle_metadata,
-           proxima_core.test_host_lifecycle_generic_rows
-           TO proxima_test_runtime, proxima_test_platform;",
+           proxiima_core.test_host_lifecycle_facts,
+           proxiima_core.test_host_lifecycle_metadata,
+           proxiima_core.test_host_lifecycle_generic_rows
+           TO proxiima_test_runtime, proxiima_test_platform;",
     )
     .execute(pool)
     .await
     .expect("runtime role can inspect host lifecycle tables");
     sqlx::raw_sql(
-        "ALTER TABLE proxima_core.test_host_lifecycle_facts OWNER TO proxima_test_platform;
-         ALTER TABLE proxima_core.test_host_lifecycle_metadata OWNER TO proxima_test_platform;
-         ALTER TABLE proxima_core.test_host_lifecycle_generic_rows OWNER TO proxima_test_platform;",
+        "ALTER TABLE proxiima_core.test_host_lifecycle_facts OWNER TO proxiima_test_platform;
+         ALTER TABLE proxiima_core.test_host_lifecycle_metadata OWNER TO proxiima_test_platform;
+         ALTER TABLE proxiima_core.test_host_lifecycle_generic_rows OWNER TO proxiima_test_platform;",
     )
     .execute(pool)
     .await
     .expect("platform role owns host lifecycle tables");
     sqlx::raw_sql(
-        "ALTER TABLE proxima_core.test_host_lifecycle_facts ENABLE ROW LEVEL SECURITY;
-         ALTER TABLE proxima_core.test_host_lifecycle_facts FORCE ROW LEVEL SECURITY;
-         ALTER TABLE proxima_core.test_host_lifecycle_metadata ENABLE ROW LEVEL SECURITY;
-         ALTER TABLE proxima_core.test_host_lifecycle_metadata FORCE ROW LEVEL SECURITY;
-         ALTER TABLE proxima_core.test_host_lifecycle_generic_rows ENABLE ROW LEVEL SECURITY;
-         ALTER TABLE proxima_core.test_host_lifecycle_generic_rows FORCE ROW LEVEL SECURITY;
+        "ALTER TABLE proxiima_core.test_host_lifecycle_facts ENABLE ROW LEVEL SECURITY;
+         ALTER TABLE proxiima_core.test_host_lifecycle_facts FORCE ROW LEVEL SECURITY;
+         ALTER TABLE proxiima_core.test_host_lifecycle_metadata ENABLE ROW LEVEL SECURITY;
+         ALTER TABLE proxiima_core.test_host_lifecycle_metadata FORCE ROW LEVEL SECURITY;
+         ALTER TABLE proxiima_core.test_host_lifecycle_generic_rows ENABLE ROW LEVEL SECURITY;
+         ALTER TABLE proxiima_core.test_host_lifecycle_generic_rows FORCE ROW LEVEL SECURITY;
          DO $$ DECLARE table_name text; BEGIN
            FOREACH table_name IN ARRAY ARRAY['test_host_lifecycle_facts', 'test_host_lifecycle_metadata', 'test_host_lifecycle_generic_rows'] LOOP
-             EXECUTE format('CREATE POLICY proxima_owner_read ON proxima_core.%I FOR SELECT TO proxima_test_runtime USING (owner_id::text = current_setting(''app.owner'', true))', table_name);
-             EXECUTE format('CREATE POLICY proxima_owner_write ON proxima_core.%I FOR ALL TO proxima_test_runtime USING (owner_id::text = current_setting(''app.owner'', true)) WITH CHECK (owner_id::text = current_setting(''app.owner'', true))', table_name);
-             EXECUTE format('CREATE POLICY proxima_platform ON proxima_core.%I FOR ALL TO proxima_test_platform USING (current_setting(''app.proxima_scope'', true) = ''platform'') WITH CHECK (current_setting(''app.proxima_scope'', true) = ''platform'')', table_name);
+             EXECUTE format('CREATE POLICY proxiima_owner_read ON proxiima_core.%I FOR SELECT TO proxiima_test_runtime USING (owner_id::text = current_setting(''app.owner'', true))', table_name);
+             EXECUTE format('CREATE POLICY proxiima_owner_write ON proxiima_core.%I FOR ALL TO proxiima_test_runtime USING (owner_id::text = current_setting(''app.owner'', true)) WITH CHECK (owner_id::text = current_setting(''app.owner'', true))', table_name);
+             EXECUTE format('CREATE POLICY proxiima_platform ON proxiima_core.%I FOR ALL TO proxiima_test_platform USING (current_setting(''app.proxiima_scope'', true) = ''platform'') WITH CHECK (current_setting(''app.proxiima_scope'', true) = ''platform'')', table_name);
            END LOOP;
          END $$;",
     )
@@ -856,7 +856,7 @@ async fn seed_host_fact(
     payload: &[u8],
 ) {
     sqlx::query(
-        "INSERT INTO proxima_core.test_host_lifecycle_facts
+        "INSERT INTO proxiima_core.test_host_lifecycle_facts
             (fact_id, owner_id, source_id, payload)
          VALUES ($1, $2, $3, $4)",
     )
@@ -875,7 +875,7 @@ async fn seed_metadata(pool: &PgPool, owner: OwnerId) {
 
 async fn seed_metadata_for_source(pool: &PgPool, owner: OwnerId, source: &str) {
     sqlx::query(
-        "INSERT INTO proxima_core.test_host_lifecycle_metadata (owner_id, source_id, metadata)
+        "INSERT INTO proxiima_core.test_host_lifecycle_metadata (owner_id, source_id, metadata)
          VALUES ($1, $2, 'opaque')",
     )
     .bind(owner.into_inner())
@@ -887,7 +887,7 @@ async fn seed_metadata_for_source(pool: &PgPool, owner: OwnerId, source: &str) {
 
 async fn seed_generic_counter_row(pool: &PgPool, owner: OwnerId) {
     sqlx::query(
-        "INSERT INTO proxima_core.test_host_lifecycle_generic_rows (owner_id, value)
+        "INSERT INTO proxiima_core.test_host_lifecycle_generic_rows (owner_id, value)
          VALUES ($1, 'generic')",
     )
     .bind(owner.into_inner())
@@ -924,8 +924,8 @@ fn group_erase_auth(owner: OwnerId) -> EraseAuthorization {
 /// Register `owner` as a group, as group creation does in production.
 async fn register_group(pool: &PgPool, owner: OwnerId) {
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, 'group'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
+         VALUES ($1, 'group'::proxiima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
     .bind(owner.into_inner())
     .execute(pool)
@@ -935,7 +935,7 @@ async fn register_group(pool: &PgPool, owner: OwnerId) {
 
 async fn host_fact_count(pool: &PgPool, owner: OwnerId) -> i64 {
     sqlx::query_scalar(
-        "SELECT count(*)::bigint FROM proxima_core.test_host_lifecycle_facts WHERE owner_id = $1",
+        "SELECT count(*)::bigint FROM proxiima_core.test_host_lifecycle_facts WHERE owner_id = $1",
     )
     .bind(owner.into_inner())
     .fetch_one(pool)
@@ -944,7 +944,7 @@ async fn host_fact_count(pool: &PgPool, owner: OwnerId) -> i64 {
 }
 
 async fn core_fact_count(pool: &PgPool, fact_id: MemoryId) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM proxima_core.memory WHERE t = $1 AND kind = 'fact'")
+    sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory WHERE t = $1 AND kind = 'fact'")
         .bind(fact_id.into_inner())
         .fetch_one(pool)
         .await
@@ -952,7 +952,7 @@ async fn core_fact_count(pool: &PgPool, fact_id: MemoryId) -> i64 {
 }
 
 async fn publication_origin_count(pool: &PgPool, fact_id: MemoryId) -> i64 {
-    sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.publication_origin WHERE t = $1")
+    sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.publication_origin WHERE t = $1")
         .bind(fact_id.into_inner())
         .fetch_one(pool)
         .await
@@ -1096,12 +1096,12 @@ async fn source_erase_combines_physical_and_original_copy_selectors_once() {
             .await?,
             "the original-only selector is a transferred Fact"
         );
-        // The lifecycle fixture's facts are ordinary Proxima facts, not
+        // The lifecycle fixture's facts are ordinary Proxiima facts, not
         // published admissions. Seed the payload-free origin index directly
         // to exercise both copy-selection domains; publication_outbox tests
         // cover production capture into this same index.
         sqlx::query(
-            "INSERT INTO proxima_core.publication_origin
+            "INSERT INTO proxiima_core.publication_origin
                  (t, original_owner_id, source_id)
              VALUES
                  ($1, $2, $4),
@@ -1153,11 +1153,11 @@ async fn source_erase_combines_physical_and_original_copy_selectors_once() {
         assert_eq!(
             request.selection().original_copies(),
             &[
-                proxima_core::storage_ports::HostStateFactCopyLocator {
+                proxiima_core::storage_ports::HostStateFactCopyLocator {
                     original_owner,
                     fact_id: both,
                 },
-                proxima_core::storage_ports::HostStateFactCopyLocator {
+                proxiima_core::storage_ports::HostStateFactCopyLocator {
                     original_owner,
                     fact_id: original_only,
                 },
@@ -1171,7 +1171,7 @@ async fn source_erase_combines_physical_and_original_copy_selectors_once() {
 
         let remaining: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT owner_id, fact_id
-               FROM proxima_core.test_host_lifecycle_facts
+               FROM proxiima_core.test_host_lifecycle_facts
               ORDER BY owner_id, fact_id",
         )
         .fetch_all(pool)
@@ -1202,7 +1202,7 @@ async fn source_erase_exclusive_fence_makes_waiting_origin_check_see_revocation(
         let source = SourceId::new("exclusive-source-first");
         let fact = ingest(&pg, owner, source.as_str(), "exclusive-source-fact").await;
         sqlx::query(
-            "INSERT INTO proxima_core.publication_origin
+            "INSERT INTO proxiima_core.publication_origin
                  (t, original_owner_id, source_id)
              VALUES ($1, $2, $3)",
         )
@@ -1381,7 +1381,7 @@ async fn exact_physical_erase_invokes_global_copy_inverse_only_for_selected_fact
             .host_state_erase_context()
             .expect("boot-frozen lifecycle callback is present");
         let mut tx = pool.begin().await?;
-        proxima_storage_pg::verbs::forget::erase_memory(
+        proxiima_storage_pg::verbs::forget::erase_memory(
             &mut tx,
             pg.sidecars(),
             &context,
@@ -1407,7 +1407,7 @@ async fn exact_physical_erase_invokes_global_copy_inverse_only_for_selected_fact
 
         let remaining: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT owner_id, fact_id
-               FROM proxima_core.test_host_lifecycle_facts
+               FROM proxiima_core.test_host_lifecycle_facts
               ORDER BY owner_id, fact_id",
         )
         .fetch_all(pool)
@@ -1418,7 +1418,7 @@ async fn exact_physical_erase_invokes_global_copy_inverse_only_for_selected_fact
             "physical selection removes every owner copy of the target and preserves other Facts"
         );
         let metadata_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
+            "SELECT count(*) FROM proxiima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
         )
         .bind(owner.into_inner())
         .fetch_one(pool)
@@ -1446,7 +1446,7 @@ async fn exact_receipt_scope_and_retained_counts_fail_closed_and_wrong_owner_nev
         seed_host_fact(pool, owner, selected, source.as_str(), &[1, 2, 3]).await;
         seed_metadata(pool, owner).await;
         sqlx::query(
-            "INSERT INTO proxima_core.publication_origin
+            "INSERT INTO proxiima_core.publication_origin
                  (t, original_owner_id, source_id)
              VALUES ($1, $2, $3)",
         )
@@ -1462,7 +1462,7 @@ async fn exact_receipt_scope_and_retained_counts_fail_closed_and_wrong_owner_nev
             .host_state_erase_context()
             .expect("boot-frozen lifecycle callback is present");
         let mut wrong_owner_tx = pool.begin().await?;
-        let wrong = proxima_storage_pg::verbs::forget::erase_memory(
+        let wrong = proxiima_storage_pg::verbs::forget::erase_memory(
             &mut wrong_owner_tx,
             pg.sidecars(),
             &context,
@@ -1490,7 +1490,7 @@ async fn exact_receipt_scope_and_retained_counts_fail_closed_and_wrong_owner_nev
         ] {
             lifecycle.set_erase_fault(fault);
             let mut tx = pool.begin().await?;
-            let rejected = proxima_storage_pg::verbs::forget::erase_memory(
+            let rejected = proxiima_storage_pg::verbs::forget::erase_memory(
                 &mut tx,
                 pg.sidecars(),
                 &context,
@@ -1519,7 +1519,7 @@ async fn exact_receipt_scope_and_retained_counts_fail_closed_and_wrong_owner_nev
                 "origin rolls back for {fault:?}"
             );
             let metadata_payload: Vec<u8> = sqlx::query_scalar(
-                "SELECT payload FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
+                "SELECT payload FROM proxiima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
             )
             .bind(owner.into_inner())
             .fetch_one(pool)
@@ -1549,7 +1549,7 @@ async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_ro
         seed_host_fact(pool, owner, fact, source.as_str(), &[42, 0, 254]).await;
         seed_metadata_for_source(pool, owner, source.as_str()).await;
         sqlx::query(
-            "INSERT INTO proxima_core.publication_origin
+            "INSERT INTO proxiima_core.publication_origin
                  (t, original_owner_id, source_id)
              VALUES ($1, $2, $3)",
         )
@@ -1561,11 +1561,11 @@ async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_ro
         let outbox_bytes = [0x11_u8, 0x00, 0xff];
         let outbox_digest = [0xab_u8; 32];
         sqlx::query(
-            "INSERT INTO proxima_core.publication_outbox
+            "INSERT INTO proxiima_core.publication_outbox
                  (t, owner_id, schema_id, schema_version, event_type, event_id,
                   envelope, envelope_digest)
              VALUES ($1, $2, 'core.test-lifecycle-rollback', 1,
-                     'com.proxima.test.lifecycle', $3, $4, $5)",
+                     'com.proxiima.test.lifecycle', $3, $4, $5)",
         )
         .bind(fact.into_inner())
         .bind(owner.into_inner())
@@ -1599,14 +1599,14 @@ async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_ro
             assert_eq!(core_fact_count(pool, fact).await, 1, "core Fact rolled back for {fault:?}");
             assert_eq!(host_fact_count(pool, owner).await, 1, "host Fact rolled back for {fault:?}");
             let metadata: i64 = sqlx::query_scalar(
-                "SELECT count(*)::bigint FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
+                "SELECT count(*)::bigint FROM proxiima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
             )
             .bind(owner.into_inner())
             .fetch_one(pool)
             .await?;
             assert_eq!(metadata, 1, "metadata rolled back for {fault:?}");
             let metadata_payload: Vec<u8> = sqlx::query_scalar(
-                "SELECT payload FROM proxima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
+                "SELECT payload FROM proxiima_core.test_host_lifecycle_metadata WHERE owner_id = $1",
             )
             .bind(owner.into_inner())
             .fetch_one(pool)
@@ -1614,7 +1614,7 @@ async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_ro
             assert_eq!(metadata_payload, vec![0xaa], "scrub rolled back for {fault:?}");
             assert_eq!(publication_origin_count(pool, fact).await, 1, "origin inverse rolls back for {fault:?}");
             let retained_outbox: (Vec<u8>, Vec<u8>) = sqlx::query_as(
-                "SELECT envelope, envelope_digest FROM proxima_core.publication_outbox WHERE t = $1",
+                "SELECT envelope, envelope_digest FROM proxiima_core.publication_outbox WHERE t = $1",
             )
             .bind(fact.into_inner())
             .fetch_one(pool)
@@ -1632,7 +1632,7 @@ async fn invalid_callback_receipts_and_commit_failure_roll_back_core_and_host_ro
         assert_eq!(host_fact_count(pool, owner).await, 0);
         assert_eq!(publication_origin_count(pool, fact).await, 0);
         let remaining_outbox: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.publication_outbox WHERE t = $1",
+            "SELECT count(*) FROM proxiima_core.publication_outbox WHERE t = $1",
         )
         .bind(fact.into_inner())
         .fetch_one(pool)
@@ -1681,7 +1681,7 @@ async fn erase_receipt_separates_actual_payload_scrubbing_from_row_deletion() {
         assert_eq!(host_state_scrubbed.get(METADATA_TABLE), Some(&0));
         assert_eq!(counts.get("host_lifecycle_rows"), 0);
         let facts = sqlx::query(
-            "SELECT fact_id, payload FROM proxima_core.test_host_lifecycle_facts WHERE owner_id = $1",
+            "SELECT fact_id, payload FROM proxiima_core.test_host_lifecycle_facts WHERE owner_id = $1",
         )
         .bind(owner.into_inner())
         .fetch_all(pool)
@@ -1710,7 +1710,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
                 lifecycle: lifecycle.clone(),
                 lifecycle_enabled: false,
             }))
-            .try_with_flavors(&registry);
+            .try_with_spiices(&registry);
         assert!(
             missing.is_err(),
             "managed surfaces need an erase/export port"
@@ -1722,7 +1722,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
                 lifecycle: lifecycle.clone(),
                 tables: WRONG_PARTICIPANT_TABLES,
             }))
-            .try_with_flavors(&registry);
+            .try_with_spiices(&registry);
         assert!(
             mismatch.is_err(),
             "the frozen managed set must match the captured callback"
@@ -1737,7 +1737,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
                 lifecycle: wrong_port,
                 lifecycle_enabled: true,
             }))
-            .try_with_flavors(&registry);
+            .try_with_spiices(&registry);
         assert!(
             wrong_id.is_err(),
             "the callback ID must match the captured host participant"
@@ -1750,7 +1750,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
                 lifecycle: wrong_port,
                 lifecycle_enabled: true,
             }))
-            .try_with_flavors(&registry);
+            .try_with_spiices(&registry);
         assert!(
             wrong_port_tables.is_err(),
             "callback tables must exactly cover managed policies"
@@ -1758,7 +1758,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
 
         let missing_participant = PgStorage::connect_for_tests(db_url(&db_name))
             .await?
-            .try_with_flavors(&registry);
+            .try_with_spiices(&registry);
         assert!(
             missing_participant.is_err(),
             "managed policies require the actual participant"
@@ -1770,7 +1770,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
                 lifecycle: lifecycle.clone(),
                 tables: UNDECLARED_PARTICIPANT_TABLES,
             }))
-            .try_with_flavors(&registry);
+            .try_with_spiices(&registry);
         assert!(
             undeclared.is_err(),
             "participant tables must be linked state surfaces"
@@ -1784,7 +1784,7 @@ async fn lifecycle_boot_rejects_missing_callback_and_invalid_descriptor() {
                     lifecycle: lifecycle.clone(),
                     lifecycle_enabled: true,
                 }))
-                .try_with_flavors(&invalid_registry);
+                .try_with_spiices(&invalid_registry);
             assert!(
                 invalid.is_err(),
                 "duplicate/overlapping policy must fail boot"
@@ -1887,7 +1887,7 @@ async fn export_behind_a_long_erase_gives_up_with_a_retryable_error() {
         });
         // An erase holds the fence for its whole body.
         let mut erase = pool.begin().await?;
-        sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
+        sqlx::query("LOCK TABLE proxiima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
             .execute(&mut *erase)
             .await?;
         pg.platform_scope_for_host()
@@ -1935,7 +1935,7 @@ const FENCE_LOCKS_SQL: &str = "\
 SELECT count(*) FILTER (WHERE NOT granted)::bigint, count(*)::bigint
   FROM pg_locks
  WHERE locktype = 'relation'
-   AND relation = 'proxima_core.export_erase_fence'::regclass
+   AND relation = 'proxiima_core.export_erase_fence'::regclass
    AND database = (SELECT oid FROM pg_database WHERE datname = current_database())";
 
 async fn wait_for_fence_waiters(pool: &PgPool, expected: i64) -> bool {
@@ -2098,7 +2098,7 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_l
         // An export cancelled while it waits on the fence leaves no lock
         // behind: its transaction rolls back when its connection returns.
         let mut fence = pool.begin().await?;
-        sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
+        sqlx::query("LOCK TABLE proxiima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
             .execute(&mut *fence)
             .await?;
         let cancel_pg = pg.clone();
@@ -2142,7 +2142,7 @@ async fn erase_fence_orders_write_session_and_export_snapshot_and_cancellation_l
         // A unit holds its owner's fence shared from its first write; a
         // whole-owner erase queues behind it.
         let mut writer = pool.begin().await?;
-        proxima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut writer, &owner)
+        proxiima_storage_pg::access::owner_columns::lock_owner_fence_shared_tx(&mut writer, &owner)
             .await?;
         let reverse_gate = Arc::new(CallbackGate::default());
         lifecycle.set_erase_gate(Some(reverse_gate.clone()));
@@ -2189,7 +2189,7 @@ async fn export_snapshot_keeps_unfenced_cursor_and_grant_writes_coherent() {
         let subject_id = Uuid::now_v7();
         let mut seed = pool.begin().await?;
         sqlx::query(
-            "INSERT INTO proxima_core.source_cursors
+            "INSERT INTO proxiima_core.source_cursors
                 (owner_id, source, cursor)
              VALUES ($1, 'snapshot-source', decode('aabb', 'hex'))",
         )
@@ -2197,7 +2197,7 @@ async fn export_snapshot_keeps_unfenced_cursor_and_grant_writes_coherent() {
         .execute(&mut *seed)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.delegated_authority_grants
+            "INSERT INTO proxiima_core.delegated_authority_grants
                 (delegation_id, subject_user_id, owner_id, tool_name,
                  read_ceiling, write_ceiling, expires_at, auth_epoch, issued_at, \"by\", via)
              VALUES ($1, $2, $3, 'core_remember', 'fact', 'fact',
@@ -2213,7 +2213,7 @@ async fn export_snapshot_keeps_unfenced_cursor_and_grant_writes_coherent() {
 
         let mut writer = pool.begin().await?;
         sqlx::query(
-            "UPDATE proxima_core.source_cursors
+            "UPDATE proxiima_core.source_cursors
                 SET cursor = decode('ccdd', 'hex')
               WHERE owner_id = $1 AND source = 'snapshot-source'",
         )
@@ -2221,7 +2221,7 @@ async fn export_snapshot_keeps_unfenced_cursor_and_grant_writes_coherent() {
         .execute(&mut *writer)
         .await?;
         sqlx::query(
-            "UPDATE proxima_core.delegated_authority_grants
+            "UPDATE proxiima_core.delegated_authority_grants
                 SET auth_epoch = 2
               WHERE delegation_id = $1",
         )
@@ -2229,7 +2229,7 @@ async fn export_snapshot_keeps_unfenced_cursor_and_grant_writes_coherent() {
         .execute(&mut *writer)
         .await?;
         sqlx::query(
-            "UPDATE proxima_core.test_host_lifecycle_facts
+            "UPDATE proxiima_core.test_host_lifecycle_facts
                 SET payload = decode('3040', 'hex')
               WHERE fact_id = $1 AND owner_id = $2",
         )
@@ -2253,11 +2253,11 @@ async fn export_snapshot_keeps_unfenced_cursor_and_grant_writes_coherent() {
         gate.release.notify_one();
         let before_snapshot = first.await??;
         assert_eq!(
-            before_snapshot.tables["proxima_core.source_cursors"][0]["cursor"].as_str(),
+            before_snapshot.tables["proxiima_core.source_cursors"][0]["cursor"].as_str(),
             Some(r"\xaabb")
         );
         assert_eq!(
-            before_snapshot.tables["proxima_core.delegated_authority_grants"][0]["auth_epoch"]
+            before_snapshot.tables["proxiima_core.delegated_authority_grants"][0]["auth_epoch"]
                 .as_i64(),
             Some(1)
         );
@@ -2270,11 +2270,11 @@ async fn export_snapshot_keeps_unfenced_cursor_and_grant_writes_coherent() {
         let auth = ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner { user_id });
         let after_commit = pg.export_owner_bundle(&auth, pg.surfaces()).await?;
         assert_eq!(
-            after_commit.tables["proxima_core.source_cursors"][0]["cursor"].as_str(),
+            after_commit.tables["proxiima_core.source_cursors"][0]["cursor"].as_str(),
             Some(r"\xccdd")
         );
         assert_eq!(
-            after_commit.tables["proxima_core.delegated_authority_grants"][0]["auth_epoch"]
+            after_commit.tables["proxiima_core.delegated_authority_grants"][0]["auth_epoch"]
                 .as_i64(),
             Some(2)
         );
@@ -2325,7 +2325,7 @@ async fn cancelling_erase_after_host_callback_dml_rolls_back_and_releases_fences
         assert_eq!(core_fact_count(pool, fact).await, 1);
         assert_eq!(host_fact_count(pool, owner).await, 1);
         let payload: Vec<u8> = sqlx::query_scalar(
-            "SELECT payload FROM proxima_core.test_host_lifecycle_facts WHERE fact_id = $1",
+            "SELECT payload FROM proxiima_core.test_host_lifecycle_facts WHERE fact_id = $1",
         )
         .bind(fact.into_inner())
         .fetch_one(pool)
@@ -2363,7 +2363,7 @@ async fn cancelling_erase_during_core_delete_after_host_callback_dml_rolls_back_
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pool = pg.pool_for_tests();
         sqlx::raw_sql(
-            "CREATE FUNCTION proxima_core.test_lifecycle_commit_gate() RETURNS trigger
+            "CREATE FUNCTION proxiima_core.test_lifecycle_commit_gate() RETURNS trigger
              LANGUAGE plpgsql AS $$
              BEGIN
                  PERFORM pg_advisory_xact_lock(871922);
@@ -2371,8 +2371,8 @@ async fn cancelling_erase_during_core_delete_after_host_callback_dml_rolls_back_
              END;
              $$;
              CREATE TRIGGER test_lifecycle_commit_gate_trigger
-             AFTER DELETE ON proxima_core.memory
-             FOR EACH ROW EXECUTE FUNCTION proxima_core.test_lifecycle_commit_gate();",
+             AFTER DELETE ON proxiima_core.memory
+             FOR EACH ROW EXECUTE FUNCTION proxiima_core.test_lifecycle_commit_gate();",
         )
         .execute(pool)
         .await?;
@@ -2430,7 +2430,7 @@ async fn cancelling_erase_during_core_delete_after_host_callback_dml_rolls_back_
         assert_eq!(core_fact_count(pool, fact).await, 1);
         assert_eq!(host_fact_count(pool, owner).await, 1);
         let payload: Vec<u8> = sqlx::query_scalar(
-            "SELECT payload FROM proxima_core.test_host_lifecycle_facts WHERE fact_id = $1",
+            "SELECT payload FROM proxiima_core.test_host_lifecycle_facts WHERE fact_id = $1",
         )
         .bind(fact.into_inner())
         .fetch_one(pool)
@@ -2472,7 +2472,7 @@ async fn cancelling_max_one_export_waiting_on_the_fence_releases_its_connection(
         ingest(&pg, owner, "cancel-source", "cancel-fact").await;
         let barrier_pool = PgPool::connect(&db_url(&db_name)).await?;
         let mut barrier = barrier_pool.begin().await?;
-        sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
+        sqlx::query("LOCK TABLE proxiima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
             .execute(&mut *barrier)
             .await?;
 
@@ -2516,11 +2516,11 @@ async fn an_export_queued_behind_the_fence_reads_what_its_holder_committed() {
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
         let fact = ingest(&pg, owner, "fence-source", "fence-fact").await;
         let mut holder = pool.begin().await?;
-        sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
+        sqlx::query("LOCK TABLE proxiima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
             .execute(&mut *holder)
             .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.test_host_lifecycle_facts
+            "INSERT INTO proxiima_core.test_host_lifecycle_facts
                 (fact_id, owner_id, source_id, payload)
              VALUES ($1, $2, 'fence-source', decode('2a', 'hex'))",
         )

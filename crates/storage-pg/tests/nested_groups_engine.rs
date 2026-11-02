@@ -2,16 +2,16 @@
 
 use std::sync::Arc;
 
-use proxima_core::authz::{AuthorizationHook, AuthzInput, AuthzOperation, AuthzVeto};
-use proxima_core::test_fixtures::authenticated_context;
-use proxima_core::{
-    AuthPath, AuthzContext, Engine, FlavorRegistry, GroupId, OwnerId, OwnerMembershipAdminPort,
-    Relation, Role, UserId,
+use proxiima_core::authz::{AuthorizationHook, AuthzInput, AuthzOperation, AuthzVeto};
+use proxiima_core::test_fixtures::authenticated_context;
+use proxiima_core::{
+    AuthPath, AuthzContext, Engine, GroupId, OwnerId, OwnerMembershipAdminPort, Relation, Role,
+    SpiiceRegistry, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
-use proxima_storage_pg::test_fixtures::register_group_for_tests;
-use proxima_storage_pg::{PgPlatformScope, PgStorage};
-use proxima_storage_pg::{PgPoolConfig, PgTuning};
+use proxiima_pg_testkit::{create_db, db_url, drop_db, split_role_urls};
+use proxiima_storage_pg::test_fixtures::register_group_for_tests;
+use proxiima_storage_pg::{PgPlatformScope, PgStorage};
+use proxiima_storage_pg::{PgPoolConfig, PgTuning};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -25,7 +25,7 @@ impl AuthorizationHook for VetoRemovals {
         if matches!(
             input.operation,
             AuthzOperation::Membership {
-                change: proxima_core::authz::MembershipChange::Remove,
+                change: proxiima_core::authz::MembershipChange::Remove,
                 ..
             }
         ) {
@@ -51,11 +51,11 @@ impl Harness {
     }
 
     async fn new_with_hook(hook: Option<Arc<dyn AuthorizationHook>>) -> TestResult<Self> {
-        let name = format!("proxima_test_nested_engine_{}", Uuid::now_v7().simple());
+        let name = format!("proxiima_test_nested_engine_{}", Uuid::now_v7().simple());
         create_db(&name).await?;
         let admin_pool = PgPool::connect(&db_url(&name)).await?;
         let (runtime_url, platform_url) = split_role_urls(&name).await?;
-        let migration = proxima_storage_pg::PgMigrationStorage::connect_with_config(
+        let migration = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
             &platform_url,
             PgPoolConfig::default(),
             PgTuning::default(),
@@ -64,7 +64,8 @@ impl Harness {
         migration.run_migrations().await?;
         migration.initialize_store_number(1).await?;
         let platform_pool = PgPool::connect(&platform_url).await?;
-        let platform_scope = PgPlatformScope::new(platform_pool.clone(), &["proxima_core"]).await?;
+        let platform_scope =
+            PgPlatformScope::new(platform_pool.clone(), &["proxiima_core"]).await?;
         let storage = Arc::new(
             PgStorage::connect_with_config(
                 &runtime_url,
@@ -86,7 +87,7 @@ impl Harness {
         storage
             .bootstrap_group_admin(child, admin, admin.into_inner())
             .await?;
-        let mut registry = FlavorRegistry::new();
+        let mut registry = SpiiceRegistry::new();
         if let Some(hook) = hook {
             registry.add_authorization_hook(hook);
         }
@@ -127,7 +128,7 @@ async fn engine_requires_manage_on_both_endpoints_to_attach_a_group() -> TestRes
         )
         .await
         .expect_err("attached-group manage is required");
-    assert_eq!(error.code, proxima_core::ErrorCode::Forbidden);
+    assert_eq!(error.code, proxiima_core::ErrorCode::Forbidden);
 
     let child_only = authenticated_context(AuthzContext::for_subject_with_role(
         h.admin,
@@ -144,7 +145,7 @@ async fn engine_requires_manage_on_both_endpoints_to_attach_a_group() -> TestRes
         )
         .await
         .expect_err("parent manage is required");
-    assert_eq!(error.code, proxima_core::ErrorCode::Forbidden);
+    assert_eq!(error.code, proxiima_core::ErrorCode::Forbidden);
     h.finish().await;
     Ok(())
 }
@@ -215,7 +216,7 @@ async fn member_endpoint_detach_removes_edge_without_parent_read_authority() -> 
         [(OwnerId::from(h.child), Role::admin())],
         AuthPath::HostBearer,
     ));
-    assert!(!child_only.may_read(&h.parent.into(), proxima_core::AccessKind::Fact));
+    assert!(!child_only.may_read(&h.parent.into(), proxiima_core::AccessKind::Fact));
     let admin_pool = PgPool::connect(&db_url(&h.name)).await?;
     for relation in [None, Some(Relation::Viewer)] {
         h.engine
@@ -234,7 +235,7 @@ async fn member_endpoint_detach_removes_edge_without_parent_read_authority() -> 
             }
         }
         let remaining: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.group_edges WHERE child_group_id = $1",
+            "SELECT count(*) FROM proxiima_core.group_edges WHERE child_group_id = $1",
         )
         .bind(h.child.into_inner())
         .fetch_one(&admin_pool)
@@ -270,7 +271,7 @@ async fn member_endpoint_detach_runs_the_remove_hook() -> TestResult {
         .remove_member(&child_only, h.parent, OwnerId::from(h.child))
         .await
         .expect_err("the removal hook must run before a member-endpoint detach");
-    assert_eq!(error.code, proxima_core::ErrorCode::Forbidden);
+    assert_eq!(error.code, proxiima_core::ErrorCode::Forbidden);
     h.finish().await;
     Ok(())
 }
@@ -305,7 +306,7 @@ async fn member_endpoint_cannot_replace_a_group_relation() -> TestResult {
         )
         .await
         .expect_err("relation replacement requires parent manage authority");
-    assert_eq!(error.code, proxima_core::ErrorCode::Forbidden);
+    assert_eq!(error.code, proxiima_core::ErrorCode::Forbidden);
     h.finish().await;
     Ok(())
 }

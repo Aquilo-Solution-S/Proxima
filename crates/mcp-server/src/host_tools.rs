@@ -1,9 +1,9 @@
 //! Host-served MCP tools: tools a host lists and runs beside the frozen
-//! flavor registry, through the same scope gate and request behaviors.
+//! spiice registry, through the same scope gate and request behaviors.
 
 use async_trait::async_trait;
-use proxima_core::FlavorServices;
-use proxima_core::mcp::{McpToolError, ToolCall, ToolEffect, ToolReply};
+use proxiima_core::SpiiceServices;
+use proxiima_core::mcp::{McpToolError, ToolCall, ToolEffect, ToolReply};
 
 use crate::auth::McpAuthContext;
 
@@ -18,15 +18,15 @@ pub const MAX_HOST_INSTRUCTIONS_CHARS: usize = 4096;
 /// `#[non_exhaustive]`, so a field added later does not break a host.
 ///
 /// ```compile_fail
-/// let _tool = proxima_mcp_server::McpHostTool {
+/// let _tool = proxiima_mcp_server::McpHostTool {
 ///     name: "host_tool".into(),
 ///     description: "a tool".into(),
 ///     args_schema: serde_json::json!({"type": "object"}),
 ///     output_schema: None,
-///     effect: proxima_core::ToolEffect::ReadOnly,
+///     effect: proxiima_core::ToolEffect::ReadOnly,
 ///     meta: None,
 ///     open_world: None,
-///     services: proxima_core::FlavorServices::default(),
+///     services: proxiima_core::SpiiceServices::default(),
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -34,7 +34,7 @@ pub const MAX_HOST_INSTRUCTIONS_CHARS: usize = 4096;
 pub struct McpHostTool {
     /// Canonical and wire name: 1..=[`MAX_HOST_TOOL_NAME_CHARS`] characters
     /// of `[A-Za-z0-9_.-]`, so it is never a `tool:action` leaf or a
-    /// `resource:` scope key. A name the flavor registry serves (canonical or
+    /// `resource:` scope key. A name the spiice registry serves (canonical or
     /// wire), a repeat, or a malformed name is not served; see
     /// [`McpToolHost::host_tools_for`](crate::McpToolHost::host_tools_for).
     ///
@@ -50,7 +50,7 @@ pub struct McpHostTool {
     /// `None` for a tool that answers with content or a structured failure.
     pub output_schema: Option<serde_json::Value>,
     /// What the tool does; its MCP hints are
-    /// [`McpToolAnnotations::host`](proxima_core::McpToolAnnotations::host),
+    /// [`McpToolAnnotations::host`](proxiima_core::McpToolAnnotations::host),
     /// the only source of `readOnlyHint`, `destructiveHint` and
     /// `idempotentHint`.
     pub effect: ToolEffect,
@@ -59,17 +59,17 @@ pub struct McpHostTool {
     /// `openWorldHint`, which [`McpToolAnnotations::host`] leaves unset
     /// because [`ToolEffect`] says nothing about it.
     ///
-    /// [`McpToolAnnotations::host`]: proxima_core::McpToolAnnotations::host
+    /// [`McpToolAnnotations::host`]: proxiima_core::McpToolAnnotations::host
     pub open_world: Option<bool>,
     /// Values a call resolved to this entry carries: they join the call's
     /// request services beside
-    /// [`McpHostToolCall`](proxima_core::McpHostToolCall), taken from the list
+    /// [`McpHostToolCall`](proxiima_core::McpHostToolCall), taken from the list
     /// the call was resolved against, so [`McpHostTools::call`] and every
     /// request behavior read the entry the scope gate judged without listing
-    /// again. Proxima neither reads them nor lists them. A type the call's
+    /// again. Proxiima neither reads them nor lists them. A type the call's
     /// services already hold (`McpHostToolCall`, a request or boot service) is
     /// an internal error.
-    pub services: FlavorServices,
+    pub services: SpiiceServices,
 }
 
 impl McpHostTool {
@@ -88,7 +88,7 @@ impl McpHostTool {
             effect,
             meta: None,
             open_world: None,
-            services: FlavorServices::default(),
+            services: SpiiceServices::default(),
         }
     }
 
@@ -115,7 +115,7 @@ impl McpHostTool {
 
     /// Set the services a call resolved to this entry carries (see [`Self::services`]).
     #[must_use]
-    pub fn with_services(mut self, services: FlavorServices) -> Self {
+    pub fn with_services(mut self, services: SpiiceServices) -> Self {
         self.services = services;
         self
     }
@@ -129,7 +129,7 @@ impl McpHostTool {
 /// `visible`, like every registry tool. `tools/call` runs a listed tool
 /// through the registry's request behaviors (scope gate first) with
 /// [`Self::call`] as the terminal; the call's services carry an
-/// [`McpHostToolCall`](proxima_core::McpHostToolCall) and the resolved entry's
+/// [`McpHostToolCall`](proxiima_core::McpHostToolCall) and the resolved entry's
 /// [`services`](McpHostTool::services). Each call resolves its name once.
 ///
 /// [`McpToolHost::with_host_tools`]: crate::McpToolHost::with_host_tools
@@ -143,7 +143,7 @@ pub trait McpHostTools: Send + Sync + std::fmt::Debug {
     ///
     /// Any [`McpToolError`]; it fails the `tools/list`, or the `tools/call`
     /// that needed the catalog, with the JSON-RPC error a registry tool's
-    /// would map to. Proxima never degrades to an empty list: a host that
+    /// would map to. Proxiima never degrades to an empty list: a host that
     /// wants one on a failed read returns `Ok(Vec::new())`.
     async fn list(&self, auth: &McpAuthContext) -> Result<Vec<McpHostTool>, McpToolError>;
 
@@ -192,7 +192,7 @@ pub trait McpHostTools: Send + Sync + std::fmt::Debug {
     async fn call(&self, call: ToolCall) -> Result<ToolReply, McpToolError>;
 
     /// Text this host adds to the server `instructions` `initialize` and
-    /// `server/discover` return for `auth`, after Proxima's generated text
+    /// `server/discover` return for `auth`, after Proxiima's generated text
     /// (alone when that is empty). Longer than
     /// [`MAX_HOST_INSTRUCTIONS_CHARS`] it is omitted with a warning.
     /// Default: none.

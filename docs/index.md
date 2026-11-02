@@ -1,7 +1,7 @@
-# Proxima
+# Proxiima
 > Status: current
 
-Proxima is an owner-scoped memory substrate for agents. It admits observations
+Proxiima is an owner-scoped memory substrate for agents. It admits observations
 as Facts, derives typed Abstractions and Perspectives, and records Goals as
 intent. A host supplies identity, authorization, event sources, and effects;
 the core supplies the durable graph and its write rules.
@@ -13,7 +13,7 @@ the core supplies the durable graph and its write rules.
 | Understand the model | [Concepts](concepts.md) |
 | Run a local server | [Get started](get-started.md) |
 | Connect a host application | [Host integration](host-integration.md) |
-| Build a vocabulary crate | [Build a flavor](build-a-flavor.md) |
+| Build a vocabulary crate | [Build a spiice](build-a-spiice.md) |
 | Operate a deployment | [Operate](operate.md) |
 | Find the one settings table | [Configuration](configuration.md) |
 | Review deletion and export | [Data and erasure](data-and-erasure.md) |
@@ -49,9 +49,9 @@ flowchart LR
     H[Host application]
     ID[Owner identity and access]
     S[Event sources]
-    C[Proxima core]
+    C[Proxiima core]
     O[OtherStores]
-    V[Flavor vocabulary crate]
+    V[Spiice vocabulary crate]
     CAT[Live catalog]
     H --> ID
     S --> H
@@ -63,10 +63,10 @@ flowchart LR
     C --> CAT
 ```
 
-A flavor is a vocabulary crate linked into a host at build time. The host reads
-remote stores through `OtherStores`; a flavor is not a separately installed
+A spiice is a vocabulary crate linked into a host at build time. The host reads
+remote stores through `OtherStores`; a spiice is not a separately installed
 runtime process. MCP and REST expose views of the same live catalog. Discover
-the current actions and resources from `tools/list`, `proxima://tools`, or
+the current actions and resources from `tools/list`, `proxiima://tools`, or
 `/v1/openapi.json`; this site does not copy their schemas.
 
 ## Authority
@@ -77,6 +77,6 @@ code, tests, and prose into agreement. Migrations own table shape; rustdoc
 owns types, defaults, and limits; [Configuration](configuration.md) owns
 settings descriptions.
 
-The [Lean principles](https://github.com/Aquilo-Solution-S/Proxima/blob/main/docs/lean/Causa/Principles.lean)
+The [Lean principles](https://github.com/Aquilo-Solution-S/proxiima/blob/main/docs/lean/Causa/Principles.lean)
 state the domainless rules. This site presents their current concepts and
 decisions; Rust code and tests define runtime behaviour.

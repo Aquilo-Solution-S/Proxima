@@ -1,0 +1,690 @@
+use std::net::SocketAddr;
+use std::num::NonZeroU32;
+
+pub const DEFAULT_BIND: &str = "127.0.0.1:31415";
+pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxiima_dev";
+
+/// Rows per transaction of `maintain-storage` without `--batch-size`.
+const DEFAULT_MAINTENANCE_BATCH: NonZeroU32 = NonZeroU32::new(1000).unwrap();
+
+/// `DATABASE_URL`, or the dev default when it is not configured.
+///
+/// Read through [`proxiima_core::env_value`] so `DATABASE_URL=` falls back to
+/// the default instead of handing an empty connection string to the pool.
+fn database_url_from_env() -> String {
+    proxiima_core::env_value(&proxiima_core::process_env, "DATABASE_URL")
+        .unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string())
+}
+
+pub const USAGE: &str = "\
+Usage:
+  proxiima-mcp [serve] [OPTIONS]
+  proxiima-mcp maintain-embeddings [OPTIONS]
+  proxiima-mcp maintain-storage [OPTIONS]
+  proxiima-mcp maintain-blobs [OPTIONS]
+
+Proxiima Streamable HTTP MCP server.
+
+Auth:
+  (OIDC)                   Set PROXIIMA_OIDC_ISSUER + PROXIIMA_OIDC_AUDIENCE
+                           (see Environment) for bearer-JWT auth.
+
+Optional:
+  --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxiima_dev)
+  --bind <ADDR:PORT>       Bind address override (loopback only)
+  -h, --help               Print this message
+
+Environment:
+  PROXIIMA_STORE_NUMBER          Required immutable host-assigned store number (0..65535)
+  PROXIIMA_MCP_BIND              Bind address; allows non-loopback with
+                                PROXIIMA_EXPOSE_NETWORK=true
+                                (e.g. 0.0.0.0:8080)
+  PROXIIMA_EXPOSE_NETWORK        Permit non-loopback MCP exposure
+  PROXIIMA_ALLOWED_ORIGINS       Comma-separated CORS origin allowlist
+  PROXIIMA_ALLOWED_HOSTS         Comma-separated inbound Host allowlist
+                                (hostnames or host:port). Defaults to the
+                                host of PROXIIMA_PUBLIC_URL + the allowed
+                                origins; loopback is always permitted
+  PROXIIMA_PUBLIC_URL            Public base URL for OAuth discovery
+  PROXIIMA_OIDC_ISSUER           OIDC issuer / authorization server
+  PROXIIMA_OIDC_AUDIENCE         Expected token audience
+  PROXIIMA_OIDC_JWKS_URI         Optional explicit JWKS endpoint
+  PROXIIMA_OIDC_JWKS_JSON        Optional pinned JWKS document; nothing is
+                                fetched from the issuer (excludes JWKS_URI)
+  PROXIIMA_OIDC_HTTP_TIMEOUT_SECONDS
+                                Discovery/JWKS complete-request timeout
+                                (default 10; range 1..=300 seconds)
+  PROXIIMA_OIDC_ALLOWED_SUBJECTS Optional comma-separated sub allowlist
+                                (in addition to the subject map below, never
+                                an identity source by itself)
+  PROXIIMA_OIDC_SUBJECT_MAP_JSON Issuer-aware (iss,sub)->user_id identity map:
+                                a JSON array of {iss, sub, user_id} objects.
+                                Required when PROXIIMA_OIDC_ISSUER is set.
+  PROXIIMA_TOOL_PROFILE          Tool profile: memory (fail-closed default) or
+                                full (opt-in; adds core_transfer/core_membership);
+                                every profile admits reads for every audience
+  PROXIIMA_TOOL_ALLOW            Comma-separated canonical tool ids added to profile
+  PROXIIMA_TOOL_DENY             Comma-separated canonical tool ids removed from
+                                profile; naming a read fails startup
+  PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS
+                                Complete /embeddings request timeout
+                                (default 120; range 1..=3600)
+  PROXIIMA_EMBED_BATCH_SIZE      Texts per provider request
+                                (default 32; range 1..=1024)
+  PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS
+                                Idle worker poll interval
+                                (default 5; range 1..=3600)
+  PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS
+                                Processing-claim crash timeout
+                                (default 900; range 1..=86400; must be
+                                greater than request timeout)
+  PROXIIMA_EMBED_QUERY_INSTRUCTION
+                                Template every search query is embedded in;
+                                holds {query}, \n is a newline (default: none)
+
+Maintenance:
+  maintain-embeddings      One self-healing pass: orphan sweep, reconcile
+                           enqueue, health report.
+                           Cron-safe (skips if another pass holds the lease)
+  maintain-storage         One storage pass: retry the object-store purge
+                           debts committed erases left, and/or rotate the
+                           change log on an explicit horizon. Cron-safe
+  maintain-blobs           One reconcile pass over the S3 bucket: report
+                           artefacts whose object is gone, objects no row
+                           claims, and rows naming another store. Deletes
+                           and repairs nothing directly; owes a canonical
+                           object only an aborted or expired upload implies
+
+Endpoint:
+  http://127.0.0.1:31415/mcp
+  MCP initialize must include X-Proxiima-Owner: <uuid>, the owner's bare
+  id. The server binds that owner to Mcp-Session-Id.
+
+Tools:
+  core_search_memories
+  core_recall
+  core_think
+  core_memory_spaces
+  core_remember
+  core_episode_commit
+  core_forget
+  core_restore
+  core_record_utterance
+  core_derive
+  core_interpret
+  core_goal
+  core_fact
+  core_membership
+  core_transfer
+  core_upload
+";
+
+pub const MAINTAIN_USAGE: &str = "\
+Usage: proxiima-mcp maintain-embeddings [OPTIONS]
+
+One embedding self-healing pass, in order: sweep orphaned embedding rows,
+enqueue jobs for memories that need the target space (model at
+PROXIIMA_EMBED_DIM, default 1024), then print a health report (backlog,
+orphans, recall canary). The serving process drains the queue.
+Passes are serialized by a maintenance lease in Postgres; when another pass
+holds it, this run prints a skip notice and exits 0 — safe to fire from cron.
+
+Optional:
+  --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxiima_dev)
+  --model <ID>             Embedding model id (defaults to PROXIIMA_EMBED_MODEL; one is required)
+  --missing-only           Enqueue memories with no embedding at all (default)
+  --include-stale          Also re-enqueue memories embedded only under another model
+  --since <RFC3339>        Only scan memories created at/after the timestamp
+  --limit <N>              Maximum memories to scan (omit for the full graph)
+  -h, --help               Print this message
+";
+
+pub const MAINTAIN_BLOBS_USAGE: &str = "\
+Usage: proxiima-mcp maintain-blobs [OPTIONS]
+
+One reconcile pass over the configured S3 bucket and the rows that name it.
+It deletes nothing and repairs nothing directly, because the direction that
+matters cannot be repaired from here — the bytes are gone, and only a bucket
+version or a backup still has them. One exception: it records purge debt for
+a canonical object only an aborted or expired upload implies (counted as
+newly-owed), and the drain removes it.
+
+Reports three separate numbers, which are three different problems:
+  missing   an artefact the corpus claims to hold whose object is absent.
+            A CITATION THAT CANNOT BE RESOLVED. This is the one to alert on
+  orphans   objects no row claims and no purge debt owes: cost and
+            retention, nothing broken
+  owed      objects with purge debt: the drain removes them
+  newly-owed
+            canonical objects only an aborted or expired upload implies,
+            put after it ended: owed now, so the drain removes them
+  stale-transfers
+            pending/ transfer keys no in-flight upload claims
+  foreign   rows naming another bucket, or any key other than the one
+            derived from the row's own upload id. Neither loss nor waste -
+            a hand-written locator, not something this host minted
+
+Requires the same PROXIIMA_S3_* block the host runs with; the bucket is taken
+from the environment rather than a flag so it cannot be pointed at a store
+the database has no relation to.
+
+Optional:
+  --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxiima_dev)
+  -h, --help               Print this help
+";
+
+pub const STORAGE_MAINTENANCE_USAGE: &str = "\
+Usage: proxiima-mcp maintain-storage [OPTIONS]
+
+One storage-maintenance pass. Passes are serialized by a maintenance lease in
+Postgres; when another pass holds it, this run prints a skip notice and exits
+0 — safe to fire from cron. A Proxiima server with an object store runs the
+same sweep and drain in-process under the same lease
+(PROXIIMA_OBJECT_PURGE_INTERVAL_SECS); this command is for a host that runs
+no server, to name stuck debt, or to name and drain debt owed to another
+store, which a server refuses to start over.
+
+Neither action is a promise to a user. The drain finishes destruction a
+committed owner erase already owes the object store; the prune is log
+rotation. What a host promises about retention or holds is the host's to
+enforce before it calls erase.
+
+At least one action flag is required — there are deliberately no
+destruction defaults.
+
+Actions (at least one):
+  --retry-cold-object-purges
+                           Retry a bounded batch of exact object-store keys
+                           left by committed owner erases. Live retry
+                           requires the serving host's PROXIIMA_S3_* block.
+                           Exits non-zero while debt is owed to another
+                           object store
+  --sweep-expired-uploads  Expire uploads whose TTL passed before they were
+                           staged, owing both of their keys. Requires the
+                           PROXIIMA_S3_* block; not with --dry-run
+
+Optional:
+  --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxiima_dev)
+  --batch-size <N>         Rows per transaction (default 1000)
+  --dry-run                Report what would be purged without
+                           changing anything
+  -h, --help               Print this message
+";
+
+#[derive(Clone)]
+pub struct McpConfig {
+    pub database_url: String,
+    pub bind: Option<SocketAddr>,
+}
+
+impl std::fmt::Debug for McpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpConfig")
+            .field("database_url", &"<redacted>")
+            .field("bind", &self.bind)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct MaintainConfig {
+    pub database_url: String,
+    pub model: Option<String>,
+    pub scope: ReconcileScope,
+    pub limit: Option<i64>,
+}
+
+impl std::fmt::Debug for MaintainConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MaintainConfig")
+            .field("database_url", &"<redacted>")
+            .field("model", &self.model)
+            .field("scope", &self.scope)
+            .field("limit", &self.limit)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileScope {
+    MissingOnly,
+    IncludeStale,
+    Since(time::OffsetDateTime),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct StorageMaintenanceConfig {
+    pub database_url: String,
+    pub retry_cold_object_purges: bool,
+    pub sweep_expired_uploads: bool,
+    pub batch_size: NonZeroU32,
+    pub dry_run: bool,
+}
+
+impl std::fmt::Debug for StorageMaintenanceConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StorageMaintenanceConfig")
+            .field("database_url", &"<redacted>")
+            .field("retry_cold_object_purges", &self.retry_cold_object_purges)
+            .field("sweep_expired_uploads", &self.sweep_expired_uploads)
+            .field("batch_size", &self.batch_size)
+            .field("dry_run", &self.dry_run)
+            .finish()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ArgsError {
+    #[error("help requested")]
+    Help,
+    #[error("{0}")]
+    Invalid(String),
+}
+
+impl ArgsError {
+    #[must_use]
+    pub fn is_help(&self) -> bool {
+        matches!(self, Self::Help)
+    }
+}
+
+/// The arguments of one subcommand, read flag by flag. Every parser asks first which flag it
+/// has, and only a flag that takes a value then reads one, so an unknown flag is always
+/// reported as unknown and a value is never the next flag.
+struct Flags<I> {
+    rest: I,
+}
+
+impl<I: Iterator<Item = String>> Flags<I> {
+    fn new(args: impl IntoIterator<IntoIter = I>) -> Self {
+        Self {
+            rest: args.into_iter(),
+        }
+    }
+
+    /// The next flag; `-h` and `--help` end the parse as [`ArgsError::Help`].
+    fn next_flag(&mut self) -> Result<Option<String>, ArgsError> {
+        match self.rest.next() {
+            Some(flag) if matches!(flag.as_str(), "-h" | "--help") => Err(ArgsError::Help),
+            flag => Ok(flag),
+        }
+    }
+
+    /// The value of `flag`: the next argument, which must not itself be a flag.
+    fn value(&mut self, flag: &str) -> Result<String, ArgsError> {
+        self.rest
+            .next()
+            .filter(|value| !value.starts_with("--"))
+            .ok_or_else(|| ArgsError::Invalid(format!("flag {flag} expects a value")))
+    }
+}
+
+fn unknown_flag(flag: &str) -> ArgsError {
+    ArgsError::Invalid(format!("unknown flag: {flag}"))
+}
+
+/// # Errors
+///
+/// Returns `ArgsError` for help, unknown flags, missing values, or unreadable
+/// current dir.
+pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, ArgsError> {
+    let mut database_url: Option<String> = None;
+    let mut bind: Option<SocketAddr> = None;
+
+    let mut flags = Flags::new(args);
+    while let Some(flag) = flags.next_flag()? {
+        match flag.as_str() {
+            "--database-url" => database_url = Some(flags.value("--database-url")?),
+            "--bind" => {
+                let value = flags.value("--bind")?;
+                let parsed: SocketAddr = value.parse().map_err(|err| {
+                    ArgsError::Invalid(format!("invalid --bind {value:?}: {err}"))
+                })?;
+                if !parsed.ip().is_loopback() {
+                    return Err(ArgsError::Invalid(format!(
+                        "--bind must be loopback, got {}",
+                        parsed.ip()
+                    )));
+                }
+                bind = Some(parsed);
+            }
+            other => return Err(unknown_flag(other)),
+        }
+    }
+
+    let database_url = database_url.unwrap_or_else(database_url_from_env);
+
+    Ok(McpConfig { database_url, bind })
+}
+
+/// # Errors
+///
+/// Returns `ArgsError` for help, unknown flags, missing values, invalid
+/// timestamp, negative limit, or unreadable env defaults.
+pub fn parse_maintain_args<I: IntoIterator<Item = String>>(
+    args: I,
+) -> Result<MaintainConfig, ArgsError> {
+    let mut database_url: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut scope = ReconcileScope::MissingOnly;
+    let mut limit: Option<i64> = None;
+
+    let mut flags = Flags::new(args);
+    while let Some(flag) = flags.next_flag()? {
+        match flag.as_str() {
+            "--missing-only" => scope = ReconcileScope::MissingOnly,
+            "--include-stale" => scope = ReconcileScope::IncludeStale,
+            "--database-url" => database_url = Some(flags.value("--database-url")?),
+            "--model" => model = Some(flags.value("--model")?),
+            "--limit" => {
+                let value = flags.value("--limit")?;
+                let parsed: i64 = value.parse().map_err(|err| {
+                    ArgsError::Invalid(format!("invalid --limit {value:?}: {err}"))
+                })?;
+                if parsed < 0 {
+                    return Err(ArgsError::Invalid("--limit must be nonnegative".into()));
+                }
+                limit = Some(parsed);
+            }
+            "--since" => {
+                let value = flags.value("--since")?;
+                let parsed = time::OffsetDateTime::parse(
+                    &value,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .map_err(|err| ArgsError::Invalid(format!("invalid --since {value:?}: {err}")))?;
+                scope = ReconcileScope::Since(parsed);
+            }
+            other => return Err(unknown_flag(other)),
+        }
+    }
+
+    let database_url = database_url.unwrap_or_else(database_url_from_env);
+
+    Ok(MaintainConfig {
+        database_url,
+        model,
+        scope,
+        limit,
+    })
+}
+
+/// What `maintain-blobs` needs, which is only where the database is.
+///
+/// The bucket comes from `PROXIIMA_S3_*` and not from a flag, because it must
+/// be the SAME bucket the running host writes to. A `--bucket` flag would
+/// let an operator reconcile a database against a store it has no relation
+/// to and be told, truthfully and uselessly, that every artefact is missing.
+pub struct MaintainBlobsConfig {
+    pub database_url: String,
+}
+
+impl std::fmt::Debug for MaintainBlobsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MaintainBlobsConfig")
+            .field("database_url", &"<redacted>")
+            .finish()
+    }
+}
+
+/// # Errors
+///
+/// Returns `ArgsError` for help, unknown flags, or a missing value.
+pub fn parse_maintain_blobs_args<I: IntoIterator<Item = String>>(
+    args: I,
+) -> Result<MaintainBlobsConfig, ArgsError> {
+    let mut database_url: Option<String> = None;
+    let mut flags = Flags::new(args);
+    while let Some(flag) = flags.next_flag()? {
+        match flag.as_str() {
+            "--database-url" => database_url = Some(flags.value("--database-url")?),
+            other => return Err(unknown_flag(other)),
+        }
+    }
+    let database_url = database_url.unwrap_or_else(database_url_from_env);
+    Ok(MaintainBlobsConfig { database_url })
+}
+
+/// # Errors
+///
+/// Returns `ArgsError` for help, unknown flags, missing values, an invalid
+/// duration or batch size, or when no action flag is given — destruction
+/// must be an explicit operator choice, so there is no default action.
+pub fn parse_storage_maintenance_args<I: IntoIterator<Item = String>>(
+    args: I,
+) -> Result<StorageMaintenanceConfig, ArgsError> {
+    let mut database_url: Option<String> = None;
+    let mut retry_cold_object_purges = false;
+    let mut sweep_expired_uploads = false;
+    let mut batch_size = DEFAULT_MAINTENANCE_BATCH;
+    let mut dry_run = false;
+
+    let mut flags = Flags::new(args);
+    while let Some(flag) = flags.next_flag()? {
+        match flag.as_str() {
+            "--retry-cold-object-purges" => retry_cold_object_purges = true,
+            "--sweep-expired-uploads" => sweep_expired_uploads = true,
+            "--dry-run" => dry_run = true,
+            "--database-url" => database_url = Some(flags.value("--database-url")?),
+            "--batch-size" => {
+                let value = flags.value("--batch-size")?;
+                let parsed: u32 = value.parse().map_err(|err| {
+                    ArgsError::Invalid(format!("invalid --batch-size {value:?}: {err}"))
+                })?;
+                batch_size = NonZeroU32::new(parsed)
+                    .ok_or_else(|| ArgsError::Invalid("--batch-size must be positive".into()))?;
+            }
+            other => return Err(unknown_flag(other)),
+        }
+    }
+
+    if !retry_cold_object_purges && !sweep_expired_uploads {
+        return Err(ArgsError::Invalid(
+            "maintain-storage requires --retry-cold-object-purges or --sweep-expired-uploads"
+                .into(),
+        ));
+    }
+    if sweep_expired_uploads && dry_run {
+        return Err(ArgsError::Invalid(
+            "--sweep-expired-uploads has no dry run".into(),
+        ));
+    }
+
+    let database_url = database_url.unwrap_or_else(database_url_from_env);
+
+    Ok(StorageMaintenanceConfig {
+        database_url,
+        retry_cold_object_purges,
+        sweep_expired_uploads,
+        batch_size,
+        dry_run,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_flag_returns_help() {
+        let err = parse_args(["--help".to_string()]).expect_err("help");
+        assert!(err.is_help());
+    }
+
+    #[test]
+    fn non_loopback_bind_rejected() {
+        let err = parse_args(["--bind".into(), "0.0.0.0:31415".into()]).expect_err("non-loopback");
+        assert!(err.to_string().contains("loopback"));
+    }
+
+    /// An unknown flag is reported as unknown, with or without an argument after it, and the
+    /// value of a flag is never the next flag.
+    #[test]
+    fn every_parser_names_an_unknown_flag_and_refuses_a_flag_as_a_value() {
+        let unknown = |flags: &[&str]| {
+            flags
+                .iter()
+                .map(|flag| (*flag).to_string())
+                .collect::<Vec<_>>()
+        };
+        for flags in [unknown(&["--nonsense"]), unknown(&["--nonsense", "x"])] {
+            for error in [
+                parse_args(flags.clone()).expect_err("serve"),
+                parse_maintain_args(flags.clone()).expect_err("maintain-embeddings"),
+                parse_maintain_blobs_args(flags.clone()).expect_err("maintain-blobs"),
+                parse_storage_maintenance_args(flags.clone()).expect_err("maintain-storage"),
+            ] {
+                assert!(
+                    error.to_string().contains("unknown flag: --nonsense"),
+                    "{error}"
+                );
+            }
+        }
+        let error = parse_storage_maintenance_args(unknown(&[
+            "--retry-cold-object-purges",
+            "--database-url",
+            "--dry-run",
+        ]))
+        .expect_err("a flag is not a URL");
+        assert!(
+            error.to_string().contains("--database-url expects a value"),
+            "{error}"
+        );
+        assert!(parse_args(unknown(&["--bind"])).is_err());
+    }
+
+    /// The top-level usage lists every subcommand whose own usage exists.
+    #[test]
+    fn the_top_usage_lists_each_subcommand_with_its_own_usage() {
+        for usage in [
+            MAINTAIN_USAGE,
+            MAINTAIN_BLOBS_USAGE,
+            STORAGE_MAINTENANCE_USAGE,
+        ] {
+            let line = usage.lines().next().expect("a usage line");
+            let command = line.strip_prefix("Usage: ").expect("a Usage: line");
+            assert!(USAGE.contains(&format!("  {command}\n")), "{command}");
+        }
+    }
+
+    #[test]
+    fn maintain_blobs_help_flag_returns_help() {
+        let err = parse_maintain_blobs_args(["--help".to_string()]).expect_err("help");
+        assert!(MAINTAIN_BLOBS_USAGE.contains("deletes nothing and repairs nothing directly"));
+        assert!(MAINTAIN_BLOBS_USAGE.contains(
+            "records purge debt for\na canonical object only an aborted or expired upload implies"
+        ));
+        assert!(!MAINTAIN_BLOBS_USAGE.contains("READ-ONLY"));
+        assert!(!USAGE.contains("Read-only"));
+        assert!(err.is_help());
+    }
+
+    #[test]
+    fn maintain_blobs_takes_a_database_url_and_refuses_a_bucket() {
+        let cfg = parse_maintain_blobs_args(["--database-url".into(), "postgres://x/y".into()])
+            .expect("valid args");
+        assert_eq!(cfg.database_url, "postgres://x/y");
+
+        // The bucket is deliberately NOT a flag: it must be the one the host
+        // writes to, and a mismatched pair would report total loss with a
+        // straight face. If this ever starts parsing, the usage text and the
+        // reason in `MaintainBlobsConfig` are what to re-read.
+        let err = parse_maintain_blobs_args(["--bucket".into(), "somewhere-else".into()])
+            .expect_err("--bucket must not be accepted");
+        assert!(!err.is_help(), "{err:?}");
+    }
+
+    #[test]
+    fn maintain_help_flag_returns_help() {
+        let err = parse_maintain_args(["--help".to_string()]).expect_err("help");
+        assert!(err.is_help());
+    }
+
+    #[test]
+    fn maintain_args_parse_scope_and_limit() {
+        let cfg = parse_maintain_args([
+            "--database-url".into(),
+            "postgres://x/y".into(),
+            "--model".into(),
+            "custom-embed".into(),
+            "--include-stale".into(),
+            "--limit".into(),
+            "50".into(),
+        ])
+        .expect("valid args");
+        assert_eq!(cfg.database_url, "postgres://x/y");
+        assert_eq!(cfg.model.as_deref(), Some("custom-embed"));
+        assert_eq!(cfg.scope, ReconcileScope::IncludeStale);
+        assert_eq!(cfg.limit, Some(50));
+        assert!(
+            parse_maintain_args(["--drain".into()]).is_err(),
+            "the inline drain is gone; the serving process drains"
+        );
+    }
+
+    #[test]
+    fn storage_maintenance_help_flag_returns_help() {
+        let err = parse_storage_maintenance_args(["--help".to_string()]).expect_err("help");
+        assert!(err.is_help());
+        assert!(STORAGE_MAINTENANCE_USAGE.contains("PROXIIMA_S3_*"));
+    }
+
+    #[test]
+    fn storage_maintenance_requires_an_action_flag() {
+        let err = parse_storage_maintenance_args(["--dry-run".to_string()]).expect_err("no action");
+        assert!(err.to_string().contains("--retry-cold-object-purges"));
+    }
+
+    #[test]
+    fn storage_maintenance_cold_purge_retry_is_an_explicit_action() {
+        let cfg = parse_storage_maintenance_args([
+            "--retry-cold-object-purges".to_string(),
+            "--batch-size".to_string(),
+            "17".to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect("retry alone is a valid bounded pass");
+        assert!(cfg.retry_cold_object_purges);
+        assert_eq!(cfg.batch_size.get(), 17);
+        assert!(cfg.dry_run);
+    }
+
+    #[test]
+    fn storage_maintenance_sweep_is_an_action_without_a_dry_run() {
+        let cfg = parse_storage_maintenance_args(["--sweep-expired-uploads".to_string()])
+            .expect("the sweep alone is a valid pass");
+        assert!(cfg.sweep_expired_uploads);
+        assert!(!cfg.retry_cold_object_purges);
+        let err = parse_storage_maintenance_args([
+            "--sweep-expired-uploads".to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect_err("no dry run");
+        assert!(err.to_string().contains("no dry run"));
+        assert!(STORAGE_MAINTENANCE_USAGE.contains("--sweep-expired-uploads"));
+    }
+
+    #[test]
+    fn storage_maintenance_batch_size_must_be_positive() {
+        let err = parse_storage_maintenance_args([
+            "--retry-cold-object-purges".into(),
+            "--batch-size".into(),
+            "0".into(),
+        ])
+        .expect_err("zero batch");
+        assert!(err.to_string().contains("--batch-size must be positive"));
+    }
+
+    #[test]
+    fn storage_maintenance_batch_size_refuses_what_u32_cannot_hold() {
+        for value in ["-1", "4294967296", "many"] {
+            let err = parse_storage_maintenance_args([
+                "--sweep-expired-uploads".into(),
+                "--batch-size".into(),
+                value.into(),
+            ])
+            .expect_err(value);
+            assert!(err.to_string().contains("invalid --batch-size"), "{err}");
+        }
+    }
+}

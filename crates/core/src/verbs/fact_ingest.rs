@@ -2,7 +2,7 @@
 //!
 //! See docs/protocol.md §`FactIngest` and
 //! docs/concepts.md. The storage-side body lives in
-//! `proxima-storage-pg`.
+//! `proxiima-storage-pg`.
 
 use crate::verbs::query::SidecarAtom;
 use uuid::Uuid;
@@ -150,7 +150,7 @@ pub struct FactWriteCommand {
     /// declares `LanguagePolicy::PerRow` refuses it at the write port
     /// rather than choosing on the writer's behalf.
     ///
-    /// It lands on the PROJECTION row — `<flavor>.projection`'s
+    /// It lands on the PROJECTION row — `<spiice>.projection`'s
     /// `lexical_language` column — which is where the vector it governs is
     /// derived. The projection is the first write path that has both the
     /// value and a column in scope, which is why the `language` parameter
@@ -615,7 +615,7 @@ impl AuthorizedFactWithCitation {
     /// the Engine's upload verb.
     ///
     /// ```compile_fail
-    /// fn forge(write: proxima_core::verbs::fact_ingest::AuthorizedFactWithCitation) {
+    /// fn forge(write: proxiima_core::verbs::fact_ingest::AuthorizedFactWithCitation) {
     ///     write.with_upload_completion(uuid::Uuid::nil());
     /// }
     /// ```

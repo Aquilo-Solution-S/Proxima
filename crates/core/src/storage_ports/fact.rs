@@ -46,15 +46,15 @@ pub trait FactIngestPort: Send + Sync {
     ///
     /// The authorized wrapper owns the payload slice because a Fact may be
     /// extended: the substrate owns the Fact and its own sidecar, and a
-    /// flavor may add further rows of its own against the same `memory_id` —
-    /// extra columns on an event the substrate defines, without the flavor
+    /// spiice may add further rows of its own against the same `memory_id` —
+    /// extra columns on an event the substrate defines, without the spiice
     /// having to own the event.
     ///
     /// **Destination is resolved per bound payload, never positionally.** Storage
     /// routes each payload by its own `(kind, schema_id, schema_version)`
     /// through the sidecar registry, and an unregistered schema is a
     /// `ConstraintViolation`. Two payloads therefore cannot be transposed
-    /// into each other's tables by an ordering slip, and a flavor cannot
+    /// into each other's tables by an ordering slip, and a spiice cannot
     /// name a destination it has not registered. The slice's ORDER is the
     /// insert order and nothing else.
     ///
@@ -72,7 +72,7 @@ pub trait FactIngestPort: Send + Sync {
     /// Note what is NOT widened: `AuthorizedFactWrite::fact_sidecar_table`
     /// and its natural-key columns still come from the Fact's OWN registered
     /// schema, because a stateful Fact's identity belongs to the event, not
-    /// to whatever a flavor chose to staple onto it.
+    /// to whatever a spiice chose to staple onto it.
     ///
     /// # Errors
     ///

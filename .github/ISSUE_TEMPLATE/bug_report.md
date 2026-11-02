@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a reproducible problem in Proxima
+about: Report a reproducible problem in Proxiima
 title: "bug(<component>): "
 labels: bug
 assignees: ""
@@ -30,7 +30,7 @@ assignees: ""
 
 ## Environment
 
-- Proxima version / commit:
+- Proxiima version / commit:
 - OS:
 - Rust version (`rustc --version`):
 - Database / services involved:

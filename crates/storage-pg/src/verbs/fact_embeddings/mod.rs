@@ -1,4 +1,4 @@
-use proxima_core::StorageError;
+use proxiima_core::StorageError;
 
 mod jobs;
 mod ops;

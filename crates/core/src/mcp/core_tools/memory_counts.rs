@@ -1,4 +1,4 @@
-//! `proxima://memories/counts` — how many current memories the caller can
+//! `proxiima://memories/counts` — how many current memories the caller can
 //! read, by kind.
 //!
 //! One per series head for Fact, Abstraction and Perspective and one per Goal

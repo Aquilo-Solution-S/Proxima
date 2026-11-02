@@ -1,9 +1,9 @@
 //! Exact paging semantics under the production owner policies. Expected rows
 //! are computed from the seeded records, independently of the SQL builder.
 
-use proxima_core::verbs::query::{EntityKind, QueryCursor, QueryRequest, SupersessionStatus};
-use proxima_core::{Credentials, GroupId, MemoryId, OwnerId, OwnerRoles, Role, SchemaId, UserId};
-use proxima_storage_pg::{begin_owner_transaction, verbs::query::memory_page_sql_for_tests};
+use proxiima_core::verbs::query::{EntityKind, QueryCursor, QueryRequest, SupersessionStatus};
+use proxiima_core::{Credentials, GroupId, MemoryId, OwnerId, OwnerRoles, Role, SchemaId, UserId};
+use proxiima_storage_pg::{begin_owner_transaction, verbs::query::memory_page_sql_for_tests};
 use sqlx::{PgConnection, PgPool, Row};
 use uuid::Uuid;
 
@@ -20,19 +20,19 @@ async fn insert_record(pool: &PgPool, handle: Uuid, row: &Record, anchor: Option
         None
     } else {
         let id = Uuid::now_v7();
-        sqlx::query("INSERT INTO proxima_core.content(content_id, owner_id, schema_id, content_hash) VALUES ($1,$2,$3,$4)")
+        sqlx::query("INSERT INTO proxiima_core.content(content_id, owner_id, schema_id, content_hash) VALUES ($1,$2,$3,$4)")
             .bind(id).bind(row.owner).bind(&row.schema).bind(row.t.as_bytes().repeat(2))
             .execute(pool).await.unwrap();
         Some(id)
     };
-    sqlx::query("INSERT INTO proxima_core.memory(handle,t,kind,owner_id,schema_id,content_id,refs, occurred_at, \"by\", via) VALUES ($1,$2,$3::text::proxima_core.memory_kind,$4,$5,$6,$7, CASE WHEN $3::text::proxima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
+    sqlx::query("INSERT INTO proxiima_core.memory(handle,t,kind,owner_id,schema_id,content_id,refs, occurred_at, \"by\", via) VALUES ($1,$2,$3::text::proxiima_core.memory_kind,$4,$5,$6,$7, CASE WHEN $3::text::proxiima_core.memory_kind = 'fact' THEN uuid_extract_timestamp($2) END, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
         .bind(handle).bind(row.t).bind(row.kind).bind(row.owner).bind(&row.schema)
         .bind(content).bind(anchor.into_iter().collect::<Vec<_>>())
         .execute(pool).await.unwrap();
 }
 
 async fn insert_head(pool: &PgPool, handle: Uuid, row: &Record, t: Uuid) {
-    sqlx::query("INSERT INTO proxima_core.memory_head(handle,t,kind,owner_id,schema_id) VALUES ($1,$2,$3::text::proxima_core.memory_kind,$4,$5)")
+    sqlx::query("INSERT INTO proxiima_core.memory_head(handle,t,kind,owner_id,schema_id) VALUES ($1,$2,$3::text::proxiima_core.memory_kind,$4,$5)")
         .bind(handle).bind(t).bind(row.kind).bind(row.owner).bind(&row.schema)
         .execute(pool).await.unwrap();
 }
@@ -43,7 +43,7 @@ async fn seed(pool: &PgPool, owners: &[Uuid; 3]) -> Vec<Record> {
     let base = Uuid::now_v7().as_u128() & !0xffff;
     let mut rows = Vec::new();
     for (index, owner) in owners.iter().copied().enumerate() {
-        sqlx::query("INSERT INTO proxima_core.owners(owner_id, kind) VALUES ($1, 'group')")
+        sqlx::query("INSERT INTO proxiima_core.owners(owner_id, kind) VALUES ($1, 'group')")
             .bind(owner)
             .execute(pool)
             .await
@@ -232,7 +232,7 @@ async fn paged_query_preserves_filters_history_and_scope_before_limit() {
         )
         .unwrap(),
     };
-    let authz = proxima_core::authenticate(&verifier, &Credentials::Bearer("paging-test".into()))
+    let authz = proxiima_core::authenticate(&verifier, &Credentials::Bearer("paging-test".into()))
         .await
         .unwrap();
     let mut tx = begin_owner_transaction(&runtime, authz.owner_scope().unwrap())

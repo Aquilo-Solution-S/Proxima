@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use proxima_core::verbs::schema::MemoryEmbedUnit;
-use proxima_core::{EntityKind, MemoryId, OwnerId, StorageError};
+use proxiima_core::verbs::schema::MemoryEmbedUnit;
+use proxiima_core::{EntityKind, MemoryId, OwnerId, StorageError};
 use sqlx::{Executor, PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -11,7 +11,7 @@ use crate::pg_ident::PgIdent;
 /// Owner-scoped embed text for one memory.
 ///
 /// Text comes from the `(table, column)` the row's schema declares as its
-/// [`proxima_core::flavor::EmbedUnit`]. A schema that declares none, or
+/// [`proxiima_core::spiice::EmbedUnit`]. A schema that declares none, or
 /// that is listed in `non_embeddable_schemas`, has nothing to embed.
 ///
 /// # Errors
@@ -99,7 +99,7 @@ pub async fn load_embedding_texts_on_connection(
         .collect();
     let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
         "SELECT t, owner_id, schema_id
-           FROM proxima_core.memory /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+           FROM proxiima_core.memory /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
           WHERE t = ANY($1::uuid[]) AND forgotten_at IS NULL",
     )
     .bind(&ids)
@@ -139,7 +139,7 @@ pub async fn load_embedding_texts_on_connection(
         let member_ids: Vec<Uuid> = members.iter().map(|(_, t)| *t).collect();
         // `c.{key}` is the sidecar's memory column as its `Surface`
         // declares it; the alias back to `t` is this function's own row
-        // shape, which stays one spelling whatever a flavor names its
+        // shape, which stays one spelling whatever a spiice names its
         // column — the same rule the search legs keep.
         let sql = format!(
             "SELECT c.{key} AS t, c.{column}
@@ -215,7 +215,7 @@ where
 {
     sqlx::query_scalar(
         "SELECT m.schema_id
-           FROM proxima_core.memory m /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
+           FROM proxiima_core.memory m /* FORGET-POLICY: live-only (embedding drain and reconcile act on live memories) */
           WHERE m.t = $1
             AND m.owner_id = $2
             AND m.forgotten_at IS NULL",
@@ -263,7 +263,7 @@ mod tests {
         let src = include_str!("text.rs");
         let join = format!(
             "{}{}",
-            "JOIN proxima_core.memory_head h ON h.handle", " = m.handle"
+            "JOIN proxiima_core.memory_head h ON h.handle", " = m.handle"
         );
         assert!(
             !src.contains(&join),

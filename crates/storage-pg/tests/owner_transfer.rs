@@ -3,44 +3,44 @@
 
 use std::sync::Arc;
 
-use proxima_core::FactPayload;
-use proxima_core::owner_inverse::{
+use proxiima_core::FactPayload;
+use proxiima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget,
     OwnerExportTarget, OwnerSurfaces,
 };
-use proxima_core::storage_ports::FactIngestPort;
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::FactIngestPort;
+use proxiima_core::storage_ports::{
     MemoryAuthoringPort, MemoryReadPort, OwnerInversePort, OwnerTransferPort, OwnerWritePermit,
 };
-use proxima_core::test_fixtures::{authenticated_context, owner_scope_for_tests};
-use proxima_core::verbs::fact_ingest::{
+use proxiima_core::test_fixtures::{authenticated_context, owner_scope_for_tests};
+use proxiima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, CitationSpec, FactIngestOutcome, FactWriteCommand,
 };
-use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{
-    AccessKind, AgentNoteV1, AuthPath, AuthzContext, ColdObjectStore, Engine, EntityId,
-    FlavorRegistry, GoalId, GroupId, OwnerId, SchemaId, SchemaVersion, SidecarPayload,
-    StorageError, UserId,
+use proxiima_core::verbs::goal_write::GoalState;
+use proxiima_core::{
+    AccessKind, AgentNoteV1, AuthPath, AuthzContext, ColdObjectStore, Engine, EntityId, GoalId,
+    GroupId, OwnerId, SchemaId, SchemaVersion, SidecarPayload, SpiiceRegistry, StorageError,
+    UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db, split_role_urls};
-use proxima_storage_pg::test_fixtures::{create_core_db, register_group_for_tests};
-use proxima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series};
-use proxima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
-use proxima_storage_pg::{
+use proxiima_pg_testkit::{db_url, drop_db, split_role_urls};
+use proxiima_storage_pg::test_fixtures::{create_core_db, register_group_for_tests};
+use proxiima_storage_pg::verbs::forget::{MemoryColdStore, erase_memory_series};
+use proxiima_storage_pg::verbs::goal_timeseries::{GoalWriteCommand, write_goal};
+use proxiima_storage_pg::{
     PgStorage, add_group_member, core_pg_sidecars, register_group, replace_group_member_relation,
 };
 use uuid::Uuid;
 
 /// The five sidecar legs exactly as the engine assembles them: from the
-/// frozen flavor registry. Passing empty slices here would silently skip
+/// frozen spiice registry. Passing empty slices here would silently skip
 /// the owner-pinned leg, which is the difference these tests exist to
 /// measure.
 fn contract_sidecar_tables() -> OwnerSurfaces {
-    OwnerSurfaces::for_registry(&proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests())
+    OwnerSurfaces::for_registry(&proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests())
 }
 
-fn erase_context() -> proxima_storage_pg::PgHostStateEraseContext {
-    proxima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(contract_sidecar_tables())
+fn erase_context() -> proxiima_storage_pg::PgHostStateEraseContext {
+    proxiima_storage_pg::PgHostStateEraseContext::for_surfaces_for_tests(contract_sidecar_tables())
         .expect("owner-transfer fixture has no host lifecycle tables")
 }
 
@@ -62,10 +62,10 @@ async fn owner_fence_lock_state(
                 AND granted = $2
                 AND mode = $3
                 AND classid::bigint = ((hashtextextended(
-                    'proxima-owner-fence:' || $1::text, 0
+                    'proxiima-owner-fence:' || $1::text, 0
                 ) >> 32) & 4294967295)
                 AND objid::bigint = (hashtextextended(
-                    'proxima-owner-fence:' || $1::text, 0
+                    'proxiima-owner-fence:' || $1::text, 0
                 ) & 4294967295)
          )",
     )
@@ -85,10 +85,10 @@ async fn handle_lock_held(pool: &sqlx::PgPool, handle: Uuid) -> Result<bool, sql
                 AND granted
                 AND mode = 'ExclusiveLock'
                 AND classid::bigint = ((hashtextextended(
-                    'proxima-memory-handle:' || $1::text, 0
+                    'proxiima-memory-handle:' || $1::text, 0
                 ) >> 32) & 4294967295)
                 AND objid::bigint = (hashtextextended(
-                    'proxima-memory-handle:' || $1::text, 0
+                    'proxiima-memory-handle:' || $1::text, 0
                 ) & 4294967295)
          )",
     )
@@ -109,10 +109,10 @@ async fn owner_fence_waiter_count(
             AND NOT granted
             AND mode = $2
             AND classid::bigint = ((hashtextextended(
-                'proxima-owner-fence:' || $1::text, 0
+                'proxiima-owner-fence:' || $1::text, 0
             ) >> 32) & 4294967295)
             AND objid::bigint = (hashtextextended(
-                'proxima-owner-fence:' || $1::text, 0
+                'proxiima-owner-fence:' || $1::text, 0
             ) & 4294967295)",
     )
     .bind(owner.into_inner())
@@ -129,10 +129,10 @@ async fn lifecycle_waiter_count(pool: &sqlx::PgPool, t: Uuid) -> Result<i64, sql
             AND NOT granted
             AND mode = 'ExclusiveLock'
             AND classid::bigint = ((hashtextextended(
-                'proxima-forget:' || $1::text, 0
+                'proxiima-forget:' || $1::text, 0
             ) >> 32) & 4294967295)
             AND objid::bigint = (hashtextextended(
-                'proxima-forget:' || $1::text, 0
+                'proxiima-forget:' || $1::text, 0
             ) & 4294967295)",
     )
     .bind(t)
@@ -156,10 +156,10 @@ async fn object_key_waiter_count(
             AND NOT granted
             AND mode = 'ExclusiveLock'
             AND classid::bigint = ((hashtextextended(
-                'proxima-object-key:' || $1, 0
+                'proxiima-object-key:' || $1, 0
             ) >> 32) & 4294967295)
             AND objid::bigint = (hashtextextended(
-                'proxima-object-key:' || $1, 0
+                'proxiima-object-key:' || $1, 0
             ) & 4294967295)",
     )
     .bind(object_key)
@@ -183,7 +183,7 @@ fn draft() -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
@@ -219,14 +219,14 @@ fn destination() -> OwnerId {
 /// later erase it through the group path.
 async fn registered_destination(
     pool: &sqlx::PgPool,
-) -> Result<OwnerId, proxima_core::StorageError> {
+) -> Result<OwnerId, proxiima_core::StorageError> {
     let group = GroupId::new(Uuid::now_v7());
     register_group_for_tests(pool, group).await?;
     Ok(OwnerId::from(group))
 }
 
 async fn fresh_pg() -> (String, PgStorage) {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -278,28 +278,28 @@ impl CountingColdStore {
 
 #[async_trait::async_trait]
 impl ColdObjectStore for CountingColdStore {
-    fn store_id(&self) -> &proxima_core::ObjectStoreId {
-        static ID: std::sync::LazyLock<proxima_core::ObjectStoreId> =
+    fn store_id(&self) -> &proxiima_core::ObjectStoreId {
+        static ID: std::sync::LazyLock<proxiima_core::ObjectStoreId> =
             std::sync::LazyLock::new(|| {
-                proxima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
+                proxiima_core::ObjectStoreId::parse("s3:test/bucket").expect("test store id")
             });
         &ID
     }
 
-    async fn delete(&self, key: &str) -> Result<proxima_core::PurgeDeleted, StorageError> {
+    async fn delete(&self, key: &str) -> Result<proxiima_core::PurgeDeleted, StorageError> {
         self.deletes
             .lock()
             .expect("delete log")
             .push(key.to_owned());
         let removed = self.objects.lock().expect("objects").remove(key);
-        Ok(proxima_core::PurgeDeleted::from_versions(u64::from(
+        Ok(proxiima_core::PurgeDeleted::from_versions(u64::from(
             removed.is_some(),
         )))
     }
 }
 
 async fn fresh_pg_with_counting_cold() -> (String, PgStorage, Arc<CountingColdStore>) {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -312,7 +312,7 @@ async fn fresh_pg_with_counting_cold() -> (String, PgStorage, Arc<CountingColdSt
 }
 
 async fn fresh_pg_with_cold() -> (String, PgStorage, Arc<MemoryColdStore>) {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -340,7 +340,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
         // `agent-note-v1` is `LanguagePolicy::PerRow`: the write names a
         // language.
         fact.lexical_language =
-            Some(proxima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
+            Some(proxiima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned());
         let authorized = AuthorizedFactWrite::new_for_tests(
             OwnerWritePermit::new_for_tests(owner, AccessKind::Fact),
             fact,
@@ -356,7 +356,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
         let written = pg.ingest_fact_with_typed_sidecar(&authorized, &[]).await?;
         let t = written.memory_id.into_inner();
         let witness_before: Option<String> = sqlx::query_scalar(
-            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+            "SELECT kind::text FROM proxiima_core.erased_pin_target WHERE t = $1",
         )
         .bind(t)
         .fetch_optional(pool)
@@ -366,7 +366,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             "a transfer must not create a hard-erase witness"
         );
         let content_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/test-fact-v1', $2)
              RETURNING content_id",
         )
@@ -374,7 +374,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
         .bind(vec![7_u8; 32])
         .fetch_one(pool)
         .await?;
-        sqlx::query("UPDATE proxima_core.memory SET content_id = $2 WHERE t = $1")
+        sqlx::query("UPDATE proxiima_core.memory SET content_id = $2 WHERE t = $1")
             .bind(t)
             .bind(content_id)
             .execute(pool)
@@ -391,15 +391,15 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             .await?;
         assert!(first);
         let moved_writer: (Uuid, Option<Uuid>) =
-            sqlx::query_as("SELECT \"by\", via FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_as("SELECT \"by\", via FROM proxiima_core.memory WHERE t = $1")
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(moved_writer, (writer.by, writer.via));
         let content_owner: Uuid = sqlx::query_scalar(
             "SELECT c.owner_id
-               FROM proxima_core.content c
-               JOIN proxima_core.memory m ON m.content_id = c.content_id
+               FROM proxiima_core.content c
+               JOIN proxiima_core.memory m ON m.content_id = c.content_id
               WHERE m.t = $1",
         )
         .bind(t)
@@ -411,7 +411,7 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             "transfer must re-home Content with the Memory"
         );
         let old_left: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.content WHERE content_id = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.content WHERE content_id = $1",
         )
         .bind(content_id)
         .fetch_one(pool)
@@ -421,13 +421,13 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             "origin Content is GC'd after an exclusive transfer"
         );
         let owner_id: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(owner_id, dest.into_inner());
         let sketch_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.sketch WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.sketch WHERE t = $1")
                 .bind(t)
                 .fetch_one(pool)
                 .await?;
@@ -445,20 +445,20 @@ async fn transfer_moves_same_memory_t_and_sidecar() {
             "the destination must read the moved sketch"
         );
         let notes: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.agent_note_v1 WHERE t = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.agent_note_v1 WHERE t = $1",
         )
         .bind(t)
         .fetch_one(pool)
         .await?;
         assert_eq!(notes, 1);
         let keys: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE ingest_key = 'k1'",
+            "SELECT count(*)::bigint FROM proxiima_core.ingest_keys WHERE ingest_key = 'k1'",
         )
         .fetch_one(pool)
         .await?;
         assert_eq!(keys, 0);
         let witness_after: Option<String> = sqlx::query_scalar(
-            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+            "SELECT kind::text FROM proxiima_core.erased_pin_target WHERE t = $1",
         )
         .bind(t)
         .fetch_optional(pool)
@@ -499,7 +499,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
         let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
         let t = written.memory_id.into_inner();
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings
+            "INSERT INTO proxiima_core.embeddings
                 (entity_id, model_id, dim, embedding_version, chunk_ordinal, vec, owner_id)
              SELECT $1, model_id, 1024, version, chunk_ordinal,
                     ('[' || array_to_string(array_fill(0::real, ARRAY[1024]), ',') || ']')::vector,
@@ -513,7 +513,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_heads
+            "INSERT INTO proxiima_core.embedding_heads
                 (entity_id, model_id, dim, embedding_version, owner_id)
              SELECT $1, model_id, 1024, 2, $2
                FROM unnest(ARRAY['kept-model', 'removed-model']) AS model_id",
@@ -523,7 +523,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
+            "INSERT INTO proxiima_core.embedding_jobs (entity_id, model_id, dim, owner_id)
              SELECT $1, model_id, 1024, $2
                FROM unnest(ARRAY['kept-model', 'removed-model']) AS model_id",
         )
@@ -538,9 +538,9 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
             .export_owner_bundle(&export, &contract_sidecar_tables())
             .await?;
         for table in [
-            "proxima_core.embeddings",
-            "proxima_core.embedding_heads",
-            "proxima_core.embedding_jobs",
+            "proxiima_core.embeddings",
+            "proxiima_core.embedding_heads",
+            "proxiima_core.embedding_jobs",
         ] {
             assert!(
                 !bundle.tables.contains_key(table),
@@ -548,9 +548,9 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
             );
         }
 
-        let route = [proxima_core::EmbeddingSpace::new(
+        let route = [proxiima_core::EmbeddingSpace::new(
             "kept-model",
-            proxima_core::EmbeddingDim::D1024,
+            proxiima_core::EmbeddingDim::D1024,
         )];
         assert!(
             pg.transfer_to_owner(
@@ -564,7 +564,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
         );
         let chunks: Vec<(String, i32, i32, Uuid)> = sqlx::query_as(
             "SELECT model_id, embedding_version, chunk_ordinal, owner_id
-               FROM proxima_core.embeddings WHERE entity_id = $1
+               FROM proxiima_core.embeddings WHERE entity_id = $1
               ORDER BY embedding_version, chunk_ordinal",
         )
         .bind(t)
@@ -584,7 +584,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
         );
         let head: Vec<(String, i32, Uuid)> = sqlx::query_as(
             "SELECT model_id, embedding_version, owner_id
-               FROM proxima_core.embedding_heads WHERE entity_id = $1",
+               FROM proxiima_core.embedding_heads WHERE entity_id = $1",
         )
         .bind(t)
         .fetch_all(pool)
@@ -592,7 +592,7 @@ async fn transfer_moves_all_routed_chunks_and_purges_unrouted_spaces() {
         assert_eq!(head, vec![("kept-model".into(), 2, dest.into_inner())]);
         let jobs: Vec<(String, Uuid)> = sqlx::query_as(
             "SELECT model_id, owner_id
-               FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+               FROM proxiima_core.embedding_jobs WHERE entity_id = $1",
         )
         .bind(t)
         .fetch_all(pool)
@@ -624,7 +624,7 @@ async fn transfer_rehomes_forgotten_versions() {
             .cited_object_id
             .expect("citation-bearing write returns its object");
         let personal_content_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.content (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/test-fact-v1', $2)
              RETURNING content_id",
         )
@@ -632,14 +632,14 @@ async fn transfer_rehomes_forgotten_versions() {
         .bind(vec![11_u8; 32])
         .fetch_one(pool)
         .await?;
-        sqlx::query("UPDATE proxima_core.memory SET content_id = $2 WHERE t = $1")
+        sqlx::query("UPDATE proxiima_core.memory SET content_id = $2 WHERE t = $1")
             .bind(first.memory_id.into_inner())
             .bind(personal_content_id)
             .execute(pool)
             .await?;
         // Vectors the forget deletes with the rest of the derived state.
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings
+            "INSERT INTO proxiima_core.embeddings
                 (entity_id, model_id, dim, chunk_ordinal, vec, owner_id)
              SELECT $1, 'transfer-hydrate-model', 1024, chunk_ordinal,
                     ('[' || array_to_string(array_fill(0::real, ARRAY[1024]), ',') || ']')::vector,
@@ -668,13 +668,13 @@ async fn transfer_rehomes_forgotten_versions() {
             .await?;
         assert!(transferred);
         let forgotten_writer: (Uuid, Option<Uuid>) =
-            sqlx::query_as("SELECT \"by\", via FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_as("SELECT \"by\", via FROM proxiima_core.memory WHERE t = $1")
                 .bind(first.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(forgotten_writer, (writer.by, writer.via));
         let (forgotten_owner, still_forgotten): (uuid::Uuid, bool) = sqlx::query_as(
-            "SELECT owner_id, forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+            "SELECT owner_id, forgotten_at IS NOT NULL FROM proxiima_core.memory WHERE t = $1",
         )
         .bind(first.memory_id.into_inner())
         .fetch_one(pool)
@@ -686,7 +686,7 @@ async fn transfer_rehomes_forgotten_versions() {
         );
         assert!(still_forgotten, "the transferred version stays forgotten");
         let blob_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
                 .bind(cited_object_id)
                 .fetch_one(pool)
                 .await?;
@@ -696,7 +696,7 @@ async fn transfer_rehomes_forgotten_versions() {
             "a forgotten citation follows its transferred series"
         );
         let stale_ingest_keys: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.ingest_keys WHERE t = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.ingest_keys WHERE t = $1",
         )
         .bind(first.memory_id.into_inner())
         .fetch_one(pool)
@@ -707,8 +707,8 @@ async fn transfer_rehomes_forgotten_versions() {
         );
         let forgotten_content_owner: Uuid = sqlx::query_scalar(
             "SELECT c.owner_id
-               FROM proxima_core.memory m
-               JOIN proxima_core.content c ON c.content_id = m.content_id
+               FROM proxiima_core.memory m
+               JOIN proxiima_core.content c ON c.content_id = m.content_id
               WHERE m.t = $1",
         )
         .bind(first.memory_id.into_inner())
@@ -721,7 +721,7 @@ async fn transfer_rehomes_forgotten_versions() {
         );
         for witnessed_t in [first.memory_id.into_inner(), second.memory_id.into_inner()] {
             let witness: Option<String> = sqlx::query_scalar(
-                "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+                "SELECT kind::text FROM proxiima_core.erased_pin_target WHERE t = $1",
             )
             .bind(witnessed_t)
             .fetch_optional(pool)
@@ -732,7 +732,7 @@ async fn transfer_rehomes_forgotten_versions() {
             );
         }
         let personal_content_left: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.content WHERE content_id = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.content WHERE content_id = $1",
         )
         .bind(personal_content_id)
         .fetch_one(pool)
@@ -780,19 +780,19 @@ async fn transfer_accepts_a_forgotten_input_for_a_live_series() {
         );
 
         let forgotten_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(first.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(forgotten_owner, dest.into_inner());
         let hot_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(second.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(hot_owner, dest.into_inner());
         let head: (Uuid, Uuid) =
-            sqlx::query_as("SELECT t, owner_id FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_as("SELECT t, owner_id FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(first.handle)
                 .fetch_one(pool)
                 .await?;
@@ -820,7 +820,7 @@ async fn a_forgotten_memory_restores_under_the_owner_it_was_transferred_to() {
         let t = first.memory_id.into_inner();
         let writer = || {
             sqlx::query_as::<_, (Uuid, Option<Uuid>)>(
-                "SELECT \"by\", via FROM proxima_core.memory WHERE t = $1",
+                "SELECT \"by\", via FROM proxiima_core.memory WHERE t = $1",
             )
             .bind(t)
             .fetch_one(pool)
@@ -839,15 +839,15 @@ async fn a_forgotten_memory_restores_under_the_owner_it_was_transferred_to() {
         );
 
         let dest_permit = OwnerWritePermit::new_for_tests(dest, AccessKind::Fact);
-        let dest_spaces = [proxima_core::EmbeddingSpace::new(
+        let dest_spaces = [proxiima_core::EmbeddingSpace::new(
             "transfer-restore-model",
-            proxima_core::EmbeddingDim::D1024,
+            proxiima_core::EmbeddingDim::D1024,
         )];
         pg.restore_memory(&dest_permit, first.memory_id, &dest_spaces)
             .await?;
         let owners: (Uuid, Uuid, bool) = sqlx::query_as(
             "SELECT m.owner_id, s.owner_id, m.forgotten_at IS NOT NULL
-               FROM proxima_core.memory m JOIN proxima_core.sketch s ON s.t = m.t
+               FROM proxiima_core.memory m JOIN proxiima_core.sketch s ON s.t = m.t
               WHERE m.t = $1",
         )
         .bind(t)
@@ -860,7 +860,7 @@ async fn a_forgotten_memory_restores_under_the_owner_it_was_transferred_to() {
         );
         assert_eq!(writer().await?, written_by);
         let embed_job_owners: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT owner_id FROM proxima_core.embedding_jobs WHERE entity_id = $1",
+            "SELECT owner_id FROM proxiima_core.embedding_jobs WHERE entity_id = $1",
         )
         .bind(t)
         .fetch_all(pool)
@@ -905,9 +905,9 @@ async fn transfer_moves_a_fully_forgotten_series() {
 
         let before: (i64, i64) = sqlx::query_as(
             "SELECT
-                 (SELECT count(*) FROM proxima_core.memory
+                 (SELECT count(*) FROM proxiima_core.memory
                    WHERE handle = $1 AND forgotten_at IS NOT NULL),
-                 (SELECT count(*) FROM proxima_core.memory_head WHERE handle = $1)",
+                 (SELECT count(*) FROM proxiima_core.memory_head WHERE handle = $1)",
         )
         .bind(first.handle)
         .fetch_one(pool)
@@ -926,7 +926,7 @@ async fn transfer_moves_a_fully_forgotten_series() {
         );
 
         let owners: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT owner_id FROM proxima_core.memory
+            "SELECT owner_id FROM proxiima_core.memory
               WHERE handle = $1 ORDER BY t",
         )
         .bind(first.handle)
@@ -935,9 +935,9 @@ async fn transfer_moves_a_fully_forgotten_series() {
         assert_eq!(owners, vec![dest.into_inner(); 2]);
         let after: (i64, Uuid) = sqlx::query_as(
             "SELECT
-                 (SELECT count(*) FROM proxima_core.memory
+                 (SELECT count(*) FROM proxiima_core.memory
                    WHERE handle = $1 AND forgotten_at IS NOT NULL),
-                 (SELECT owner_id FROM proxima_core.memory_head WHERE handle = $1)",
+                 (SELECT owner_id FROM proxiima_core.memory_head WHERE handle = $1)",
         )
         .bind(first.handle)
         .fetch_one(pool)
@@ -967,23 +967,23 @@ async fn engine_transfer_accepts_a_forgotten_memory() {
         MemoryAuthoringPort::forget_memory(&pg, &permit, written.memory_id).await?;
 
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, 'group'::proxima_core.owner_kind)",
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
+             VALUES ($1, 'group'::proxiima_core.owner_kind)",
         )
         .bind(destination.into_inner())
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxima_core.group_memberships
+            "INSERT INTO proxiima_core.group_memberships
                 (group_id, member_user_id, relation)
-             VALUES ($1, $2, 'admin'::proxima_core.membership_relation)",
+             VALUES ($1, $2, 'admin'::proxiima_core.membership_relation)",
         )
         .bind(destination.into_inner())
         .bind(owner.into_inner())
         .execute(pool)
         .await?;
 
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let authz = authenticated_context(AuthzContext::single_owner(&owner, AuthPath::HostBearer));
         engine
@@ -991,13 +991,13 @@ async fn engine_transfer_accepts_a_forgotten_memory() {
             .await?;
 
         let forgotten_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(written.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(forgotten_owner, destination.into_inner());
         let head_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(written.handle)
                 .fetch_one(pool)
                 .await?;
@@ -1031,23 +1031,23 @@ async fn engine_transfer_uses_folded_nested_destination_role() {
             &mut transaction,
             child,
             person,
-            proxima_core::Relation::Admin,
+            proxiima_core::Relation::Admin,
         )
         .await?;
         add_group_member(
             &mut transaction,
             parent,
             OwnerId::from(child),
-            proxima_core::Relation::Admin,
+            proxiima_core::Relation::Admin,
         )
         .await?;
         transaction.commit().await?;
 
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_storage_ports(Arc::new(pg.clone()).storage_ports());
         let authz = authenticated_context(AuthzContext::for_subject_with_role(
             person.as_user(),
-            [(OwnerId::from(child), proxima_core::Role::admin())],
+            [(OwnerId::from(child), proxiima_core::Role::admin())],
             AuthPath::HostBearer,
         ));
         engine
@@ -1066,8 +1066,8 @@ async fn engine_transfer_uses_folded_nested_destination_role() {
             &mut transaction,
             parent,
             OwnerId::from(child),
-            proxima_core::Relation::Admin,
-            proxima_core::Relation::Viewer,
+            proxiima_core::Relation::Admin,
+            proxiima_core::Relation::Viewer,
         )
         .await?;
         transaction.commit().await?;
@@ -1080,9 +1080,9 @@ async fn engine_transfer_uses_folded_nested_destination_role() {
             )
             .await
             .expect_err("viewer-capped nested destination cannot transfer");
-        assert_eq!(refused.code, proxima_core::ErrorCode::Forbidden);
+        assert_eq!(refused.code, proxiima_core::ErrorCode::Forbidden);
         let owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(second.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -1118,7 +1118,7 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
         sqlx::raw_sql(
             "CREATE SEQUENCE public.transfer_race_probe;
              GRANT USAGE, SELECT ON SEQUENCE public.transfer_race_probe
-             TO proxima_test_runtime, proxima_test_platform;
+             TO proxiima_test_runtime, proxiima_test_platform;
              CREATE FUNCTION public.block_owner_transfer() RETURNS trigger
              LANGUAGE plpgsql AS $$
              BEGIN
@@ -1128,7 +1128,7 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
              END
              $$;
              CREATE TRIGGER block_owner_transfer
-             BEFORE UPDATE OF owner_id ON proxima_core.memory
+             BEFORE UPDATE OF owner_id ON proxiima_core.memory
              FOR EACH ROW
              WHEN (OLD.owner_id IS DISTINCT FROM NEW.owner_id)
              EXECUTE FUNCTION public.block_owner_transfer();",
@@ -1219,14 +1219,14 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
         );
 
         let head: (Uuid, Uuid) =
-            sqlx::query_as("SELECT t, owner_id FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_as("SELECT t, owner_id FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(first.handle)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(head.0, second.memory_id.into_inner());
         assert_eq!(head.1, dest.into_inner());
         let unmoved_versions: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory
+            "SELECT count(*)::bigint FROM proxiima_core.memory
               WHERE handle = $1 AND owner_id <> $2",
         )
         .bind(first.handle)
@@ -1238,7 +1238,7 @@ async fn transfer_serializes_same_handle_ingest_after_handle_lock() {
             "the transfer must move the complete series"
         );
         let stale_third_key: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.ingest_keys
+            "SELECT count(*)::bigint FROM proxiima_core.ingest_keys
               WHERE owner_id = $1 AND ingest_key = 'k3'",
         )
         .bind(owner.into_inner())
@@ -1281,7 +1281,7 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "CREATE SEQUENCE public.transfer_citation_probe;
              GRANT USAGE, SELECT ON SEQUENCE public.transfer_citation_probe
-             TO proxima_test_runtime, proxima_test_platform;
+             TO proxiima_test_runtime, proxiima_test_platform;
              CREATE FUNCTION public.block_source_citation_insert() RETURNS trigger
              LANGUAGE plpgsql AS $$
              BEGIN
@@ -1291,7 +1291,7 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
              END
              $$;
              CREATE TRIGGER block_source_citation_insert
-             BEFORE INSERT ON proxima_core.memory
+             BEFORE INSERT ON proxiima_core.memory
              FOR EACH ROW
              EXECUTE FUNCTION public.block_source_citation_insert();",
         )))
@@ -1357,7 +1357,7 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
         })
         .await??;
         let owner_before_release: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
@@ -1377,19 +1377,19 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
         assert!(transferred?);
 
         let source_blob_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(source_blob_owner, owner.into_inner());
         let source_citation_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(appended.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(source_citation_owner, owner.into_inner());
         let source_citation_blob: Uuid =
-            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(appended.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -1397,7 +1397,7 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
 
         let target_owner_and_blob: (Uuid, Uuid) = sqlx::query_as(
             "SELECT m.owner_id, m.blob_id
-               FROM proxima_core.memory m
+               FROM proxiima_core.memory m
               WHERE m.t = $1",
         )
         .bind(target.memory_id.into_inner())
@@ -1409,7 +1409,7 @@ async fn transfer_serializes_source_citation_before_moving_a_blob() {
             "the transferred citation must use the destination mount"
         );
         let mounted_blob_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
                 .bind(target_owner_and_blob.1)
                 .fetch_one(pool)
                 .await?;
@@ -1447,7 +1447,7 @@ async fn transfer_serializes_destination_citation_dedupe() {
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "CREATE SEQUENCE public.destination_blob_probe;
              GRANT USAGE, SELECT ON SEQUENCE public.destination_blob_probe
-             TO proxima_test_runtime, proxima_test_platform;
+             TO proxiima_test_runtime, proxiima_test_platform;
              CREATE FUNCTION public.block_destination_blob_insert() RETURNS trigger
              LANGUAGE plpgsql AS $$
              BEGIN
@@ -1459,7 +1459,7 @@ async fn transfer_serializes_destination_citation_dedupe() {
              END
              $$;
              CREATE TRIGGER block_destination_blob_insert
-             BEFORE INSERT ON proxima_core.blob
+             BEFORE INSERT ON proxiima_core.blob
              FOR EACH ROW
              EXECUTE FUNCTION public.block_destination_blob_insert();",
             destination = destination.into_inner(),
@@ -1468,7 +1468,7 @@ async fn transfer_serializes_destination_citation_dedupe() {
         .await?;
         sqlx::query(
             "GRANT EXECUTE ON FUNCTION public.block_destination_blob_insert()
-             TO proxima_test_runtime, proxima_test_platform",
+             TO proxiima_test_runtime, proxiima_test_platform",
         )
         .execute(pool)
         .await?;
@@ -1529,7 +1529,7 @@ async fn transfer_serializes_destination_citation_dedupe() {
         })
         .await??;
         let owner_before_release: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
                 .bind(source_blob)
                 .fetch_one(pool)
                 .await?;
@@ -1554,7 +1554,7 @@ async fn transfer_serializes_destination_citation_dedupe() {
         );
 
         let (target_owner, target_blob): (Uuid, Uuid) =
-            sqlx::query_as("SELECT owner_id, blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_as("SELECT owner_id, blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(source_row.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -1581,15 +1581,15 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
         let destination = destination();
         let pool = pg.pool_for_tests();
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal'::proxiima_core.owner_kind) ON CONFLICT DO NOTHING",
         )
         .bind(source.into_inner())
         .execute(pool)
         .await?;
         let content_hash = vec![37_u8; 32];
         let blob_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/uploaded-blob-v1', $2)
              RETURNING blob_id",
         )
@@ -1599,7 +1599,7 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
         .await?;
         let upload_id = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads
+            "INSERT INTO proxiima_core.blob_uploads
                 (owner_id, upload_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, content_hash, expires_at)
              VALUES ($1, $2, 'test', 's3:test/test', 'pending/test', 'test.pdf',
@@ -1628,7 +1628,7 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
             "unpublished upload refusal must be a caller-retryable conflict: {error}"
         );
         let source_blob_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
@@ -1638,7 +1638,7 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
         // upload service performs this transition under the same owner fence;
         // stage has already pinned the digest and canonical object key.
         sqlx::query(
-            "UPDATE proxima_core.blob_uploads
+            "UPDATE proxiima_core.blob_uploads
                 SET status = 'completed', blob_id = $2, completed_at = now(),
                     object_key = 'objects/' || upload_id::text, sha256 = $4
               WHERE owner_id = $1 AND upload_id = $3",
@@ -1662,8 +1662,8 @@ async fn transfer_refuses_unpublished_upload_until_finish_publishes() {
         );
         let (blob_owner, upload_owner): (Uuid, Uuid) = sqlx::query_as(
             "SELECT b.owner_id, u.owner_id
-               FROM proxima_core.blob b
-               JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id
+               FROM proxiima_core.blob b
+               JOIN proxiima_core.blob_uploads u ON u.blob_id = b.blob_id
               WHERE b.blob_id = $1 AND u.upload_id = $2",
         )
         .bind(blob_id)
@@ -1692,15 +1692,15 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
         let permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
         let pool = pg.pool_for_tests();
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, 'personal'::proxima_core.owner_kind)",
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal'::proxiima_core.owner_kind)",
         )
         .bind(source.into_inner())
         .execute(pool)
         .await?;
         let content_hash = vec![38_u8; 32];
         let blob_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/uploaded-blob-v1', $2)
              RETURNING blob_id",
         )
@@ -1710,7 +1710,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
         .await?;
         let upload_id = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads
+            "INSERT INTO proxiima_core.blob_uploads
                 (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, sha256, expires_at)
              VALUES ($1, $2, 'test', 's3:test/test', 'objects/' || $1::text, 'legacy.pdf',
@@ -1739,7 +1739,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
             "legacy staged upload refusal must be retryable: {error}"
         );
         let owner_before_retry: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
@@ -1748,7 +1748,7 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
         // Model the retry's restage and finish database transitions after it
         // re-hashed the retained object under the 0007 schema.
         sqlx::query(
-            "UPDATE proxima_core.blob_uploads
+            "UPDATE proxiima_core.blob_uploads
                 SET content_hash = $4, status = 'completed', blob_id = $2,
                     completed_at = now()
               WHERE owner_id = $1 AND upload_id = $3",
@@ -1772,8 +1772,8 @@ async fn legacy_staged_upload_without_blake3_fences_transfer_until_retry() {
         );
         let (blob_owner, upload_owner): (Uuid, Uuid) = sqlx::query_as(
             "SELECT b.owner_id, u.owner_id
-               FROM proxima_core.blob b
-               JOIN proxima_core.blob_uploads u ON u.blob_id = b.blob_id
+               FROM proxiima_core.blob b
+               JOIN proxiima_core.blob_uploads u ON u.blob_id = b.blob_id
               WHERE b.blob_id = $1 AND u.upload_id = $2",
         )
         .bind(blob_id)
@@ -1805,7 +1805,7 @@ async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
 
         let unrelated_hash = vec![91_u8; 32];
         let unrelated_blob: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/uploaded-blob-v1', $2)
              RETURNING blob_id",
         )
@@ -1816,7 +1816,7 @@ async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
         let unrelated = cite(&pg, &permit, "unrelated-upload", unrelated_blob).await?;
 
         sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads
+            "INSERT INTO proxiima_core.blob_uploads
                 (owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, content_hash, expires_at)
              VALUES
@@ -1844,7 +1844,7 @@ async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
             "neither an abandoned prepare nor another series' staged upload may pin this series"
         );
         let unrelated_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(unrelated.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -1855,7 +1855,7 @@ async fn transfer_ignores_unstaged_and_unrelated_pending_uploads() {
         );
         let pending_source_rows: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint
-               FROM proxima_core.blob_uploads
+               FROM proxiima_core.blob_uploads
               WHERE owner_id = $1 AND status = 'pending'",
         )
         .bind(source.into_inner())
@@ -1890,11 +1890,11 @@ async fn transfer_allows_aborted_and_expired_upload_cleanup() {
             let blob_id = written.cited_object_id.ok_or("cited blob missing")?;
             let upload_id = Uuid::now_v7();
             sqlx::query(
-                "INSERT INTO proxima_core.blob_uploads
+                "INSERT INTO proxiima_core.blob_uploads
                     (owner_id, upload_id, bucket, object_store, object_key, filename, mime,
                      expected_byte_len, status, expires_at)
                  VALUES ($1, $2, 'test', 's3:test/test', 'pending/test', 'test.pdf',
-                     'application/pdf', 1, $3::proxima_core.blob_upload_status,
+                     'application/pdf', 1, $3::proxiima_core.blob_upload_status,
                          now() + interval '1 hour')",
             )
             .bind(source.into_inner())
@@ -1915,14 +1915,14 @@ async fn transfer_allows_aborted_and_expired_upload_cleanup() {
                 "transfer must proceed after {status} cleanup"
             );
             let moved_blob_owner: Uuid =
-                sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+                sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
                     .bind(blob_id)
                     .fetch_one(pool)
                     .await?;
             assert_eq!(moved_blob_owner, destination.into_inner());
             let (terminal_owner, observed_status): (Uuid, String) = sqlx::query_as(
                 "SELECT owner_id, status::text
-                   FROM proxima_core.blob_uploads
+                   FROM proxiima_core.blob_uploads
                   WHERE upload_id = $1",
             )
             .bind(upload_id)
@@ -1953,7 +1953,7 @@ async fn transfer_waits_for_terminal_uploaded_blob_publication() {
         let digest = vec![81_u8; 32];
         let (blob_id, upload_id) = seed_cited_blob(pool, source, &digest).await?;
         sqlx::query(
-            "UPDATE proxima_core.blob_uploads
+            "UPDATE proxiima_core.blob_uploads
                 SET status = 'aborted', blob_id = NULL, completed_at = NULL
               WHERE upload_id = $1",
         )
@@ -1978,7 +1978,7 @@ async fn transfer_waits_for_terminal_uploaded_blob_publication() {
         );
 
         sqlx::query(
-            "UPDATE proxima_core.blob_uploads
+            "UPDATE proxiima_core.blob_uploads
                 SET status = 'completed', blob_id = $2, completed_at = now()
               WHERE upload_id = $1",
         )
@@ -2020,7 +2020,7 @@ async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
         let (blob_id, completed_upload) = seed_cited_blob(pool, source, &hash).await?;
         let terminal_upload = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads
+            "INSERT INTO proxiima_core.blob_uploads
                 (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, sha256, content_hash, expires_at,
                  aborted_at)
@@ -2048,9 +2048,9 @@ async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
         );
         let (memory_owner, blob_owner, completed_owner): (Uuid, Uuid, Uuid) = sqlx::query_as(
             "SELECT m.owner_id, b.owner_id, u.owner_id
-               FROM proxima_core.memory m
-               JOIN proxima_core.blob b ON b.blob_id = m.blob_id
-               JOIN proxima_core.blob_uploads u ON u.upload_id = $2
+               FROM proxiima_core.memory m
+               JOIN proxiima_core.blob b ON b.blob_id = m.blob_id
+               JOIN proxiima_core.blob_uploads u ON u.upload_id = $2
               WHERE m.t = $1",
         )
         .bind(written.memory_id.into_inner())
@@ -2062,7 +2062,7 @@ async fn terminal_same_hash_retry_does_not_pin_an_exactly_published_blob() {
         assert_eq!(completed_owner, destination.into_inner());
         let (terminal_owner, terminal_status): (Uuid, String) = sqlx::query_as(
             "SELECT owner_id, status::text
-               FROM proxima_core.blob_uploads
+               FROM proxiima_core.blob_uploads
               WHERE upload_id = $1",
         )
         .bind(terminal_upload)
@@ -2097,7 +2097,7 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
         let mut blocker = pool.begin().await?;
         sqlx::query(
             "SELECT pg_advisory_xact_lock(
-                 hashtextextended('proxima-forget:' || $1::text, 0)
+                 hashtextextended('proxiima-forget:' || $1::text, 0)
              )",
         )
         .bind(first_t)
@@ -2137,7 +2137,7 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
         // lets the test prove that the exact reread is still a safety net if
         // a writer crosses the boundary.
         sqlx::query(
-            "INSERT INTO proxima_core.memory
+            "INSERT INTO proxiima_core.memory
                 (handle, t, kind, owner_id, schema_id, origins, refs,
                  goal_refs, sidecar_tables, occurred_at, \"by\", via)
              VALUES ($1, $2, 'fact', $3, 'core/test-fact-v1', '{}', '{}',
@@ -2148,7 +2148,7 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
         .bind(owner.into_inner())
         .execute(pool)
         .await?;
-        sqlx::query("UPDATE proxima_core.memory_head SET t = $2 WHERE handle = $1")
+        sqlx::query("UPDATE proxiima_core.memory_head SET t = $2 WHERE handle = $1")
             .bind(first.handle)
             .bind(drift_t)
             .execute(pool)
@@ -2162,7 +2162,7 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
 
         let source_rows: i64 = sqlx::query_scalar::<_, i64>(
             "SELECT count(*)::bigint
-               FROM proxima_core.memory
+               FROM proxiima_core.memory
               WHERE handle = $1 AND owner_id = $2",
         )
         .bind(first.handle)
@@ -2177,7 +2177,7 @@ async fn transfer_retries_when_series_membership_drifts_before_mutation() {
         );
         let destination_rows: i64 = sqlx::query_scalar::<_, i64>(
             "SELECT count(*)::bigint
-               FROM proxima_core.memory
+               FROM proxiima_core.memory
               WHERE handle = $1 AND owner_id = $2",
         )
         .bind(first.handle)
@@ -2223,7 +2223,7 @@ async fn crossed_transfers_do_not_deadlock_on_owner_fences() {
         let mut fence_blocker = pool.begin().await?;
         sqlx::query(
             "SELECT pg_advisory_xact_lock(
-                 hashtextextended('proxima-owner-fence:' || $1::text, 0)
+                 hashtextextended('proxiima-owner-fence:' || $1::text, 0)
              )",
         )
         .bind(first_fenced_owner.into_inner())
@@ -2275,12 +2275,12 @@ async fn crossed_transfers_do_not_deadlock_on_owner_fences() {
         assert!(right_result??, "right-to-left transfer must complete");
 
         let left_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE handle = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE handle = $1")
                 .bind(left_row.handle)
                 .fetch_one(pool)
                 .await?;
         let right_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE handle = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE handle = $1")
                 .bind(right_row.handle)
                 .fetch_one(pool)
                 .await?;
@@ -2343,13 +2343,13 @@ async fn transfer_does_not_move_a_handle_reused_after_complete_erase() {
         );
 
         let replacement_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(replacement.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(replacement_owner, owner.into_inner());
         let head: Uuid =
-            sqlx::query_scalar("SELECT t FROM proxima_core.memory_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT t FROM proxiima_core.memory_head WHERE handle = $1")
                 .bind(original.handle)
                 .fetch_one(pool)
                 .await?;
@@ -2385,19 +2385,19 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
 
         let usurper = OwnerId::from(UserId::new(Uuid::now_v7()));
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
              VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
         )
         .bind(usurper.into_inner())
         .execute(pool)
         .await?;
-        sqlx::query("UPDATE proxima_core.memory_head SET owner_id = $2 WHERE handle = $1")
+        sqlx::query("UPDATE proxiima_core.memory_head SET owner_id = $2 WHERE handle = $1")
             .bind(first.handle)
             .bind(usurper.into_inner())
             .execute(pool)
             .await?;
         let destination_owner_before: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.owners WHERE owner_id = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.owners WHERE owner_id = $1",
         )
         .bind(dest.into_inner())
         .fetch_one(pool)
@@ -2418,7 +2418,7 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
         );
 
         let (forgotten_owner, still_forgotten): (Uuid, bool) = sqlx::query_as(
-            "SELECT owner_id, forgotten_at IS NOT NULL FROM proxima_core.memory WHERE t = $1",
+            "SELECT owner_id, forgotten_at IS NOT NULL FROM proxiima_core.memory WHERE t = $1",
         )
         .bind(first.memory_id.into_inner())
         .fetch_one(pool)
@@ -2430,13 +2430,13 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
         );
         assert!(still_forgotten, "the forgotten row stays forgotten");
         let hot_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(second.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(hot_owner, owner.into_inner());
         let destination_owner_after: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.owners WHERE owner_id = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.owners WHERE owner_id = $1",
         )
         .bind(dest.into_inner())
         .fetch_one(pool)
@@ -2457,7 +2457,7 @@ async fn transfer_is_unchanged_when_the_head_owner_is_already_lost() {
 /// owner outside the read set, and the same memory twice.
 #[tokio::test]
 async fn visible_home_owners_answer_each_entity_in_order() {
-    use proxima_core::storage_ports::OwnerAccessReadPort;
+    use proxiima_core::storage_ports::OwnerAccessReadPort;
     let (db_name, pg) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let (reader, other) = (
@@ -2482,7 +2482,7 @@ async fn visible_home_owners_answer_each_entity_in_order() {
         let goal = write_goal(
             &mut tx,
             &reader,
-            proxima_storage_pg::test_fixtures::writer(),
+            proxiima_storage_pg::test_fixtures::writer(),
             &GoalWriteCommand {
                 handle: None,
                 schema_id: "core/task-goal-v1".into(),
@@ -2505,7 +2505,7 @@ async fn visible_home_owners_answer_each_entity_in_order() {
 
         let entities = [
             EntityId::Memory(held.memory_id),
-            EntityId::Memory(proxima_core::MemoryId::new(Uuid::now_v7())),
+            EntityId::Memory(proxiima_core::MemoryId::new(Uuid::now_v7())),
             EntityId::Goal(GoalId::new(goal.t)),
             EntityId::Memory(foreign.memory_id),
             EntityId::Memory(held.memory_id),
@@ -2551,7 +2551,7 @@ async fn transfer_refuses_goal_entities() {
         let out = write_goal(
             &mut tx,
             &owner,
-            proxima_storage_pg::test_fixtures::writer(),
+            proxiima_storage_pg::test_fixtures::writer(),
             &GoalWriteCommand {
                 handle: None,
                 schema_id: "core/task-goal-v1".into(),
@@ -2588,13 +2588,13 @@ async fn transfer_refuses_goal_entities() {
             "refusal must be a ConstraintViolation naming the ruling: {err}"
         );
         let head_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.goal_head WHERE handle = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.goal_head WHERE handle = $1")
                 .bind(out.handle)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(head_owner, owner.into_inner());
         let row_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.goal WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.goal WHERE t = $1")
                 .bind(out.t)
                 .fetch_one(pool)
                 .await?;
@@ -2602,21 +2602,21 @@ async fn transfer_refuses_goal_entities() {
 
         // DDL backstops behind the storage guard: goal rows refuse UPDATE
         // entirely, and `goal_head_t_only` freezes the head's owner_id.
-        let frozen = sqlx::query("UPDATE proxima_core.goal SET owner_id = $2 WHERE t = $1")
+        let frozen = sqlx::query("UPDATE proxiima_core.goal SET owner_id = $2 WHERE t = $1")
             .bind(out.t)
             .bind(dest.into_inner())
             .execute(pool)
             .await;
         assert!(frozen.is_err(), "goal must refuse UPDATE entirely");
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
              VALUES ($1, 'group') ON CONFLICT DO NOTHING",
         )
         .bind(dest.into_inner())
         .execute(pool)
         .await?;
         let head_frozen =
-            sqlx::query("UPDATE proxima_core.goal_head SET owner_id = $2 WHERE handle = $1")
+            sqlx::query("UPDATE proxiima_core.goal_head SET owner_id = $2 WHERE handle = $1")
                 .bind(out.handle)
                 .bind(dest.into_inner())
                 .execute(pool)
@@ -2644,7 +2644,7 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
         let _ = seed;
         let hash = vec![7u8; 32];
         let blob_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/bytes-v1', $2)
              RETURNING blob_id",
         )
@@ -2668,13 +2668,13 @@ async fn transfer_moves_exclusive_blob_with_the_fact() {
             .await?
         );
         let blob_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
         assert_eq!(blob_owner, dest.into_inner());
         let stored_blob: Option<Uuid> =
-            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(written.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -2701,7 +2701,7 @@ async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
         let written = pg.ingest_fact_atomic(&permit, &draft(), None).await?;
 
         let before: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.owners WHERE owner_id = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.owners WHERE owner_id = $1",
         )
         .bind(dest.into_inner())
         .fetch_one(pool)
@@ -2720,7 +2720,7 @@ async fn transfer_mints_the_destination_owner_row_in_the_same_transaction() {
         );
 
         let kind: String =
-            sqlx::query_scalar("SELECT kind::text FROM proxima_core.owners WHERE owner_id = $1")
+            sqlx::query_scalar("SELECT kind::text FROM proxiima_core.owners WHERE owner_id = $1")
                 .bind(dest.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -2763,7 +2763,7 @@ async fn absent_destination_append_waits_before_owner_insert() {
         let mut fence_blocker = pool.begin().await?;
         sqlx::query(
             "SELECT pg_advisory_xact_lock(
-                 hashtextextended('proxima-owner-fence:' || $1::text, 0)
+                 hashtextextended('proxiima-owner-fence:' || $1::text, 0)
              )",
         )
         .bind(destination.into_inner())
@@ -2803,7 +2803,7 @@ async fn absent_destination_append_waits_before_owner_insert() {
              END
              $$;
              CREATE TRIGGER note_absent_owner_insert
-             AFTER INSERT ON proxima_core.owners
+             AFTER INSERT ON proxiima_core.owners
              FOR EACH ROW
              EXECUTE FUNCTION public.note_absent_owner_insert();"
         )))
@@ -2811,7 +2811,7 @@ async fn absent_destination_append_waits_before_owner_insert() {
         .await?;
         sqlx::query(
             "GRANT USAGE, SELECT ON SEQUENCE public.absent_owner_insert_probe
-             TO proxima_test_runtime, proxima_test_platform",
+             TO proxiima_test_runtime, proxiima_test_platform",
         )
         .execute(&pool)
         .await?;
@@ -2893,7 +2893,7 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
         sqlx::raw_sql(
             "CREATE SEQUENCE public.transfer_owner_insert_probe;
              GRANT USAGE, SELECT ON SEQUENCE public.transfer_owner_insert_probe
-             TO proxima_test_runtime, proxima_test_platform;
+             TO proxiima_test_runtime, proxiima_test_platform;
              CREATE FUNCTION public.block_destination_owner_insert() RETURNS trigger
              LANGUAGE plpgsql AS $$
              BEGIN
@@ -2903,7 +2903,7 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
              END
              $$;
              CREATE TRIGGER block_destination_owner_insert
-             AFTER INSERT ON proxima_core.owners
+             AFTER INSERT ON proxiima_core.owners
              FOR EACH ROW
              EXECUTE FUNCTION public.block_destination_owner_insert();",
         )
@@ -2971,7 +2971,7 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
         let mut target_probe = pool.begin().await?;
         let target_available: bool = sqlx::query_scalar(
             "SELECT pg_try_advisory_xact_lock(
-                 hashtextextended('proxima-forget:' || $1::text, 0)
+                 hashtextextended('proxiima-forget:' || $1::text, 0)
              )",
         )
         .bind(target_t)
@@ -3000,13 +3000,13 @@ async fn destination_owner_admission_waits_before_target_lifecycle_lock() {
         assert!(!admitted.idempotent_replay);
 
         let moved_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(target_t)
                 .fetch_one(&pool)
                 .await?;
         assert_eq!(moved_owner, destination.into_inner());
         let admitted_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(admitted.memory_id.into_inner())
                 .fetch_one(&pool)
                 .await?;
@@ -3058,14 +3058,14 @@ async fn seed_cited_blob(
     hash: &[u8],
 ) -> Result<(Uuid, Uuid), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO proxima_core.owners (owner_id, kind)
-         VALUES ($1, 'personal'::proxima_core.owner_kind) ON CONFLICT DO NOTHING",
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal'::proxiima_core.owner_kind) ON CONFLICT DO NOTHING",
     )
     .bind(owner.into_inner())
     .execute(pool)
     .await?;
     let blob_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+        "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
          VALUES ($1, 'core/uploaded-blob-v1', $2)
          RETURNING blob_id",
     )
@@ -3074,7 +3074,7 @@ async fn seed_cited_blob(
     .fetch_one(pool)
     .await?;
     let upload_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO proxima_core.blob_uploads
+        "INSERT INTO proxiima_core.blob_uploads
              (owner_id, bucket, object_store, object_key, filename, mime, expected_byte_len,
               status, blob_id, sha256, content_hash, expires_at, completed_at)
          VALUES ($1, 'bucket', 's3:test/bucket', 'placeholder', 'f.bin', 'application/octet-stream', 3,
@@ -3087,7 +3087,7 @@ async fn seed_cited_blob(
     .fetch_one(pool)
     .await?;
     sqlx::query(
-        "UPDATE proxima_core.blob_uploads
+        "UPDATE proxiima_core.blob_uploads
             SET object_key = 'objects/' || upload_id::text
           WHERE upload_id = $1",
     )
@@ -3108,7 +3108,7 @@ async fn seed_malformed_completed_upload(
 ) -> Result<Uuid, sqlx::Error> {
     let upload_id = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO proxima_core.blob_uploads
+        "INSERT INTO proxiima_core.blob_uploads
              (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
               expected_byte_len, status, blob_id, sha256, content_hash,
               expires_at, completed_at)
@@ -3164,8 +3164,8 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
         let pool = pg.pool_for_tests();
         for owner in [source, foreign] {
             sqlx::query(
-                "INSERT INTO proxima_core.owners (owner_id, kind)
-                 VALUES ($1, 'personal'::proxima_core.owner_kind)",
+                "INSERT INTO proxiima_core.owners (owner_id, kind)
+                 VALUES ($1, 'personal'::proxiima_core.owner_kind)",
             )
             .bind(owner.into_inner())
             .execute(pool)
@@ -3173,7 +3173,7 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
         }
         let content_hash = vec![43_u8; 32];
         let source_blob: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
         )
         .bind(source.into_inner())
@@ -3181,7 +3181,7 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
         .fetch_one(pool)
         .await?;
         let foreign_blob: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/bytes-v1', $2) RETURNING blob_id",
         )
         .bind(foreign.into_inner())
@@ -3189,7 +3189,7 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
         .fetch_one(pool)
         .await?;
         let written = cite(&pg, &permit, "foreign-blob", source_blob).await?;
-        sqlx::query("UPDATE proxima_core.memory SET blob_id = $2 WHERE t = $1")
+        sqlx::query("UPDATE proxiima_core.memory SET blob_id = $2 WHERE t = $1")
             .bind(written.memory_id.into_inner())
             .bind(foreign_blob)
             .execute(pool)
@@ -3212,8 +3212,8 @@ async fn transfer_refuses_a_series_citing_another_owners_blob() {
         );
         let (memory_owner, blob_owner): (Uuid, Uuid) = sqlx::query_as(
             "SELECT m.owner_id, b.owner_id
-               FROM proxima_core.memory m
-               JOIN proxima_core.blob b ON b.blob_id = m.blob_id
+               FROM proxiima_core.memory m
+               JOIN proxiima_core.blob b ON b.blob_id = m.blob_id
               WHERE m.t = $1",
         )
         .bind(written.memory_id.into_inner())
@@ -3239,7 +3239,7 @@ async fn transfer_refuses_an_uploaded_blob_with_a_noncanonical_source_locator() 
         let hash = vec![44_u8; 32];
         let (blob_id, upload_id) = seed_cited_blob(pool, source, &hash).await?;
         sqlx::query(
-            "UPDATE proxima_core.blob_uploads
+            "UPDATE proxiima_core.blob_uploads
                 SET object_key = 'objects/not-the-minting-id'
               WHERE upload_id = $1",
         )
@@ -3265,8 +3265,8 @@ async fn transfer_refuses_an_uploaded_blob_with_a_noncanonical_source_locator() 
         );
         let (memory_owner, blob_owner): (Uuid, Uuid) = sqlx::query_as(
             "SELECT m.owner_id, b.owner_id
-               FROM proxima_core.memory m
-               JOIN proxima_core.blob b ON b.blob_id = m.blob_id
+               FROM proxiima_core.memory m
+               JOIN proxiima_core.blob b ON b.blob_id = m.blob_id
               WHERE m.t = $1",
         )
         .bind(moving.memory_id.into_inner())
@@ -3311,8 +3311,8 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_source_publication_set() {
         );
         let (memory_owner, malformed_owner): (Uuid, Uuid) = sqlx::query_as(
             "SELECT m.owner_id, u.owner_id
-               FROM proxima_core.memory m
-               JOIN proxima_core.blob_uploads u ON u.upload_id = $2
+               FROM proxiima_core.memory m
+               JOIN proxiima_core.blob_uploads u ON u.upload_id = $2
               WHERE m.t = $1",
         )
         .bind(moving.memory_id.into_inner())
@@ -3341,14 +3341,14 @@ async fn transfer_refuses_an_unpublished_destination_dedupe_blob() {
         let moving = cite(&pg, &permit, "unpublished-destination-dedupe", source_blob).await?;
 
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, 'group'::proxima_core.owner_kind)",
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
+             VALUES ($1, 'group'::proxiima_core.owner_kind)",
         )
         .bind(destination.into_inner())
         .execute(pool)
         .await?;
         let destination_blob: Uuid = sqlx::query_scalar(
-            "INSERT INTO proxima_core.blob (owner_id, schema_id, content_hash)
+            "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
              VALUES ($1, 'core/uploaded-blob-v1', $2)
              RETURNING blob_id",
         )
@@ -3373,14 +3373,14 @@ async fn transfer_refuses_an_unpublished_destination_dedupe_blob() {
             "the unreadable destination dedupe row must fail closed: {error}"
         );
         let (memory_owner, cited_blob): (Uuid, Uuid) =
-            sqlx::query_as("SELECT owner_id, blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_as("SELECT owner_id, blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(moving.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(memory_owner, source.into_inner());
         assert_eq!(cited_blob, source_blob);
         let destination_blob_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
                 .bind(destination_blob)
                 .fetch_one(pool)
                 .await?;
@@ -3423,14 +3423,14 @@ async fn transfer_refuses_a_mixed_valid_and_malformed_destination_publication_se
             "the mixed destination publication set must fail closed: {error}"
         );
         let (memory_owner, cited_blob): (Uuid, Uuid) =
-            sqlx::query_as("SELECT owner_id, blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_as("SELECT owner_id, blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(moving.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         assert_eq!(memory_owner, source.into_inner());
         assert_eq!(cited_blob, source_blob);
         let malformed_owner: Uuid = sqlx::query_scalar(
-            "SELECT owner_id FROM proxima_core.blob_uploads WHERE upload_id = $1",
+            "SELECT owner_id FROM proxiima_core.blob_uploads WHERE upload_id = $1",
         )
         .bind(malformed)
         .fetch_one(pool)
@@ -3455,15 +3455,15 @@ async fn a_blob_mount_copies_only_source_owned_upload_rows() {
         let hash = vec![47_u8; 32];
         let (blob_id, _) = seed_cited_blob(pool, source, &hash).await?;
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, 'personal'::proxima_core.owner_kind)",
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal'::proxiima_core.owner_kind)",
         )
         .bind(foreign.into_inner())
         .execute(pool)
         .await?;
         let foreign_upload = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads
+            "INSERT INTO proxiima_core.blob_uploads
                 (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, blob_id, sha256, content_hash,
                  expires_at, completed_at)
@@ -3491,13 +3491,13 @@ async fn a_blob_mount_copies_only_source_owned_upload_rows() {
             .await?
         );
         let moved_blob: Uuid =
-            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(moving.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         let destination_uploads: i64 = sqlx::query_scalar(
             "SELECT count(*)::bigint
-               FROM proxima_core.blob_uploads
+               FROM proxiima_core.blob_uploads
               WHERE blob_id = $1 AND owner_id = $2",
         )
         .bind(moved_blob)
@@ -3509,7 +3509,7 @@ async fn a_blob_mount_copies_only_source_owned_upload_rows() {
             "only the source owner's exact publication may be mounted"
         );
         let foreign_owner: Uuid = sqlx::query_scalar(
-            "SELECT owner_id FROM proxima_core.blob_uploads WHERE upload_id = $1",
+            "SELECT owner_id FROM proxiima_core.blob_uploads WHERE upload_id = $1",
         )
         .bind(foreign_upload)
         .fetch_one(pool)
@@ -3534,15 +3534,15 @@ async fn an_in_place_blob_move_refuses_a_foreign_upload_pointer() {
         let hash = vec![53_u8; 32];
         let (blob_id, _) = seed_cited_blob(pool, source, &hash).await?;
         sqlx::query(
-            "INSERT INTO proxima_core.owners (owner_id, kind)
-             VALUES ($1, 'personal'::proxima_core.owner_kind)",
+            "INSERT INTO proxiima_core.owners (owner_id, kind)
+             VALUES ($1, 'personal'::proxiima_core.owner_kind)",
         )
         .bind(foreign.into_inner())
         .execute(pool)
         .await?;
         let foreign_upload = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.blob_uploads
+            "INSERT INTO proxiima_core.blob_uploads
                 (upload_id, owner_id, bucket, object_store, object_key, filename, mime,
                  expected_byte_len, status, blob_id, sha256, content_hash,
                  expires_at, completed_at)
@@ -3575,9 +3575,9 @@ async fn an_in_place_blob_move_refuses_a_foreign_upload_pointer() {
         );
         let (memory_owner, blob_owner, foreign_upload_owner): (Uuid, Uuid, Uuid) = sqlx::query_as(
             "SELECT m.owner_id, b.owner_id, u.owner_id
-                   FROM proxima_core.memory m
-                   JOIN proxima_core.blob b ON b.blob_id = m.blob_id
-                   JOIN proxima_core.blob_uploads u ON u.upload_id = $2
+                   FROM proxiima_core.memory m
+                   JOIN proxiima_core.blob b ON b.blob_id = m.blob_id
+                   JOIN proxiima_core.blob_uploads u ON u.upload_id = $2
                   WHERE m.t = $1",
         )
         .bind(moving.memory_id.into_inner())
@@ -3617,7 +3617,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
         let hash = vec![11_u8; 32];
         let (blob_id, upload_id) = seed_cited_blob(pool, owner, &hash).await?;
         let source_key: String = sqlx::query_scalar(
-            "SELECT object_key FROM proxima_core.blob_uploads WHERE upload_id = $1",
+            "SELECT object_key FROM proxiima_core.blob_uploads WHERE upload_id = $1",
         )
         .bind(upload_id)
         .fetch_one(pool)
@@ -3642,7 +3642,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
         );
 
         let moved_to: Uuid =
-            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(mine.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -3651,7 +3651,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
             "the destination gets a row of its own, not the source's"
         );
         let (dest_owner, dest_schema, dest_hash): (Uuid, String, Vec<u8>) = sqlx::query_as(
-            "SELECT owner_id, schema_id, content_hash FROM proxima_core.blob WHERE blob_id = $1",
+            "SELECT owner_id, schema_id, content_hash FROM proxiima_core.blob WHERE blob_id = $1",
         )
         .bind(moved_to)
         .fetch_one(pool)
@@ -3664,7 +3664,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
         let (mounted_key, mounted_from, mounted_owner): (String, Option<Uuid>, Uuid) =
             sqlx::query_as(
                 "SELECT object_key, mounted_from_upload_id, owner_id
-                   FROM proxima_core.blob_uploads WHERE blob_id = $1",
+                   FROM proxiima_core.blob_uploads WHERE blob_id = $1",
             )
             .bind(moved_to)
             .fetch_one(pool)
@@ -3682,7 +3682,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
 
         // The source is untouched: the other owner still cites it.
         let source_owner: Uuid =
-            sqlx::query_scalar("SELECT owner_id FROM proxima_core.blob WHERE blob_id = $1")
+            sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
                 .bind(blob_id)
                 .fetch_one(pool)
                 .await?;
@@ -3692,7 +3692,7 @@ async fn a_shared_blob_transfer_dedupes_instead_of_refusing() {
             "a still-cited source row does not change hands"
         );
         let orphaned: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.memory
+            "SELECT count(*)::bigint FROM proxiima_core.memory
               WHERE blob_id = $1 AND owner_id <> $2",
         )
         .bind(blob_id)
@@ -3740,8 +3740,8 @@ async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
         );
 
         let (blob_owner, blob_count): (Uuid, i64) = sqlx::query_as(
-            "SELECT owner_id, (SELECT count(*)::bigint FROM proxima_core.blob)
-               FROM proxima_core.blob WHERE blob_id = $1",
+            "SELECT owner_id, (SELECT count(*)::bigint FROM proxiima_core.blob)
+               FROM proxiima_core.blob WHERE blob_id = $1",
         )
         .bind(blob_id)
         .fetch_one(pool)
@@ -3751,7 +3751,7 @@ async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
 
         let (upload_owner, mounted_from): (Uuid, Option<Uuid>) = sqlx::query_as(
             "SELECT owner_id, mounted_from_upload_id
-               FROM proxima_core.blob_uploads WHERE upload_id = $1",
+               FROM proxiima_core.blob_uploads WHERE upload_id = $1",
         )
         .bind(upload_id)
         .fetch_one(pool)
@@ -3760,7 +3760,7 @@ async fn an_unshared_blob_still_moves_in_place_with_no_mount() {
         assert_eq!(mounted_from, None, "a move is not a mount");
 
         let cited: Option<Uuid> =
-            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(written.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -3811,7 +3811,7 @@ async fn a_destination_that_already_holds_the_bytes_keeps_its_own_row() {
         );
 
         let cited: Option<Uuid> =
-            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(written.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -3821,7 +3821,7 @@ async fn a_destination_that_already_holds_the_bytes_keeps_its_own_row() {
             "the citation follows the destination's existing row"
         );
         let mounted_from: Option<Uuid> = sqlx::query_scalar(
-            "SELECT mounted_from_upload_id FROM proxima_core.blob_uploads WHERE upload_id = $1",
+            "SELECT mounted_from_upload_id FROM proxiima_core.blob_uploads WHERE upload_id = $1",
         )
         .bind(dest_upload)
         .fetch_one(pool)
@@ -3831,7 +3831,7 @@ async fn a_destination_that_already_holds_the_bytes_keeps_its_own_row() {
             "the destination already had its own object; there is nothing to mount"
         );
         let source_still_there: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM proxima_core.blob WHERE blob_id = $1)",
+            "SELECT EXISTS (SELECT 1 FROM proxiima_core.blob WHERE blob_id = $1)",
         )
         .bind(source_blob)
         .fetch_one(pool)
@@ -3880,7 +3880,7 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
             .await?
         );
         let hop_one: Uuid =
-            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(mine.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
@@ -3901,13 +3901,13 @@ async fn a_mount_of_a_mount_still_names_the_object_that_was_uploaded() {
         );
 
         let hop_two: Uuid =
-            sqlx::query_scalar("SELECT blob_id FROM proxima_core.memory WHERE t = $1")
+            sqlx::query_scalar("SELECT blob_id FROM proxiima_core.memory WHERE t = $1")
                 .bind(mine.memory_id.into_inner())
                 .fetch_one(pool)
                 .await?;
         let (key, mounted_from): (String, Option<Uuid>) = sqlx::query_as(
             "SELECT object_key, mounted_from_upload_id
-               FROM proxima_core.blob_uploads WHERE blob_id = $1",
+               FROM proxiima_core.blob_uploads WHERE blob_id = $1",
         )
         .bind(hop_two)
         .fetch_one(pool)
@@ -3968,7 +3968,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
             .await?
         );
         let mounts: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.blob_uploads WHERE object_key = $1",
         )
         .bind(&object_key)
         .fetch_one(pool)
@@ -3992,7 +3992,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
             "an object another owner still names survives that owner's erase"
         );
         let survivors: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.blob_uploads WHERE object_key = $1",
         )
         .bind(&object_key)
         .fetch_one(pool)
@@ -4015,7 +4015,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
         assert!(
             matches!(
                 cold.get(&object_key),
-                Err(proxima_core::StorageError::NotFound)
+                Err(proxiima_core::StorageError::NotFound)
             ),
             "with no row left naming it, the object is finally destroyed"
         );
@@ -4038,7 +4038,7 @@ async fn erasing_one_owner_of_a_mounted_object_does_not_destroy_the_bytes() {
 /// has committed its deletion.
 ///
 /// The rendezvous is the proof that both erases decide under the key. A third
-/// session holds `proxima-object-key:<key>`; the two erases (of different
+/// session holds `proxiima-object-key:<key>`; the two erases (of different
 /// owners, so they share no owner fence) must both queue behind it. Once both
 /// waits are visible, releasing the object key lets the serialized refcount
 /// decisions prove that the bytes are destroyed exactly once.
@@ -4068,7 +4068,7 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
             .await?
         );
         let mounts: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.blob_uploads WHERE object_key = $1",
         )
         .bind(&object_key)
         .fetch_one(pool)
@@ -4079,7 +4079,7 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
         let mut barrier = pool.begin().await?;
         sqlx::query(
             "SELECT pg_advisory_xact_lock(
-                 hashtextextended('proxima-object-key:' || $1, 0)
+                 hashtextextended('proxiima-object-key:' || $1, 0)
              )",
         )
         .bind(&object_key)
@@ -4129,7 +4129,7 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
         );
 
         let survivors: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.blob_uploads WHERE object_key = $1",
         )
         .bind(&object_key)
         .fetch_one(pool)
@@ -4143,12 +4143,12 @@ async fn concurrent_erases_of_a_mounted_object_destroy_its_bytes_exactly_once() 
         assert!(
             matches!(
                 cold.get(&object_key),
-                Err(proxima_core::StorageError::NotFound)
+                Err(proxiima_core::StorageError::NotFound)
             ),
             "the object is destroyed, not orphaned"
         );
         let pending: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.cold_purge_pending")
+            sqlx::query_scalar("SELECT count(*)::bigint FROM proxiima_core.cold_purge_pending")
                 .fetch_one(pool)
                 .await?;
         assert_eq!(pending, 0, "the discharged debt leaves no queue row");
@@ -4201,7 +4201,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
             .await?
         );
         let mounts: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.blob_uploads WHERE object_key = $1",
         )
         .bind(&object_key)
         .fetch_one(pool)
@@ -4213,14 +4213,14 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
         // citation. Its blob row and upload row go; the object must not.
         let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {
             user_id,
-            source_id: proxima_core::SourceId::new("src-drop"),
+            source_id: proxiima_core::SourceId::new("src-drop"),
             drop_event_id: "drop-source-mounted".into(),
         });
         let outcome = pg
             .erase_personal_source_scope(
                 &auth,
                 user_id,
-                &proxima_core::SourceId::new("src-drop"),
+                &proxiima_core::SourceId::new("src-drop"),
                 &contract_sidecar_tables(),
             )
             .await?;
@@ -4229,7 +4229,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
             "the source-scope erase completes: {outcome:?}"
         );
         let source_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.blob_uploads
+            "SELECT count(*)::bigint FROM proxiima_core.blob_uploads
               WHERE object_key = $1 AND owner_id = $2",
         )
         .bind(&object_key)
@@ -4258,7 +4258,7 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
         assert!(
             matches!(
                 cold.get(&object_key),
-                Err(proxima_core::StorageError::NotFound)
+                Err(proxiima_core::StorageError::NotFound)
             ),
             "with the last row naming it gone, the object is destroyed"
         );
@@ -4269,15 +4269,15 @@ async fn erasing_one_source_scope_of_a_mounted_object_does_not_destroy_the_bytes
     result.expect("source-scope refcounted object purge failed");
 }
 
-/// A flavor-scope erase must take the blobs its admissions cited.
+/// A spiice-scope erase must take the blobs its admissions cited.
 ///
-/// `erase_memory_series` is presented as the complete inverse a flavor gets
-/// for free, and the code flavor's entire citation story is blobs. It read
+/// `erase_memory_series` is presented as the complete inverse a spiice gets
+/// for free, and the code spiice's entire citation story is blobs. It read
 /// `blob_id` into its hot row and used it for nothing: erasing a repository
 /// left the `blob` row, the `blob_uploads` row and the S3 object behind,
 /// with no admission left anywhere to reach them from. Nothing would ever
 /// have collected them — owner erase is the only other thing that
-/// deletes blobs, and it works by owner or by source, not by flavor scope.
+/// deletes blobs, and it works by owner or by source, not by spiice scope.
 ///
 /// Both directions, because a refcount that only ever says "delete" is not
 /// a refcount: the bytes go when this was the last reference, and stay when
@@ -4314,7 +4314,7 @@ async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_by
             mine_again.memory_id.into_inner(),
         ] {
             let witness: Option<String> = sqlx::query_scalar(
-                "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+                "SELECT kind::text FROM proxiima_core.erased_pin_target WHERE t = $1",
             )
             .bind(erased_t)
             .fetch_optional(pool)
@@ -4336,9 +4336,9 @@ async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_by
         );
 
         let leftovers: Vec<String> = sqlx::query_scalar(
-            "SELECT 'blob' AS relation FROM proxima_core.blob WHERE blob_id = $1
+            "SELECT 'blob' AS relation FROM proxiima_core.blob WHERE blob_id = $1
              UNION ALL
-             SELECT 'blob_uploads' FROM proxima_core.blob_uploads WHERE blob_id = $1
+             SELECT 'blob_uploads' FROM proxiima_core.blob_uploads WHERE blob_id = $1
              ORDER BY relation",
         )
         .bind(blob_id)
@@ -4349,7 +4349,7 @@ async fn erasing_the_last_admission_citing_a_blob_takes_the_blob_and_owes_its_by
             "no row of a blob nothing cites survives the erase: {leftovers:?}"
         );
         let queued: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.cold_purge_pending WHERE object_key = $1",
         )
         .bind(&object_key)
         .fetch_one(pool)
@@ -4402,7 +4402,7 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
         tx.commit().await?;
         assert_eq!(erased, 1);
         let witness: Option<String> = sqlx::query_scalar(
-            "SELECT kind::text FROM proxima_core.erased_pin_target WHERE t = $1",
+            "SELECT kind::text FROM proxiima_core.erased_pin_target WHERE t = $1",
         )
         .bind(mine.memory_id.into_inner())
         .fetch_optional(pool)
@@ -4419,24 +4419,25 @@ async fn a_series_erase_does_not_owe_bytes_another_owner_mounted() {
              the source upload's transfer key"
         );
 
-        let source_rows: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.blob WHERE blob_id = $1")
-                .bind(blob_id)
-                .fetch_one(pool)
-                .await?;
+        let source_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM proxiima_core.blob WHERE blob_id = $1",
+        )
+        .bind(blob_id)
+        .fetch_one(pool)
+        .await?;
         assert_eq!(
             source_rows, 0,
             "the source's own blob row still goes — it is the OBJECT that is shared"
         );
         let mount_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.blob_uploads WHERE object_key = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.blob_uploads WHERE object_key = $1",
         )
         .bind(&object_key)
         .fetch_one(pool)
         .await?;
         assert_eq!(mount_rows, 1, "the destination's mount is untouched");
         let queued: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM proxima_core.cold_purge_pending WHERE object_key = $1",
+            "SELECT count(*)::bigint FROM proxiima_core.cold_purge_pending WHERE object_key = $1",
         )
         .bind(&object_key)
         .fetch_one(pool)
@@ -4488,11 +4489,11 @@ async fn a_cited_blob_is_held_against_a_concurrent_citation() {
         let (runtime_url, _) = split_role_urls(&db_name).await?;
         let writer = PgStorage::connect_with_config(
             &runtime_url,
-            proxima_storage_pg::PgPoolConfig {
+            proxiima_storage_pg::PgPoolConfig {
                 statement_timeout: std::time::Duration::from_millis(2500),
-                ..proxima_storage_pg::PgPoolConfig::default()
+                ..proxiima_storage_pg::PgPoolConfig::default()
             },
-            proxima_storage_pg::PgTuning::default(),
+            proxiima_storage_pg::PgTuning::default(),
             pg.platform_scope_for_host(),
             1,
         )
@@ -4504,7 +4505,7 @@ async fn a_cited_blob_is_held_against_a_concurrent_citation() {
             .expect("with no erase in flight a second citation is an ordinary write");
 
         let mut tx = pool.begin().await?;
-        let held = proxima_storage_pg::verbs::forget::cited_blobs_locked_for_erase(
+        let held = proxiima_storage_pg::verbs::forget::cited_blobs_locked_for_erase(
             &mut tx,
             &owner,
             &[cited.memory_id.into_inner()],

@@ -4,18 +4,18 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::{Engine, EngineMcpListener};
-use crate::FlavorRegistryError;
+use crate::SpiiceRegistryError;
 use crate::authz::{
     DelegationRuntimeAuthority, DelegationRuntimeBinding, SystemAuthority, SystemAuthorityBinding,
 };
 use crate::storage_ports::{EngineStoragePorts, StoragePorts};
-use crate::verbs::schema::FlavorRegistryFrozen;
+use crate::verbs::schema::SpiiceRegistryFrozen;
 
 const DEFAULT_MCP_LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
 impl Engine {
     #[must_use]
-    pub fn new(registry: FlavorRegistryFrozen) -> Self {
+    pub fn new(registry: SpiiceRegistryFrozen) -> Self {
         Self {
             registry,
             system_authority_binding: SystemAuthorityBinding::fresh(),
@@ -64,39 +64,39 @@ impl Engine {
     #[must_use]
     pub fn compose_or_panic_for_tests(
         storage: StoragePorts,
-        register: impl FnOnce(&mut crate::FlavorRegistry),
+        register: impl FnOnce(&mut crate::SpiiceRegistry),
     ) -> Self {
         Self::try_compose(storage, |registry| {
             register(registry);
             Ok(())
         })
-        .expect("flavor registry must be valid")
+        .expect("spiice registry must be valid")
     }
 
-    /// One-call composite assembly: build a [`crate::FlavorRegistry`],
-    /// hand it to `register` for each linked flavor's `register` fn,
+    /// One-call composite assembly: build a [`crate::SpiiceRegistry`],
+    /// hand it to `register` for each linked spiice's `register` fn,
     /// freeze it, and wire the engine over `storage`. Authentication lives
     /// at the transport edge; chain `with_*` builders on the result for MCP,
     /// providers, and tuning.
     ///
     /// Migrations are NOT run here — the host runs substrate and
-    /// per-flavor migrators against its pool before composing.
+    /// per-spiice migrators against its pool before composing.
     ///
     /// # Errors
     ///
-    /// Returns a registry error from flavor registration or freeze.
+    /// Returns a registry error from spiice registration or freeze.
     pub fn try_compose(
         storage: StoragePorts,
-        register: impl FnOnce(&mut crate::FlavorRegistry) -> Result<(), FlavorRegistryError>,
-    ) -> Result<Self, FlavorRegistryError> {
-        let mut registry = crate::FlavorRegistry::new();
+        register: impl FnOnce(&mut crate::SpiiceRegistry) -> Result<(), SpiiceRegistryError>,
+    ) -> Result<Self, SpiiceRegistryError> {
+        let mut registry = crate::SpiiceRegistry::new();
         register(&mut registry)?;
         Ok(Self::new(registry.try_freeze()?).with_storage_ports(storage))
     }
 
     /// Get a reference to the schema registry.
     #[must_use]
-    pub fn registry(&self) -> &FlavorRegistryFrozen {
+    pub fn registry(&self) -> &SpiiceRegistryFrozen {
         &self.registry
     }
 
@@ -167,7 +167,7 @@ impl Engine {
     /// engine starts without an MCP server (`mcp_url()` stays `None`)
     /// — fine for tests and headless callers that don't need MCP.
     /// Host binaries wire a concrete listener
-    /// serving `proxima_mcp_server::streamable_http_service`.
+    /// serving `proxiima_mcp_server::streamable_http_service`.
     #[must_use]
     pub fn with_mcp_listener(mut self, listener: Arc<dyn EngineMcpListener>) -> Self {
         self.mcp_listener = Some(listener);
@@ -183,7 +183,7 @@ mod tests {
     use async_trait::async_trait;
 
     use super::Engine;
-    use crate::{EmbeddingClient, EmbeddingRuntimePolicy, FlavorRegistry, LlmError, StoragePorts};
+    use crate::{EmbeddingClient, EmbeddingRuntimePolicy, LlmError, SpiiceRegistry, StoragePorts};
 
     #[test]
     fn compose_assembles_engine_over_registry_closure() {
@@ -223,7 +223,7 @@ mod tests {
             Duration::from_secs(3),
         )
         .expect("valid policy");
-        let engine = Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        let engine = Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
             .with_embedding_runtime_policy(policy)
             .with_embedding_router(Arc::new(
                 crate::llm::SingleClientRouter::bind(Arc::new(HangingCustomEmbedding))

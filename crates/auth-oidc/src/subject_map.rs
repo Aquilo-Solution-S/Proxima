@@ -1,5 +1,5 @@
 //! Issuer-aware `(iss, sub) -> SubjectBinding` identity map for the default
-//! Proxima MCP group-auth path.
+//! Proxiima MCP group-auth path.
 //!
 //! `OidcAuthConfig` carries no identity mapping (see `config.rs`): the
 //! default [`crate::OidcAuthenticator::new`] path resolves the validated
@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use proxima_core::{MAX_OPERATOR_LABEL_CHARS, UserId};
+use proxiima_core::{MAX_OPERATOR_LABEL_CHARS, UserId};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum OidcSubjectMapError {
@@ -62,7 +62,7 @@ struct RawEntry {
 /// `trusted_model_id` is the deployment's statement that this principal *is*
 /// a particular configured runner. It certifies which runner reached the
 /// edge — not that a model produced any particular content — and is the only
-/// model provenance a flavor may build policy on.
+/// model provenance a spiice may build policy on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubjectBinding {
     pub user_id: UserId,

@@ -4,7 +4,7 @@
 //! under `store/` a caller can name. Keeping them free of logic means the
 //! public surface can be read in one file.
 
-use proxima_core::OwnerId;
+use proxiima_core::OwnerId;
 
 /// Tauri/TS-compatible cited-blob upload request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

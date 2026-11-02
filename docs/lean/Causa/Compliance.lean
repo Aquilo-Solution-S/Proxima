@@ -1,13 +1,13 @@
 /-
 Causa — Compliance
 
-Hard delete is abandonment, the forgotten path, or a flavor-scoped erase:
+Hard delete is abandonment, the forgotten path, or a spiice-scoped erase:
 
-  wipeable := abandoned ∨ (forgotten ∧ unreferenced ∧ policy) ∨ flavorScoped
+  wipeable := abandoned ∨ (forgotten ∧ unreferenced ∧ policy) ∨ spiiceScoped
 
-Forget sets a flag on the row and keeps it (#488); erase wipes abandoned owners; a flavor-scoped erase wipes whole
-series of one flavor's own schemas under one live owner, on Admin or the
-host's system authority (renegotiated in writing, docs/13 §Flavor-scoped
+Forget sets a flag on the row and keeps it (#488); erase wipes abandoned owners; a spiice-scoped erase wipes whole
+series of one spiice's own schemas under one live owner, on Admin or the
+host's system authority (renegotiated in writing, docs/13 §Spiice-scoped
 erase). An owner-to-owner transfer carries
 the entity's erase reach with it: after the move it is the DESTINATION owner
 whose abandonment wipes the row. There is no edge cascade — pins live on the
@@ -64,10 +64,10 @@ theorem forgotten_after_forget
   ⟨m.forget, (forgetIn_marks memories (memory_t m) m hm rfl).1, rfl, rfl⟩
 
 -- ============================================================
--- Flavor-scoped erase (docs/13 §Flavor-scoped erase)
+-- Spiice-scoped erase (docs/13 §Spiice-scoped erase)
 -- ============================================================
 
-/-- Who issues a flavor-scoped erase: a user, or the host's system authority
+/-- Who issues a spiice-scoped erase: a user, or the host's system authority
     (a retention schedule runs with nobody in the loop). -/
 inductive EraseAuthority where
   | user (u : User)
@@ -79,12 +79,12 @@ def EraseAuthority.admits : EraseAuthority → Owner → Prop
   | .user u, o => may_write u o .goal
   | .system, _ => True
 
-/-- One flavor-scoped erase: whole series (`handles`), one live owner, and
-    only the named flavor's own schemas. The flavor's vocabulary is a
-    PARAMETER (`ownSchemas`), as in `Causa.Flavor`; a series carries one
+/-- One spiice-scoped erase: whole series (`handles`), one live owner, and
+    only the named spiice's own schemas. The spiice's vocabulary is a
+    PARAMETER (`ownSchemas`), as in `Causa.Spiice`; a series carries one
     schema (`seriesSchema`: a new shape is a new handle, Identity). Nothing
     here requires the owner to be abandoned. -/
-structure FlavorScopedErase (memories : Set Memory) where
+structure SpiiceScopedErase (memories : Set Memory) where
   owner        : Owner
   ownSchemas   : SchemaRef → Prop
   seriesSchema : Handle → SchemaRef
@@ -98,16 +98,16 @@ structure FlavorScopedErase (memories : Set Memory) where
 
 /-- A `t` the erase selects: any version, live or forgotten, of a selected
     series. -/
-def FlavorScopedErase.selects {memories : Set Memory}
-    (e : FlavorScopedErase memories) (id : MemoryId) : Prop :=
+def SpiiceScopedErase.selects {memories : Set Memory}
+    (e : SpiiceScopedErase memories) (id : MemoryId) : Prop :=
   ∃ m : Memory, m ∈ memories ∧ memory_t m = id ∧ memory_handle m ∈ e.handles
 
 /-- CO-7 / ST-13: abandonment OR (forgotten ∧ unreferenced ∧ policy) OR
-    selected by a flavor-scoped erase of that owner. -/
+    selected by a spiice-scoped erase of that owner. -/
 def wipeable (o : Owner) (memories : Set Memory)
     (id : MemoryId) (policy : Prop) : Prop :=
   abandoned o ∨ (forgotten memories id ∧ unreferenced memories id ∧ policy) ∨
-    ∃ e : FlavorScopedErase memories, e.owner = o ∧ e.selects id
+    ∃ e : SpiiceScopedErase memories, e.owner = o ∧ e.selects id
 
 theorem wipeable_when_abandoned
     (o : Owner) (memories : Set Memory)
@@ -122,27 +122,27 @@ theorem wipeable_when_forgotten_unreferenced_policy
     wipeable o memories id policy :=
   Or.inr (Or.inl ⟨hc, hu, hp⟩)
 
-theorem wipeable_when_flavor_scoped
+theorem wipeable_when_spiice_scoped
     (o : Owner) (memories : Set Memory)
     (id : MemoryId) (policy : Prop)
-    (e : FlavorScopedErase memories) (ho : e.owner = o) (hs : e.selects id) :
+    (e : SpiiceScopedErase memories) (ho : e.owner = o) (hs : e.selects id) :
     wipeable o memories id policy :=
   Or.inr (Or.inr ⟨e, ho, hs⟩)
 
 /-- The erase never prunes a series' history: every version of a selected
     series, live or forgotten, is selected. -/
-theorem flavor_erase_takes_whole_series
+theorem spiice_erase_takes_whole_series
     {memories : Set Memory}
-    (e : FlavorScopedErase memories) (m : Memory)
+    (e : SpiiceScopedErase memories) (m : Memory)
     (hm : m ∈ memories) (hh : memory_handle m ∈ e.handles) :
     e.selects (memory_t m) :=
   ⟨m, hm, rfl, hh⟩
 
-/-- … forgotten versions included: a flavor-scoped erase keeps no forgotten
+/-- … forgotten versions included: a spiice-scoped erase keeps no forgotten
     copy. -/
-theorem flavor_erase_takes_forgotten_versions
+theorem spiice_erase_takes_forgotten_versions
     {memories : Set Memory}
-    (e : FlavorScopedErase memories) (m : Memory)
+    (e : SpiiceScopedErase memories) (m : Memory)
     (hm : m ∈ memories) (_hf : memory_forgotten m = true)
     (hh : memory_handle m ∈ e.handles) :
     e.selects (memory_t m) :=
@@ -150,23 +150,23 @@ theorem flavor_erase_takes_forgotten_versions
 
 /-- One owner: no version of a selected series, live or forgotten, belongs
     to anyone else. -/
-theorem flavor_erase_stays_in_owner
+theorem spiice_erase_stays_in_owner
     {memories : Set Memory}
-    (e : FlavorScopedErase memories) :
+    (e : SpiiceScopedErase memories) :
     ∀ m : Memory, m ∈ memories → memory_handle m ∈ e.handles →
       memory_owner m = e.owner :=
   e.inOwner
 
-/-- Only the flavor's own vocabulary. -/
-theorem flavor_erase_stays_in_flavor
+/-- Only the spiice's own vocabulary. -/
+theorem spiice_erase_stays_in_spiice
     {memories : Set Memory}
-    (e : FlavorScopedErase memories) (h : Handle) (hh : h ∈ e.handles) :
+    (e : SpiiceScopedErase memories) (h : Handle) (hh : h ∈ e.handles) :
     e.ownSchemas (e.seriesSchema h) :=
   e.ownSchema h hh
 
-/-- Below Admin, no user authorizes a flavor-scoped erase: a write ceiling
+/-- Below Admin, no user authorizes a spiice-scoped erase: a write ceiling
     that stops short of Goals stops short of erasing. -/
-theorem below_admin_cannot_authorize_flavor_erase
+theorem below_admin_cannot_authorize_spiice_erase
     (u : User) (o : Owner) (x : Role) (hx : o u = some x) (hw : x.write ≤ 3) :
     ¬ (EraseAuthority.user u).admits o := by
   rintro ⟨y, hy, hwy⟩
@@ -178,10 +178,10 @@ theorem below_admin_cannot_authorize_flavor_erase
 
 /-- The Ingest preset in particular: a principal that may add Facts may not
     erase them. -/
-theorem ingest_cannot_authorize_flavor_erase
+theorem ingest_cannot_authorize_spiice_erase
     (u : User) (o : Owner) (hx : o u = some Role.ingest) :
     ¬ (EraseAuthority.user u).admits o :=
-  below_admin_cannot_authorize_flavor_erase u o Role.ingest hx (by decide)
+  below_admin_cannot_authorize_spiice_erase u o Role.ingest hx (by decide)
 
 /-- Target render: live / forgotten / unavailable. A pin to a forgotten `t`
     renders forgotten, not a missing origin. -/

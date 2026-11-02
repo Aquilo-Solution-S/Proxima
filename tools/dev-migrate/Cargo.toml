@@ -1,5 +1,5 @@
 [package]
-name = "proxima-dev-migrate"
+name = "proxiima-dev-migrate"
 version = "0.1.0"
 publish = false
 edition.workspace = true
@@ -15,13 +15,13 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-proxima = { path = "../../crates/proxima" }
-proxima-core = { path = "../../crates/core" }
-proxima-storage-pg = { path = "../../crates/storage-pg", features = ["backend-api"] }
-proxima-example = { path = "../../flavors/example" }
+proxiima = { path = "../../crates/proxiima" }
+proxiima-core = { path = "../../crates/core" }
+proxiima-storage-pg = { path = "../../crates/storage-pg", features = ["backend-api"] }
+proxiima-example = { path = "../../spiices/example" }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
-proxima-pg-testkit = { path = "../../crates/pg-testkit" }
-proxima-storage-pg = { path = "../../crates/storage-pg", features = ["test-fixtures"] }
+proxiima-pg-testkit = { path = "../../crates/pg-testkit" }
+proxiima-storage-pg = { path = "../../crates/storage-pg", features = ["test-fixtures"] }

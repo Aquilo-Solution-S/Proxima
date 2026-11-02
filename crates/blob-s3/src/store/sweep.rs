@@ -6,9 +6,9 @@
 //! with it. The sweep expires such rows in bounded batches and owes both of
 //! their keys, exactly as the touch path does.
 
-use proxima_core::StorageError;
-use proxima_core::authz::SystemAuthority;
-use proxima_storage_pg::verbs::forget::ColdPurgeEntry;
+use proxiima_core::StorageError;
+use proxiima_core::authz::SystemAuthority;
+use proxiima_storage_pg::verbs::forget::ColdPurgeEntry;
 use uuid::Uuid;
 
 use super::CitedBlobStore;
@@ -62,7 +62,7 @@ impl CitedBlobStore {
         if limit > 0 {
             let mut tx = self.begin_platform_transaction().await?;
             let candidates: Vec<(Uuid, Uuid)> = sqlx::query_as(concat!(
-                "SELECT owner_id, upload_id FROM proxima_core.blob_uploads WHERE ",
+                "SELECT owner_id, upload_id FROM proxiima_core.blob_uploads WHERE ",
                 expirable!(),
                 " ORDER BY expires_at, upload_id LIMIT $2"
             ))
@@ -73,7 +73,7 @@ impl CitedBlobStore {
             .map_err(unavailable)?;
             tx.commit().await.map_err(unavailable)?;
             for (owner_id, upload_id) in candidates {
-                let owner = proxima_core::OwnerId::from(owner_id);
+                let owner = proxiima_core::OwnerId::from(owner_id);
                 if let Some(entries) = self.expire_one(&owner, upload_id).await? {
                     outcome.expired += 1;
                     outcome.owed += entries.len() as u64;
@@ -84,7 +84,7 @@ impl CitedBlobStore {
         self.purge_owed_after_commit(owed).await;
         let mut tx = self.begin_platform_transaction().await?;
         let remaining: i64 = sqlx::query_scalar(concat!(
-            "SELECT count(*) FROM proxima_core.blob_uploads WHERE ",
+            "SELECT count(*) FROM proxiima_core.blob_uploads WHERE ",
             expirable!()
         ))
         .bind(self.store_id.as_str())
@@ -99,19 +99,19 @@ impl CitedBlobStore {
     /// Expire one upload if it is still expirable and nobody holds it.
     async fn expire_one(
         &self,
-        owner: &proxima_core::OwnerId,
+        owner: &proxiima_core::OwnerId,
         upload_id: Uuid,
     ) -> Result<Option<Vec<ColdPurgeEntry>>, StorageError> {
-        use proxima_storage_pg::access::owner_columns as columns;
+        use proxiima_storage_pg::access::owner_columns as columns;
 
         let mut tx = self.begin_platform_transaction().await?;
         columns::lock_owner_fence_shared_tx(&mut tx, owner).await?;
         columns::lock_object_keys_tx(&mut tx, &[canonical_object_key(upload_id)]).await?;
         let expired = sqlx::query(concat!(
-            "UPDATE proxima_core.blob_uploads
+            "UPDATE proxiima_core.blob_uploads
                 SET status = 'expired', error_message = 'upload expired'
               WHERE upload_id = (
-                    SELECT upload_id FROM proxima_core.blob_uploads
+                    SELECT upload_id FROM proxiima_core.blob_uploads
                      WHERE owner_id = $2 AND upload_id = $3 AND ",
             expirable!(),
             " FOR UPDATE SKIP LOCKED)"

@@ -158,7 +158,7 @@ impl PgSidecarRegistry {
     /// Seal the PG registry against the already-frozen core registry.
     ///
     /// Takes the whole frozen registry, not just its `SchemaInfo` slice,
-    /// because the flavor contracts are part of what a PG registration has
+    /// because the spiice contracts are part of what a PG registration has
     /// to agree with: `pg_sidecar!` owner mode (`Pinned` / `Follows` / `None`)
     /// and the contract's transfer / `owner_column` / Keep declarations are
     /// statements of the same fact, and this is what compares them.
@@ -173,7 +173,7 @@ impl PgSidecarRegistry {
     /// declares the same table.
     pub fn freeze_against(
         mut self,
-        registry: &proxima_core::FlavorRegistryFrozen,
+        registry: &proxiima_core::SpiiceRegistryFrozen,
     ) -> Result<PgSidecarRegistryFrozen, StorageError> {
         let schemas = registry.schemas();
         let schema_keys = schemas
@@ -262,9 +262,9 @@ impl PgSidecarRegistry {
 
         Ok(PgSidecarRegistryFrozen {
             entries: Arc::new(self.entries),
-            flavor_schema_names: proxima_core::composed_schema_names(registry)
+            spiice_schema_names: proxiima_core::composed_schema_names(registry)
                 .into_iter()
-                .filter(|schema| schema != "proxima_core")
+                .filter(|schema| schema != "proxiima_core")
                 .collect::<Vec<_>>()
                 .into(),
         })
@@ -285,7 +285,7 @@ impl PgSidecarRegistry {
     /// name is not a valid `PostgreSQL` identifier.
     fn attach_projections(
         &mut self,
-        registry: &proxima_core::FlavorRegistryFrozen,
+        registry: &proxiima_core::SpiiceRegistryFrozen,
     ) -> Result<(), StorageError> {
         for entry in self.entries.values_mut() {
             if !matches!(
@@ -294,10 +294,10 @@ impl PgSidecarRegistry {
             ) {
                 continue;
             }
-            let Some((flavor_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
+            let Some((spiice_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
                 continue;
             };
-            let Some(contract) = registry.flavor_contract(flavor_id) else {
+            let Some(contract) = registry.spiice_contract(spiice_id) else {
                 continue;
             };
             let Some(spec) = contract.projection.spec() else {
@@ -310,7 +310,7 @@ impl PgSidecarRegistry {
             else {
                 continue;
             };
-            let proxima_core::flavor::SearchProjectionDecl::Projected { language, .. } =
+            let proxiima_core::spiice::SearchProjectionDecl::Projected { language, .. } =
                 &schema.search
             else {
                 continue;
@@ -341,18 +341,18 @@ impl PgSidecarRegistry {
     /// is a wrong-owner bundle or an unstamped row rather than a crash,
     /// which is why they are compared here.
     ///
-    /// EVERY LINKED FLAVOR THAT SHIPS A CONTRACT IS CHECKED. Schemas whose
-    /// flavor registered no contract are skipped: a flavor without a
+    /// EVERY LINKED SPIICE THAT SHIPS A CONTRACT IS CHECKED. Schemas whose
+    /// spiice registered no contract are skipped: a spiice without a
     /// contract has made no claim to contradict, and that is the only sound
     /// reading of an absent contract — the alternative asserts every
     /// contract-less sidecar is `Follow`, which is a claim nobody made. So
-    /// the cross-check grows teeth per flavor rather than all at once.
+    /// the cross-check grows teeth per spiice rather than all at once.
     fn check_owner_pinned_against_contracts(
         &self,
-        registry: &proxima_core::FlavorRegistryFrozen,
+        registry: &proxiima_core::SpiiceRegistryFrozen,
     ) -> Result<(), StorageError> {
         use crate::sidecars::SidecarOwnerMode;
-        use proxima_core::flavor::TransferRule;
+        use proxiima_core::spiice::TransferRule;
 
         let retained = registry.retain_at_source_sidecar_tables();
         for entry in self.entries.values() {
@@ -362,10 +362,10 @@ impl PgSidecarRegistry {
             ) {
                 continue;
             }
-            let Some((flavor_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
+            let Some((spiice_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
                 continue;
             };
-            let Some(contract) = registry.flavor_contract(flavor_id) else {
+            let Some(contract) = registry.spiice_contract(spiice_id) else {
                 continue;
             };
             let expected = if retained.iter().any(|table| table == &entry.sidecar_table) {
@@ -423,16 +423,16 @@ impl PgSidecarRegistry {
     /// declaration nobody wrote.
     fn check_memory_key_against_contracts(
         &self,
-        registry: &proxima_core::FlavorRegistryFrozen,
+        registry: &proxiima_core::SpiiceRegistryFrozen,
     ) -> Result<(), StorageError> {
         for entry in self.entries.values() {
             let Some(registered) = entry.memory_key_column else {
                 continue;
             };
-            let Some((flavor_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
+            let Some((spiice_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
                 continue;
             };
-            let Some(contract) = registry.flavor_contract(flavor_id) else {
+            let Some(contract) = registry.spiice_contract(spiice_id) else {
                 continue;
             };
             let Some(declared) = contract.sidecar_memory_key_column(&entry.sidecar_table) else {
@@ -440,8 +440,8 @@ impl PgSidecarRegistry {
             };
             if declared != registered {
                 return Err(StorageError::ConstraintViolation(format!(
-                    "PG sidecar {} registers `pg_sidecar!(key: {registered})` but flavor \
-                     {flavor_id} declares its Surface as KeyShape::MemoryT {{ column: \
+                    "PG sidecar {} registers `pg_sidecar!(key: {registered})` but spiice \
+                     {spiice_id} declares its Surface as KeyShape::MemoryT {{ column: \
                      {declared:?} }}; {} v{} would have its row written on {registered} and its \
                      projection, substring and snippet statements read from {declared}, so the \
                      two declarations have to name one column",
@@ -460,9 +460,9 @@ impl PgSidecarRegistry {
     /// `ForgetLeg::derive` supplies the shared classifier.
     fn check_keep_is_owner_pinned(
         &self,
-        registry: &proxima_core::FlavorRegistryFrozen,
+        registry: &proxiima_core::SpiiceRegistryFrozen,
     ) -> Result<(), StorageError> {
-        let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(registry);
+        let surfaces = proxiima_core::owner_inverse::OwnerSurfaces::for_registry(registry);
         for entry in self.entries.values() {
             if !matches!(
                 entry.key.kind,
@@ -470,15 +470,15 @@ impl PgSidecarRegistry {
             ) {
                 continue;
             }
-            let Some((flavor_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
+            let Some((spiice_id, _)) = entry.key.schema_id.as_str().split_once('/') else {
                 continue;
             };
-            if registry.flavor_contract(flavor_id).is_none() {
+            if registry.spiice_contract(spiice_id).is_none() {
                 continue;
             }
             let kept = matches!(
                 surfaces.forget_leg(&entry.sidecar_table),
-                proxima_core::flavor::ForgetLeg::Kept { .. }
+                proxiima_core::spiice::ForgetLeg::Kept { .. }
             );
             if kept != entry.owner.is_pinned() {
                 return Err(StorageError::ConstraintViolation(format!(
@@ -502,13 +502,13 @@ impl PgSidecarRegistry {
 #[cfg(test)]
 mod memory_key_agreement_tests {
     use super::{PgSidecarEntry, PgSidecarKey, PgSidecarRegistry};
-    use proxima_core::verbs::schema::PayloadKind;
-    use proxima_core::{AgentNoteV1, FactPayload, SchemaId, SchemaVersion, StorageError};
+    use proxiima_core::verbs::schema::PayloadKind;
+    use proxiima_core::{AgentNoteV1, FactPayload, SchemaId, SchemaVersion, StorageError};
     use std::collections::HashMap;
 
-    const AGENT_NOTE: &str = "proxima_core.agent_note_v1";
+    const AGENT_NOTE: &str = "proxiima_core.agent_note_v1";
 
-    /// One registration of flavor #0's note sidecar, keyed on `key_column`.
+    /// One registration of spiice #0's note sidecar, keyed on `key_column`.
     ///
     /// Everything else is what `add_fact` would build. The inserters are
     /// stubs because this check reads neither: it compares two declarations.
@@ -544,9 +544,9 @@ mod memory_key_agreement_tests {
     /// lookup silently finds nothing.
     #[test]
     fn a_registration_keyed_as_its_surface_declares_is_admitted() {
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         assert_eq!(
-            proxima_core::FLAVOR_0.sidecar_memory_key_column(AGENT_NOTE),
+            proxiima_core::SPIICE_0.sidecar_memory_key_column(AGENT_NOTE),
             Some("t"),
             "the note's Surface declares its memory key"
         );
@@ -564,7 +564,7 @@ mod memory_key_agreement_tests {
     /// the schema's search corpus is silently empty.
     #[test]
     fn a_registration_keyed_off_its_surface_is_refused_naming_both() {
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
         let err = registry_keyed_on("note_memory_id")
             .check_memory_key_against_contracts(&registry)
             .expect_err("the two declarations name different columns");
@@ -590,16 +590,16 @@ mod memory_key_agreement_tests {
 mod owner_mode_agreement_tests {
     use super::{PgSidecarEntry, PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen};
     use crate::sidecars::SidecarOwnerMode;
-    use proxima_core::flavor::{
-        CounterRule, EmbeddingRecipe, EraseRule, ExportRule, FlavorContract, ForgetRule, KeyShape,
-        ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, Surface,
+    use proxiima_core::spiice::{
+        CounterRule, EmbeddingRecipe, EraseRule, ExportRule, ForgetRule, KeyShape, ProjectionDecl,
+        Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, SpiiceContract, Surface,
         TransferRule,
     };
-    use proxima_core::verbs::schema::PayloadKind;
-    use proxima_core::{FactPayload, SchemaId, SchemaVersion, StorageError};
+    use proxiima_core::verbs::schema::PayloadKind;
+    use proxiima_core::{FactPayload, SchemaId, SchemaVersion, StorageError};
     use std::collections::HashMap;
 
-    const FLAVOR: &str = "test-owner-mode";
+    const SPIICE: &str = "test-owner-mode";
     const TABLE: &str = "test_owner_mode.stamp_v1";
     const SCHEMA_ID: &str = "test-owner-mode/stamp-v1";
 
@@ -706,8 +706,8 @@ mod owner_mode_agreement_tests {
         );
     }
 
-    fn freeze_contract(contract: &'static FlavorContract) -> proxima_core::FlavorRegistryFrozen {
-        let mut registry = proxima_core::FlavorRegistry::new();
+    fn freeze_contract(contract: &'static SpiiceContract) -> proxiima_core::SpiiceRegistryFrozen {
+        let mut registry = proxiima_core::SpiiceRegistry::new();
         registry.add_fact_schema_or_panic_for_tests::<StampFixture>();
         registry.add_contract_or_panic_for_tests(contract);
         registry.freeze_or_panic_for_tests()
@@ -715,11 +715,11 @@ mod owner_mode_agreement_tests {
 
     #[test]
     fn freeze_refuses_follows_declared_retain_at_source() {
-        static CONTRACT: FlavorContract = FlavorContract {
-            flavor_id: FLAVOR,
+        static CONTRACT: SpiiceContract = SpiiceContract {
+            spiice_id: SPIICE,
             ordinal: 91,
             schemas: &[SchemaContract {
-                id: SchemaRef::new(FLAVOR, "stamp", 1),
+                id: SchemaRef::new(SPIICE, "stamp", 1),
                 kind: PayloadKind::Fact,
                 sidecar_table: Some(TABLE),
                 search: SearchProjectionDecl::None {
@@ -772,7 +772,7 @@ mod owner_mode_agreement_tests {
             .expect("the matching pinned registration freezes");
         assert!(frozen.owner_follows_memory_sidecar_tables().is_empty());
         assert_eq!(
-            frozen.flavor_schema_names(),
+            frozen.spiice_schema_names(),
             ["test_owner_mode"],
             "a composition with no Follows must still clear its stale marks"
         );
@@ -780,11 +780,11 @@ mod owner_mode_agreement_tests {
 
     #[test]
     fn freeze_refuses_follows_declared_keep() {
-        static CONTRACT: FlavorContract = FlavorContract {
-            flavor_id: FLAVOR,
+        static CONTRACT: SpiiceContract = SpiiceContract {
+            spiice_id: SPIICE,
             ordinal: 92,
             schemas: &[SchemaContract {
-                id: SchemaRef::new(FLAVOR, "stamp", 1),
+                id: SchemaRef::new(SPIICE, "stamp", 1),
                 kind: PayloadKind::Fact,
                 sidecar_table: Some(TABLE),
                 search: SearchProjectionDecl::None {
@@ -832,11 +832,11 @@ mod owner_mode_agreement_tests {
 
     #[test]
     fn freeze_admits_follows_with_follow_and_owner_column() {
-        static CONTRACT: FlavorContract = FlavorContract {
-            flavor_id: FLAVOR,
+        static CONTRACT: SpiiceContract = SpiiceContract {
+            spiice_id: SPIICE,
             ordinal: 93,
             schemas: &[SchemaContract {
-                id: SchemaRef::new(FLAVOR, "stamp", 1),
+                id: SchemaRef::new(SPIICE, "stamp", 1),
                 kind: PayloadKind::Fact,
                 sidecar_table: Some(TABLE),
                 search: SearchProjectionDecl::None {
@@ -890,12 +890,12 @@ mod owner_mode_agreement_tests {
             .expect("complete fixture coverage");
         assert_eq!(frozen.owner_follows_memory_sidecar_tables(), [TABLE]);
         assert_eq!(
-            frozen.flavor_schema_names(),
+            frozen.spiice_schema_names(),
             ["test_owner_mode", "test_owner_state"]
         );
         let amended =
             frozen.with_unusable_memory_table("test-owner-mode/unusable-v1", "unusable.sidecar_v1");
-        assert_eq!(amended.flavor_schema_names(), frozen.flavor_schema_names());
+        assert_eq!(amended.spiice_schema_names(), frozen.spiice_schema_names());
     }
 
     /// `Follows` needs somewhere to stamp the owner. A `Follow` surface with
@@ -904,11 +904,11 @@ mod owner_mode_agreement_tests {
     /// pair a `Follows` registration with one.
     #[test]
     fn freeze_refuses_follows_declared_follow_without_owner_column() {
-        static CONTRACT: FlavorContract = FlavorContract {
-            flavor_id: FLAVOR,
+        static CONTRACT: SpiiceContract = SpiiceContract {
+            spiice_id: SPIICE,
             ordinal: 94,
             schemas: &[SchemaContract {
-                id: SchemaRef::new(FLAVOR, "stamp", 1),
+                id: SchemaRef::new(SPIICE, "stamp", 1),
                 kind: PayloadKind::Fact,
                 sidecar_table: Some(TABLE),
                 search: SearchProjectionDecl::None {
@@ -937,7 +937,7 @@ mod owner_mode_agreement_tests {
             bespoke_erase_legs: &[],
             bespoke_transfer_legs: &[],
         };
-        let mut registry = proxima_core::FlavorRegistry::new();
+        let mut registry = proxiima_core::SpiiceRegistry::new();
         registry.add_fact_schema_or_panic_for_tests::<StampFixture>();
         registry.add_contract_or_panic_for_tests(&CONTRACT);
         let err = registry
@@ -946,8 +946,8 @@ mod owner_mode_agreement_tests {
         assert!(
             matches!(
                 err,
-                proxima_core::flavor::FlavorRegistryError::UnmovableSurface {
-                    flavor_id: FLAVOR,
+                proxiima_core::spiice::SpiiceRegistryError::UnmovableSurface {
+                    spiice_id: SPIICE,
                     table: TABLE,
                 }
             ),
@@ -960,11 +960,11 @@ mod owner_mode_agreement_tests {
     /// column) is refused.
     #[test]
     fn freeze_refuses_none_declared_follow_with_owner_column() {
-        static CONTRACT: FlavorContract = FlavorContract {
-            flavor_id: FLAVOR,
+        static CONTRACT: SpiiceContract = SpiiceContract {
+            spiice_id: SPIICE,
             ordinal: 95,
             schemas: &[SchemaContract {
-                id: SchemaRef::new(FLAVOR, "stamp", 1),
+                id: SchemaRef::new(SPIICE, "stamp", 1),
                 kind: PayloadKind::Fact,
                 sidecar_table: Some(TABLE),
                 search: SearchProjectionDecl::None {

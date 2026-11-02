@@ -1,5 +1,5 @@
-use proxima_core::owner_inverse::OwnerSurfaces;
-use proxima_core::storage_ports::{
+use proxiima_core::owner_inverse::OwnerSurfaces;
+use proxiima_core::storage_ports::{
     OwnerWritePermit, SIDECAR_SESSION_READ_MAX_ROWS, SidecarSessionRead,
 };
 use sqlx::QueryBuilder;
@@ -124,7 +124,7 @@ fn session_read_owner_column<'a>(
     else {
         return Err(StorageError::ConstraintViolation(format!(
             "session sidecar read names {table}, which declares no Surface; \
-             declare one on the flavor contract so the read can be owner-scoped"
+             declare one on the spiice contract so the read can be owner-scoped"
         )));
     };
     surface.owner_column.ok_or_else(|| {
@@ -185,7 +185,7 @@ impl PgSidecarReadCtx<'_> {
     }
 
     pub(super) fn for_registered_table(mut self, table: &str) -> Self {
-        self.allow_core_schema = table.starts_with("proxima_core.");
+        self.allow_core_schema = table.starts_with("proxiima_core.");
         self
     }
 }
@@ -193,9 +193,9 @@ impl PgSidecarReadCtx<'_> {
 impl PgSidecarReadCtx<'_> {
     /// Fetch at most one sidecar row using a backend-owned, memory-id-bound query.
     ///
-    /// The helper intentionally does not expose `PgPool` to flavor crates. It
+    /// The helper intentionally does not expose `PgPool` to spiice crates. It
     /// rejects core-table SQL so sidecar payload readback cannot become a raw
-    /// `proxima_core.*` escape hatch.
+    /// `proxiima_core.*` escape hatch.
     ///
     /// # Errors
     ///
@@ -243,9 +243,9 @@ impl PgSidecarReadCtx<'_> {
     ///
     /// Backend-owned SQL only: the statement comes from
     /// [`super::memory_select_batch_owner_pinned_sql`], which is why the
-    /// `proxima_core.*` prohibition does not apply here — the join to
-    /// `proxima_core.memory` IS the owner rule, and it is emitted by the
-    /// backend rather than supplied by a flavor.
+    /// `proxiima_core.*` prohibition does not apply here — the join to
+    /// `proxiima_core.memory` IS the owner rule, and it is emitted by the
+    /// backend rather than supplied by a spiice.
     ///
     /// # Errors
     ///
@@ -325,9 +325,9 @@ pub(crate) fn validate_sidecar_read_sql(
     allow_core_schema: bool,
 ) -> Result<(), StorageError> {
     let lowered = sql.to_ascii_lowercase();
-    if !allow_core_schema && lowered.contains("proxima_core.") {
+    if !allow_core_schema && lowered.contains("proxiima_core.") {
         return Err(StorageError::Internal(
-            "sidecar read SQL must not reference proxima_core.*".to_string(),
+            "sidecar read SQL must not reference proxiima_core.*".to_string(),
         ));
     }
     validate_sidecar_read_sql_shape(sql)

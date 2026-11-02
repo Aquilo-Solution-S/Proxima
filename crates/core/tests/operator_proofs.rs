@@ -1,4 +1,4 @@
-use proxima_core::{
+use proxiima_core::{
     EntityKind, InputContractId, MemoryId, MemoryOutputInvocation, OperatorId,
     OperatorInvocationManifest, OperatorPhase, OutputEdgeManifest, SchemaId, SchemaVersion,
 };
@@ -23,7 +23,7 @@ fn ftoa_manifest_rejects_missing_declared_input_edge() {
         inputs: vec![(input, EntityKind::Fact)],
         output_memory_id: output,
         output_kind: EntityKind::Abstraction,
-        schema_id: SchemaId::new("proxima-core/agent-derivation".to_string()),
+        schema_id: SchemaId::new("proxiima-core/agent-derivation".to_string()),
         schema_version: SchemaVersion::new(1),
         output_edges: Vec::new(),
     });
@@ -37,7 +37,7 @@ fn ftoa_manifest_rejects_missing_declared_input_edge() {
 #[test]
 fn atog_manifest_rejects_goal_output_for_memory_phase() {
     let input = memory_id();
-    let goal = proxima_core::GoalId::new(Uuid::now_v7());
+    let goal = proxiima_core::GoalId::new(Uuid::now_v7());
     let manifest = OperatorInvocationManifest::goal_output(
         OperatorPhase::AtoP,
         OperatorId::new(Uuid::now_v7()),

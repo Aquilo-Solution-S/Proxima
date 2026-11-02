@@ -7,7 +7,7 @@
 //! 1. an explicit configuration name from the caller,
 //! 2. `"auto"`: reliable detection from the content itself,
 //! 3. neither: [`LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT`], which ASKS for the
-//!    database default (`proxima_core.lexical_config()`).
+//!    database default (`proxiima_core.lexical_config()`).
 //!
 //! Resolution is total: every write that runs through it names a choice,
 //! and asking for the deployment configuration is one of the choices. A
@@ -31,7 +31,7 @@
 pub const LEXICAL_LANGUAGE_AUTO: &str = "auto";
 
 /// The resolved value that asks storage for the deployment's configured
-/// text-search configuration (`proxima_core.lexical_config()`).
+/// text-search configuration (`proxiima_core.lexical_config()`).
 ///
 /// It is deliberately not a `PostgreSQL` identifier: `@` cannot open one,
 /// so no `CREATE TEXT SEARCH CONFIGURATION` can collide with it and

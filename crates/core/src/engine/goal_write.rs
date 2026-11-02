@@ -85,7 +85,7 @@ impl Engine {
     }
 
     /// Create an Active typed Goal for an embedded host or protocol
-    /// caller without exposing `proxima_core.goal` storage shape.
+    /// caller without exposing `proxiima_core.goal` storage shape.
     ///
     /// The request may name a target Perspective. An unassigned Goal belongs
     /// to its Owner alone.
@@ -705,8 +705,8 @@ mod tests {
         GoalAssignmentTarget, GoalEvidenceRef, GoalTopologyWrite, SystemOrigin,
     };
     use crate::{
-        AuthPath, Engine, FlavorRegistry, GoalId, GoalPayload, GroupId, OwnerId, SchemaId,
-        SchemaVersion, ToolId, UserId,
+        AuthPath, Engine, GoalId, GoalPayload, GroupId, OwnerId, SchemaId, SchemaVersion,
+        SpiiceRegistry, ToolId, UserId,
     };
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -722,7 +722,7 @@ mod tests {
     }
 
     fn engine() -> Engine {
-        Engine::new(FlavorRegistry::new().freeze_or_panic_for_tests())
+        Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
     }
 
     /// #514 F10: the goal-tree refusals reach the protocol as

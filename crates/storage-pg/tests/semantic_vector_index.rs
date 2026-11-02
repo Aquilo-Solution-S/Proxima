@@ -2,18 +2,18 @@
 
 use std::sync::{Arc, Mutex};
 
-use proxima_core::storage_ports::{
+use proxiima_core::storage_ports::{
     InMemoryVectorIndex, MemoryReadPort, VectorCandidate, VectorEntry, VectorIndex, VectorKey,
 };
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::query::{
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
-use proxima_core::{
+use proxiima_core::{
     EmbeddableEntityRef, EmbeddingDim, EmbeddingSpace, MemoryId, OwnerId, SpaceVector,
     StorageError, UserId,
 };
-use proxima_storage_pg::test_fixtures::fresh_pg_host_index;
+use proxiima_storage_pg::test_fixtures::fresh_pg_host_index;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -99,22 +99,22 @@ fn request(owner: OwnerId) -> MemorySearchRequest {
 }
 
 async fn seed(pool: &PgPool, owner: OwnerId, schema: &str, tag: &str) -> Result<Uuid, sqlx::Error> {
-    sqlx::query("INSERT INTO proxima_core.owners(owner_id, kind) VALUES ($1, 'personal') ON CONFLICT DO NOTHING")
+    sqlx::query("INSERT INTO proxiima_core.owners(owner_id, kind) VALUES ($1, 'personal') ON CONFLICT DO NOTHING")
         .bind(owner.into_inner()).execute(pool).await?;
     let t = Uuid::now_v7();
     let handle = Uuid::now_v7();
-    sqlx::query("INSERT INTO proxima_core.memory_head(handle, t, kind, owner_id, schema_id) VALUES ($1, $2, 'fact', $3, $4)")
+    sqlx::query("INSERT INTO proxiima_core.memory_head(handle, t, kind, owner_id, schema_id) VALUES ($1, $2, 'fact', $3, $4)")
         .bind(handle).bind(t).bind(owner.into_inner()).bind(schema).execute(pool).await?;
     let mut tx = pool.begin().await?;
-    sqlx::query("INSERT INTO proxima_core.memory(handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via) VALUES ($1, $2, 'fact', $3, $4, $5, uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
+    sqlx::query("INSERT INTO proxiima_core.memory(handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via) VALUES ($1, $2, 'fact', $3, $4, $5, uuid_extract_timestamp($2), '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
         .bind(handle).bind(t).bind(owner.into_inner()).bind(schema)
-        .bind(if schema == "core/agent-note-v1" { vec!["proxima_core.agent_note_v1"] } else { Vec::new() })
+        .bind(if schema == "core/agent-note-v1" { vec!["proxiima_core.agent_note_v1"] } else { Vec::new() })
         .execute(&mut *tx).await?;
     if schema == "core/agent-note-v1" {
-        sqlx::query("INSERT INTO proxima_core.agent_note_v1(t, note_id, title, body, tags) VALUES ($1, $2, 'Index result', 'Hydrated from memory', ARRAY[$3])")
+        sqlx::query("INSERT INTO proxiima_core.agent_note_v1(t, note_id, title, body, tags) VALUES ($1, $2, 'Index result', 'Hydrated from memory', ARRAY[$3])")
             .bind(t).bind(Uuid::now_v7()).bind(tag).execute(&mut *tx).await?;
     }
-    sqlx::query("INSERT INTO proxima_core.projection(memory_id, schema_id, owner_id, search_tsv, tag) VALUES ($1, $2, $3, ''::tsvector, ARRAY[$4])")
+    sqlx::query("INSERT INTO proxiima_core.projection(memory_id, schema_id, owner_id, search_tsv, tag) VALUES ($1, $2, $3, ''::tsvector, ARRAY[$4])")
         .bind(t).bind(schema).bind(owner.into_inner()).bind(tag).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(t)
@@ -145,7 +145,7 @@ async fn semantic_port_expands_past_stale_foreign_and_filtered_candidates() -> T
     index
         .put(entity(visible), owner, 1, &[vector(0.1), vector(0.8)])
         .await?;
-    let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
+    let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
     let scope = owner_scope_for_tests(&[owner]);
     let page = pg
         .search_memories(Some(&scope), &request(owner), registry.search_projections())
@@ -166,7 +166,7 @@ async fn head(
     version: i32,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO proxima_core.embedding_heads (entity_id, model_id, dim, embedding_version, owner_id)
+        "INSERT INTO proxiima_core.embedding_heads (entity_id, model_id, dim, embedding_version, owner_id)
          VALUES ($1, 'memory-index', 384, $2, $3)",
     )
     .bind(entity)
@@ -192,7 +192,7 @@ fn fact(id: Uuid) -> EmbeddableEntityRef {
 }
 
 async fn debt_rows(pool: &PgPool) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT count(*) FROM proxima_core.vector_index_debt")
+    sqlx::query_scalar("SELECT count(*) FROM proxiima_core.vector_index_debt")
         .fetch_one(pool)
         .await
 }
@@ -202,7 +202,7 @@ async fn debt_rows(pool: &PgPool) -> Result<i64, sqlx::Error> {
 /// follows.
 #[tokio::test]
 async fn the_drain_pays_head_deletes_and_owner_moves_to_the_index() -> TestResult {
-    use proxima_core::storage_ports::EmbeddingJobPort;
+    use proxiima_core::storage_ports::EmbeddingJobPort;
     let index = Arc::new(InMemoryVectorIndex::default());
     let (pg, _database) = fresh_pg_host_index("vector_index_debt_drain", index.clone()).await;
     let pool = pg.pool_for_tests().clone();
@@ -215,11 +215,11 @@ async fn the_drain_pays_head_deletes_and_owner_moves_to_the_index() -> TestResul
         head(&pool, entity, owner, 1).await?;
         index.put(fact(entity), owner, 1, &[vector(1.0)]).await?;
     }
-    sqlx::query("DELETE FROM proxima_core.embedding_heads WHERE entity_id = $1")
+    sqlx::query("DELETE FROM proxiima_core.embedding_heads WHERE entity_id = $1")
         .bind(gone)
         .execute(&pool)
         .await?;
-    sqlx::query("UPDATE proxima_core.embedding_heads SET owner_id = $2 WHERE entity_id = $1")
+    sqlx::query("UPDATE proxiima_core.embedding_heads SET owner_id = $2 WHERE entity_id = $1")
         .bind(moved)
         .bind(other.into_inner())
         .execute(&pool)
@@ -286,10 +286,11 @@ async fn the_sweep_repairs_the_index_against_the_heads() -> TestResult {
     ];
     expected.sort_by(|a, b| a.0.order().cmp(&b.0.order()));
     assert_eq!(held, expected);
-    let heads: Vec<Uuid> =
-        sqlx::query_scalar("SELECT entity_id FROM proxima_core.embedding_heads ORDER BY entity_id")
-            .fetch_all(&pool)
-            .await?;
+    let heads: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT entity_id FROM proxiima_core.embedding_heads ORDER BY entity_id",
+    )
+    .fetch_all(&pool)
+    .await?;
     let mut expected = vec![kept, misowned];
     expected.sort();
     assert_eq!(heads, expected);
@@ -300,10 +301,10 @@ async fn the_sweep_repairs_the_index_against_the_heads() -> TestResult {
 /// commits, in a database that has no pgvector to hold them.
 #[tokio::test]
 async fn an_owner_erase_takes_its_entries_out_of_the_index() -> TestResult {
-    use proxima_core::owner_inverse::{
+    use proxiima_core::owner_inverse::{
         EraseAuthorization, OwnerEraseOutcome, OwnerEraseTarget, OwnerSurfaces,
     };
-    use proxima_core::storage_ports::OwnerInversePort;
+    use proxiima_core::storage_ports::OwnerInversePort;
 
     let index = Arc::new(InMemoryVectorIndex::default());
     let (pg, _database) = fresh_pg_host_index("vector_index_erase", index.clone()).await;
@@ -325,7 +326,7 @@ async fn an_owner_erase_takes_its_entries_out_of_the_index() -> TestResult {
         drop_event_id: "test-drop".into(),
     });
     let surfaces = OwnerSurfaces::for_registry(
-        &proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests(),
+        &proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests(),
     );
     let outcome = pg.erase_personal_owner(&auth, user, &surfaces).await?;
     assert!(
@@ -340,9 +341,10 @@ async fn an_owner_erase_takes_its_entries_out_of_the_index() -> TestResult {
         .map(|entry| entry.key)
         .collect();
     assert_eq!(held, [key(kept)]);
-    let heads: Vec<Uuid> = sqlx::query_scalar("SELECT entity_id FROM proxima_core.embedding_heads")
-        .fetch_all(&pool)
-        .await?;
+    let heads: Vec<Uuid> =
+        sqlx::query_scalar("SELECT entity_id FROM proxiima_core.embedding_heads")
+            .fetch_all(&pool)
+            .await?;
     assert_eq!(heads, [kept]);
     assert_eq!(debt_rows(&pool).await?, 0);
     Ok(())

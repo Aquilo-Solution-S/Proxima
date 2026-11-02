@@ -5,15 +5,15 @@
 use crate::access::owner_columns::{other_upload_implies_key_sql, upload_implied_keys_sql};
 use std::collections::BTreeMap;
 
-use proxima_core::flavor::{EraseLeg, HostStateEraseDisposition, KeyShape};
-use proxima_core::owner_inverse::{
+use proxiima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseCounts, OwnerEraseOutcome, OwnerEraseRefusal, OwnerSurfaces,
 };
-use proxima_core::storage_ports::{
+use proxiima_core::spiice::{EraseLeg, HostStateEraseDisposition, KeyShape};
+use proxiima_core::storage_ports::{
     HostStateEraseReceipt, HostStateEraseRequest, HostStateEraseScope, HostStateEraseSelection,
     HostStateFactCopyLocator,
 };
-use proxima_core::{ColdObjectStore, GroupId, OwnerId, SourceId, StorageError};
+use proxiima_core::{ColdObjectStore, GroupId, OwnerId, SourceId, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::access::owner_columns::{
@@ -76,7 +76,7 @@ async fn begin_bulk_erase_tx(
     // export never overlaps an erase and one queued behind it reads its
     // result. Erases do not exclude each other here: the mode is
     // self-compatible.
-    sqlx::query("LOCK TABLE proxima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
+    sqlx::query("LOCK TABLE proxiima_core.export_erase_fence IN ROW EXCLUSIVE MODE")
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
@@ -260,7 +260,7 @@ async fn erase_precondition(
     lock_group_membership_tx(tx, group_id).await?;
     let is_user: bool = sqlx::query_scalar(
         "SELECT EXISTS (
-                SELECT 1 FROM proxima_core.owners
+                SELECT 1 FROM proxiima_core.owners
                  WHERE owner_id = $1 AND kind = 'personal'
             )",
     )
@@ -281,8 +281,8 @@ async fn erase_precondition(
 
 async fn group_member_count(tx: &mut Tx<'_>, group_id: GroupId) -> Result<i64, StorageError> {
     sqlx::query_scalar(
-        "SELECT (SELECT count(*) FROM proxima_core.group_memberships WHERE group_id = $1)
-              + (SELECT count(*) FROM proxima_core.group_edges WHERE parent_group_id = $1)",
+        "SELECT (SELECT count(*) FROM proxiima_core.group_memberships WHERE group_id = $1)
+              + (SELECT count(*) FROM proxiima_core.group_edges WHERE parent_group_id = $1)",
     )
     .bind(group_id.into_inner())
     .fetch_one(&mut **tx)
@@ -316,7 +316,7 @@ impl KeyedSet {
     }
 }
 
-/// Which selection set a keyed leg joins, from the key shape the flavor
+/// Which selection set a keyed leg joins, from the key shape the spiice
 /// declared.
 ///
 /// The classification itself is [`EraseLeg`], resolved by the contract at
@@ -331,7 +331,7 @@ const fn keyed_set(key: KeyShape) -> Option<(KeyedSet, &'static str)> {
         // An entity `t` has two home tables and therefore two selection
         // sets; the erase fills one per home and can join neither
         // unambiguously. All four such surfaces are declared bespoke erase
-        // legs, and a flavor that forgets the exemption gets
+        // legs, and a spiice that forgets the exemption gets
         // `UndeletableSurface` rather than this returning a guess.
         KeyShape::EntityT { .. } | KeyShape::OwnerId | KeyShape::Custom(_) => None,
     }
@@ -428,7 +428,7 @@ async fn delete_owned_surfaces(
                 format!(
                     "DELETE FROM {tbl} a
                       WHERE a.{owner} = $1
-                        AND EXISTS (SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+                        AND EXISTS (SELECT 1 FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                                      WHERE m.t = a.{key} AND m.source_id = $2)",
                     tbl = ident.as_str(),
                     owner = owner_column.as_str(),
@@ -454,7 +454,7 @@ async fn delete_owned_surfaces(
     Ok(total)
 }
 
-/// `proxima_core.sketch` is keyed on a memory `t` OR a goal `t` — one
+/// `proxiima_core.sketch` is keyed on a memory `t` OR a goal `t` — one
 /// column, two home tables, which is also why it carries no foreign key.
 /// No generated statement spans two selection sets, so this leg is named.
 ///
@@ -464,7 +464,7 @@ async fn delete_owned_surfaces(
 async fn delete_selected_sketches(tx: &mut Tx<'_>) -> Result<u64, StorageError> {
     let memories = delete_fixed_by_selected(
         tx,
-        "proxima_core.sketch",
+        "proxiima_core.sketch",
         "t",
         KeyedSet::Memories.table(),
         KeyedSet::Memories.column(),
@@ -472,7 +472,7 @@ async fn delete_selected_sketches(tx: &mut Tx<'_>) -> Result<u64, StorageError> 
     .await?;
     let goals = delete_fixed_by_selected(
         tx,
-        "proxima_core.sketch",
+        "proxiima_core.sketch",
         "t",
         KeyedSet::Goals.table(),
         KeyedSet::Goals.column(),
@@ -488,17 +488,17 @@ async fn erase_selected(
     surfaces: &OwnerSurfaces,
     lifecycle: Option<&crate::RegisteredHostStateLifecycle>,
 ) -> Result<ColdPurgePlan, StorageError> {
-    // Core membership state is outside the flavor surface contract. Remove
+    // Core membership state is outside the spiice surface contract. Remove
     // the erased person's rows and the erased group's parent edge in this
     // transaction; membership triggers maintain the projection.
     if matches!(scope, SelectionScope::Owner) {
         let owner_id = owner.into_inner();
-        sqlx::query("DELETE FROM proxima_core.group_memberships WHERE member_user_id = $1")
+        sqlx::query("DELETE FROM proxiima_core.group_memberships WHERE member_user_id = $1")
             .bind(owner_id)
             .execute(&mut **tx)
             .await
             .map_err(map_err)?;
-        sqlx::query("DELETE FROM proxima_core.group_edges WHERE child_group_id = $1")
+        sqlx::query("DELETE FROM proxiima_core.group_edges WHERE child_group_id = $1")
             .bind(owner_id)
             .execute(&mut **tx)
             .await
@@ -528,10 +528,10 @@ async fn erase_selected(
     let sketches = delete_selected_sketches(tx).await?;
     record_count(tx, "sketches", sketches).await?;
 
-    let embedding_jobs = delete_embeddings(tx, "proxima_core.embedding_jobs").await?;
+    let embedding_jobs = delete_embeddings(tx, "proxiima_core.embedding_jobs").await?;
     record_count(tx, "embedding_jobs", embedding_jobs).await?;
-    let embedding_heads = delete_embeddings(tx, "proxima_core.embedding_heads").await?;
-    let embeddings = delete_embeddings(tx, "proxima_core.embeddings").await?;
+    let embedding_heads = delete_embeddings(tx, "proxiima_core.embedding_heads").await?;
+    let embeddings = delete_embeddings(tx, "proxiima_core.embeddings").await?;
     record_count(tx, "embeddings", embeddings.saturating_add(embedding_heads)).await?;
 
     delete_owned_surfaces(tx, surfaces, owner, scope).await?;
@@ -615,7 +615,7 @@ async fn invoke_host_lifecycle_erase(
     .await
     .map_err(map_err)?
     .into_iter()
-    .map(proxima_core::MemoryId::new)
+    .map(proxiima_core::MemoryId::new)
     .collect();
     let owner_id = owner.into_inner();
     let source_id = match scope {
@@ -624,7 +624,7 @@ async fn invoke_host_lifecycle_erase(
     };
     let original_copies = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid)>(
         "SELECT origin.original_owner_id, origin.t
-           FROM proxima_core.publication_origin origin
+           FROM proxiima_core.publication_origin origin
           WHERE EXISTS (
                     SELECT 1 FROM selected_memories sm
                      WHERE sm.kind = 'fact' AND sm.memory_id = origin.t
@@ -641,7 +641,7 @@ async fn invoke_host_lifecycle_erase(
     .into_iter()
     .map(|(owner_id, t)| HostStateFactCopyLocator {
         original_owner: OwnerId::new(owner_id),
-        fact_id: proxima_core::MemoryId::new(t),
+        fact_id: proxiima_core::MemoryId::new(t),
     })
     .collect();
     let selection = HostStateEraseSelection::new(selected_fact_ids, original_copies);
@@ -692,7 +692,7 @@ pub(crate) async fn invoke_host_lifecycle_exact_erase(
         physical_facts
             .iter()
             .copied()
-            .map(proxima_core::MemoryId::new)
+            .map(proxiima_core::MemoryId::new)
             .collect(),
         Vec::new(),
     );
@@ -908,7 +908,7 @@ macro_rules! selected_origin_ts_sql {
     () => {
         "SELECT sm.memory_id FROM selected_memories sm WHERE sm.kind = 'fact'
          UNION ALL
-         SELECT o.t FROM proxima_core.publication_origin o
+         SELECT o.t FROM proxiima_core.publication_origin o
           WHERE o.original_owner_id = $1 AND ($2::text IS NULL OR o.source_id = $2)"
     };
 }
@@ -925,7 +925,7 @@ async fn lock_selected_publication_origins(
     let owner_id = owner.into_inner();
     let ids = sqlx::query_scalar::<_, uuid::Uuid>(concat!(
         "SELECT origin.t
-           FROM proxima_core.publication_origin origin
+           FROM proxiima_core.publication_origin origin
           WHERE origin.t IN (",
         selected_origin_ts_sql!(),
         ")
@@ -954,7 +954,7 @@ async fn revoke_original_publications(
     let owner_id = owner.into_inner();
     let source = scope.source_bind();
     let publications = sqlx::query(concat!(
-        "DELETE FROM proxima_core.publication_outbox outbox
+        "DELETE FROM proxiima_core.publication_outbox outbox
           WHERE outbox.t IN (",
         selected_origin_ts_sql!(),
         ")"
@@ -966,7 +966,7 @@ async fn revoke_original_publications(
     .map_err(map_err)?
     .rows_affected();
     let origins = sqlx::query(concat!(
-        "DELETE FROM proxima_core.publication_origin origin
+        "DELETE FROM proxiima_core.publication_origin origin
           WHERE origin.t IN (",
         selected_origin_ts_sql!(),
         ")"
@@ -1035,10 +1035,10 @@ async fn lock_selected_object_keys(
     let keys: Vec<String> = match scope {
         SelectionScope::Owner => sqlx::query_scalar(
             "SELECT DISTINCT key FROM (
-                 SELECT object_key AS key FROM proxima_core.blob_uploads WHERE owner_id = $1
+                 SELECT object_key AS key FROM proxiima_core.blob_uploads WHERE owner_id = $1
                  UNION
                  SELECT 'objects/' || coalesce(mounted_from_upload_id, upload_id)::text
-                   FROM proxima_core.blob_uploads WHERE owner_id = $1
+                   FROM proxiima_core.blob_uploads WHERE owner_id = $1
              ) keys
              ORDER BY key",
         )
@@ -1049,11 +1049,11 @@ async fn lock_selected_object_keys(
         SelectionScope::Source(_) => sqlx::query_scalar(
             "SELECT DISTINCT key FROM (
                  SELECT u.object_key AS key
-                   FROM proxima_core.blob_uploads u
+                   FROM proxiima_core.blob_uploads u
                    JOIN selected_blobs sb ON sb.blob_id = u.blob_id
                  UNION
                  SELECT 'objects/' || coalesce(u.mounted_from_upload_id, u.upload_id)::text
-                   FROM proxima_core.blob_uploads u
+                   FROM proxiima_core.blob_uploads u
                    JOIN selected_blobs sb ON sb.blob_id = u.blob_id
              ) keys
              ORDER BY key",
@@ -1078,7 +1078,7 @@ async fn create_selected_sets(
     //
     // Nothing in this function binds the kind. Every selection here reaches
     // its rows by `owner_id` alone, which is unique across kinds because
-    // `proxima_core.owners` refuses a second kind for an id already stored.
+    // `proxiima_core.owners` refuses a second kind for an id already stored.
     let owner_id = owner.into_inner();
 
     sqlx::query("CREATE TEMP TABLE selected_memories(memory_id uuid PRIMARY KEY, handle uuid NOT NULL, kind text NOT NULL) ON COMMIT DROP")
@@ -1090,7 +1090,7 @@ async fn create_selected_sets(
             sqlx::query(
                 "INSERT INTO selected_memories(memory_id, handle, kind)
                  SELECT t, handle, kind::text
-                   FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+                   FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                   WHERE owner_id = $1",
             )
             .bind(owner_id)
@@ -1102,7 +1102,7 @@ async fn create_selected_sets(
             sqlx::query(
                 "INSERT INTO selected_memories(memory_id, handle, kind)
                  SELECT m.t, m.handle, m.kind::text
-                   FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+                   FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                   WHERE m.owner_id = $1
                     AND m.source_id = $2",
             )
@@ -1122,7 +1122,7 @@ async fn create_selected_sets(
         SelectionScope::Owner => {
             sqlx::query(
                 "INSERT INTO selected_blobs(blob_id)
-                 SELECT blob_id FROM proxima_core.blob WHERE owner_id = $1",
+                 SELECT blob_id FROM proxiima_core.blob WHERE owner_id = $1",
             )
             .bind(owner_id)
             .execute(&mut **tx)
@@ -1133,7 +1133,7 @@ async fn create_selected_sets(
             sqlx::query(
                 "INSERT INTO selected_blobs(blob_id)
                  SELECT DISTINCT m.blob_id
-                   FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+                   FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                    JOIN selected_memories sm ON sm.memory_id = m.t
                   WHERE m.blob_id IS NOT NULL",
             )
@@ -1150,7 +1150,7 @@ async fn create_selected_sets(
     if matches!(scope, SelectionScope::Owner) {
         sqlx::query(
             "INSERT INTO selected_goals(goal_id, handle, kind)
-             SELECT t, handle, 'goal'::text FROM proxima_core.goal
+             SELECT t, handle, 'goal'::text FROM proxiima_core.goal
               WHERE owner_id = $1",
         )
         .bind(owner_id)
@@ -1192,7 +1192,7 @@ async fn capture_selected_handles(tx: &mut Tx<'_>) -> Result<(), StorageError> {
 
 async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<(), StorageError> {
     sqlx::query(
-        "UPDATE proxima_core.memory_head h
+        "UPDATE proxiima_core.memory_head h
             SET t = r.t
            FROM (
                 SELECT handle, t
@@ -1202,7 +1202,7 @@ async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<()
                                PARTITION BY handle
                                ORDER BY (forgotten_at IS NULL) DESC, t DESC
                            ) AS n
-                      FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (the head is the newest live version, like sync_memory_head) */
+                      FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (the head is the newest live version, like sync_memory_head) */
                      WHERE owner_id = $1
                        AND handle IN (SELECT handle FROM selected_memory_handles)
                   ) ranked
@@ -1216,11 +1216,11 @@ async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<()
     .await
     .map_err(map_err)?;
     sqlx::query(
-        "DELETE FROM proxima_core.memory_head h
+        "DELETE FROM proxiima_core.memory_head h
           WHERE h.owner_id = $1
             AND h.handle IN (SELECT handle FROM selected_memory_handles)
             AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+                SELECT 1 FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                  WHERE m.handle = h.handle AND m.owner_id = $1
             )",
     )
@@ -1231,11 +1231,11 @@ async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<()
     // A series' publication position goes once nothing of the series is
     // left. Forget never deletes it; this is its only delete.
     sqlx::query(
-        "DELETE FROM proxima_core.publication_counter c
+        "DELETE FROM proxiima_core.publication_counter c
           WHERE c.owner_id = $1
             AND c.handle IN (SELECT handle FROM selected_memory_handles)
             AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.memory m WHERE m.handle = c.handle /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+                SELECT 1 FROM proxiima_core.memory m WHERE m.handle = c.handle /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
             )",
     )
     .bind(owner_id)
@@ -1243,14 +1243,14 @@ async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<()
     .await
     .map_err(map_err)?;
     sqlx::query(
-        "UPDATE proxima_core.goal_head h
+        "UPDATE proxiima_core.goal_head h
             SET t = r.t
            FROM (
                 SELECT handle, t
                   FROM (
                     SELECT handle, t,
                            row_number() OVER (PARTITION BY handle ORDER BY t DESC) AS n
-                      FROM proxima_core.goal
+                      FROM proxiima_core.goal
                      WHERE owner_id = $1
                        AND handle IN (SELECT handle FROM selected_goal_handles)
                   ) ranked
@@ -1264,11 +1264,11 @@ async fn sync_selected_heads(tx: &mut Tx<'_>, owner_id: uuid::Uuid) -> Result<()
     .await
     .map_err(map_err)?;
     sqlx::query(
-        "DELETE FROM proxima_core.goal_head h
+        "DELETE FROM proxiima_core.goal_head h
           WHERE h.owner_id = $1
             AND h.handle IN (SELECT handle FROM selected_goal_handles)
             AND NOT EXISTS (
-                SELECT 1 FROM proxima_core.goal g
+                SELECT 1 FROM proxiima_core.goal g
                  WHERE g.handle = h.handle AND g.owner_id = $1
             )",
     )
@@ -1302,7 +1302,7 @@ async fn record_count(tx: &mut Tx<'_>, name: &str, count: u64) -> Result<(), Sto
 /// The receipt: every counter the transaction tallied, in one read.
 ///
 /// Reading the whole table makes the receipt exactly what the erase counted,
-/// including counters a flavor declares that no fixed struct could name.
+/// including counters a spiice declares that no fixed struct could name.
 async fn final_counts(tx: &mut Tx<'_>) -> Result<OwnerEraseCounts, StorageError> {
     let rows: Vec<(String, i64)> =
         sqlx::query_as("SELECT name, count FROM erase_counts ORDER BY name")
@@ -1431,7 +1431,7 @@ async fn delete_selected_memories(
     scope: SelectionScope<'_>,
 ) -> Result<u64, StorageError> {
     let result = sqlx::query(
-        "DELETE FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+        "DELETE FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
           USING selected_memories s
           WHERE m.t = s.memory_id
             AND m.owner_id = $1
@@ -1447,7 +1447,7 @@ async fn delete_selected_memories(
 
 async fn delete_selected_goals(tx: &mut Tx<'_>, owner: OwnerId) -> Result<u64, StorageError> {
     let result = sqlx::query(
-        "DELETE FROM proxima_core.goal g
+        "DELETE FROM proxiima_core.goal g
           USING selected_goals s
           WHERE g.t = s.goal_id
             AND g.owner_id = $1",
@@ -1466,7 +1466,7 @@ async fn selected_content_ids(
 ) -> Result<Vec<uuid::Uuid>, StorageError> {
     sqlx::query_scalar(
         "SELECT DISTINCT m.content_id
-           FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+           FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
            JOIN selected_memories sm ON sm.memory_id = m.t
           WHERE m.owner_id = $1
             AND ($2::text IS NULL OR m.source_id = $2)
@@ -1518,7 +1518,7 @@ async fn delete_delegated_authority_grants(
     // the owner erases those too. A group's id is never a grant subject.
     let owner_id = owner.into_inner();
     let result = sqlx::query(
-        "DELETE FROM proxima_core.delegated_authority_grants dag
+        "DELETE FROM proxiima_core.delegated_authority_grants dag
           WHERE dag.owner_id = $1
              OR dag.subject_user_id = $1",
     )
@@ -1531,7 +1531,7 @@ async fn delete_delegated_authority_grants(
 
 /// Rows destroyed by [`delete_blobs`], reported separately because the three
 /// tables hold different owner data: content hashes, S3 upload metadata, and
-/// whatever a flavor's citation payload carries.
+/// whatever a spiice's citation payload carries.
 struct BlobEraseCounts {
     uploads: u64,
     blobs: u64,
@@ -1540,7 +1540,7 @@ struct BlobEraseCounts {
 
 /// Destroy the owner's cited-blob rows: the registered citation sidecar rows
 /// keyed on `blob_id`, then `blob_uploads`, then `blob` itself. That order is
-/// the FK order — `blob_uploads.blob_id` and a flavor sidecar's own
+/// the FK order — `blob_uploads.blob_id` and a spiice sidecar's own
 /// `blob_id` reference both point at `blob` — and `memory.blob_id` is why this
 /// runs after the memory deletions above.
 ///
@@ -1578,7 +1578,7 @@ async fn delete_blobs(
         sqlx::query(
             "DELETE FROM selected_blobs sb
               WHERE EXISTS (
-                    SELECT 1 FROM proxima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
+                    SELECT 1 FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (erase removes forgotten rows too) */
                      WHERE m.blob_id = sb.blob_id
               )",
         )
@@ -1592,7 +1592,7 @@ async fn delete_blobs(
     let cold_purge = enqueue_blob_object_keys(tx, owner_id, scope).await?;
     let uploads = match scope {
         SelectionScope::Owner => {
-            sqlx::query("DELETE FROM proxima_core.blob_uploads WHERE owner_id = $1")
+            sqlx::query("DELETE FROM proxiima_core.blob_uploads WHERE owner_id = $1")
                 .bind(owner_id)
                 .execute(&mut **tx)
                 .await
@@ -1602,7 +1602,7 @@ async fn delete_blobs(
         SelectionScope::Source(_) => {
             delete_fixed_by_selected(
                 tx,
-                "proxima_core.blob_uploads",
+                "proxiima_core.blob_uploads",
                 "blob_id",
                 "selected_blobs",
                 "blob_id",
@@ -1612,7 +1612,7 @@ async fn delete_blobs(
     };
     let blobs = delete_fixed_by_selected(
         tx,
-        "proxima_core.blob",
+        "proxiima_core.blob",
         "blob_id",
         "selected_blobs",
         "blob_id",
@@ -1654,16 +1654,16 @@ async fn enqueue_blob_object_keys(
     // but differ in `owner_id`, and the insert needs exactly one row per key.
     let rows: Vec<(String, String)> = match scope {
         SelectionScope::Owner => sqlx::query_as(concat!(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+            "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
              SELECT DISTINCT ON (u.object_store, k.object_key) k.object_key, u.owner_id, u.object_store
-               FROM proxima_core.blob_uploads u ",
+               FROM proxiima_core.blob_uploads u ",
             upload_implied_keys_sql!(),
             "
               WHERE u.owner_id = $1
                 AND k.object_key IS NOT NULL
                 AND NOT EXISTS (
                         SELECT 1
-                          FROM proxima_core.blob_uploads other
+                          FROM proxiima_core.blob_uploads other
                          WHERE other.owner_id <> $1
                            AND ",
             other_upload_implies_key_sql!(),
@@ -1679,16 +1679,16 @@ async fn enqueue_blob_object_keys(
         .await
         .map_err(map_err)?,
         SelectionScope::Source(_) => sqlx::query_as(concat!(
-            "INSERT INTO proxima_core.cold_purge_pending (object_key, owner_id, object_store)
+            "INSERT INTO proxiima_core.cold_purge_pending (object_key, owner_id, object_store)
              SELECT DISTINCT ON (u.object_store, k.object_key) k.object_key, u.owner_id, u.object_store
-               FROM proxima_core.blob_uploads u
+               FROM proxiima_core.blob_uploads u
                JOIN selected_blobs sb ON sb.blob_id = u.blob_id ",
             upload_implied_keys_sql!(),
             "
               WHERE k.object_key IS NOT NULL
                 AND NOT EXISTS (
                         SELECT 1
-                          FROM proxima_core.blob_uploads other
+                          FROM proxiima_core.blob_uploads other
                          WHERE other.upload_id <> u.upload_id
                            AND NOT EXISTS (
                                    SELECT 1
@@ -1730,7 +1730,7 @@ async fn delete_source_cursors(
     let owner_id = owner.into_inner();
     let result = match scope {
         SelectionScope::Owner => sqlx::query(
-            "DELETE FROM proxima_core.source_cursors
+            "DELETE FROM proxiima_core.source_cursors
               WHERE owner_id = $1",
         )
         .bind(owner_id)
@@ -1738,7 +1738,7 @@ async fn delete_source_cursors(
         .await
         .map_err(map_err)?,
         SelectionScope::Source(source_id) => sqlx::query(
-            "DELETE FROM proxima_core.source_cursors
+            "DELETE FROM proxiima_core.source_cursors
               WHERE owner_id = $1
                 AND source = $2",
         )
@@ -1768,7 +1768,7 @@ mod tests {
     #[test]
     fn erase_sql_does_not_name_retired_suppression_table() {
         let src = include_str!("owner_erase.rs");
-        let needle = format!("{}.{}", "proxima_core", "compliance_suppression_keys");
+        let needle = format!("{}.{}", "proxiima_core", "compliance_suppression_keys");
         assert!(
             !src.contains(&needle),
             "the schema declares no suppression table"
@@ -1787,15 +1787,15 @@ mod tests {
     #[test]
     fn group_abandonment_counts_group_memberships() {
         let src = include_str!("owner_erase.rs");
-        let retired = format!("{}.{}", "proxima_core", "resolved_group_memberships");
-        let live = format!("{}.{}", "proxima_core", "group_memberships");
+        let retired = format!("{}.{}", "proxiima_core", "resolved_group_memberships");
+        let live = format!("{}.{}", "proxiima_core", "group_memberships");
         assert!(
             !src.contains(&retired),
             "the resolved-membership view is not part of the schema"
         );
         assert!(
             src.contains(&live),
-            "abandonment counts proxima_core.group_memberships"
+            "abandonment counts proxiima_core.group_memberships"
         );
     }
 
@@ -1804,15 +1804,15 @@ mod tests {
     /// `task_goal_v1`.
     #[test]
     fn the_registry_pass_reaches_every_core_sidecar() {
-        use proxima_core::flavor::{EraseLeg, KeyShape};
+        use proxiima_core::spiice::{EraseLeg, KeyShape};
 
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-        let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
+        let surfaces = proxiima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
 
         for table in [
-            "proxima_core.agent_derivation_v1",
-            "proxima_core.agent_note_v1",
-            "proxima_core.utterance_v1",
+            "proxiima_core.agent_derivation_v1",
+            "proxiima_core.agent_note_v1",
+            "proxiima_core.utterance_v1",
         ] {
             assert_eq!(
                 surfaces.erase_leg(table),
@@ -1821,7 +1821,7 @@ mod tests {
             );
         }
         assert_eq!(
-            surfaces.erase_leg("proxima_core.task_goal_v1"),
+            surfaces.erase_leg("proxiima_core.task_goal_v1"),
             EraseLeg::Keyed(KeyShape::GoalT { column: "t" }),
             "task_goal_v1 is a goal sidecar; the goal sweep must reach it"
         );
@@ -1830,20 +1830,20 @@ mod tests {
     /// The substrate half of the completeness property.
     ///
     /// Which leg owns a surface is decided in core, at freeze, for every
-    /// flavor (`FlavorRegistryError::UndeletableSurface`). What core cannot
+    /// spiice (`SpiiceRegistryError::UndeletableSurface`). What core cannot
     /// know is whether THIS crate can actually execute the answer, and the
     /// two generic loops skip anything they cannot map: a `Keyed` leg whose
     /// key shape has no selection set here would be silently dropped in
-    /// exactly the way freeze prevents one flavor-side.
+    /// exactly the way freeze prevents one spiice-side.
     ///
     /// So: no core surface resolves to `Unreachable`, and every keyed one
     /// maps to a temp table this transaction fills.
     #[test]
     fn every_declared_surface_has_a_leg_this_crate_can_run() {
-        use proxima_core::flavor::EraseLeg;
+        use proxiima_core::spiice::EraseLeg;
 
-        let registry = proxima_core::FlavorRegistry::new().freeze_or_panic_for_tests();
-        let surfaces = proxima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
+        let surfaces = proxiima_core::owner_inverse::OwnerSurfaces::for_registry(&registry);
         assert!(
             surfaces.surfaces().len() > 20,
             "the registry should carry the whole core contract, got {}",
@@ -1873,7 +1873,7 @@ mod tests {
     /// nobody prunes, and this one is read by two crates.
     #[test]
     fn the_bespoke_leg_list_is_sorted_by_table() {
-        let tables = proxima_core::flavor::FLAVOR_0.bespoke_erase_legs;
+        let tables = proxiima_core::spiice::SPIICE_0.bespoke_erase_legs;
         let mut sorted = tables.to_vec();
         sorted.sort_unstable();
         assert_eq!(sorted, tables, "keep the exemption list sorted by table");
@@ -1882,7 +1882,7 @@ mod tests {
     /// The three selection sets are the whole vocabulary of a keyed leg.
     #[test]
     fn every_homed_key_shape_maps_to_a_selection_set() {
-        use proxima_core::flavor::KeyShape;
+        use proxiima_core::spiice::KeyShape;
 
         assert_eq!(
             keyed_set(KeyShape::MemoryT { column: "t" }),
@@ -1905,15 +1905,15 @@ mod tests {
         use std::time::Duration;
 
         use crate::test_fixtures::fresh_pg;
-        use proxima_core::{StorageError, UserId};
-        use proxima_pg_testkit::drop_db;
+        use proxiima_core::{StorageError, UserId};
+        use proxiima_pg_testkit::drop_db;
 
         const FENCE_WAIT: Duration = Duration::from_millis(200);
         let (pg, database) = fresh_pg("owner_erase_owner_lock_timeout").await;
         let pool = pg.pool_for_tests();
         let platform = pg.platform_scope_for_host();
-        let owner = proxima_core::OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
-        let other = proxima_core::OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+        let owner = proxiima_core::OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+        let other = proxiima_core::OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
         let mut blocker = pool.begin().await.expect("begin shared-fence blocker");
         super::lock_owner_fence_shared_tx(&mut blocker, &owner)
             .await

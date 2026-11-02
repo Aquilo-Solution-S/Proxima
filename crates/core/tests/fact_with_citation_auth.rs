@@ -1,13 +1,13 @@
-use proxima_core::engine::Engine;
-use proxima_core::error::ErrorCode;
-use proxima_core::verbs::fact_ingest::{
+use proxiima_core::engine::Engine;
+use proxiima_core::error::ErrorCode;
+use proxiima_core::verbs::fact_ingest::{
     FactReceiptDraft, FactWriteCommand, InlineCitedObjectDraft,
 };
-use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{
-    AuthPath, AuthzContext, CitedObjectPayload, FactPayload, FlavorRegistry,
-    OCCURRED_AT_FUTURE_BOUND, OwnerId, PayloadKeyBuilder, SchemaId, SchemaVersion, SourceId,
-    UserId, canonical_json_bytes,
+use proxiima_core::verbs::schema::PayloadKind;
+use proxiima_core::{
+    AuthPath, AuthzContext, CitedObjectPayload, FactPayload, OCCURRED_AT_FUTURE_BOUND, OwnerId,
+    PayloadKeyBuilder, SchemaId, SchemaVersion, SourceId, SpiiceRegistry, UserId,
+    canonical_json_bytes,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -60,7 +60,7 @@ fn owner() -> OwnerId {
 }
 
 fn engine() -> Engine {
-    let mut registry = FlavorRegistry::new();
+    let mut registry = SpiiceRegistry::new();
     registry.add_fact_schema_or_panic_for_tests::<TestFact>();
     registry.add_cited_object_schema_or_panic_for_tests::<TestCitedObject>();
     Engine::new(registry.freeze_or_panic_for_tests())
@@ -86,7 +86,7 @@ fn draft(_owner: &OwnerId) -> FactWriteCommand {
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     }
 }
@@ -160,7 +160,7 @@ async fn every_fact_authorization_refuses_an_occurrence_beyond_the_future_bound(
     let engine = engine();
     let beyond =
         time::OffsetDateTime::now_utc() + OCCURRED_AT_FUTURE_BOUND + time::Duration::MINUTE;
-    let refused = |err: proxima_core::error::ProtocolError| {
+    let refused = |err: proxiima_core::error::ProtocolError| {
         assert_eq!(err.code, ErrorCode::InvalidArgument);
         assert!(err.message.contains("occurred_at"), "{}", err.message);
     };
@@ -229,7 +229,7 @@ async fn a_past_occurrence_rides_the_witness_in_stored_form() {
 
 #[test]
 fn registered_cited_object_schema_exposes_sidecar_table() {
-    let mut registry = FlavorRegistry::new();
+    let mut registry = SpiiceRegistry::new();
     registry.add_cited_object_schema_or_panic_for_tests::<TestCitedObject>();
     let frozen = registry.freeze_or_panic_for_tests();
 

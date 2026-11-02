@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use proxima_pg_testkit::{drop_db, ensure_template, unique_db_name};
+use proxiima_pg_testkit::{drop_db, ensure_template, unique_db_name};
 
 #[tokio::test]
 async fn failed_template_build_is_not_reused() {
-    let template = unique_db_name("proxima_failed_template");
+    let template = unique_db_name("proxiima_failed_template");
     let failed = ensure_template(&template, |pool| async move {
         sqlx::query("CREATE TABLE migration_marker (id integer)")
             .execute(&pool)
@@ -34,7 +34,7 @@ async fn failed_template_build_is_not_reused() {
 
 #[tokio::test]
 async fn template_name_is_published_only_after_successful_build() {
-    let template = unique_db_name("proxima_template_visibility");
+    let template = unique_db_name("proxiima_template_visibility");
     let published = template.clone();
     let visible_during_build = Arc::new(AtomicBool::new(true));
     let visible = Arc::clone(&visible_during_build);

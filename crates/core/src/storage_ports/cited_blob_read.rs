@@ -83,7 +83,7 @@ pub trait CitedBlobReadPort: Send + Sync {
     ) -> Result<VerifiedCitedBlob, CitedBlobReadError>;
 }
 
-/// Shared verified-read handle published through the composed flavor services.
+/// Shared verified-read handle published through the composed spiice services.
 #[derive(Clone)]
 pub struct CitedBlobReadService {
     port: Arc<dyn CitedBlobReadPort>,

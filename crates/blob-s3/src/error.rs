@@ -12,7 +12,7 @@ pub enum BlobError {
     Db(#[from] sqlx::Error),
     /// A failure in the shared transactional upload publication path.
     #[error("{0}")]
-    Storage(proxima_core::StorageError),
+    Storage(proxiima_core::StorageError),
     /// The authorization context does not permit acting on the request Owner.
     #[error("access denied: {0}")]
     Denied(String),
@@ -21,10 +21,10 @@ pub enum BlobError {
     State(String),
 }
 
-impl From<proxima_core::StorageError> for BlobError {
-    fn from(error: proxima_core::StorageError) -> Self {
+impl From<proxiima_core::StorageError> for BlobError {
+    fn from(error: proxiima_core::StorageError) -> Self {
         match error {
-            proxima_core::StorageError::ConstraintViolation(message) => Self::State(message),
+            proxiima_core::StorageError::ConstraintViolation(message) => Self::State(message),
             other => Self::Storage(other),
         }
     }

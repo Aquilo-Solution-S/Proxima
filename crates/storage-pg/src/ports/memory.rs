@@ -1,12 +1,12 @@
-use proxima_core::read_models::{MemorySchemaSpec, MemorySnapshot};
-use proxima_core::storage_ports::{
+use proxiima_core::read_models::{MemorySchemaSpec, MemorySnapshot};
+use proxiima_core::storage_ports::{
     MemoryAuthoringPort, MemoryInspectPort, MemoryReadPort, OwnerWritePermit,
 };
-use proxima_core::verbs::query::{
+use proxiima_core::verbs::query::{
     MemoryLineageRequest, MemoryLineageResponse, MemorySearchPage, MemorySearchRequest,
     QueryRequest, QueryResponse,
 };
-use proxima_core::{
+use proxiima_core::{
     AuthorDerivedOutcome, AuthorDerivedRequest, MemoryGraphIdentity, MemoryGraphPayloadRow,
     MemoryId, MemoryKindRow, OwnerId, StorageError,
 };
@@ -20,7 +20,7 @@ impl MemoryAuthoringPort for PgStorage {
         &self,
         req: &AuthorDerivedRequest<'_>,
         permit: &OwnerWritePermit,
-        _proof: proxima_core::storage_ports::OperatorWriteProof,
+        _proof: proxiima_core::storage_ports::OperatorWriteProof,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         // Retry the whole begin→body→commit on transient deadlock/
         // serialization. A retryable error fully rolls the transaction back, so
@@ -131,7 +131,7 @@ impl MemoryAuthoringPort for PgStorage {
 
     async fn load_memory_kinds(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<MemoryKindRow>, StorageError> {
@@ -151,7 +151,7 @@ impl MemoryAuthoringPort for PgStorage {
         .await?;
         let rows: Vec<(uuid::Uuid, crate::pg_enums::PgMemoryKind)> = sqlx::query_as(
             "SELECT m.t, m.kind
-             FROM proxima_core.memory m
+             FROM proxiima_core.memory m
              WHERE m.owner_id = $1
                AND m.t = ANY($2::uuid[])",
         )
@@ -203,7 +203,7 @@ impl MemoryAuthoringPort for PgStorage {
         &self,
         permit: &OwnerWritePermit,
         memory_id: MemoryId,
-        embedding_spaces: &[proxima_core::EmbeddingSpace],
+        embedding_spaces: &[proxiima_core::EmbeddingSpace],
     ) -> Result<(), StorageError> {
         let t = memory_id.into_inner();
         let storage = self.clone();
@@ -240,7 +240,7 @@ impl MemoryReadPort for PgStorage {
 
     async fn load_fact_text(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: &OwnerId,
         memory_id: MemoryId,
     ) -> Result<Option<String>, StorageError> {
@@ -264,7 +264,7 @@ impl MemoryReadPort for PgStorage {
 
     async fn load_memory_graph_payloads(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         identities: &[MemoryGraphIdentity],
         schemas: &[MemorySchemaSpec],
         include_body: bool,
@@ -290,10 +290,10 @@ impl MemoryReadPort for PgStorage {
 
     async fn load_sketches(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
         memory_ids: &[MemoryId],
-    ) -> Result<Vec<proxima_core::read_models::MemorySketch>, StorageError> {
+    ) -> Result<Vec<proxiima_core::read_models::MemorySketch>, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
             crate::owner_scope::require_owner_scope(owner_scope)?,
@@ -304,7 +304,7 @@ impl MemoryReadPort for PgStorage {
                 .await?;
             Ok(rows
                 .into_iter()
-                .map(|row| proxima_core::read_models::MemorySketch {
+                .map(|row| proxiima_core::read_models::MemorySketch {
                     id: row.id,
                     owner: row.owner,
                     kind: row.kind,
@@ -318,10 +318,10 @@ impl MemoryReadPort for PgStorage {
 
     async fn load_pin_nodes(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
         memory_ids: &[MemoryId],
-    ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
+    ) -> Result<Vec<proxiima_core::PinNode>, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
             crate::owner_scope::require_owner_scope(owner_scope)?,
@@ -336,10 +336,10 @@ impl MemoryReadPort for PgStorage {
 
     async fn load_visible_goal_ids(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
-        goal_ids: &[proxima_core::GoalId],
-    ) -> Result<Vec<proxima_core::GoalId>, StorageError> {
+        goal_ids: &[proxiima_core::GoalId],
+    ) -> Result<Vec<proxiima_core::GoalId>, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
             crate::owner_scope::require_owner_scope(owner_scope)?,
@@ -354,10 +354,10 @@ impl MemoryReadPort for PgStorage {
 
     async fn load_inbound_pin_nodes(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
-        query: proxima_core::InboundPinQuery<'_>,
-    ) -> Result<Vec<proxima_core::PinNode>, StorageError> {
+        query: proxiima_core::InboundPinQuery<'_>,
+    ) -> Result<Vec<proxiima_core::PinNode>, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
             crate::owner_scope::require_owner_scope(owner_scope)?,
@@ -372,7 +372,7 @@ impl MemoryReadPort for PgStorage {
 
     async fn query_memories(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
         req: &QueryRequest,
         schemas: &[MemorySchemaSpec],
@@ -398,9 +398,9 @@ impl MemoryReadPort for PgStorage {
 
     async fn count_memories(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
-    ) -> Result<proxima_core::read_models::MemoryCounts, StorageError> {
+    ) -> Result<proxiima_core::read_models::MemoryCounts, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
             crate::owner_scope::require_owner_scope(owner_scope)?,
@@ -413,9 +413,9 @@ impl MemoryReadPort for PgStorage {
 
     async fn search_memories(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         req: &MemorySearchRequest,
-        projections: &[proxima_core::verbs::schema::MemorySearchProjection],
+        projections: &[proxiima_core::verbs::schema::MemorySearchProjection],
     ) -> Result<MemorySearchPage, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
@@ -426,7 +426,7 @@ impl MemoryReadPort for PgStorage {
             // A request can narrow authenticated authority. The database helper
             // is also the candidate functions' source of the owner-set union.
             let authenticated_owners: Vec<uuid::Uuid> =
-                sqlx::query_scalar("SELECT proxima_core.search_owner_ids()")
+                sqlx::query_scalar("SELECT proxiima_core.search_owner_ids()")
                     .fetch_one(tx.as_mut())
                     .await
                     .map_err(crate::error::map_err)?;
@@ -448,7 +448,7 @@ impl MemoryReadPort for PgStorage {
 
     async fn walk_memory_lineage(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
         req: &MemoryLineageRequest,
     ) -> Result<MemoryLineageResponse, StorageError> {
@@ -472,10 +472,10 @@ impl MemoryReadPort for PgStorage {
 
     async fn external_edges(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
-        memory_ids: &[proxima_core::MemoryId],
-    ) -> Result<Vec<(proxima_core::MemoryId, uuid::Uuid, proxima_core::EdgeKind)>, StorageError>
+        memory_ids: &[proxiima_core::MemoryId],
+    ) -> Result<Vec<(proxiima_core::MemoryId, uuid::Uuid, proxiima_core::EdgeKind)>, StorageError>
     {
         if read_owners.is_empty() || memory_ids.is_empty() {
             return Ok(Vec::new());
@@ -488,7 +488,7 @@ impl MemoryReadPort for PgStorage {
         let ids: Vec<uuid::Uuid> = memory_ids
             .iter()
             .copied()
-            .map(proxima_core::MemoryId::into_inner)
+            .map(proxiima_core::MemoryId::into_inner)
             .collect();
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
@@ -503,10 +503,10 @@ impl MemoryReadPort for PgStorage {
 
     async fn lineage_nodes(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
-        memory_ids: &[proxima_core::MemoryId],
-    ) -> Result<Vec<proxima_core::verbs::query::MemoryLineageNode>, StorageError> {
+        memory_ids: &[proxiima_core::MemoryId],
+    ) -> Result<Vec<proxiima_core::verbs::query::MemoryLineageNode>, StorageError> {
         if read_owners.is_empty() || memory_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -518,7 +518,7 @@ impl MemoryReadPort for PgStorage {
         let ids: Vec<uuid::Uuid> = memory_ids
             .iter()
             .copied()
-            .map(proxima_core::MemoryId::into_inner)
+            .map(proxiima_core::MemoryId::into_inner)
             .collect();
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
@@ -540,10 +540,10 @@ impl MemoryReadPort for PgStorage {
 
     async fn forgotten_nodes(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
-        memory_ids: &[proxima_core::MemoryId],
-    ) -> Result<Vec<proxima_core::verbs::query::MemoryLineageNode>, StorageError> {
+        memory_ids: &[proxiima_core::MemoryId],
+    ) -> Result<Vec<proxiima_core::verbs::query::MemoryLineageNode>, StorageError> {
         if read_owners.is_empty() || memory_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -555,7 +555,7 @@ impl MemoryReadPort for PgStorage {
         let ids: Vec<uuid::Uuid> = memory_ids
             .iter()
             .copied()
-            .map(proxima_core::MemoryId::into_inner)
+            .map(proxiima_core::MemoryId::into_inner)
             .collect();
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
@@ -570,10 +570,10 @@ impl MemoryReadPort for PgStorage {
 
     async fn sidecar_heads_by_key(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
-        query: &proxima_core::verbs::query::ResolvedSidecarHeads<'_>,
-    ) -> Result<proxima_core::verbs::query::SidecarHeadsPage, StorageError> {
+        query: &proxiima_core::verbs::query::ResolvedSidecarHeads<'_>,
+    ) -> Result<proxiima_core::verbs::query::SidecarHeadsPage, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
             crate::owner_scope::require_owner_scope(owner_scope)?,
@@ -586,11 +586,11 @@ impl MemoryReadPort for PgStorage {
 
     async fn owned_series_handle(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         owner: OwnerId,
-        schema_id: &proxima_core::SchemaId,
+        schema_id: &proxiima_core::SchemaId,
         sidecar_table: &str,
-        columns: &[(&str, proxima_core::verbs::query::SidecarAtom)],
+        columns: &[(&str, proxiima_core::verbs::query::SidecarAtom)],
     ) -> Result<Option<uuid::Uuid>, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
@@ -627,8 +627,8 @@ impl MemoryReadPort for PgStorage {
 impl MemoryInspectPort for PgStorage {
     async fn load_memory_by_id(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
-        memory_id: proxima_core::MemoryId,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
+        memory_id: proxiima_core::MemoryId,
         schemas: &[MemorySchemaSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         let mut tx = crate::owner_scope::begin_owner_transaction(
@@ -651,7 +651,7 @@ impl MemoryInspectPort for PgStorage {
 
     async fn load_memories_by_ids(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
         memory_ids: &[MemoryId],
         schemas: &[MemorySchemaSpec],
@@ -677,7 +677,7 @@ impl MemoryInspectPort for PgStorage {
 
     async fn load_series_head(
         &self,
-        owner_scope: Option<&proxima_core::OwnerScope>,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
         read_owners: &[OwnerId],
         memory_id: MemoryId,
     ) -> Result<Option<MemoryId>, StorageError> {

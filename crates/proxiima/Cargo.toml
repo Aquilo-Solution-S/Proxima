@@ -1,0 +1,173 @@
+[package]
+name = "proxiima"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+proxiima-core = { path = "../core" }
+# auth-oidc: the only Authenticator that ships. Optional and on by default
+# because `Proxiima::app().authenticator(..)` is otherwise a public builder
+# method taking a type no out-of-tree host can construct — and MCP serving
+# refuses insecure single-owner mode, so without this there is no way for a
+# spiice outside this repo to serve MCP at all. Optional so an embedded
+# host that only uses the Host API can drop the JWT and HTTP stack.
+proxiima-auth-oidc = { path = "../auth-oidc", optional = true }
+proxiima-storage-pg = { path = "../storage-pg", features = ["backend-api"] }
+proxiima-blob-s3 = { path = "../blob-s3" }
+proxiima-llm-openai-compat = { path = "../llm-openai-compat", optional = true }
+proxiima-mcp-server = { path = "../mcp-server" }
+proxiima-pg-testkit = { path = "../pg-testkit", optional = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+http = { workspace = true }
+# Re-exported as `proxiima::rmcp` so a host implementing `ServerHandler` around
+# `DynamicHandler` builds against the version and feature set Proxiima pins.
+# Already linked through `proxiima-mcp-server`; declaring it adds no code.
+rmcp = { workspace = true }
+# The built-in HTTP outbox sink (docs/18 §Built-in HTTP sink) and the vector
+# index client.
+reqwest = { workspace = true }
+sqlx = { workspace = true }
+# The vector index wire (`vector_index_http`).
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net", "signal", "time"] }
+tokio-util = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[features]
+default = ["openai-compat-embed", "auth-oidc"]
+auth-oidc = ["dep:proxiima-auth-oidc"]
+openai-compat-embed = ["dep:proxiima-llm-openai-compat"]
+# Compile the `/v1` REST rendering of the tool manifest (docs/17). Compiling
+# it is not enabling it: the surface still needs `PROXIIMA_REST_ENABLED`.
+rest = ["proxiima-mcp-server/rest"]
+# Test support for spiice crates (`proxiima::testkit`): PG fixtures, a verified
+# owner-scoped AuthzContext (core `test-fixtures`), split-role databases and
+# the trigger drift assertion.
+testkit = ["dep:proxiima-pg-testkit", "proxiima-core/test-fixtures"]
+
+[dev-dependencies]
+proxiima-example = { path = "../../spiices/example", features = ["testkit"] }
+proxiima-storage-pg = { path = "../storage-pg", features = ["test-fixtures"] }
+aws-lc-rs = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+base64 = { workspace = true }
+futures = { workspace = true }
+proxiima-core = { path = "../core", features = ["test-fixtures"] }
+proxiima-pg-testkit = { path = "../pg-testkit" }
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+tokio = { workspace = true, features = ["io-util", "test-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true }
+time = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+tracing-subscriber = { workspace = true }
+
+[[test]]
+name = "publication_supervision_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "owner_inverse_reach_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "forget_note_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "stamp_follows_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "scope_fence_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "spiice_kit_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "host_template_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "pending_migrations_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "publication_boot_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "unit_of_work_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "kind_rule_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "core_mcp_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "stock_spiice_host_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "facade_graph_surface_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "unit_of_work_host_state_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "spiice_workers_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "host_membership_transaction_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "erase_own_series_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "stateful_heads_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "sidecar_heads_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "derived_supersession_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "goal_targeting_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "owner_rls_installer_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "owner_rls_table_pg"
+required-features = ["testkit"]

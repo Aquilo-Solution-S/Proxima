@@ -4,16 +4,16 @@
 //! to it, so the two paths report the same body.
 #![allow(clippy::missing_errors_doc)]
 
-use proxima_core::read_models::MemorySchemaSpec;
-use proxima_core::storage::MemoryGraphIdentity;
-use proxima_core::storage_ports::{
+use proxiima_core::read_models::MemorySchemaSpec;
+use proxiima_core::storage::MemoryGraphIdentity;
+use proxiima_core::storage_ports::{
     FactIngestPort, MemoryInspectPort, MemoryReadPort, OwnerWritePermit,
 };
-use proxima_core::test_fixtures::owner_scope_for_tests;
-use proxima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
-use proxima_core::verbs::query::EntityKind;
-use proxima_core::{AccessKind, OwnerId, SchemaId, SchemaVersion, UserId};
-use proxima_storage_pg::test_fixtures::fresh_pg;
+use proxiima_core::test_fixtures::owner_scope_for_tests;
+use proxiima_core::verbs::fact_ingest::{AuthorizedFactWrite, FactWriteCommand};
+use proxiima_core::verbs::query::EntityKind;
+use proxiima_core::{AccessKind, OwnerId, SchemaId, SchemaVersion, UserId};
+use proxiima_storage_pg::test_fixtures::fresh_pg;
 use uuid::Uuid;
 
 /// A schema with no sidecar and no search declaration: nothing names a
@@ -23,7 +23,7 @@ const BARE_SCHEMA: &str = "core/test-fact-v1";
 #[tokio::test]
 async fn search_and_by_id_reads_fall_back_to_the_memorys_own_text()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (pg, _db) = fresh_pg("proxima_display_body_fallback").await;
+    let (pg, _db) = fresh_pg("proxiima_display_body_fallback").await;
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
     let scope = owner_scope_for_tests(&[owner]);
     let schema_id = SchemaId::new(BARE_SCHEMA.into());
@@ -48,7 +48,7 @@ async fn search_and_by_id_reads_fall_back_to_the_memorys_own_text()
         additional_references: Vec::new(),
         refs: Vec::new(),
         blob_id: None,
-        kind: proxima_core::MemoryKind::Fact,
+        kind: proxiima_core::MemoryKind::Fact,
         request: None,
     };
     let authorized = AuthorizedFactWrite::new_for_tests(

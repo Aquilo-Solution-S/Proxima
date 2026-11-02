@@ -1,0 +1,388 @@
+//! A spiice can declare a dispatcher, and every seam treats it as one.
+//!
+//! `McpToolDescriptor::action_arg_specs` is THE enumeration of a dispatcher's
+//! actions. Every seam reads it: the scope gate, argument validation,
+//! `proxiima://tools`, and the REST action routes. A tool whose `Args` is an
+//! internally tagged enum derives a dispatcher schema, so
+//! clients see a dispatcher — and one registered with an empty spec slice is
+//! gated whole, validated against every variant's fields merged together,
+//! lists no actions in `proxiima://tools`, and serves no REST action route.
+
+use std::sync::Arc;
+
+use futures::future::BoxFuture;
+use proxiima_core::mcp::{
+    McpActionArgSpec, McpAuthorContext, McpToolAudience, McpToolCtx, McpToolError, McpToolOrigin,
+    Next, Replay, RequestBehavior, ScopeGateBehavior, TerminalDispatch, ToolCall, ToolEffect,
+    ToolReply,
+};
+use proxiima_core::spiice::{ProjectionDecl, SpiiceContract, ToolContract};
+use proxiima_core::{
+    AuthPath, AuthzContext, GroupId, OwnerId, ScopeKey, ServedSurface, SpiiceRegistry,
+    SpiiceRegistryFrozen, SpiiceServices, Tool, ToolCtx, ToolError, ToolScope, UserId,
+    access::Role, proxiima_spiice,
+};
+
+/// `CARGO_PKG_NAME` is `proxiima-core` inside core's own `tests/`, so the
+/// macro's prefix assertion demands that name — see `spiice_macro.rs`.
+const SPIICE: &str = "proxiima-core";
+const DISPATCH: &str = "proxiima-core_dispatch";
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct DispatchOutput {}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "the derived schema is the subject, not the values"
+)]
+enum DispatchArgs {
+    /// Inspect one thing without changing it.
+    Look {
+        #[schemars(description = "Which thing to look at.")]
+        id: String,
+    },
+    /// Change one thing and optionally record a note.
+    Touch {
+        #[schemars(description = "Which thing to touch.")]
+        id: String,
+        #[schemars(description = "Optional note recorded with the touch.")]
+        note: Option<String>,
+    },
+}
+
+#[derive(Debug)]
+struct DispatchTool;
+
+impl Tool for DispatchTool {
+    const TITLE: &'static str = "Test tool";
+    const NAME: &'static str = DISPATCH;
+    const DESCRIPTION: &'static str = "A spiice dispatcher declared through proxiima_spiice!.";
+    const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
+        McpActionArgSpec {
+            action: "look",
+            allowed_fields: &["id"],
+            required_fields: &["id"],
+            effect: ToolEffect::ReadOnly,
+            audience: McpToolAudience::Shared,
+            title: "Test action",
+        },
+        McpActionArgSpec {
+            action: "touch",
+            allowed_fields: &["id", "note"],
+            required_fields: &["id"],
+            effect: ToolEffect::Additive(Replay::NonIdempotent),
+            audience: McpToolAudience::Shared,
+            title: "Test action",
+        },
+    ];
+    type Args = DispatchArgs;
+    type Output = DispatchOutput;
+
+    fn call(
+        _ctx: ToolCtx,
+        _args: Self::Args,
+    ) -> BoxFuture<'static, Result<Self::Output, ToolError>> {
+        Box::pin(async { Ok(DispatchOutput {}) })
+    }
+}
+
+/// The spiice's declaration. `contract =` is optional to the macro and
+/// refused at freeze when omitted, so the fixture carries one.
+///
+/// `actions` and `idempotent` are held to the REGISTRATION: the action list
+/// is the specs above, in order, and `idempotent` is false because a
+/// dispatcher resolves its annotations per action and this one mixes a read
+/// with a write.
+static DISPATCH_SPIICE_CONTRACT: SpiiceContract = SpiiceContract {
+    spiice_id: SPIICE,
+    // Non-zero: ordinal 0 is core's, and two claims on it are refused.
+    ordinal: 7,
+    schemas: &[],
+    state_surfaces: &[],
+    scopes: &[],
+    kernel_surfaces: &[],
+    tools: &[ToolContract {
+        wire_name: DISPATCH,
+        actions: &["look", "touch"],
+    }],
+    resources: &[],
+    bespoke_erase_legs: &[],
+    bespoke_transfer_legs: &[],
+    projection: ProjectionDecl::None {
+        why: "a dispatcher fixture registers no search surface",
+    },
+};
+
+proxiima_spiice! {
+    name = "proxiima-core",
+    mcp_tools = [ DispatchTool ],
+    contract = &DISPATCH_SPIICE_CONTRACT,
+}
+
+fn frozen() -> Arc<SpiiceRegistryFrozen> {
+    let mut registry = SpiiceRegistry::new();
+    register(&mut registry).expect("the spiice registers");
+    Arc::new(registry.freeze_or_panic_for_tests())
+}
+
+fn ctx(registry: &Arc<SpiiceRegistryFrozen>, scope: ToolScope) -> McpToolCtx {
+    let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+    McpToolCtx {
+        owner,
+        authz: AuthzContext::single_owner(&owner, AuthPath::HostBearer).with_tool_scope(scope),
+        registry: registry.clone(),
+        author: McpAuthorContext {
+            model_id: "test".into(),
+            trusted_model_id: None,
+            client_name: "test".into(),
+            client_version: "0".into(),
+            caller_self_perspective: None,
+        },
+        caller_self_perspective: None,
+        services: SpiiceServices::default(),
+        engine: None,
+        judged: proxiima_core::mcp::JudgedKey::default(),
+    }
+}
+
+fn viewer_ctx(registry: &Arc<SpiiceRegistryFrozen>, scope: ToolScope) -> McpToolCtx {
+    let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+    McpToolCtx {
+        owner,
+        authz: AuthzContext::for_subject_with_role(
+            UserId::new(uuid::Uuid::now_v7()),
+            [(owner, Role::viewer())],
+            AuthPath::HostBearer,
+        )
+        .with_tool_scope(scope),
+        registry: registry.clone(),
+        author: McpAuthorContext {
+            model_id: "test".into(),
+            trusted_model_id: None,
+            client_name: "test".into(),
+            client_version: "0".into(),
+            caller_self_perspective: None,
+        },
+        caller_self_perspective: None,
+        services: SpiiceServices::default(),
+        engine: None,
+        judged: proxiima_core::mcp::JudgedKey::default(),
+    }
+}
+
+async fn run_gate(ctx: McpToolCtx, args: serde_json::Value) -> Result<ToolReply, McpToolError> {
+    let behaviors: Vec<Arc<dyn RequestBehavior>> = vec![Arc::new(ScopeGateBehavior)];
+    let terminal: TerminalDispatch<'_> = Box::new(|_call| {
+        Box::pin(async {
+            Ok(ToolReply::Structured(
+                serde_json::json!({ "reached": true }),
+            ))
+        })
+    });
+    Next::new(&behaviors, terminal)
+        .run(ToolCall {
+            name: DISPATCH.to_string(),
+            args,
+            ctx,
+        })
+        .await
+}
+
+/// Run the argument through the real behavior chain, which is the only way
+/// `ScopeGateBehavior` is reached in production.
+async fn through_the_gate(
+    registry: &Arc<SpiiceRegistryFrozen>,
+    scope: ToolScope,
+    args: serde_json::Value,
+) -> Result<ToolReply, McpToolError> {
+    run_gate(ctx(registry, scope), args).await
+}
+
+/// The macro path stores the specs, and the derived schema agrees with them
+/// — which `try_freeze` now also refuses to seal without.
+#[test]
+fn a_macro_registered_spiice_dispatcher_carries_its_action_specs() {
+    let registry = frozen();
+    let descriptor = registry
+        .mcp_tool(DISPATCH)
+        .expect("the macro registered the dispatcher");
+
+    assert_eq!(
+        descriptor.origin,
+        McpToolOrigin::Spiice(SPIICE.to_string()),
+        "a macro-registered tool is spiice-origin",
+    );
+    let declared: Vec<&str> = descriptor
+        .action_arg_specs
+        .iter()
+        .map(|spec| spec.action)
+        .collect();
+    assert_eq!(declared, ["look", "touch"]);
+
+    let derived: Vec<&str> = descriptor
+        .dispatcher_schema
+        .as_ref()
+        .expect("the schema pass derives the dispatcher")
+        .actions
+        .iter()
+        .map(|action| action.action.as_str())
+        .collect();
+    assert_eq!(derived, ["look", "touch"]);
+    assert_eq!(
+        descriptor.action_description("look"),
+        Some("Inspect one thing without changing it."),
+    );
+    assert_eq!(
+        descriptor.action_description("touch"),
+        Some("Change one thing and optionally record a note."),
+    );
+}
+
+/// A palette holding one leaf grants one leaf. Keyed on the substrate
+/// tables, this tool fell to the whole-tool branch: `allows("…_dispatch")`
+/// is false for a palette of leaves, so the token that was granted `look`
+/// was refused the tool outright.
+#[tokio::test]
+async fn a_spiice_dispatcher_is_gated_per_action() {
+    let registry = frozen();
+    let scope = ToolScope::Palette(vec![
+        ScopeKey::parse(&format!("{DISPATCH}:look")).expect("a leaf key"),
+    ]);
+
+    through_the_gate(
+        &registry,
+        scope.clone(),
+        serde_json::json!({ "action": "look", "id": "x" }),
+    )
+    .await
+    .expect("the granted leaf passes the gate");
+
+    let err = through_the_gate(
+        &registry,
+        scope,
+        serde_json::json!({ "action": "touch", "id": "x" }),
+    )
+    .await
+    .expect_err("an ungranted leaf is refused");
+    assert!(
+        matches!(err, McpToolError::NotAuthorized(ref key) if key == &format!("{DISPATCH}:touch")),
+        "the denial names the leaf, not the tool: {err:?}",
+    );
+}
+
+/// Owner-role classification follows the selected descriptor spec. The
+/// parent deliberately says read-only, but the write leaf stays a write.
+#[tokio::test]
+async fn a_viewer_reaches_only_the_read_action_of_a_mixed_spiice_dispatcher() {
+    let registry = frozen();
+
+    run_gate(
+        viewer_ctx(&registry, ToolScope::All),
+        serde_json::json!({ "action": "look", "id": "x" }),
+    )
+    .await
+    .expect("the read action admits a viewer");
+
+    let err = run_gate(
+        viewer_ctx(&registry, ToolScope::All),
+        serde_json::json!({ "action": "touch", "id": "x" }),
+    )
+    .await
+    .expect_err("the write action still requires a writer");
+    assert!(
+        matches!(err, McpToolError::NotAuthorized(ref key) if key == DISPATCH),
+        "got {err:?}",
+    );
+}
+
+/// The other half of the whole-tool fallback: with nothing enumerating the
+/// actions, an unknown one reached the tool and failed at decode instead of
+/// at the gate.
+#[tokio::test]
+async fn an_unknown_action_on_a_spiice_dispatcher_is_refused_at_the_gate() {
+    let registry = frozen();
+    let err = through_the_gate(
+        &registry,
+        ToolScope::All,
+        serde_json::json!({ "action": "vanish" }),
+    )
+    .await
+    .expect_err("an action the tool does not declare is refused");
+    assert!(
+        matches!(err, McpToolError::InvalidInput(ref message)
+            if message.contains(r#"unknown action "vanish""#)),
+        "got {err:?}",
+    );
+}
+
+/// Strict pre-decode validation is a dispatcher property: arguments are
+/// checked per action before decode.
+#[tokio::test]
+async fn a_spiice_dispatcher_validates_arguments_per_action_before_decode() {
+    let registry = frozen();
+    let descriptor = registry.mcp_tool(DISPATCH).expect("registered");
+
+    let err = (descriptor.call)(
+        ctx(&registry, ToolScope::All),
+        serde_json::json!({ "action": "look", "id": "x", "note": "y" }),
+    )
+    .await
+    .expect_err("`note` belongs to `touch`, not to `look`");
+    assert!(
+        matches!(err, McpToolError::InvalidInput(ref message) if message.contains("note")),
+        "got {err:?}",
+    );
+
+    let err = (descriptor.call)(
+        ctx(&registry, ToolScope::All),
+        serde_json::json!({ "action": "touch" }),
+    )
+    .await
+    .expect_err("`touch` requires `id`");
+    assert!(
+        matches!(err, McpToolError::InvalidInput(ref message) if message.contains("id")),
+        "got {err:?}",
+    );
+}
+
+#[tokio::test]
+async fn deployment_reads_do_not_expand_the_callers_dispatcher_scope() {
+    let registry = frozen();
+    let descriptor = registry.mcp_tool(DISPATCH).expect("registered dispatcher");
+    let read_key = ScopeKey::parse(&format!("{DISPATCH}:look")).expect("read leaf");
+    let surface = ServedSurface::Palette(Vec::new());
+    for (scope, advertised, permitted) in [
+        (ToolScope::All, true, true),
+        (ToolScope::Palette(vec![read_key]), true, true),
+        (
+            ToolScope::Palette(vec![ScopeKey::parse(DISPATCH).expect("bare name")]),
+            false,
+            false,
+        ),
+        (
+            ToolScope::Palette(vec![
+                ScopeKey::parse(&format!("{DISPATCH}:unknown")).expect("unknown leaf"),
+            ]),
+            false,
+            false,
+        ),
+        (ToolScope::Palette(Vec::new()), false, false),
+    ] {
+        let mut context = ctx(&registry, scope);
+        context.authz = context.authz.with_served_surface(surface.clone());
+        assert_eq!(
+            descriptor.advertised_by(context.authz.capabilities()),
+            advertised
+        );
+        assert_eq!(
+            descriptor.action_advertised_by(context.authz.capabilities(), "look"),
+            advertised
+        );
+        assert!(!descriptor.action_advertised_by(context.authz.capabilities(), "touch"));
+        assert!(!descriptor.action_advertised_by(context.authz.capabilities(), "unknown"));
+        let result = run_gate(context, serde_json::json!({"action":"look", "id":"x"})).await;
+        assert_eq!(result.is_ok(), permitted, "{result:?}");
+    }
+}

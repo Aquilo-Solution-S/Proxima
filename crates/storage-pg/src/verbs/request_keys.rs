@@ -1,10 +1,10 @@
-//! Tool `idempotency_key` request ledger, stored in `proxima_core.ingest_keys`
+//! Tool `idempotency_key` request ledger, stored in `proxiima_core.ingest_keys`
 //! under source `core/key/<scope>`.
 
-use proxima_core::verbs::idempotency::{
+use proxiima_core::verbs::idempotency::{
     ExistingHandle, KeyConflict, KeyVerdict, RequestKey, judge,
 };
-use proxima_core::{OwnerId, StorageError};
+use proxiima_core::{OwnerId, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
@@ -39,7 +39,7 @@ pub(crate) async fn judge_request(
     let fingerprint_row = request.fingerprint_row_key();
 
     let Some(t): Option<Uuid> = sqlx::query_scalar(
-        "SELECT t FROM proxima_core.ingest_keys
+        "SELECT t FROM proxiima_core.ingest_keys
           WHERE owner_id = $1 AND source_id = $2 AND ingest_key = $3",
     )
     .bind(owner_id)
@@ -55,7 +55,7 @@ pub(crate) async fn judge_request(
     let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
     let row: Result<Option<(Uuid, bool)>, StorageError> = sqlx::query_as(
         "SELECT handle, forgotten_at IS NOT NULL
-           FROM proxima_core.memory /* FORGET-POLICY: includes-forgotten (keyed replay answers forgotten) */
+           FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (keyed replay answers forgotten) */
           WHERE t = $1 AND owner_id = $2",
     )
     .bind(t)
@@ -70,7 +70,7 @@ pub(crate) async fn judge_request(
 
     let fingerprint_matches: bool = sqlx::query_scalar(
         "SELECT EXISTS (
-             SELECT 1 FROM proxima_core.ingest_keys
+             SELECT 1 FROM proxiima_core.ingest_keys
               WHERE owner_id = $1 AND source_id = $2 AND ingest_key = $3 AND t = $4
          )",
     )
@@ -106,7 +106,7 @@ pub(crate) async fn claim_request(
     let fingerprint_row = request.fingerprint_row_key();
 
     let claimed = sqlx::query(
-        "INSERT INTO proxima_core.ingest_keys (owner_id, source_id, ingest_key, t)
+        "INSERT INTO proxiima_core.ingest_keys (owner_id, source_id, ingest_key, t)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (owner_id, source_id, ingest_key) DO NOTHING",
     )
@@ -123,7 +123,7 @@ pub(crate) async fn claim_request(
     }
 
     sqlx::query(
-        "INSERT INTO proxima_core.ingest_keys (owner_id, source_id, ingest_key, t)
+        "INSERT INTO proxiima_core.ingest_keys (owner_id, source_id, ingest_key, t)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (owner_id, source_id, ingest_key) DO NOTHING",
     )
