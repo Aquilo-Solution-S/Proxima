@@ -4,6 +4,68 @@
 
 -- Assertion functions
 
+-- FORGET-POLICY: includes-forgotten (DROP must preserve every stored admission) applies to every read in this function
+CREATE OR REPLACE FUNCTION proxiima_core.assert_fact_schema_drained(
+    retired_schema_id text, retiring_tables text[]
+) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path TO 'pg_catalog'
+AS $function$
+DECLARE
+    surface text;
+BEGIN
+    IF current_setting('app.proxiima_scope', true) IS DISTINCT FROM 'platform'
+       OR NOT EXISTS (
+           SELECT 1 FROM pg_roles r
+            WHERE r.rolname = current_user AND NOT r.rolsuper AND NOT r.rolbypassrls
+              AND pg_has_role(current_user,
+                    (SELECT relowner FROM pg_class
+                      WHERE oid = 'proxiima_core.memory'::regclass), 'USAGE')
+       ) THEN
+        RAISE EXCEPTION 'schema DROP requires the migration role in platform scope'
+            USING ERRCODE = '42501';
+    END IF;
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'schema DROP requires READ COMMITTED for a fresh writer-fenced proof'
+            USING ERRCODE = '25001';
+    END IF;
+    IF retired_schema_id IS NULL OR btrim(retired_schema_id) = ''
+       OR retiring_tables IS NULL OR cardinality(retiring_tables) = 0
+       OR array_ndims(retiring_tables) <> 1 THEN
+        RAISE EXCEPTION 'schema DROP requires a schema identity and declared sidecar tables'
+            USING ERRCODE = '22023';
+    END IF;
+
+    -- Conflicts with admission's ROW EXCLUSIVE lock and lasts through the
+    -- caller's DDL and commit. VOLATILE PL/pgSQL reads get a fresh snapshot
+    -- after this wait under READ COMMITTED.
+    LOCK TABLE proxiima_core.memory IN SHARE ROW EXCLUSIVE MODE;
+    PERFORM proxiima_core.owner_rls_census_table('proxiima_core', 'memory');
+    FOREACH surface IN ARRAY retiring_tables LOOP
+        IF surface IS NULL OR surface !~ '^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$'
+           OR NOT EXISTS (
+            SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname || '.' || c.relname = surface AND c.relkind IN ('r', 'p')
+               AND EXISTS (SELECT 1 FROM proxiima_core.spiice_surface s
+                            WHERE s.table_name = surface)
+        ) THEN
+            RAISE EXCEPTION 'schema DROP sidecar % is not an existing declared table', surface
+                USING ERRCODE = '22023';
+        END IF;
+    END LOOP;
+    IF EXISTS (
+        SELECT 1 FROM proxiima_core.memory m
+         WHERE m.schema_id = retired_schema_id OR m.sidecar_tables && retiring_tables
+    ) THEN
+        RAISE EXCEPTION 'cannot drop schema %: stored admissions still name the schema or its sidecars',
+            retired_schema_id
+            USING ERRCODE = '23503',
+                  HINT = 'Run the erase-capable release first, with its registered host inverses and sidecars present, then retry this schema-only migration.';
+    END IF;
+END;
+$function$;
+REVOKE ALL ON FUNCTION proxiima_core.assert_fact_schema_drained(text, text[]) FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION proxiima_core.assert_declared_sidecar_present() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -161,12 +223,17 @@ AS $function$
 DECLARE
     undeclared text;
 BEGIN
+    -- Catalog lookup observes a concurrent DROP even when a repeatable-read
+    -- writer's data snapshot still contains the registration. Admission
+    -- already holds the memory writer lock, so the DROP guard cannot pass
+    -- until this transaction ends.
     SELECT stamped INTO undeclared
       FROM unnest(NEW.sidecar_tables) AS stamped
      WHERE NOT EXISTS (
                SELECT 1
                  FROM proxiima_core.spiice_surface fs
                 WHERE fs.table_name = stamped
+                  AND to_regclass(fs.table_name) IS NOT NULL
            )
      LIMIT 1;
     IF undeclared IS NOT NULL THEN

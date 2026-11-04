@@ -50,6 +50,32 @@ pgvector-backed store needs has a description starting with `pgvector`; a store
 with a host vector index skips it, and its definitions live in
 `definitions/vector.sql`.
 
+Before retiring a Fact sidecar, run the erase-capable release with its host
+inverses and sidecars still present. Stop producers of the retired schema.
+The later schema-only migration uses the existing platform-scoped migration
+transaction, at `READ COMMITTED`:
+
+```sql
+SELECT proxiima_core.assert_fact_schema_drained(
+    'example/retired-v1', ARRAY['proxiima_example.retired_v1']);
+DROP TABLE proxiima_example.retired_v1;
+DELETE FROM proxiima_core.spiice_surface
+ WHERE table_name = 'proxiima_example.retired_v1';
+```
+
+Remove the sidecar's generated presence trigger on `proxiima_core.memory` in
+that migration as well. The guard requires the non-bypass migration role,
+platform scope, and existing declared sidecar names. It holds a memory writer
+fence until transaction end and refuses any raw admission naming the schema
+or a retiring table, including forgotten versions and rows of other owners.
+Keep the guard, DDL, registration removal, and migration ledger commit in the
+same transaction; a successful call in an earlier transaction proves nothing
+about the later DROP. Admission checks the sidecar's catalog existence as well
+as its registration, so a stale writer cannot commit a stamp after DROP. The
+guard erases no data and stores no completion flag; its refusal instructs the
+operator to run the erase-capable release first. A fresh empty store can
+proceed directly.
+
 ## Local verification
 
 Use the smallest relevant check during iteration, then the complete gates
