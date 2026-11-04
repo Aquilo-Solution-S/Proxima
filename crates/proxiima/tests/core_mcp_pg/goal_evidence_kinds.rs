@@ -52,6 +52,36 @@ impl Env {
         call_test_model_tool(&self.tools, self.authz.clone(), self.owner, tool, args).await
     }
 
+    pub(super) async fn call_with_self(
+        &self,
+        tool: &str,
+        args: serde_json::Value,
+        perspective: proxiima_core::MemoryId,
+    ) -> TestResult<serde_json::Value> {
+        let author = proxiima_core::mcp::McpAuthorContext {
+            model_id: "test-model".into(),
+            trusted_model_id: None,
+            client_name: "goal-test".into(),
+            client_version: "1".into(),
+            caller_self_perspective: Some(perspective),
+        };
+        Ok(self
+            .tools
+            .clone()
+            .into_dynamic_handler()
+            .server
+            .call_tool(
+                tool,
+                args,
+                author,
+                Some(proxiima::McpAuthContext {
+                    owner: self.owner,
+                    authz: self.authz.clone(),
+                }),
+            )
+            .await?)
+    }
+
     async fn handle(&self, tool: &str, args: serde_json::Value) -> TestResult<String> {
         let made = self.call(tool, args).await?;
         Ok(made["handle"].as_str().ok_or("handle")?.to_owned())

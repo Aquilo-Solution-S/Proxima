@@ -29,15 +29,26 @@ authority. Reads use the resolved readable owner set. A write selects one owner
 and checks its required role at the command boundary. Kind restrictions remain
 part of the effective scope.
 
-MCP sessions bind the selected owner at initialization. Subsequent requests
-recheck access. Server-issued memory-space keys are selectors resolved through
-the same context. Missing and unreadable entity references have the same public
-result. A readable source keeps its pins even when their target is redacted.
+MCP sessions bind the default owner at initialization. Subsequent requests
+recheck access and retain the credential's effective owner roles. Selecting a
+default does not confine reads or per-call space selection; credentials that
+are explicitly confined remain confined. Server-issued memory-space keys are
+selectors resolved through the same context. Missing and unreadable entity
+references have the same public result. A readable source keeps its pins even
+when their target is redacted.
 
 `core_forget` and `core_restore` accept the same optional `space` key as
 `core_remember`. Pass a key from `core_memory_spaces` and the memory's UUID
 to hide or restore it in that space; omit the key to use the session's selected
 owner. The key grants no write authority.
+
+Every `core_goal` action accepts the same optional `space` selector; omission
+uses the session default. A later action must select the goal's owner.
+Evidence and the caller's self-Perspective may belong to other spaces the
+writer can read; reading the goal grants no access to those memories.
+Assignment is explicit: omit `target_perspective` to leave a goal unassigned,
+including goals created by `core_episode_commit`. A supplied target must be a
+Perspective in the goal's own space.
 
 Session retention is scoped to the authenticated principal, independently of
 the selected owner. Opening more sessions can evict only that principal's own

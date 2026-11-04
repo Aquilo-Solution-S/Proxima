@@ -119,9 +119,14 @@ pub struct GoalSetArgs {
     )]
     pub evidence: Vec<String>,
     #[schemars(
-        description = "Optional Perspective handle (`<uuid>`) the goal is assigned to. Omit to use the host caller Perspective, if any, or leave the goal unassigned."
+        description = "Optional Perspective handle (`<uuid>`) in the selected goal space. Omit to leave the goal unassigned."
     )]
     pub target_perspective: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces. Omit for the session's default space."
+    )]
+    pub space: Option<String>,
     #[schemars(
         description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
     )]
@@ -167,8 +172,10 @@ impl McpTool for CoreGoalTool {
     const TITLE: &'static str = "Goals";
     const DESCRIPTION: &'static str = "Write Goals: set or decompose, pause/resume/abandon, modify content, \
          or mark achieved. Use the returned head handle for the next write. Assignment and evidence \
-         are optional; an omitted target uses the host caller Perspective if present. Pause requires \
-         pending: keep or discard. Close a parent only after all children close; achievement also \
+         are optional; omit the target to leave the goal unassigned. Evidence and caller \
+         self-Perspective may be in other readable spaces; readers need their own access. \
+         space selects the destination; omit for the session default. Pause requires pending: \
+         keep or discard. Close a parent only after all children close; achievement also \
          needs an Achieved child.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = CORE_GOAL_PRODUCES_SCHEMA_IDS;
     const ACTION_ARG_SPECS: &'static [McpActionArgSpec] = &[
@@ -183,6 +190,7 @@ impl McpTool for CoreGoalTool {
                 "body",
                 "evidence",
                 "target_perspective",
+                "space",
                 "idempotency_key",
             ],
             required_fields: &["schema_id", "title", "text"],
@@ -192,7 +200,7 @@ impl McpTool for CoreGoalTool {
         McpActionArgSpec {
             action: "transition",
             title: "Change a goal's state",
-            allowed_fields: &["goal", "transition", "pending", "idempotency_key"],
+            allowed_fields: &["goal", "transition", "pending", "space", "idempotency_key"],
             // `pending` is required for pause and refused for the other two:
             // `GoalTransitionArgs::transition_kind` decides, once.
             required_fields: &["goal", "transition"],
@@ -210,6 +218,7 @@ impl McpTool for CoreGoalTool {
                 "text",
                 "body",
                 "evidence",
+                "space",
                 "idempotency_key",
             ],
             required_fields: &["goal", "schema_id", "title", "text"],
@@ -219,7 +228,7 @@ impl McpTool for CoreGoalTool {
         McpActionArgSpec {
             action: "mark_achieved",
             title: "Mark a goal achieved",
-            allowed_fields: &["goal", "evidence", "idempotency_key"],
+            allowed_fields: &["goal", "evidence", "space", "idempotency_key"],
             required_fields: &["goal"],
             effect: ToolEffect::Additive(Replay::NonIdempotent),
             audience: McpToolAudience::Shared,
@@ -231,6 +240,7 @@ impl McpTool for CoreGoalTool {
                 "parent_goal",
                 "children",
                 "target_perspective",
+                "space",
                 "idempotency_key",
             ],
             required_fields: &["parent_goal", "children", "idempotency_key"],
@@ -266,9 +276,14 @@ impl McpTool for CoreGoalTool {
 }
 
 async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput, McpToolError> {
+    let space = super::memory_spaces::resolve_space_owner(
+        &ctx,
+        args.space.as_deref(),
+        super::memory_spaces::SpaceDefault::Current,
+    )?;
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = resolve_goal_evidence_handles(&ctx, &args.evidence).await?;
-    let assignment = target_perspective(&ctx, args.target_perspective.as_deref())?;
+    let assignment = target_perspective(args.target_perspective.as_deref())?;
     let topology =
         GoalTopologyWrite::new(assignment, Vec::new(), evidence).map_err(McpToolError::Protocol)?;
     let request_id = IdempotencyKey::optional_or_generated("goal_set", args.idempotency_key)
@@ -279,7 +294,7 @@ async fn goal_set(ctx: McpToolCtx, args: GoalSetArgs) -> Result<GoalWriteOutput,
         .create_goal_from_payload_write(
             &ctx.authz,
             &GoalCreatePayloadWriteRequest {
-                owner: ctx.owner,
+                owner: space.owner,
                 topology,
                 payload,
                 request_id,
@@ -317,6 +332,11 @@ pub struct GoalTransitionArgs {
         description = "Required for pause, refused for resume and abandon. keep: the scheduler holds the work it queued for this goal and runs it after a resume; abandoning the goal drops it. discard: it drops that work, ready or waiting to retry. Running work finishes either way. null is the same as omitting it."
     )]
     pub pending: Option<PendingWork>,
+    #[serde(default)]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces. Omit for the session's default space."
+    )]
+    pub space: Option<String>,
     #[schemars(
         description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
     )]
@@ -348,6 +368,11 @@ async fn goal_transition(
     ctx: McpToolCtx,
     args: GoalTransitionArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
+    let space = super::memory_spaces::resolve_space_owner(
+        &ctx,
+        args.space.as_deref(),
+        super::memory_spaces::SpaceDefault::Current,
+    )?;
     let transition = args.transition_kind()?;
     let prior = ctx.resolve_goal(&args.goal)?;
     let request_id = IdempotencyKey::optional_or_generated("goal_transition", args.idempotency_key)
@@ -357,7 +382,7 @@ async fn goal_transition(
         .transition_goal(
             &ctx.authz,
             &GoalTransitionRequest {
-                owner: ctx.owner,
+                owner: space.owner,
                 prior_goal_id: prior,
                 transition,
                 authorship: GoalAuthorship::User,
@@ -379,6 +404,11 @@ pub struct GoalMarkAchievedArgs {
     #[serde(default)]
     #[schemars(description = "Optional Fact or Abstraction UUIDs that show completion.")]
     pub evidence: Vec<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces. Omit for the session's default space."
+    )]
+    pub space: Option<String>,
     #[schemars(
         description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
     )]
@@ -389,6 +419,11 @@ async fn goal_mark_achieved(
     ctx: McpToolCtx,
     args: GoalMarkAchievedArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
+    let space = super::memory_spaces::resolve_space_owner(
+        &ctx,
+        args.space.as_deref(),
+        super::memory_spaces::SpaceDefault::Current,
+    )?;
     let prior = ctx.resolve_goal(&args.goal)?;
     let evidence = resolve_goal_evidence_handles(&ctx, &args.evidence).await?;
     let request_id =
@@ -399,7 +434,7 @@ async fn goal_mark_achieved(
         .mark_goal_achieved(
             &ctx.authz,
             &GoalMarkAchievedRequest {
-                owner: ctx.owner,
+                owner: space.owner,
                 prior_goal_id: prior,
                 authorship: GoalAuthorship::System(SystemOrigin::Tool {
                     tool_id: ToolId::new(protocol_action::CORE_GOAL_MARK_ACHIEVED),
@@ -426,6 +461,11 @@ pub struct GoalModifyArgs {
         description = "Replacement Fact or Abstraction handles (`<uuid>`). Omit to keep the current evidence; an empty list clears it."
     )]
     pub evidence: Option<Vec<String>>,
+    #[serde(default)]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces. Omit for the session's default space."
+    )]
+    pub space: Option<String>,
     #[schemars(
         description = "Optional key, 1 to 180 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`."
     )]
@@ -436,6 +476,11 @@ async fn goal_modify(
     ctx: McpToolCtx,
     args: GoalModifyArgs,
 ) -> Result<GoalWriteOutput, McpToolError> {
+    let space = super::memory_spaces::resolve_space_owner(
+        &ctx,
+        args.space.as_deref(),
+        super::memory_spaces::SpaceDefault::Current,
+    )?;
     let prior = ctx.resolve_goal(&args.goal)?;
     let payload = encode_goal_payload(&ctx, args.payload)?;
     let evidence = match args.evidence.as_ref() {
@@ -449,7 +494,7 @@ async fn goal_modify(
         .modify_goal(
             &ctx.authz,
             &GoalModifyRequest {
-                owner: ctx.owner,
+                owner: space.owner,
                 prior_goal_id: prior,
                 replacement: payload,
                 authorship: system_operator_authorship(&ctx, "goal_modify"),
@@ -473,9 +518,14 @@ pub struct GoalDecomposeArgs {
     )]
     pub children: Vec<ChildGoalInput>,
     #[schemars(
-        description = "Optional Perspective handle (`<uuid>`) the children are assigned to; not inherited from the parent. Omit to use the host caller Perspective, if any, or leave them unassigned."
+        description = "Optional Perspective handle (`<uuid>`) in the selected goal space; not inherited from the parent. Omit to leave children unassigned."
     )]
     pub target_perspective: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Memory space key from core_memory_spaces. Omit for the session's default space."
+    )]
+    pub space: Option<String>,
     #[schemars(
         description = "Key, at most 162 chars, naming this one request: same key and content replays; changed content is `idempotency_conflict`; each child's key derives from it."
     )]
@@ -523,8 +573,13 @@ async fn goal_decompose(
             "children must contain at most {MAX_CHILD_GOALS} child goals"
         )));
     }
+    let space = super::memory_spaces::resolve_space_owner(
+        &ctx,
+        args.space.as_deref(),
+        super::memory_spaces::SpaceDefault::Current,
+    )?;
     let parent = ctx.resolve_goal(&args.parent_goal)?;
-    let assignment = target_perspective(&ctx, args.target_perspective.as_deref())?;
+    let assignment = target_perspective(args.target_perspective.as_deref())?;
     let topology = GoalTopologyWrite::new(assignment, Vec::new(), Vec::new())
         .map_err(McpToolError::Protocol)?;
     let mut children = Vec::with_capacity(args.children.len());
@@ -545,7 +600,7 @@ async fn goal_decompose(
         .decompose_goal(
             &ctx.authz,
             &GoalDecomposeRequest {
-                owner: ctx.owner,
+                owner: space.owner,
                 parent_goal_id: parent,
                 authorship: system_operator_authorship(&ctx, "goal_decompose"),
                 topology,
@@ -652,17 +707,14 @@ pub(crate) async fn resolve_goal_evidence_handles(
 }
 
 fn target_perspective(
-    ctx: &McpToolCtx,
     target_perspective: Option<&str>,
 ) -> Result<Option<GoalAssignmentTarget>, McpToolError> {
     match target_perspective {
-        Some(raw) => ctx
-            .resolve_memory(raw)
+        Some(raw) => crate::mcp::ids::parse_wire_uuid(raw)
+            .map(crate::MemoryId::new)
             .map(GoalAssignmentTarget::perspective)
             .map(Some),
-        None => Ok(ctx
-            .caller_self_perspective
-            .map(GoalAssignmentTarget::perspective)),
+        None => Ok(None),
     }
 }
 
@@ -814,6 +866,7 @@ mod tests {
                 payload: valid_goal_payload_args(),
                 evidence: vec![abstraction.clone()],
                 target_perspective: Some(perspective.clone()),
+                space: None,
                 idempotency_key: Some("operator-set-authorship".into()),
             },
         )
@@ -831,6 +884,7 @@ mod tests {
                     .to_string(),
                 payload: valid_goal_payload_args(),
                 evidence: Some(vec![abstraction.clone()]),
+                space: None,
                 idempotency_key: Some("operator-modify-authorship".into()),
             },
         )
@@ -851,6 +905,7 @@ mod tests {
                     evidence: vec![abstraction],
                 }],
                 target_perspective: Some(perspective),
+                space: None,
                 idempotency_key: "operator-decompose-authorship".into(),
             },
         )
@@ -901,6 +956,7 @@ mod tests {
                 })
                 .collect(),
             target_perspective: Some(target.into_inner().to_string()),
+            space: None,
             idempotency_key: root,
         }
     }

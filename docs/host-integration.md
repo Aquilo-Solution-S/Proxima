@@ -184,6 +184,16 @@ the registering client's redirect URIs.
 The scope gate judges the caller's role on the owner the call's `space`
 resolves to.
 
+The session owner and `X-Proxiima-Owner` select a default destination from the
+credential's effective roles. Ordinary reads retain the effective readable
+owner set. A host requiring a tenant boundary must return a confined
+`AuthzContext` from its authenticator, using `narrowed_to_owner` when deriving
+it from broader authority. Apply `narrowed_to_owner(tenant)` before
+`with_default_owner(tenant)` for a tenant-confined URL-only connector:
+narrowing clears any prior default. `with_default_owner` chooses a default
+without confining that authority. Hosts assigning a goal to their caller
+Perspective must pass `target_perspective` explicitly, including in episodes.
+
 Tool admission combines two distinct policies. `ServedSurface` configures a
 deployment through `RuntimeBuilder::served_surface`; every declared read-only
 tool/action and core resource remains served. `ToolScope` is the authenticated

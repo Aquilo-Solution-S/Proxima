@@ -618,7 +618,7 @@ async fn mcp_auth(
     // Validate the bearer BEFORE resolving owner/session so an invalid
     // token always yields 401 regardless of session/owner-header state.
     // This closes the 401/403 oracle: an unauthenticated caller learns
-    // nothing about owner or session requirements. Owner narrowing happens
+    // nothing about owner or session requirements. Owner binding happens
     // after selection, from this retained authentication result — plus, for
     // a Group owner its role map does not carry, one per-owner resolution
     // through the host's access port.
@@ -648,7 +648,7 @@ async fn mcp_auth(
             return (StatusCode::FORBIDDEN, "owner selection required or invalid").into_response();
         }
     };
-    let Some(ctx) = state.auth.narrow_to_owner(resolved, selected_owner).await else {
+    let Some(ctx) = state.auth.bind_to_owner(resolved, selected_owner).await else {
         return if via_session {
             session_not_found()
         } else {
@@ -1096,7 +1096,7 @@ mod tests {
     }
 
     /// Production stack with an access port attached, over a stub that
-    /// reports what the request was narrowed to.
+    /// reports the effective owners available to the request.
     fn group_access_app(
         authenticator: Arc<dyn Authenticator>,
         owner_access: Arc<dyn OwnerAccessPort>,
@@ -1106,7 +1106,7 @@ mod tests {
             .with_host(authenticator)
             .with_owner_access(owner_access);
         Router::new()
-            .route("/mcp", any(narrowed_owners))
+            .route("/mcp", any(effective_owners))
             .layer(mcp_auth_layer_with_sessions(
                 Arc::new(auth),
                 sessions,
@@ -1117,7 +1117,7 @@ mod tests {
 
     /// Body = the owners this request may read, so a test can see the
     /// narrowing and not just the status code.
-    async fn narrowed_owners(request: Request<Body>) -> Response {
+    async fn effective_owners(request: Request<Body>) -> Response {
         let Some(ctx) = request.extensions().get::<McpAuthContext>() else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
@@ -1131,7 +1131,7 @@ mod tests {
         (StatusCode::OK, owners.join(",")).into_response()
     }
 
-    async fn narrowed_to(app: Router, request: Request<Body>) -> (StatusCode, Bytes) {
+    async fn effective_owners_response(app: Router, request: Request<Body>) -> (StatusCode, Bytes) {
         let response = app.oneshot(request).await.unwrap();
         let status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -1216,7 +1216,7 @@ mod tests {
             .route(
                 "/mcp",
                 any(|request: Request<Body>| async move {
-                    let mut response = narrowed_owners(request).await;
+                    let mut response = effective_owners(request).await;
                     response
                         .headers_mut()
                         .insert("Mcp-Session-Id", "sess-forwarded".parse().unwrap());
@@ -1249,7 +1249,8 @@ mod tests {
                     request = request.header("X-Proxiima-Owner", selected);
                 }
                 assert_eq!(
-                    narrowed_to(app.clone(), request.body(Body::empty()).unwrap()).await,
+                    effective_owners_response(app.clone(), request.body(Body::empty()).unwrap())
+                        .await,
                     (StatusCode::OK, Bytes::from(owner_key(owner)))
                 );
             }
@@ -1303,7 +1304,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(
-            narrowed_to(app.clone(), matching).await,
+            effective_owners_response(app.clone(), matching).await,
             (StatusCode::OK, Bytes::from(owner_key(owner)))
         );
         assert_eq!(probes.load(Ordering::SeqCst), 1);
@@ -1315,7 +1316,7 @@ mod tests {
                 .body(Body::empty())
                 .unwrap();
             assert_eq!(
-                narrowed_to(app.clone(), mismatching).await,
+                effective_owners_response(app.clone(), mismatching).await,
                 (
                     StatusCode::NOT_FOUND,
                     Bytes::from_static(b"unknown or expired MCP session")
@@ -1390,11 +1391,10 @@ mod tests {
         OwnerId::from(GroupId::new(uuid::Uuid::now_v7()))
     }
 
-    // One ordinary subject, one party per request: each request is
-    // narrowed to exactly the party it selected, and a party the port does
-    // not resolve is refused with today's status.
+    // One ordinary subject keeps every owner role carried by the credential;
+    // the selected party remains the request's default destination.
     #[tokio::test]
-    async fn an_ordinary_group_subject_is_narrowed_to_one_party_per_request() {
+    async fn an_ordinary_group_subject_keeps_effective_roles_per_request() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let first = group_owner();
         let second = group_owner();
@@ -1413,13 +1413,14 @@ mod tests {
                 .header("X-Proxiima-Owner", owner_key(party))
                 .body(Body::empty())
                 .unwrap();
-            let (status, body) = narrowed_to(app.clone(), request).await;
+            let (status, body) = effective_owners_response(app.clone(), request).await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(
-                body,
-                Bytes::from(owner_key(party)),
-                "a request reads exactly the party it selected"
-            );
+            let expected = {
+                let mut owners = [owner_key(party), owner_key(OwnerId::from(subject))];
+                owners.sort();
+                owners.join(",")
+            };
+            assert_eq!(body, Bytes::from(expected));
         }
 
         let request = mcp_request("Bearer good-token")
@@ -1447,14 +1448,19 @@ mod tests {
             )),
             sessions,
         );
+        let expected_for = |owner| {
+            let mut owners = [owner_key(owner), owner_key(OwnerId::from(subject))];
+            owners.sort();
+            owners.join(",")
+        };
 
         let via_session = mcp_request("Bearer good-token")
             .header("Mcp-Session-Id", "sess-1")
             .body(Body::empty())
             .unwrap();
         assert_eq!(
-            narrowed_to(app.clone(), via_session).await,
-            (StatusCode::OK, Bytes::from(owner_key(bound)))
+            effective_owners_response(app.clone(), via_session).await,
+            (StatusCode::OK, Bytes::from(expected_for(bound)))
         );
 
         let via_header = mcp_request("Bearer good-token")
@@ -1462,8 +1468,8 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(
-            narrowed_to(app.clone(), via_header).await,
-            (StatusCode::OK, Bytes::from(owner_key(other)))
+            effective_owners_response(app.clone(), via_header).await,
+            (StatusCode::OK, Bytes::from(expected_for(other)))
         );
 
         let back_via_session = mcp_request("Bearer good-token")
@@ -1471,9 +1477,9 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(
-            narrowed_to(app, back_via_session).await,
-            (StatusCode::OK, Bytes::from(owner_key(bound))),
-            "the binding is untouched by the other party's request"
+            effective_owners_response(app, back_via_session).await,
+            (StatusCode::OK, Bytes::from(expected_for(bound))),
+            "the default binding is untouched by the other party's request"
         );
     }
 
@@ -1507,7 +1513,7 @@ mod tests {
         let auth = McpEdgeAuth::headless().with_host(Arc::new(GroupMemberAuth { subject }));
         let app =
             Router::new()
-                .route("/mcp", any(narrowed_owners))
+                .route("/mcp", any(effective_owners))
                 .layer(mcp_auth_layer_with_sessions(
                     Arc::new(auth),
                     McpSessionBindings::new(),
@@ -1572,14 +1578,14 @@ mod tests {
     }
 
     /// Stub that mints a session like rmcp does on `initialize` and reports
-    /// the owners the request was narrowed to.
+    /// the owners effective for the request.
     fn tenant_app(auth: TenantAuth, sessions: McpSessionBindings) -> Router {
         let edge = McpEdgeAuth::headless().with_host(Arc::new(auth));
         Router::new()
             .route(
                 "/mcp",
                 any(|request: Request<Body>| async move {
-                    let mut response = narrowed_owners(request).await;
+                    let mut response = effective_owners(request).await;
                     response
                         .headers_mut()
                         .insert("Mcp-Session-Id", "sess-new".parse().unwrap());
@@ -1595,7 +1601,7 @@ mod tests {
     }
 
     // A native client sends neither header: the host-named default is
-    // selected, narrowed like any selection, and bound to the new session.
+    // selected and bound to the new session while effective roles remain.
     #[tokio::test]
     async fn a_request_that_selects_no_owner_acts_for_the_host_named_default() {
         let subject = UserId::new(uuid::Uuid::now_v7());
@@ -1613,10 +1619,15 @@ mod tests {
         let initialize = mcp_request("Bearer good-token")
             .body(Body::empty())
             .unwrap();
+        let expected = {
+            let mut owners = [owner_key(tenant), owner_key(OwnerId::from(subject))];
+            owners.sort();
+            owners.join(",")
+        };
         assert_eq!(
-            narrowed_to(app, initialize).await,
-            (StatusCode::OK, Bytes::from(owner_key(tenant))),
-            "narrowed to the tenant alone, not tenant + personal"
+            effective_owners_response(app, initialize).await,
+            (StatusCode::OK, Bytes::from(expected)),
+            "the default owner does not erase the credential's personal role"
         );
         assert_eq!(sessions.owner_for("sess-new").await, Some(tenant));
     }
@@ -1626,23 +1637,31 @@ mod tests {
     async fn an_owner_header_overrides_the_default() {
         let subject = UserId::new(uuid::Uuid::now_v7());
         let personal = OwnerId::from(subject);
+        let tenant = group_owner();
+        let sessions = McpSessionBindings::new();
         let app = tenant_app(
             TenantAuth {
                 subject,
-                tenant: group_owner(),
+                tenant,
                 name_default: true,
             },
-            McpSessionBindings::new(),
+            sessions.clone(),
         );
 
         let request = mcp_request("Bearer good-token")
             .header("X-Proxiima-Owner", owner_key(personal))
             .body(Body::empty())
             .unwrap();
+        let expected = {
+            let mut owners = [owner_key(personal), owner_key(tenant)];
+            owners.sort();
+            owners.join(",")
+        };
         assert_eq!(
-            narrowed_to(app, request).await,
-            (StatusCode::OK, Bytes::from(owner_key(personal)))
+            effective_owners_response(app, request).await,
+            (StatusCode::OK, Bytes::from(expected))
         );
+        assert_eq!(sessions.owner_for("sess-new").await, Some(personal));
     }
 
     // No default, no selection: the 403 this edge always gave. A malformed

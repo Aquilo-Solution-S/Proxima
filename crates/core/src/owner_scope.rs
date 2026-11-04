@@ -62,6 +62,10 @@ impl OwnerScope {
         })
     }
 
+    pub(crate) const fn confined_to(&self) -> Option<OwnerId> {
+        self.selected
+    }
+
     /// The immutable writer captured when authentication sealed this scope.
     ///
     /// ```

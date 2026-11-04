@@ -1126,7 +1126,7 @@ pub(crate) fn tool_allowed_for_auth(caller: Caller<'_>, descriptor: &McpToolDesc
             .iter()
             .any(|spec| action_allowed_for_auth(caller, descriptor, spec.action))
     } else {
-        owner_role_allows(caller.auth, descriptor.is_read_only())
+        tool_owner_role_allows(caller.auth, descriptor, None)
             && caller.behaviors_show(&ToolDescriptorView::registry(descriptor, None))
     }
 }
@@ -1145,8 +1145,36 @@ pub(crate) fn action_allowed_for_auth(
     // descriptor, so this advertisement decision and the owner-role gate
     // `ScopeGateBehavior` runs at call time cannot answer differently.
     scope_allowed
-        && owner_role_allows(caller.auth, descriptor.action_is_read_only(action))
+        && tool_owner_role_allows(caller.auth, descriptor, Some(action))
         && caller.behaviors_show(&ToolDescriptorView::registry(descriptor, Some(action)))
+}
+
+/// A space-selecting tool can be used in any effective owner; the call's
+/// scope gate checks the concrete selection. Other tools use the default.
+fn tool_owner_role_allows(
+    auth: Option<&McpAuthContext>,
+    descriptor: &McpToolDescriptor,
+    action: Option<&str>,
+) -> bool {
+    let read_only = action.map_or_else(
+        || descriptor.is_read_only(),
+        |action| descriptor.action_is_read_only(action),
+    );
+    let schema = action.map_or(Some(&descriptor.args_schema), |action| {
+        descriptor.action_argument_schema(action)
+    });
+    let selects_space = schema
+        .and_then(|schema| schema.get("properties"))
+        .and_then(|properties| properties.get("space"))
+        .is_some();
+    if selects_space && let Some(ctx) = auth {
+        ctx.authz
+            .readable_owners(proxiima_core::AccessKind::Fact)
+            .iter()
+            .any(|owner| ctx.authz.may_run_tool(owner, read_only))
+    } else {
+        owner_role_allows(auth, read_only)
+    }
 }
 
 fn owner_role_allows(auth: Option<&McpAuthContext>, read_only: bool) -> bool {
@@ -2157,6 +2185,39 @@ mod tests {
             tool_allowed_for_auth(Caller::new(Some(&viewer)), core_read),
             "core search declares its own read effect"
         );
+    }
+
+    #[test]
+    fn a_space_tool_is_visible_when_another_effective_owner_allows_it() {
+        use proxiima_core::{AuthPath, AuthzContext, GroupId, OwnerId, Role, UserId};
+
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let auth = McpAuthContext {
+            owner,
+            authz: AuthzContext::for_subject_with_role(
+                subject,
+                [(owner, Role::viewer())],
+                AuthPath::HostBearer,
+            ),
+        };
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
+        let goal = registry.mcp_tool(protocol_tool::CORE_GOAL).expect("goals");
+        assert!(action_allowed_for_auth(
+            Caller::new(Some(&auth)),
+            goal,
+            "set"
+        ));
+
+        let default_only = McpAuthContext {
+            owner,
+            authz: auth.authz.narrowed_to_owner(owner).expect("viewer default"),
+        };
+        assert!(!action_allowed_for_auth(
+            Caller::new(Some(&default_only)),
+            goal,
+            "set"
+        ));
     }
 
     #[test]

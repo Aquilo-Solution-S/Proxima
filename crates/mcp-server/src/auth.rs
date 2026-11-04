@@ -35,11 +35,6 @@ pub(crate) struct ResolvedAuth {
 }
 
 impl ResolvedAuth {
-    pub(crate) fn narrowed_to_owner(self, owner: OwnerId) -> Option<McpAuthContext> {
-        let authz = self.authz.narrowed_to_owner(owner)?;
-        Some(McpAuthContext::bound(authz, owner))
-    }
-
     /// The owner the host named for a request that selects none.
     pub(crate) const fn default_owner(&self) -> Option<OwnerId> {
         self.authz.default_owner()
@@ -55,12 +50,8 @@ impl ResolvedAuth {
         self.authz.role_for_owner(&owner).is_some()
     }
 
-    /// The loop back through the port for one Group the eager map lacks:
-    /// ask, fold the answer into the map, rejoin. There is no second way to
-    /// narrow — [`Self::narrowed_to_owner`] reads the map afterwards under
-    /// the same rules as for every eagerly resolved entry. An absent port,
-    /// `Ok(None)` and an error all fold nothing, so the map is exactly what
-    /// it was and the one path refuses as it always did.
+    /// Resolve one missing Group role through the host access port and merge it
+    /// into the authenticated map; missing answers leave the map unchanged.
     async fn filled_from(self, port: Option<&dyn OwnerAccessPort>, group: GroupId) -> Option<Self> {
         let (Some(port), Some(_subject)) = (port, self.authz.subject()) else {
             return Some(self);
@@ -137,14 +128,14 @@ impl McpEdgeAuth {
 
     pub async fn resolve(&self, raw_bearer: &str, owner: OwnerId) -> Option<McpAuthContext> {
         let resolved = self.resolve_unbound(raw_bearer).await?;
-        self.narrow_to_owner(resolved, owner).await
+        self.bind_to_owner(resolved, owner).await
     }
 
-    /// Bind an authenticated request to its selected owner. Verified
+    /// Bind an authenticated request to its selected default owner. Verified
     /// forwarding claims use only their configured policy role; neither an
     /// eager role nor an ordinary membership can bypass that binding.
     /// Ordinary subjects retain eager and on-demand Group resolution.
-    pub(crate) async fn narrow_to_owner(
+    pub(crate) async fn bind_to_owner(
         &self,
         resolved: ResolvedAuth,
         owner: OwnerId,
@@ -174,7 +165,10 @@ impl McpEdgeAuth {
                 .filled_from(self.owner_access.as_deref(), owner.as_group())
                 .await?
         };
-        resolved.narrowed_to_owner(owner)
+        if !resolved.carries(owner) {
+            return None;
+        }
+        Some(McpAuthContext::bound(resolved.authz, owner))
     }
 
     /// Authenticate `raw_bearer` on an accepted path without narrowing to
@@ -243,6 +237,32 @@ mod tests {
     impl Authenticator for StubHostAuth {
         async fn authenticate(&self, _creds: &Credentials) -> Result<AuthzContext, AuthError> {
             self.result.clone()
+        }
+    }
+
+    struct ReexpansionProbe {
+        subject: UserId,
+        other: OwnerId,
+    }
+
+    #[async_trait]
+    impl OwnerAccessPort for ReexpansionProbe {
+        async fn resolve_roles_for_subject(
+            &self,
+            subject: UserId,
+        ) -> Result<OwnerRoles, AccessError> {
+            OwnerRoles::for_subject(subject, [])
+        }
+
+        async fn resolve_group_role(
+            &self,
+            subject: UserId,
+            group: GroupId,
+        ) -> Result<Option<Role>, AccessError> {
+            Ok(
+                (subject == self.subject && OwnerId::from(group) == self.other)
+                    .then_some(Role::admin()),
+            )
         }
     }
 
@@ -509,6 +529,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preconfined_host_context_cannot_reexpand_through_owner_access() {
+        let owner = fake_group_owner();
+        let other = fake_group_owner();
+        let subject = fake_user();
+        let authz = host_group_context(subject, owner, Role::admin())
+            .narrowed_to_owner(owner)
+            .expect("fixture creates an explicitly confined context");
+        let auth = McpEdgeAuth::headless()
+            .with_host(Arc::new(StubHostAuth { result: Ok(authz) }))
+            .with_owner_access(Arc::new(ReexpansionProbe { subject, other }));
+
+        let selected = auth
+            .resolve("host-token", owner)
+            .await
+            .expect("the already selected owner remains usable");
+        assert!(selected.authz.can_access_owner(&owner));
+        assert!(!selected.authz.can_access_owner(&other));
+        assert!(
+            auth.resolve("host-token", other).await.is_none(),
+            "owner access must not re-expand a preconfined credential"
+        );
+    }
+
+    #[tokio::test]
     async fn owner_scoped_ops_deny_host_context_after_role_narrowing() {
         let owner = fake_group_owner();
         let other = fake_group_owner();
@@ -530,7 +574,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_path_restricts_host_context_to_configured_owner() {
+    async fn host_binding_preserves_roles_and_explicit_narrowing_confines() {
         let owner = fake_group_owner();
         let other = fake_group_owner();
         let subject = fake_user();
@@ -546,12 +590,18 @@ mod tests {
             .await
             .expect("host resolves");
         assert!(ctx.authz.can_access_owner(&owner));
-        assert!(!ctx.authz.can_access_owner(&other));
         assert!(
-            ctx.authz
-                .narrowed_to_owner(OwnerId::from(subject))
-                .is_none(),
-            "a narrowed group witness cannot restore personal authority"
+            ctx.authz.can_access_owner(&other),
+            "binding the session default must retain the credential's other owner roles"
+        );
+        let narrowed = ctx
+            .authz
+            .clone()
+            .narrowed_to_owner(owner)
+            .expect("the selected owner remains attenuable");
+        assert!(
+            !narrowed.can_access_owner(&other),
+            "explicit attenuation must still confine the context"
         );
     }
 
@@ -586,12 +636,8 @@ mod tests {
                 .narrowed_to_owner(authorized)
                 .is_some()
         );
-        assert!(
-            selected
-                .authz
-                .narrowed_to_owner(OwnerId::from(subject))
-                .is_none()
-        );
+        assert!(selected.authz.can_access_owner(&OwnerId::from(subject)));
+        assert!(!selected.authz.can_access_owner(&unauthorized_group));
     }
 
     #[tokio::test]

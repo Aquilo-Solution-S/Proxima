@@ -173,8 +173,48 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
         "{viewer_tools:?}"
     );
     assert!(
-        !viewer_tools.contains(&"core_remember".to_string()),
-        "viewer palette must hide write tools: {viewer_tools:?}"
+        viewer_tools.contains(&"core_remember".to_string()),
+        "subject A's writable group A space keeps core_remember visible: {viewer_tools:?}"
+    );
+
+    let default_refusal = call_tool_raw(
+        &client,
+        &url,
+        &viewer_on_group_b,
+        &bearer_a,
+        "core_remember",
+        json!({
+            "title": "default viewer write",
+            "body": "group B is viewer-only",
+            "idempotency_key": format!("viewer-default-{}", Uuid::now_v7())
+        }),
+    )
+    .await?;
+    let default_message = rpc_error_message(&default_refusal)?;
+    assert!(
+        default_message.contains("not authorized"),
+        "the selected default group B remains viewer-only: {default_refusal}"
+    );
+
+    let selected_write = call_tool(
+        &client,
+        &url,
+        &viewer_on_group_b,
+        &bearer_a,
+        "core_remember",
+        json!({
+            "title": "selected writable space",
+            "body": "group A write through a group B session",
+            "space": owner_header(owner_a),
+            "idempotency_key": format!("viewer-selected-{}", Uuid::now_v7())
+        }),
+    )
+    .await?;
+    assert!(
+        selected_write["handle"]
+            .as_str()
+            .is_some_and(|handle| Uuid::parse_str(handle).is_ok()),
+        "explicit writable space must succeed: {selected_write:?}"
     );
 
     let denied = initialize_raw(&client, &url, &bearer_b, &owner_header(owner_a)).await?;
@@ -217,19 +257,14 @@ async fn multi_owner_sessions_bind_owner_palette_and_revocation()
     Ok(())
 }
 
-/// `core_transfer` over the wire, through the narrowing edge — the surface
-/// every real caller reaches it on.
+/// `core_transfer` over the wire, through the authenticated HTTP edge.
 ///
-/// `mcp_auth` narrows each authenticated request with
-/// `AuthzContext::narrowed_to_owner(selected_owner)`, whose role map holds
-/// exactly the one owner the caller selected. A transfer needs authority on
-/// TWO owners, so the request context can never carry both: the caller
-/// selects the source, and the destination is re-resolved out of band from
-/// its membership row. This test only speaks HTTP, which is the only
-/// surface that narrowing is reachable on.
+/// The session owner selects the default destination for ordinary writes, while
+/// the effective credential keeps its independently authorized owner roles.
+/// Transfer still requires manage authority on both source and destination.
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // linear e2e: boot + three authorization phases read best in one flow
-async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrowing_edge()
+async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_http_edge()
 -> Result<(), Box<dyn std::error::Error>> {
     let (database_url, created_db) = live_database_url().await?;
     let (runtime_url, platform_url) = common::split_roles(&database_url).await?;
@@ -411,11 +446,9 @@ async fn multi_owner_core_transfer_needs_admin_on_both_owners_through_the_narrow
             "admin on the source alone must be refused by the receiving side, got: {refused}"
         );
 
-        // (c) Admin + manage on the DESTINATION only. This caller selects
-        // the destination — the one owner it can select — so the served
-        // palette admits `core_transfer`. The engine must still collapse the
-        // foreign source to NotFound: receiving-side consent is neither pull
-        // authority nor an existence oracle for another owner's memory.
+        // (c) Admin + manage on the DESTINATION only. The engine must still
+        // collapse the foreign source to NotFound: receiving-side consent is
+        // neither pull authority nor an existence oracle for another owner.
         let bearer = format!("Bearer {}", mint(&signing, "transfer-destination-side"));
         let session = initialize(&client, &url, &bearer, &destination_key).await?;
         initialized(&client, &url, &session, &bearer).await?;

@@ -284,6 +284,8 @@ fn viewer_auth(scope: ToolScope) -> McpAuthContext {
             [(owner, Role::viewer())],
             AuthPath::HostBearer,
         )
+        .narrowed_to_owner(owner)
+        .expect("viewer-only credential")
         .with_tool_scope(scope),
     }
 }

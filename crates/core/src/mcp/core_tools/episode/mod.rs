@@ -129,7 +129,7 @@ pub struct EpisodeGoalItem {
     pub evidence: Vec<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional Perspective the goal is assigned to: `<uuid>` or this call's `stance:N`. Defaults to the caller Perspective when supplied by the host; otherwise the goal is unassigned."
+        description = "Optional Perspective the goal is assigned to: `<uuid>` or this call's `stance:N`. Omit to leave the goal unassigned."
     )]
     pub target_perspective: Option<String>,
     #[serde(default)]
@@ -588,7 +588,7 @@ impl EpisodeWrite<'_> {
             let payload = encode_goal_payload(ctx, item.payload.clone())?;
             let evidence = resolve_goal_evidence(ctx, &self.slots, &item.evidence).await?;
             let assignment =
-                resolve_goal_assignment(ctx, &self.slots, item.target_perspective.as_deref())?;
+                resolve_goal_assignment(&self.slots, item.target_perspective.as_deref())?;
             let topology = GoalTopologyWrite::new(assignment, Vec::new(), evidence)
                 .map_err(McpToolError::Protocol)?;
             let request_id =
@@ -719,7 +719,6 @@ async fn resolve_goal_evidence(
 }
 
 fn resolve_goal_assignment(
-    ctx: &McpToolCtx,
     slots: &EpisodeSlots,
     target_perspective: Option<&str>,
 ) -> Result<Option<GoalAssignmentTarget>, McpToolError> {
@@ -733,13 +732,12 @@ fn resolve_goal_assignment(
                 }
                 return Ok(Some(GoalAssignmentTarget::perspective(slot.id)));
             }
-            ctx.resolve_memory(handle)
+            crate::mcp::ids::parse_wire_uuid(handle)
+                .map(crate::MemoryId::new)
                 .map(GoalAssignmentTarget::perspective)
                 .map(Some)
         }
-        None => Ok(ctx
-            .caller_self_perspective
-            .map(GoalAssignmentTarget::perspective)),
+        None => Ok(None),
     }
 }
 

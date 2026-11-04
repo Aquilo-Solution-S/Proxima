@@ -357,13 +357,36 @@ impl std::fmt::Debug for VerifiedClaims {
     }
 }
 
+/// Confinement survives the transition from a host context to a sealed witness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OwnerScopeState {
+    Unsealed { confined_to: Option<OwnerId> },
+    Sealed(OwnerScope),
+}
+
+impl OwnerScopeState {
+    const fn sealed(&self) -> Option<&OwnerScope> {
+        match self {
+            Self::Unsealed { .. } => None,
+            Self::Sealed(scope) => Some(scope),
+        }
+    }
+
+    const fn confined_to(&self) -> Option<OwnerId> {
+        match self {
+            Self::Unsealed { confined_to } => *confined_to,
+            Self::Sealed(scope) => scope.confined_to(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthzContext {
     identity: Identity,
     capabilities: CapabilitySet,
     auth_path: AuthPath,
     owner_roles: Option<OwnerRoles>,
-    owner_scope: Option<OwnerScope>,
+    owner_scope: OwnerScopeState,
     /// Mandatory owner from a verified forwarding credential. It selects no
     /// ordinary membership and survives request narrowing.
     forwarded_owner: Option<OwnerId>,
@@ -595,7 +618,8 @@ impl AuthzContext {
         };
         let mut context =
             Self::server_resolved_with_writer(owner_roles.clone(), AuthPath::System, writer);
-        context.owner_scope = Some(OwnerScope::from_verified_roles(owner_roles, None, writer));
+        context.owner_scope =
+            OwnerScopeState::Sealed(OwnerScope::from_verified_roles(owner_roles, None, writer));
         context.system_binding = Some(authority.binding());
         context
     }
@@ -630,7 +654,8 @@ impl AuthzContext {
         };
         let mut context =
             Self::server_resolved_with_writer(roles.clone(), AuthPath::HostBearer, writer);
-        context.owner_scope = Some(OwnerScope::from_verified_roles(roles, None, writer));
+        context.owner_scope =
+            OwnerScopeState::Sealed(OwnerScope::from_verified_roles(roles, None, writer));
         context
             .narrowed_to_owner(owner)
             .expect("single owner's verified role is self-accessible")
@@ -642,17 +667,18 @@ impl AuthzContext {
             .clone()
             .ok_or(AuthError::InvalidCredentials)?;
         let writer = self.writer().ok_or(AuthError::InvalidCredentials)?;
-        self.owner_scope = Some(OwnerScope::from_verified_roles(
-            roles,
-            self.expires_at(),
-            writer,
-        ));
+        let scope = OwnerScope::from_verified_roles(roles, self.expires_at(), writer);
+        let scope = match self.owner_scope.confined_to() {
+            Some(owner) => scope.narrow(owner).ok_or(AuthError::InvalidCredentials)?,
+            None => scope,
+        };
+        self.owner_scope = OwnerScopeState::Sealed(scope);
         Ok(self)
     }
 
     #[must_use]
     pub fn owner_scope(&self) -> Option<&OwnerScope> {
-        self.owner_scope.as_ref()
+        self.owner_scope.sealed()
     }
 
     #[must_use]
@@ -743,7 +769,7 @@ impl AuthzContext {
     /// request header or publication extension. A sealed scope cannot be rebound.
     #[must_use]
     pub fn with_attested_writer(mut self, writer: WriterAttribution) -> Option<Self> {
-        if self.owner_scope.is_some() || self.auth_path == AuthPath::Denied {
+        if self.owner_scope().is_some() || self.auth_path == AuthPath::Denied {
             return None;
         }
         self.identity.writer = Some(writer);
@@ -880,7 +906,7 @@ impl AuthzContext {
             capabilities: CapabilitySet::all(),
             auth_path,
             owner_roles: Some(owner_roles),
-            owner_scope: None,
+            owner_scope: OwnerScopeState::Unsealed { confined_to: None },
             forwarded_owner: None,
             publication_extensions: PublicationExtensions::new(),
             verified_claims: None,
@@ -926,7 +952,7 @@ impl AuthzContext {
         port: &dyn OwnerAccessPort,
         owner: OwnerId,
     ) -> Option<Self> {
-        let scope = self.owner_scope.as_ref()?;
+        let scope = self.owner_scope()?;
         let expires_at = self
             .expires_at()
             .into_iter()
@@ -962,7 +988,7 @@ impl AuthzContext {
             .collect();
         next.owner_roles = Some(roles.clone());
         next.identity.expires_at = expires_at;
-        next.owner_scope = Some(OwnerScope::from_verified_roles(
+        next.owner_scope = OwnerScopeState::Sealed(OwnerScope::from_verified_roles(
             roles,
             expires_at,
             scope.writer(),
@@ -1061,9 +1087,10 @@ impl AuthzContext {
     ///
     /// **For authenticators only**, and only for an owner this context
     /// already carries a role for: the default selects, it never grants.
-    /// The request is still narrowed through [`Self::narrowed_to_owner`]
-    /// like any selected owner. A Group only an [`OwnerAccessPort`] would
-    /// answer is not carried and cannot be the default.
+    /// Selection preserves this context's effective roles. Use
+    /// [`Self::narrowed_to_owner`] to confine authority explicitly. A Group
+    /// only an [`OwnerAccessPort`] would answer is not carried and cannot be
+    /// the default.
     ///
     /// `None` when the context carries no role for `owner`.
     #[must_use]
@@ -1101,9 +1128,12 @@ impl AuthzContext {
             .into_iter()
             .collect();
         self.owner_roles = Some(narrowed_roles);
-        if let Some(scope) = self.owner_scope.as_ref() {
-            self.owner_scope = Some(scope.narrow(owner)?);
-        }
+        self.owner_scope = match self.owner_scope {
+            OwnerScopeState::Unsealed { .. } => OwnerScopeState::Unsealed {
+                confined_to: Some(owner),
+            },
+            OwnerScopeState::Sealed(scope) => OwnerScopeState::Sealed(scope.narrow(owner)?),
+        };
         self.identity.accessible_principals = accessible_principals;
         self.default_owner = None;
         Some(self)
@@ -1126,7 +1156,11 @@ impl AuthzContext {
     /// caller-controlled payload would make the caller its own authorizer.
     #[must_use]
     pub fn with_host_resolved_role(mut self, group: GroupId, role: Role) -> Option<Self> {
-        if self.owner_scope.is_some() || self.forwarded_owner.is_some() {
+        if !matches!(
+            self.owner_scope,
+            OwnerScopeState::Unsealed { confined_to: None }
+        ) || self.forwarded_owner.is_some()
+        {
             return None;
         }
         let roles = self.owner_roles.take()?.with_group_role(group, role);
@@ -1148,7 +1182,7 @@ impl AuthzContext {
         if self.forwarded_owner.is_some() {
             return None;
         }
-        let scope = self.owner_scope.as_ref()?;
+        let scope = self.owner_scope()?;
         if scope.is_expired() {
             return None;
         }
@@ -1162,7 +1196,7 @@ impl AuthzContext {
             .into_iter()
             .collect();
         next.owner_roles = Some(roles);
-        next.owner_scope = Some(scope);
+        next.owner_scope = OwnerScopeState::Sealed(scope);
         Some(next)
     }
 
@@ -1232,7 +1266,7 @@ impl AuthzContext {
             },
             auth_path: AuthPath::Denied,
             owner_roles: None,
-            owner_scope: None,
+            owner_scope: OwnerScopeState::Unsealed { confined_to: None },
             forwarded_owner: None,
             publication_extensions: PublicationExtensions::new(),
             verified_claims: None,

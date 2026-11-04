@@ -112,3 +112,67 @@ async fn an_episode_can_commit_a_goal_with_only_words() {
     env.shutdown().await;
     result.expect("words-only episode goal");
 }
+
+#[tokio::test]
+async fn caller_self_does_not_assign_goals_without_an_explicit_target() {
+    let env = Env::new("proxiima_goal_explicit_assignment")
+        .await
+        .expect("PG required for tests");
+    let result: TestResult<()> = async {
+        let fact = env.remember("The caller is writing a draft").await?;
+        let perspective = env.interpret("The caller values clarity", &fact).await?;
+        let self_id = proxiima_core::MemoryId::new(uuid::Uuid::parse_str(&perspective)?);
+        let mut args = words("Write the draft");
+        args["action"] = json!("set");
+        let goal = handle_of(&env.call_with_self("core_goal", args, self_id).await?)?;
+        let children = env
+            .call_with_self(
+                "core_goal",
+                json!({
+                    "action": "decompose", "parent_goal": goal,
+                    "children": [words("Write the final paragraph")],
+                    "idempotency_key": "caller-self-child",
+                }),
+                self_id,
+            )
+            .await?;
+        let child = handle_of(&children["children"][0])?;
+        let episode = env
+            .call_with_self(
+                "core_episode_commit",
+                json!({"goal": [words("Proofread the draft")]}),
+                self_id,
+            )
+            .await?;
+        let episode_goal = episode["goals"][0].as_str().ok_or("episode goal")?;
+        let mut args = words("An explicitly assigned goal");
+        args["action"] = json!("set");
+        args["target_perspective"] = json!(perspective);
+        let assigned = handle_of(&env.call_with_self("core_goal", args, self_id).await?)?;
+
+        let admin = env.admin().await?;
+        let unassigned: Vec<uuid::Uuid> = [goal.as_str(), child.as_str(), episode_goal]
+            .into_iter()
+            .map(uuid::Uuid::parse_str)
+            .collect::<Result<_, _>>()?;
+        let assignments: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxiima_core.goal WHERE t = ANY($1) AND assignment_t IS NOT NULL",
+        )
+        .bind(&unassigned)
+        .fetch_one(&admin)
+        .await?;
+        assert_eq!(assignments, 0, "caller context never supplies an assignment");
+        let explicit: Option<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT assignment_t FROM proxiima_core.goal WHERE t = $1",
+        )
+        .bind(uuid::Uuid::parse_str(&assigned)?)
+        .fetch_one(&admin)
+        .await?;
+        assert_eq!(explicit, Some(self_id.into_inner()));
+        admin.close().await;
+        Ok(())
+    }
+    .await;
+    env.shutdown().await;
+    result.expect("goal assignment is independent of caller self");
+}
