@@ -582,26 +582,156 @@ fn erase_order(closure: &Footprint) -> Vec<Vec<Uuid>> {
     order
 }
 
-/// The series of `pending` that lie on a cycle, or between two cycles: the
-/// next unit when none is ready. `pending` holds only rings and what hangs
-/// below them, and each of its series has a referrer in it, so a cycle
-/// exists and the unit is never empty.
+/// One ring of `pending`: a source strongly-connected component, after the
+/// series that hang below the rings are peeled. The next unit when none is
+/// ready. Disjoint rings stay separate units, and a ring that references
+/// another goes first. `pending` holds only rings and what hangs below them,
+/// so a cycle exists and the unit is never empty.
 fn ring(pending: &BTreeMap<Uuid, usize>, references: &BTreeMap<Uuid, BTreeSet<Uuid>>) -> Vec<Uuid> {
     let mut ring: BTreeSet<Uuid> = pending.keys().copied().collect();
     // Peel the series that reference nothing still in the ring: they hang
     // below it.
-    while let Some(below) = ring
-        .iter()
-        .find(|handle| {
-            references
-                .get(handle)
-                .is_none_or(|to| to.is_disjoint(&ring))
-        })
-        .copied()
-    {
-        ring.remove(&below);
+    loop {
+        let below: Vec<Uuid> = ring
+            .iter()
+            .copied()
+            .filter(|handle| {
+                references
+                    .get(handle)
+                    .is_none_or(|to| to.is_disjoint(&ring))
+            })
+            .collect();
+        if below.is_empty() {
+            break;
+        }
+        for handle in below {
+            ring.remove(&handle);
+        }
     }
-    ring.into_iter().collect()
+    source_component(&ring, references)
+}
+
+/// The source component of `set` whose oldest series is oldest among the
+/// sources: nothing else in `set` references it, so it can be erased before
+/// the rings it references.
+fn source_component(
+    set: &BTreeSet<Uuid>,
+    references: &BTreeMap<Uuid, BTreeSet<Uuid>>,
+) -> Vec<Uuid> {
+    if set.is_empty() {
+        return Vec::new();
+    }
+    let nodes: Vec<Uuid> = set.iter().copied().collect();
+    let mut index_of: BTreeMap<Uuid, usize> = BTreeMap::new();
+    for (index, node) in nodes.iter().copied().enumerate() {
+        index_of.insert(node, index);
+    }
+    let mut state = Tarjan {
+        nodes: &nodes,
+        index_of: &index_of,
+        references,
+        set,
+        index: 0,
+        stack: Vec::new(),
+        on_stack: vec![false; nodes.len()],
+        indices: vec![None; nodes.len()],
+        low: vec![0; nodes.len()],
+        components: Vec::new(),
+    };
+    for start in 0..nodes.len() {
+        if state.indices[start].is_none() {
+            state.strong(start);
+        }
+    }
+    let mut component_of = vec![0; nodes.len()];
+    for (component, members) in state.components.iter().enumerate() {
+        for member in members {
+            component_of[*member] = component;
+        }
+    }
+    let mut incoming = vec![false; state.components.len()];
+    for (from, node) in nodes.iter().copied().enumerate() {
+        for to in references.get(&node).into_iter().flatten() {
+            let Some(&target) = index_of.get(to) else {
+                continue;
+            };
+            if component_of[from] != component_of[target] {
+                incoming[component_of[target]] = true;
+            }
+        }
+    }
+    let source = incoming
+        .iter()
+        .enumerate()
+        .filter(|(_, incoming)| !**incoming)
+        .map(|(component, _)| component)
+        .min_by_key(|component| {
+            state.components[*component]
+                .iter()
+                .map(|member| nodes[*member])
+                .min()
+        })
+        .unwrap_or(0);
+    let mut members: Vec<Uuid> = state.components[source]
+        .iter()
+        .map(|member| nodes[*member])
+        .collect();
+    members.sort_unstable();
+    members
+}
+
+struct Tarjan<'a> {
+    nodes: &'a [Uuid],
+    index_of: &'a BTreeMap<Uuid, usize>,
+    references: &'a BTreeMap<Uuid, BTreeSet<Uuid>>,
+    set: &'a BTreeSet<Uuid>,
+    index: usize,
+    stack: Vec<usize>,
+    on_stack: Vec<bool>,
+    indices: Vec<Option<usize>>,
+    low: Vec<usize>,
+    components: Vec<Vec<usize>>,
+}
+
+impl Tarjan<'_> {
+    fn strong(&mut self, at: usize) {
+        self.indices[at] = Some(self.index);
+        self.low[at] = self.index;
+        self.index += 1;
+        self.stack.push(at);
+        self.on_stack[at] = true;
+        let next: Vec<usize> = self
+            .references
+            .get(&self.nodes[at])
+            .into_iter()
+            .flatten()
+            .filter_map(|to| {
+                self.set
+                    .contains(to)
+                    .then(|| self.index_of.get(to).copied())
+                    .flatten()
+            })
+            .collect();
+        for next in next {
+            if self.indices[next].is_none() {
+                self.strong(next);
+                self.low[at] = self.low[at].min(self.low[next]);
+            } else if self.on_stack[next] {
+                self.low[at] = self.low[at].min(self.indices[next].unwrap_or(self.low[at]));
+            }
+        }
+        if self.low[at] == self.indices[at].unwrap_or(self.low[at]) {
+            let mut component = Vec::new();
+            while let Some(member) = self.stack.pop() {
+                self.on_stack[member] = false;
+                component.push(member);
+                if member == at {
+                    break;
+                }
+            }
+            self.components.push(component);
+        }
+    }
 }
 
 /// The next page of `seeds`' closure: the closures of the oldest seeds in
@@ -610,9 +740,12 @@ fn ring(pending: &BTreeMap<Uuid, usize>, references: &BTreeMap<Uuid, BTreeSet<Uu
 ///
 /// `seeds` is oldest first, one past `max_series` when more wait. A page ends
 /// at the first unit that does not fit, never skipping it for a later one, so
-/// a later seed is only reached once an older one is wholly in the page. Each
-/// closure is checked for scope whole, not only the part that is erased now:
-/// a refusal comes before the first page is deleted, not after it.
+/// a later seed is only reached once an older one is wholly in the page. A
+/// seed whose closure is outside scope, or holds one unit over a page, is
+/// refused before any of that closure is erased. When older seeds already
+/// fill this page, the page stands and the refusal waits for the next call,
+/// when that seed is the oldest one left: refusing it now would roll the
+/// older page back and the same call would refuse forever.
 async fn page_footprint(
     tx: &mut Transaction<'_, Postgres>,
     pairs: &[ReferencePair],
@@ -628,7 +761,7 @@ async fn page_footprint(
         }
         let closure = close_footprint(tx, pairs, &[seed]).await?;
         if let Some(refusal) = scope_refusal(&closure, owner_id, request.own_schemas) {
-            return Ok(Err(refusal));
+            return Ok(page_or_refusal(page, refusal));
         }
         let series = closure.series();
         let placed = page.handles();
@@ -644,18 +777,22 @@ async fn page_footprint(
                 (unit, versions)
             })
             .collect();
-        // A unit over a page can never be erased: refuse it now, before the
-        // units ahead of it are, so a refusal never follows a partial erase.
+        // A unit over a page can never be erased. Refuse it before any of
+        // this closure is taken. Older seeds already in the page are a
+        // finished page: commit them, and refuse this seed next call.
         if let Some((unit, versions)) = units
             .iter()
             .find(|(_, versions)| *versions > request.max_versions)
         {
-            return Ok(Err(over(vec![format!(
-                "t={seed}: {} series, {versions} versions that cannot be split \
-                 (max {} versions)",
-                unit.len(),
-                request.max_versions
-            )])));
+            return Ok(page_or_refusal(
+                page,
+                over(vec![format!(
+                    "t={seed}: {} series, {versions} versions that cannot be split \
+                     (max {} versions)",
+                    unit.len(),
+                    request.max_versions
+                )]),
+            ));
         }
         for (unit, versions) in units {
             if page.versions.len() + versions > request.max_versions {
@@ -672,6 +809,22 @@ async fn page_footprint(
         }
     }
     Ok(Ok((page, more_seeds)))
+}
+
+/// `page` when it already holds older seeds, otherwise the refusal.
+///
+/// An empty page means this seed is the oldest one left, so the refusal is
+/// the call. A page that already closed older seeds is committed; the next
+/// call meets this seed with an empty page and refuses it then.
+fn page_or_refusal(
+    page: Footprint,
+    refusal: SeriesEraseRefusal,
+) -> Result<(Footprint, bool), SeriesEraseRefusal> {
+    if page.versions.is_empty() {
+        Err(refusal)
+    } else {
+        Ok((page, true))
+    }
 }
 
 /// Resolve, refuse or erase one selection. The returned plan is the cold
@@ -828,6 +981,22 @@ mod tests {
     fn a_ring_does_not_absorb_what_it_references() {
         let order = erase_order(&closure(4, &[(1, 2), (2, 1), (1, 3), (2, 4), (3, 4)]));
         assert_eq!(numbers(order), vec![vec![1, 2], vec![3], vec![4]]);
+    }
+
+    /// Two rings with no path between them are two units, oldest first, so
+    /// neither is refused for the other's size.
+    #[test]
+    fn disjoint_rings_are_separate_units() {
+        let order = erase_order(&closure(4, &[(1, 2), (2, 1), (3, 4), (4, 3)]));
+        assert_eq!(numbers(order), vec![vec![1, 2], vec![3, 4]]);
+    }
+
+    /// 1 and 2 cite each other and 2 cites 3, which cites 4 and is cited by
+    /// it. The ring that references the other goes first.
+    #[test]
+    fn a_ring_that_references_another_goes_before_it() {
+        let order = erase_order(&closure(4, &[(1, 2), (2, 1), (2, 3), (3, 4), (4, 3)]));
+        assert_eq!(numbers(order), vec![vec![1, 2], vec![3, 4]]);
     }
 
     /// Versions of one series referencing each other are not an edge between

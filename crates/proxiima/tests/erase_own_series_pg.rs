@@ -1642,3 +1642,34 @@ async fn an_indivisible_unit_over_a_page_is_refused_before_any_delete() {
     })
     .await;
 }
+
+/// An older mail that fits a page is erased even when a later mail's closure
+/// holds one series over a page. The refusal comes on the next call, when
+/// that mail is the oldest one left, and does not roll the older page back.
+#[tokio::test]
+async fn an_older_seed_commits_before_a_later_indivisible_one_is_refused() {
+    run(async |h| {
+        let (owner, authz) = personal();
+        let notebook_id = h.notebook(&owner).await;
+        let old = seed_mail(&h.pool, owner, notebook_id, &[1]).await;
+        let young = seed_mail(&h.pool, owner, notebook_id, &[1]).await;
+        let long = seed_long_series(&h.pool, owner, young.seed, 1100).await;
+        let young_before = standing(&h.pool, &young.all()).await;
+        let long_before = standing(&h.pool, &long).await;
+
+        let first = erase(&h.engine, &authz, owner, note_selection(), EraseMode::Erase).await?;
+        assert!(first.more_remaining);
+        assert_eq!(standing(&h.pool, &old.all()).await, [0, 0]);
+        assert_eq!(standing(&h.pool, &young.all()).await, young_before);
+        assert_eq!(standing(&h.pool, &long).await, long_before);
+
+        assert_eq!(
+            refusal_kind(erase(&h.engine, &authz, owner, note_selection(), EraseMode::Erase).await),
+            SeriesEraseRefusalKind::OverCap
+        );
+        assert_eq!(standing(&h.pool, &young.all()).await, young_before);
+        assert_eq!(standing(&h.pool, &long).await, long_before);
+        Ok(())
+    })
+    .await;
+}
