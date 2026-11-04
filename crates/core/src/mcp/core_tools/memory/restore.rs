@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RestoreArgs {
-    #[schemars(description = "Memory UUID in your current space.")]
+    #[schemars(description = "Memory UUID in the selected space.")]
     pub memory: String,
+    #[serde(default)]
+    #[schemars(description = "Memory space key from core_memory_spaces. Omit for current owner.")]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -36,14 +39,12 @@ impl McpTool for RestoreTool {
     ) -> futures::future::BoxFuture<'static, Result<RestoreOutput, McpToolError>> {
         Box::pin(async move {
             let memory_id = ctx.resolve_memory(&args.memory)?;
+            let (space, authz) =
+                super::super::memory_spaces::resolve_space_for_write(&ctx, args.space.as_deref())?;
             let engine = ctx.require_engine()?;
-            let owner = ctx.owner;
-            let authz = ctx
-                .authz
-                .clone()
-                .narrowed_to_owner(owner)
-                .ok_or_else(|| McpToolError::NotAuthorized("restore".into()))?;
-            engine.restore_memory(&authz, owner, memory_id).await?;
+            engine
+                .restore_memory(&authz, space.owner, memory_id)
+                .await?;
             Ok(RestoreOutput {
                 ok: true,
                 memory: args.memory,

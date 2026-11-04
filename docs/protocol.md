@@ -34,6 +34,11 @@ recheck access. Server-issued memory-space keys are selectors resolved through
 the same context. Missing and unreadable entity references have the same public
 result. A readable source keeps its pins even when their target is redacted.
 
+`core_forget` and `core_restore` accept the same optional `space` key as
+`core_remember`. Pass a key from `core_memory_spaces` and the memory's UUID
+to hide or restore it in that space; omit the key to use the session's selected
+owner. The key grants no write authority.
+
 Session retention is scoped to the authenticated principal, independently of
 the selected owner. Opening more sessions can evict only that principal's own
 oldest binding; a full global binding store refuses a new principal instead
