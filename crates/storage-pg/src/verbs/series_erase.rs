@@ -112,6 +112,9 @@ struct Footprint {
     joined_via: BTreeMap<Uuid, String>,
     /// Rows of tables with no memory key that reference the footprint.
     unerasable: Vec<String>,
+    /// `(referrer, referenced)`: the `t` whose sidecar row holds a foreign
+    /// key to the `t` of another version of the footprint.
+    references: Vec<(Uuid, Uuid)>,
 }
 
 impl Footprint {
@@ -129,6 +132,15 @@ impl Footprint {
     /// Every key is the handle of a version inserted with it.
     fn referencing_series(&self) -> usize {
         self.joined_via.len()
+    }
+
+    /// The versions of each series, by series handle.
+    fn series(&self) -> BTreeMap<Uuid, Vec<Uuid>> {
+        let mut series: BTreeMap<Uuid, Vec<Uuid>> = BTreeMap::new();
+        for (t, version) in &self.versions {
+            series.entry(version.handle).or_default().push(*t);
+        }
+        series
     }
 }
 
@@ -183,45 +195,39 @@ async fn close_footprint(
         for pair in pairs {
             let table = PgIdent::table(&pair.table)?;
             let column = PgIdent::column(&pair.column)?;
+            let via = format!("{}.{}", pair.table, pair.column);
             // A keyed table answers with the referencing row's own memory,
-            // which joins the footprint; an unkeyed one answers with the
-            // referenced `t`, which only a refusal can report.
-            let sql = match pair.key {
-                Some(key) => {
-                    let key = PgIdent::column(key)?;
-                    // SQL-POLICY: PgIdent
-                    format!(
-                        "SELECT {key} FROM {tbl} WHERE {col} = ANY($1::uuid[])",
-                        key = key.as_str(),
-                        tbl = table.as_str(),
-                        col = column.as_str()
-                    )
-                }
-                // SQL-POLICY: PgIdent
-                None => format!(
-                    "SELECT {col} FROM {tbl} WHERE {col} = ANY($1::uuid[]) LIMIT 20",
-                    tbl = table.as_str(),
-                    col = column.as_str()
-                ),
-            };
+            // which joins the footprint, and the version it references; an
+            // unkeyed one has no memory to join, so it answers with the
+            // referenced `t` twice and only a refusal reports it.
+            let key = PgIdent::column(pair.key.unwrap_or(&pair.column))?;
+            let limit = if pair.key.is_some() { "" } else { " LIMIT 20" };
+            // SQL-POLICY: PgIdent
+            let sql = format!(
+                "SELECT {key}, {col} FROM {tbl} WHERE {col} = ANY($1::uuid[]){limit}",
+                key = key.as_str(),
+                tbl = table.as_str(),
+                col = column.as_str()
+            );
             // SQL-POLICY: PgIdent (the statement above interpolates only validated identifiers)
-            let found: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            let found: Vec<(Uuid, Uuid)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
                 .bind(&added)
                 .fetch_all(tx.as_mut())
                 .await
                 .map_err(map_err)?;
-            let via = format!("{}.{}", pair.table, pair.column);
             if pair.key.is_some() {
                 frontier.extend(
                     found
-                        .into_iter()
+                        .iter()
+                        .map(|(referrer, _)| *referrer)
                         .filter(|t| !footprint.versions.contains_key(t))
                         .map(|t| (t, Some(via.clone()))),
                 );
+                footprint.references.extend(found);
             } else {
                 footprint
                     .unerasable
-                    .extend(found.into_iter().map(|t| format!("{via} t={t}")));
+                    .extend(found.into_iter().map(|(_, t)| format!("{via} t={t}")));
             }
         }
         frontier.sort_unstable();
@@ -284,6 +290,8 @@ fn scope_refusal(
     None
 }
 
+/// An `Ids` list is erased whole or not at all: its closure over either cap
+/// is refused. Every other selection is paged, never refused for its size.
 fn over_cap(footprint: &Footprint, request: &SeriesEraseRequest<'_>) -> Option<Vec<String>> {
     let series = footprint.handles().len();
     let versions = footprint.versions.len();
@@ -437,8 +445,8 @@ fn over(offending: Vec<String>) -> SeriesEraseRefusal {
     }
 }
 
-/// The closed footprint of `request`'s selection, and whether matching
-/// series were left for a later call. `Err` is an over-cap refusal.
+/// The page of `request`'s selection, and whether matching series were left
+/// for a later call. `Err` is a refusal.
 async fn resolve_footprint(
     tx: &mut Transaction<'_, Postgres>,
     sidecars: &PgSidecarRegistryFrozen,
@@ -446,16 +454,16 @@ async fn resolve_footprint(
     owner_id: Uuid,
     request: &SeriesEraseRequest<'_>,
 ) -> Result<Result<(Footprint, bool), SeriesEraseRefusal>, StorageError> {
-    // One past the cap, so a full page knows whether more wait.
+    // One past the cap, so a full list of seeds knows whether more wait.
     let limit = i64::try_from(request.max_series.saturating_add(1)).unwrap_or(i64::MAX);
     let seeds: Vec<Uuid> = match request.selection {
         SeriesSelection::Ids(ids) => {
             let seeds: Vec<Uuid> = ids.iter().map(|id| id.into_inner()).collect();
             let footprint = close_footprint(tx, pairs, &seeds).await?;
-            return Ok(match over_cap(&footprint, request) {
-                Some(offending) => Err(over(offending)),
-                None => Ok((footprint, false)),
-            });
+            let refusal = over_cap(&footprint, request)
+                .map(over)
+                .or_else(|| scope_refusal(&footprint, owner_id, request.own_schemas));
+            return Ok(refusal.map_or(Ok((footprint, false)), Err));
         }
         SeriesSelection::AdmittedBefore { schema, cutoff } => {
             sqlx::query_scalar(ADMITTED_BEFORE_SQL)
@@ -497,36 +505,149 @@ async fn resolve_footprint(
             .await?
         }
     };
-    page_footprint(tx, pairs, request, seeds).await
+    page_footprint(tx, pairs, owner_id, request, seeds).await
 }
 
-/// Close the longest prefix of `seeds` whose footprint fits the cap.
+/// The series of one closure in an order any prefix of which may be erased:
+/// a series whose rows reference another series of the closure comes before
+/// it, so the seed's own series is last.
 ///
-/// `seeds` is one page past the cap, oldest first. Halve until the closure
-/// fits, so a later series is never erased while an older one waits; a
-/// single seed over the cap is refused.
+/// Ranked by the longest chain of referrers above a series: the series
+/// nothing references go first, then what only they reference. Series that
+/// reference one another (a ring) cannot be ranked; each ring is one unit,
+/// and what hangs below it is ranked as usual once the ring is placed. Each
+/// unit is a list of series handles, oldest first.
+fn erase_order(closure: &Footprint) -> Vec<Vec<Uuid>> {
+    let mut references: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
+    // The distinct series that reference each series and are not placed yet.
+    let mut pending: BTreeMap<Uuid, usize> =
+        closure.handles().into_iter().map(|h| (h, 0)).collect();
+    for (referrer, referenced) in &closure.references {
+        let series = |t: &Uuid| closure.versions.get(t).map(|version| version.handle);
+        if let (Some(from), Some(to)) = (series(referrer), series(referenced))
+            && from != to
+            && references.entry(from).or_default().insert(to)
+        {
+            *pending.entry(to).or_default() += 1;
+        }
+    }
+    let mut order: Vec<Vec<Uuid>> = Vec::new();
+    while !pending.is_empty() {
+        let ready: Vec<Uuid> = pending
+            .iter()
+            .filter(|(_, referrers)| **referrers == 0)
+            .map(|(handle, _)| *handle)
+            .collect();
+        let units: Vec<Vec<Uuid>> = if ready.is_empty() {
+            vec![ring(&pending, &references)]
+        } else {
+            ready.into_iter().map(|handle| vec![handle]).collect()
+        };
+        for handle in units.iter().flatten() {
+            pending.remove(handle);
+        }
+        for handle in units.iter().flatten() {
+            for to in references.get(handle).into_iter().flatten() {
+                if let Some(referrers) = pending.get_mut(to) {
+                    *referrers -= 1;
+                }
+            }
+        }
+        order.extend(units);
+    }
+    order
+}
+
+/// The series of `pending` that lie on a cycle, or between two cycles: the
+/// next unit when none is ready. `pending` holds only rings and what hangs
+/// below them, and each of its series has a referrer in it, so a cycle
+/// exists and the unit is never empty.
+fn ring(pending: &BTreeMap<Uuid, usize>, references: &BTreeMap<Uuid, BTreeSet<Uuid>>) -> Vec<Uuid> {
+    let mut ring: BTreeSet<Uuid> = pending.keys().copied().collect();
+    // Peel the series that reference nothing still in the ring: they hang
+    // below it.
+    while let Some(below) = ring
+        .iter()
+        .find(|handle| {
+            references
+                .get(handle)
+                .is_none_or(|to| to.is_disjoint(&ring))
+        })
+        .copied()
+    {
+        ring.remove(&below);
+    }
+    ring.into_iter().collect()
+}
+
+/// The next page of `seeds`' closure: the closures of the oldest seeds in
+/// turn, each in [`erase_order`], up to `max_versions` versions, and whether
+/// more of the selection waits.
+///
+/// `seeds` is oldest first, one past `max_series` when more wait. A page ends
+/// at the first unit that does not fit, never skipping it for a later one, so
+/// a later seed is only reached once an older one is wholly in the page. Each
+/// closure is checked for scope whole, not only the part that is erased now:
+/// a refusal comes before the first page is deleted, not after it.
 async fn page_footprint(
     tx: &mut Transaction<'_, Postgres>,
     pairs: &[ReferencePair],
+    owner_id: Uuid,
     request: &SeriesEraseRequest<'_>,
-    mut seeds: Vec<Uuid>,
+    seeds: Vec<Uuid>,
 ) -> Result<Result<(Footprint, bool), SeriesEraseRefusal>, StorageError> {
-    let mut more = seeds.len() > request.max_series;
-    seeds.truncate(request.max_series);
-    loop {
-        let footprint = close_footprint(tx, pairs, &seeds).await?;
-        match over_cap(&footprint, request) {
-            None => return Ok(Ok((footprint, more))),
-            Some(mut offending) if seeds.len() <= 1 => {
-                offending.insert(0, format!("t={} alone", seeds[0]));
-                return Ok(Err(over(offending)));
+    let more_seeds = seeds.len() > request.max_series;
+    let mut page = Footprint::default();
+    for seed in seeds.into_iter().take(request.max_series) {
+        if page.versions.contains_key(&seed) {
+            continue;
+        }
+        let closure = close_footprint(tx, pairs, &[seed]).await?;
+        if let Some(refusal) = scope_refusal(&closure, owner_id, request.own_schemas) {
+            return Ok(Err(refusal));
+        }
+        let series = closure.series();
+        let placed = page.handles();
+        let units: Vec<(Vec<Uuid>, usize)> = erase_order(&closure)
+            .into_iter()
+            .map(|unit| {
+                unit.into_iter()
+                    .filter(|handle| !placed.contains(handle))
+                    .collect::<Vec<_>>()
+            })
+            .map(|unit| {
+                let versions = unit.iter().map(|handle| series[handle].len()).sum();
+                (unit, versions)
+            })
+            .collect();
+        // A unit over a page can never be erased: refuse it now, before the
+        // units ahead of it are, so a refusal never follows a partial erase.
+        if let Some((unit, versions)) = units
+            .iter()
+            .find(|(_, versions)| *versions > request.max_versions)
+        {
+            return Ok(Err(over(vec![format!(
+                "t={seed}: {} series, {versions} versions that cannot be split \
+                 (max {} versions)",
+                unit.len(),
+                request.max_versions
+            )])));
+        }
+        for (unit, versions) in units {
+            if page.versions.len() + versions > request.max_versions {
+                return Ok(Ok((page, true)));
             }
-            Some(_) => {
-                seeds.truncate(seeds.len() / 2);
-                more = true;
+            for handle in unit {
+                for t in &series[&handle] {
+                    page.versions.insert(*t, closure.versions[t].clone());
+                }
+                if let Some(via) = closure.joined_via.get(&handle) {
+                    page.joined_via.insert(handle, via.clone());
+                }
             }
         }
     }
+    Ok(Ok((page, more_seeds)))
 }
 
 /// Resolve, refuse or erase one selection. The returned plan is the cold
@@ -555,12 +676,6 @@ pub(crate) async fn erase_series(
                 ));
             }
         };
-    if let Some(refusal) = scope_refusal(&footprint, owner_id, request.own_schemas) {
-        return Ok((
-            SeriesEraseOutcome::Refused(refusal),
-            ColdPurgePlan::default(),
-        ));
-    }
     let ts = footprint.ts();
     if ts.is_empty() {
         return Ok((
@@ -621,7 +736,93 @@ fn count(n: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::memory_uuid_floor;
+    use std::collections::BTreeMap;
+
+    use uuid::Uuid;
+
+    use super::{Footprint, Version, erase_order, memory_uuid_floor};
+
+    /// A closure of one-version series `1..=n`; each `(a, b)` is a row of
+    /// series `a` that references series `b`.
+    fn closure(n: u128, references: &[(u128, u128)]) -> Footprint {
+        let id = |n: u128| Uuid::from_u128(n);
+        Footprint {
+            versions: (1..=n)
+                .map(|n| {
+                    let version = Version {
+                        handle: id(n),
+                        owner_id: id(0),
+                        schema_id: None,
+                    };
+                    (id(n), version)
+                })
+                .collect::<BTreeMap<_, _>>(),
+            references: references.iter().map(|(a, b)| (id(*a), id(*b))).collect(),
+            ..Footprint::default()
+        }
+    }
+
+    fn numbers(order: Vec<Vec<Uuid>>) -> Vec<Vec<u128>> {
+        order
+            .into_iter()
+            .map(|unit| unit.into_iter().map(|handle| handle.as_u128()).collect())
+            .collect()
+    }
+
+    /// Pages 4 and 5 cite attachment 2, page 6 cites attachment 3, both
+    /// attachments cite the mail 1: every page goes before any attachment,
+    /// and the mail, the seed, is last.
+    #[test]
+    fn a_referrer_goes_before_what_it_references_and_the_seed_is_last() {
+        let order = erase_order(&closure(6, &[(2, 1), (3, 1), (4, 2), (5, 2), (6, 3)]));
+        assert_eq!(
+            numbers(order),
+            vec![vec![4], vec![5], vec![6], vec![2], vec![3], vec![1]]
+        );
+    }
+
+    /// A series that is referenced by a later rank waits for all of its
+    /// referrers, not the first: 3 cites 1 directly and through 2.
+    #[test]
+    fn a_series_waits_for_its_last_referrer() {
+        let order = erase_order(&closure(3, &[(3, 1), (3, 2), (2, 1)]));
+        assert_eq!(numbers(order), vec![vec![3], vec![2], vec![1]]);
+    }
+
+    /// 2 and 3 cite each other and the seed 1; 4 cites 5, which cites 1. The
+    /// ring is one unit, placed when its turn comes, and the seed, which
+    /// hangs below it, still goes last.
+    #[test]
+    fn a_ring_is_one_unit_and_what_hangs_below_it_is_ranked_after() {
+        let order = erase_order(&closure(5, &[(2, 3), (3, 2), (3, 1), (4, 5), (5, 1)]));
+        assert_eq!(numbers(order), vec![vec![4], vec![5], vec![2, 3], vec![1]]);
+    }
+
+    /// A ring that references a large series: the series is not dragged
+    /// into the ring's unit, so it can be paged on its own.
+    #[test]
+    fn a_ring_does_not_absorb_what_it_references() {
+        let order = erase_order(&closure(4, &[(1, 2), (2, 1), (1, 3), (2, 4), (3, 4)]));
+        assert_eq!(numbers(order), vec![vec![1, 2], vec![3], vec![4]]);
+    }
+
+    /// Versions of one series referencing each other are not an edge between
+    /// series.
+    #[test]
+    fn a_series_that_references_itself_is_not_a_ring() {
+        let mut closure = closure(2, &[(2, 1)]);
+        let second = Uuid::from_u128(3);
+        closure.versions.insert(
+            second,
+            Version {
+                handle: Uuid::from_u128(2),
+                owner_id: Uuid::from_u128(0),
+                schema_id: None,
+            },
+        );
+        closure.references.push((second, Uuid::from_u128(2)));
+        assert_eq!(numbers(erase_order(&closure)), vec![vec![2], vec![1]]);
+    }
 
     #[test]
     fn the_floor_orders_below_every_memory_uuid_of_its_millisecond_and_above_the_last() {
