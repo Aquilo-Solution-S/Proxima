@@ -37,6 +37,14 @@ impl SpiiceRegistry {
                 }
                 let namespace = contract.spiice_id.replace('-', "_");
                 for surface in retired.surfaces() {
+                    // SQL emits unquoted identifiers; stamps must use their folded spelling.
+                    if surface.table.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                        return Err(SpiiceRegistryError::RetiredFactInverse {
+                            schema_id,
+                            table: surface.table,
+                            why: "inverse tables must use lowercase unquoted identifiers",
+                        });
+                    }
                     if !surface
                         .table
                         .split_once('.')
@@ -51,11 +59,12 @@ impl SpiiceRegistry {
                     if self.contracts.iter().any(|active| {
                         active
                             .all_surfaces()
-                            .any(|declared| declared.table == surface.table)
-                            || active
-                                .schemas
-                                .iter()
-                                .any(|schema| schema.sidecar_table == Some(surface.table))
+                            .any(|declared| declared.table.eq_ignore_ascii_case(surface.table))
+                            || active.schemas.iter().any(|schema| {
+                                schema
+                                    .sidecar_table
+                                    .is_some_and(|table| table.eq_ignore_ascii_case(surface.table))
+                            })
                     }) {
                         return Err(SpiiceRegistryError::ActiveRetiredFactOverlap { schema_id });
                     }
@@ -214,6 +223,61 @@ mod tests {
             core_registry.try_freeze(),
             Err(SpiiceRegistryError::RetiredFactOwnership { .. })
         ));
+    }
+
+    #[test]
+    fn retirement_tables_have_one_canonical_spelling() {
+        let mut retired = retired_fact_fixture();
+        retired.sidecar.table = "test_spiice.RETIRED_V1";
+        assert!(matches!(
+            registry(&retired).try_freeze(),
+            Err(SpiiceRegistryError::RetiredFactInverse { .. })
+        ));
+
+        let mut retired = retired_fact_fixture();
+        retired.inverse_surfaces = Box::leak(
+            vec![Surface {
+                table: "test_spiice.RETIRED_V1",
+                ..retired.sidecar
+            }]
+            .into_boxed_slice(),
+        );
+        assert!(matches!(
+            registry(&retired).try_freeze(),
+            Err(SpiiceRegistryError::RetiredFactInverse { .. })
+        ));
+    }
+
+    #[test]
+    fn active_table_case_aliases_cannot_be_retired() {
+        for sidecar in [false, true] {
+            let retired = retired_fact_fixture();
+            let mut overlap = registry(&retired);
+            let mut active = contract(8, &[], &[], &[]);
+            if sidecar {
+                let mut schema = crate::spiice::freeze::tests::fixtures::schema(
+                    SchemaRef::new("test-spiice", "active", 1),
+                    crate::spiice::TransferRule::StaysOnKey,
+                );
+                schema.sidecar_table = Some("test_spiice.RETIRED_V1");
+                active.schemas = Box::leak(vec![schema].into_boxed_slice());
+            } else {
+                active.state_surfaces = Box::leak(
+                    vec![Surface {
+                        table: "test_spiice.RETIRED_V1",
+                        ..retired.sidecar
+                    }]
+                    .into_boxed_slice(),
+                );
+            }
+            overlap
+                .try_add_contract(Box::leak(Box::new(active)))
+                .unwrap();
+            assert!(matches!(
+                overlap.try_freeze(),
+                Err(SpiiceRegistryError::ActiveRetiredFactOverlap { .. })
+            ));
+        }
     }
 
     #[test]
