@@ -11,15 +11,15 @@ mod example_engine;
 
 use example_engine::{ExampleEngine, next_millisecond};
 use proxiima::spiice::{
-    EraseMode, MAX_ERASE_SERIES_PER_CALL, SeriesEraseError, SeriesEraseReceipt,
-    SeriesEraseRefusalKind, SeriesSelection, SidecarAtom,
+    EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,
+    SeriesEraseReceipt, SeriesEraseRefusalKind, SeriesSelection, SidecarAtom,
 };
 use proxiima_core::{
     AbstractionPayload, AgentNoteV1, AuthPath, AuthzContext, DerivationIdentity, DerivedMemory,
     Engine, ErrorCode, FactPayload, FactWrite, GroupId, InputContractId, MemoryId, MemoryTarget,
     OperatorId, OwnerId, Role, SchemaId, SeriesHandle, UserId,
 };
-use proxiima_example::{DigestV1, NoteV1, SPIICE_ID};
+use proxiima_example::{DigestV1, NoteV1, SPIICE_ID, StampV1};
 use uuid::Uuid;
 
 const EXAMPLE: &str = SPIICE_ID;
@@ -148,6 +148,233 @@ async fn seed_notes(
     .expect("sidecar rows");
     tx.commit().await.expect("the seed commits");
     ts.into_iter().map(MemoryId::new).collect()
+}
+
+/// A mail: a note, two attachments that reference it, and pages that
+/// reference an attachment, the way a record holds its dependants.
+struct Mail {
+    /// The note the selection names; the attachments reference it.
+    seed: MemoryId,
+    attachments: Vec<MemoryId>,
+    pages: Vec<MemoryId>,
+}
+
+impl Mail {
+    fn all(&self) -> Vec<MemoryId> {
+        [&[self.seed][..], &self.attachments, &self.pages].concat()
+    }
+}
+
+/// `count` admissions of `schema`, each its own series with a head, oldest
+/// `t` first. The caller adds their sidecar rows.
+async fn seed_admissions(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner_id: Uuid,
+    schema: &str,
+    sidecar_table: &str,
+    count: usize,
+) -> Vec<Uuid> {
+    let count = i32::try_from(count).expect("the seed count fits i32");
+    let mut ts: Vec<Uuid> = sqlx::query_scalar(
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         SELECT uuidv7(), 'fact', $2, $1, uuidv7()
+           FROM generate_series(1, $3)
+         RETURNING t",
+    )
+    .bind(owner_id)
+    .bind(schema)
+    .bind(count)
+    .fetch_all(&mut **tx)
+    .await
+    .expect("heads");
+    ts.sort_unstable();
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory
+             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+         SELECT h.handle, h.t, 'fact', $1, $2, ARRAY[$4::text],
+                uuid_extract_timestamp(h.t), $1, NULL
+           FROM proxiima_core.memory_head h
+          WHERE h.t = ANY($3)",
+    )
+    .bind(owner_id)
+    .bind(schema)
+    .bind(&ts)
+    .bind(sidecar_table)
+    .execute(&mut **tx)
+    .await
+    .expect("memory rows");
+    ts
+}
+
+/// Stamps of `schema` referencing `parent`: the sidecar column the example
+/// spiice does not have, added here the way a spiice with dependants has it.
+async fn seed_stamps(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner_id: Uuid,
+    parent: Uuid,
+    count: usize,
+) -> Vec<Uuid> {
+    let ts = seed_admissions(
+        tx,
+        owner_id,
+        StampV1::SCHEMA_ID,
+        "proxiima_example.stamp_v1",
+        count,
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO proxiima_example.stamp_v1 (t, owner_id, mark, parent_t)
+         SELECT u, $1, 'stamp', $2 FROM unnest($3::uuid[]) AS u",
+    )
+    .bind(owner_id)
+    .bind(parent)
+    .bind(&ts)
+    .execute(&mut **tx)
+    .await
+    .expect("stamp rows");
+    ts
+}
+
+/// One series of `versions` stamps, all referencing `parent`, as a record
+/// that was superseded again and again.
+async fn seed_long_series(
+    pool: &sqlx::PgPool,
+    owner: OwnerId,
+    parent: MemoryId,
+    versions: usize,
+) -> Vec<MemoryId> {
+    let (owner_id, parent) = (owner.into_inner(), parent.into_inner());
+    let count = i32::try_from(versions).expect("the seed count fits i32");
+    let mut tx = pool.begin().await.expect("seed transaction");
+    sqlx::query("LOCK TABLE proxiima_core.memory, proxiima_core.goal IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await
+        .expect("coarse pin lock");
+    let handle: Uuid = sqlx::query_scalar("SELECT uuidv7()")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("handle");
+    let mut ts: Vec<Uuid> = sqlx::query_scalar("SELECT uuidv7() FROM generate_series(1, $1)")
+        .bind(count)
+        .fetch_all(&mut *tx)
+        .await
+        .expect("versions");
+    ts.sort_unstable();
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'fact', $2, $3, $4)",
+    )
+    .bind(handle)
+    .bind(StampV1::SCHEMA_ID)
+    .bind(owner_id)
+    .bind(ts.last())
+    .execute(&mut *tx)
+    .await
+    .expect("head");
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory
+             (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+         SELECT $1, u, 'fact', $2, $3, ARRAY['proxiima_example.stamp_v1'],
+                uuid_extract_timestamp(u), $2, NULL
+           FROM unnest($4::uuid[]) AS u",
+    )
+    .bind(handle)
+    .bind(owner_id)
+    .bind(StampV1::SCHEMA_ID)
+    .bind(&ts)
+    .execute(&mut *tx)
+    .await
+    .expect("memory rows");
+    sqlx::query(
+        "INSERT INTO proxiima_example.stamp_v1 (t, owner_id, mark, parent_t)
+         SELECT u, $1, 'stamp', $2 FROM unnest($3::uuid[]) AS u",
+    )
+    .bind(owner_id)
+    .bind(parent)
+    .bind(&ts)
+    .execute(&mut *tx)
+    .await
+    .expect("stamp rows");
+    tx.commit().await.expect("the seed commits");
+    ts.into_iter().map(MemoryId::new).collect()
+}
+
+/// One mail with an attachment per entry of `pages`, holding that many pages.
+/// A mail seeded later is newer.
+async fn seed_mail(
+    pool: &sqlx::PgPool,
+    owner: OwnerId,
+    notebook_id: Uuid,
+    pages: &[usize],
+) -> Mail {
+    let owner_id = owner.into_inner();
+    sqlx::query(
+        "ALTER TABLE proxiima_example.stamp_v1
+         ADD COLUMN IF NOT EXISTS parent_t uuid REFERENCES proxiima_core.memory (t)",
+    )
+    .execute(pool)
+    .await
+    .expect("the stamp references another memory");
+    let mut tx = pool.begin().await.expect("seed transaction");
+    sqlx::query("LOCK TABLE proxiima_core.memory, proxiima_core.goal IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await
+        .expect("coarse pin lock");
+    sqlx::query(
+        "INSERT INTO proxiima_core.owners (owner_id, kind)
+         VALUES ($1, 'personal') ON CONFLICT DO NOTHING",
+    )
+    .bind(owner_id)
+    .execute(&mut *tx)
+    .await
+    .expect("owner row");
+    let mail = seed_admissions(
+        &mut tx,
+        owner_id,
+        NoteV1::SCHEMA_ID,
+        "proxiima_example.note_v1",
+        1,
+    )
+    .await[0];
+    sqlx::query(
+        "INSERT INTO proxiima_example.note_v1 (t, notebook_id, key, body, written_at)
+         VALUES ($1, $2, 'mail', 'a mail', now())",
+    )
+    .bind(mail)
+    .bind(notebook_id)
+    .execute(&mut *tx)
+    .await
+    .expect("mail sidecar row");
+    let attachments = seed_stamps(&mut tx, owner_id, mail, pages.len()).await;
+    // Each attachment references the mail; its pages reference the attachment.
+    let mut all_pages = Vec::new();
+    for (attachment, count) in attachments.iter().zip(pages) {
+        all_pages.extend(seed_stamps(&mut tx, owner_id, *attachment, *count).await);
+    }
+    tx.commit().await.expect("the seed commits");
+    Mail {
+        seed: MemoryId::new(mail),
+        attachments: attachments.into_iter().map(MemoryId::new).collect(),
+        pages: all_pages.into_iter().map(MemoryId::new).collect(),
+    }
+}
+
+/// How many of `ts` are still admissions, and how many of those still have
+/// their referenced admission: a page that survived its attachment's erase
+/// would make the second smaller than the first.
+async fn standing(pool: &sqlx::PgPool, ts: &[MemoryId]) -> [i64; 2] {
+    let ts: Vec<Uuid> = ts.iter().map(|t| t.into_inner()).collect();
+    let (standing, referencing_a_standing_one): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM proxiima_core.memory WHERE t = ANY($1)),
+                (SELECT count(*) FROM proxiima_example.stamp_v1 s
+                  WHERE s.t = ANY($1)
+                    AND EXISTS (SELECT 1 FROM proxiima_core.memory m WHERE m.t = s.parent_t))",
+    )
+    .bind(ts)
+    .fetch_one(pool)
+    .await
+    .expect("standing census");
+    [standing, referencing_a_standing_one]
 }
 
 async fn handle_of(pool: &sqlx::PgPool, t: MemoryId) -> SeriesHandle {
@@ -1258,6 +1485,158 @@ async fn a_sidecar_selection_outside_its_declaration_is_refused_before_any_delet
             footprint(&h.pool, &[fact]).await,
             before,
             "no refusal deleted anything"
+        );
+        Ok(())
+    })
+    .await;
+}
+
+fn note_selection() -> SeriesSelection {
+    SeriesSelection::AdmittedBefore {
+        schema: note_schema(),
+        cutoff: time::OffsetDateTime::now_utc() + time::Duration::seconds(1),
+    }
+}
+
+/// One mail, two attachments and 1,100 pages are 1,103 versions: more than a
+/// page. The pages go first, in the first commit, and the attachments and the
+/// mail in the second, so no commit leaves a page referencing an erased
+/// attachment. An `Ids` list reaching the same closure is refused whole.
+#[tokio::test]
+async fn an_oversize_closure_is_erased_leaves_first_across_two_calls() {
+    run(async |h| {
+        let (owner, authz) = personal();
+        let notebook_id = h.notebook(&owner).await;
+        let mail = seed_mail(&h.pool, owner, notebook_id, &[550, 550]).await;
+        let all = mail.all();
+        assert_eq!(all.len(), 1103);
+
+        assert_eq!(
+            refusal_kind(
+                erase(
+                    &h.engine,
+                    &authz,
+                    owner,
+                    SeriesSelection::Ids(vec![mail.seed]),
+                    EraseMode::Erase,
+                )
+                .await
+            ),
+            SeriesEraseRefusalKind::OverCap,
+            "an id list is erased whole or not at all"
+        );
+        assert_eq!(standing(&h.pool, &all).await, [1103, 1102]);
+
+        let dry = erase(
+            &h.engine,
+            &authz,
+            owner,
+            note_selection(),
+            EraseMode::DryRun,
+        )
+        .await?;
+        assert_eq!(dry.versions.len(), MAX_ERASE_VERSIONS_PER_CALL);
+        assert!(dry.more_remaining);
+        assert_eq!(
+            standing(&h.pool, &all).await,
+            [1103, 1102],
+            "a dry run erases nothing"
+        );
+
+        let first = erase(&h.engine, &authz, owner, note_selection(), EraseMode::Erase).await?;
+        assert_eq!(first.versions, dry.versions, "a dry run reports the page");
+        assert!(first.more_remaining);
+        assert_eq!(first.series_erased, 1024);
+        assert_eq!(first.referencing_series, 1024);
+        assert!(
+            first.versions.iter().all(|t| mail.pages.contains(t)),
+            "the first page is pages only"
+        );
+        assert_eq!(
+            standing(&h.pool, &[&[mail.seed][..], &mail.attachments].concat()).await,
+            [3, 2],
+            "the mail and both attachments stand"
+        );
+        assert_eq!(
+            standing(&h.pool, &mail.pages).await,
+            [76, 76],
+            "every page left still has its attachment"
+        );
+
+        let second = erase(&h.engine, &authz, owner, note_selection(), EraseMode::Erase).await?;
+        assert_eq!(
+            second.versions.len(),
+            79,
+            "76 pages, 2 attachments, the mail"
+        );
+        assert_eq!(second.referencing_series, 78);
+        assert!(!second.more_remaining);
+        assert_eq!(standing(&h.pool, &all).await, [0, 0]);
+
+        let third = erase(&h.engine, &authz, owner, note_selection(), EraseMode::Erase).await?;
+        assert_eq!(third.series_erased, 0, "nothing is left");
+        assert!(!third.more_remaining);
+        Ok(())
+    })
+    .await;
+}
+
+/// An older mail is wholly worked before a newer one is touched, however
+/// large it is, and the newer follows as soon as a page has room for it.
+#[tokio::test]
+async fn the_oldest_seed_is_worked_before_a_later_one() {
+    run(async |h| {
+        let (owner, authz) = personal();
+        let notebook_id = h.notebook(&owner).await;
+        let old = seed_mail(&h.pool, owner, notebook_id, &[550, 550]).await;
+        let young = seed_mail(&h.pool, owner, notebook_id, &[3]).await;
+
+        let first = erase(&h.engine, &authz, owner, note_selection(), EraseMode::Erase).await?;
+        assert_eq!(first.versions.len(), MAX_ERASE_VERSIONS_PER_CALL);
+        assert!(first.more_remaining);
+        assert_eq!(
+            standing(&h.pool, &young.all()).await,
+            [5, 4],
+            "the newer mail is untouched while the older one has pages left"
+        );
+
+        let second = erase(&h.engine, &authz, owner, note_selection(), EraseMode::Erase).await?;
+        assert!(!second.more_remaining);
+        assert_eq!(
+            second.versions.len(),
+            79 + 5,
+            "the older rest, then the newer"
+        );
+        assert_eq!(standing(&h.pool, &old.all()).await, [0, 0]);
+        assert_eq!(standing(&h.pool, &young.all()).await, [0, 0]);
+        Ok(())
+    })
+    .await;
+}
+
+/// A unit that cannot fit a page is refused before the first page is erased,
+/// not after the series ahead of it are gone: here a series superseded 1,100
+/// times, which references the mail beside its small attachment.
+#[tokio::test]
+async fn an_indivisible_unit_over_a_page_is_refused_before_any_delete() {
+    run(async |h| {
+        let (owner, authz) = personal();
+        let notebook_id = h.notebook(&owner).await;
+        let mail = seed_mail(&h.pool, owner, notebook_id, &[3]).await;
+        let long = seed_long_series(&h.pool, owner, mail.seed, 1100).await;
+        let all = [mail.all(), long].concat();
+        let before = standing(&h.pool, &all).await;
+
+        for mode in [EraseMode::DryRun, EraseMode::Erase] {
+            assert_eq!(
+                refusal_kind(erase(&h.engine, &authz, owner, note_selection(), mode).await),
+                SeriesEraseRefusalKind::OverCap
+            );
+        }
+        assert_eq!(
+            standing(&h.pool, &all).await,
+            before,
+            "the small series ahead of it were not erased"
         );
         Ok(())
     })

@@ -8,15 +8,19 @@ use crate::error::ProtocolError;
 use crate::verbs::query::SidecarAtom;
 use crate::{MemoryId, OwnerId, SchemaId};
 
-/// Series one call may erase, the selection's reference closure included.
+/// Series one call selects: the most seeds a paged selection takes, and the
+/// most series an `Ids` list may close over. The series that reference a
+/// seed are not counted; [`MAX_ERASE_VERSIONS_PER_CALL`] bounds them.
 pub const MAX_ERASE_SERIES_PER_CALL: usize = 256;
 
-/// Versions one call may erase.
+/// Versions one call may erase: a page.
 ///
 /// The bound that protects the database: the lifecycle lock and the
 /// erase-witness trigger each take one lock per erased row, so an unbounded
-/// set can exhaust the shared lock table. Callers page; re-erasing an erased
-/// series is a no-op, so paging is safe.
+/// set can exhaust the shared lock table. A selection other than
+/// [`SeriesSelection::Ids`] whose reference closure is larger is erased
+/// across calls, referrers first, never refused; re-erasing an erased series
+/// is a no-op, so calling again is safe.
 pub const MAX_ERASE_VERSIONS_PER_CALL: usize = 1024;
 
 /// What one [`crate::UnitOfWork::erase_own_series`] call selects.
@@ -24,15 +28,25 @@ pub const MAX_ERASE_VERSIONS_PER_CALL: usize = 1024;
 /// Every selected admission is expanded to its WHOLE series, live and forgotten:
 /// the erase never prunes a series' history. Every variant but `Ids` names
 /// one own schema, selects only `owner`'s series of it, and pages: a call
-/// stops at the cap and sets [`SeriesEraseReceipt::more_remaining`].
+/// erases the next page of the selection, oldest series first, and sets
+/// [`SeriesEraseReceipt::more_remaining`] while any of it waits.
+///
+/// A page is the next [`MAX_ERASE_VERSIONS_PER_CALL`] versions of the
+/// selection's reference closure, referrers first: a series whose rows
+/// reference another goes before it, and a selected series goes after every
+/// series that references it. Each page is one commit, and none leaves a row
+/// referencing an erased version. The next call selects the same oldest
+/// series again, with a closure smaller by what was erased.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeriesSelection {
     /// Explicit memory ids, any version of a series. An id of no admission
-    /// (already erased, or never admitted) selects nothing. Over the cap the
-    /// call is refused before any delete.
+    /// (already erased, or never admitted) selects nothing. The ids and
+    /// their whole closure are one page: over either cap
+    /// ([`MAX_ERASE_SERIES_PER_CALL`] series, [`MAX_ERASE_VERSIONS_PER_CALL`]
+    /// versions) the call is refused before any delete.
     Ids(Vec<MemoryId>),
     /// Every series of `schema` whose NEWEST version was admitted before
-    /// `cutoff`, oldest first, up to the cap. Admission time is the version's
+    /// `cutoff`, oldest first, in pages. Admission time is the version's
     /// `UUIDv8` `t` at millisecond precision: the substrate stamps it, so a
     /// payload can neither back-date nor future-date it.
     AdmittedBefore {
@@ -41,7 +55,7 @@ pub enum SeriesSelection {
     },
     /// Every series of `schema` with a hot version whose row in the
     /// schema's sidecar matches every `(column, value)` pair, oldest match
-    /// first, up to the cap. The predicates are `AND`-joined equality over
+    /// first, in pages. The predicates are `AND`-joined equality over
     /// the sidecar's own columns — the
     /// [`crate::storage_ports::SidecarSessionRead`] shape — at least one.
     /// Any matching version selects its series: the unit is the series, not
@@ -53,7 +67,7 @@ pub enum SeriesSelection {
     },
     /// Every series of `schema` whose NEWEST version's `column` — a
     /// `timestamptz` column of the schema's sidecar — is older than
-    /// `cutoff`, oldest value first, up to the cap. The clock is the one the
+    /// `cutoff`, oldest value first, in pages. The clock is the one the
     /// payload declares, so a backfilled event ages by when it happened; a
     /// series whose newest version carries a later value keeps every
     /// version. A newest version that holds `NULL` there has no value to
@@ -67,7 +81,7 @@ pub enum SeriesSelection {
     /// Every series of `schema` whose NEWEST version is older than `cutoff`
     /// by the memory's own clock: its `occurred_at` for a Fact, else its
     /// admission time (as [`Self::AdmittedBefore`] reads it). Oldest first,
-    /// up to the cap. A backfilled Fact ages by when it happened, and an
+    /// in pages. A backfilled Fact ages by when it happened, and an
     /// Abstraction or Perspective by when it was admitted. This is the
     /// clock an owner's `retention` row ages a schema by.
     OccurredBefore {
@@ -121,8 +135,8 @@ pub struct SeriesEraseReceipt {
     /// Memories outside the erase whose `origins[]` or `refs[]` name an
     /// erased `t`. The graph is diminished, not refused.
     pub dangling_pins: u64,
-    /// A selection other than [`SeriesSelection::Ids`] stopped at the cap
-    /// with matching series left: call again.
+    /// A selection other than [`SeriesSelection::Ids`] erased one page and
+    /// has more left, in this closure or in a later series: call again.
     pub more_remaining: bool,
 }
 
@@ -138,8 +152,12 @@ pub enum SeriesEraseRefusalKind {
     /// A row of a table that is not a registered memory sidecar references
     /// the erase set, so its erase has no series to join.
     UnerasableReference,
-    /// The selection closes over more series or versions than one call may
-    /// erase ([`MAX_ERASE_SERIES_PER_CALL`], [`MAX_ERASE_VERSIONS_PER_CALL`]).
+    /// An [`SeriesSelection::Ids`] list closes over more series or versions
+    /// than one call may erase ([`MAX_ERASE_SERIES_PER_CALL`],
+    /// [`MAX_ERASE_VERSIONS_PER_CALL`]), or any selection reaches one
+    /// indivisible unit over the version cap: a single series, or a ring of
+    /// series that reference one another. A paged selection is otherwise
+    /// never refused for its size, and is refused before the first page.
     OverCap,
 }
 

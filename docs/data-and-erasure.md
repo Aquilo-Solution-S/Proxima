@@ -129,8 +129,21 @@ versions. Cross-owner, foreign-schema, or unerasable references refuse before
 deletion. Reference closure and transaction bounds are part of the typed API.
 
 The erase is the unit's sole operation. Dry-run uses the same selection and
-rollback path. Bounded selections report remaining work; retrying an already
-erased series is a no-op. Rustdoc owns selection fields, caps, and receipt types.
+rollback path, and reports the same page.
+
+Every selection but an explicit id list is erased in pages. A page is the next
+1,024 versions of the selection's reference closure, oldest selected series
+first and, within one series' closure, what references the set before what it
+references: the rows that cite an attachment, then the attachment, then the
+record that holds it. Each page is one commit and reports `more_remaining`; the
+next call selects the same oldest series again, with a closure smaller by what
+was erased, so one large record never stalls the series behind it. A referrer
+is always erased before or with what it references, so every commit leaves a
+consistent store, and a shared object goes with its last citing admission. An
+id list over the cap is refused whole, and so is one indivisible unit over a
+page, before the first page is erased: a single series or a ring of series that
+reference one another. Retrying an already erased series is a no-op. Rustdoc
+owns selection fields, caps, and receipt types.
 
 ### Retention
 

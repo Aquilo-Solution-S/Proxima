@@ -1266,8 +1266,8 @@ impl<'a> UnitOfWork<'a> {
     ///   its columns, and `DeclaredBefore`'s is `timestamptz`;
     /// - at most [`MAX_ERASE_SERIES_PER_CALL`] series and
     ///   [`MAX_ERASE_VERSIONS_PER_CALL`] versions: an `Ids` selection over
-    ///   the cap is refused, every other selection stops at it and reports
-    ///   `more_remaining`.
+    ///   the cap is refused, every other selection erases one page of its
+    ///   closure, referrers first, and reports `more_remaining`.
     ///
     /// It must be the unit's first and only operation: the erase takes its
     /// locks before anything else in the transaction. [`EraseMode::DryRun`]
