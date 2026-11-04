@@ -136,12 +136,25 @@ actions. `cliff.toml` renders these in the release notes;
 Per-release changes live only in those notes.
 
 Changes are pushed to `main` directly; `verified` names the last `main`
-commit that passed CI, and new work starts from it. A release is cut by a
-commit that bumps `proxiima_core::RELEASE_VERSION`: once `verify.yml` advances
-`verified` onto it, the value becomes the `v${VERSION}` tag and git-cliff
-generates notes. A commit that leaves the constant unchanged cuts no release.
+commit that passed CI, and new work starts from it. After CI passes, `verify.yml`
+atomically advances `verified` and the lightweight `nightly` tag to that tested
+commit. `nightly` follows every successful verification; it has no daily schedule
+or GitHub Release entry. Routine changes leave `proxiima_core::RELEASE_VERSION`
+unchanged.
+
+A numbered release is cut by a deliberate bump of that constant: once
+`verify.yml` advances `verified` onto the commit, the value becomes the
+`v${VERSION}` tag and git-cliff generates notes. A commit that leaves the
+constant unchanged cuts no release.
 Run full local gates before pushing, and `scripts/check-release-version.py`
 for a version bump. Do not tag by hand.
+
+`nightly` is a moving source selector. Use an immutable numbered tag or commit
+SHA for reproducible builds, and keep the same git selector across all Proxiima
+dependencies. Cargo locks git dependencies to a commit until `cargo update`.
+For a local clone that already has `nightly`, explicitly refresh only that tag
+with `git fetch origin +refs/tags/nightly:refs/tags/nightly`. Nightly source trees
+retain the last declared release version; identify their exact source by SHA.
 
 For a spiice change, also verify the served catalog and the host e2e path. For
 an outbox or host-state change, exercise the transaction and retry or rollback

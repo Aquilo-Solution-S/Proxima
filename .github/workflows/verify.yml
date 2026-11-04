@@ -2,10 +2,11 @@ name: Verify
 
 # `main` takes direct pushes; `verified` names the last commit that passed CI.
 # Work starts from `verified`, releases are cut only from it, and this workflow
-# is the only writer of it.
+# is the only writer of it and the rolling `nightly` tag.
 #
-#   green  CI passes on the newest `main` commit -> `verified` fast-forwards to
-#          it and release.yml cuts a tag if RELEASE_VERSION was bumped.
+#   green  CI passes on the newest `main` commit -> `verified` fast-forwards and
+#          `nightly` moves to that same commit atomically. release.yml cuts a
+#          numbered tag only if RELEASE_VERSION was deliberately bumped.
 #   red    CI is re-run on up to eight commits between `verified` and that tip
 #          (scripts/verify-culprit.py). If the first red one sits directly on
 #          a green one, it is reverted on `main` and verify runs again;
@@ -78,19 +79,23 @@ jobs:
       ref: ${{ needs.target.outputs.tip }}
 
   advance:
-    name: advance verified
+    name: advance verified and nightly
     needs: [target, ci]
     if: ${{ needs.ci.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      # The server moves the ref and refuses anything but a fast-forward;
-      # branch protection forbids force pushes to `verified` as well.
-      - run: gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/verified" -f sha="${TIP}" -F force=false
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TIP: ${{ needs.target.outputs.tip }}
+      # actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.target.outputs.tip }}
+          fetch-depth: 0
+      # One transaction keeps both refs on the tested commit. Only the rolling
+      # tag is forced; `verified` still requires a fast-forward. No release
+      # object is created for nightly, and numbered tags are never moved.
+      - name: publish verified and nightly
+        run: git push --atomic origin HEAD:refs/heads/verified +HEAD:refs/tags/nightly
 
   release:
     needs: advance

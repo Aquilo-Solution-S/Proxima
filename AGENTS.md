@@ -37,7 +37,8 @@ concepts and integration; avoid a second invariant or configuration ledger.
 ## Branch and release policy
 
 1. Push to `main` directly. History stays linear: rebase, never merge or
-   force-push. Before pushing, run the complete local gates and an independent
+   force-push branches or numbered tags. Only `verify.yml` moves the rolling
+   `nightly` tag. Before pushing, run the complete local gates and an independent
    review of `origin/main..HEAD` by a vendor other than the one the commits'
    `Co-Authored-By` trailers name. Every rule in this file that says "review"
    means this review; nothing else reads a change before it lands.
@@ -45,14 +46,16 @@ concepts and integration; avoid a second invariant or configuration ledger.
    moves it. Start work from `origin/verified`, not `origin/main`: commits on
    `main` past `verified` are untested and are not ground truth.
 3. `verify.yml` runs CI on the newest `main` commit and batches pushes that
-   land meanwhile. Green fast-forwards `verified`. Red re-runs CI on commits in
-   the batch, reverts the first red one on `main`, or opens an issue naming the
+   land meanwhile. Green atomically fast-forwards `verified` and moves the
+   lightweight `nightly` tag to the same tested commit. Red re-runs CI on commits
+   in the batch, reverts the first red one on `main`, or opens an issue naming the
    range. Only verify runs save Rust caches. PRs remain for outside
    contributors.
-4. A commit that changes `proxiima_core::RELEASE_VERSION` cuts `v${VERSION}`
-   through `release.yml` once `verified` reaches it; an unchanged constant cuts
-   no release, and no release is cut from an unverified commit. The version
-   checker validates the next published number.
+4. Routine changes leave `proxiima_core::RELEASE_VERSION` unchanged and ship
+   through `nightly`, without creating a GitHub Release. A deliberate bump cuts
+   `v${VERSION}` through `release.yml` once `verified` reaches it. No release is
+   cut from an unverified commit. The version checker validates the next
+   published number.
 5. Released migrations are immutable; `scripts/check-migrations.py` pins every
    released file from `RELEASE_EPOCH`. New migration versions must be above all
    released versions in their directory. Definitions are edited in place; see
