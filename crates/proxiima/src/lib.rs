@@ -148,6 +148,7 @@ mod outbox_http;
 mod outbox_test_fixture;
 mod owner_access;
 mod proxiima_host;
+mod retention_http;
 mod runtime;
 mod runtime_config;
 mod runtime_grants;

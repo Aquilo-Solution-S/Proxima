@@ -674,7 +674,8 @@ pub async fn dump_database(
         // `publication_outbox_pg_tests` pins it. 0042's owner_follows is
         // host-written schema metadata about no owner. 0050's index debt is
         // a host vector index's pending owner moves, which
-        // `semantic_vector_index` pins.
+        // `semantic_vector_index` pins. 0062's retention rows stay with their
+        // owner (`TransferRule::StaysOnKey`), as the generated leg declares.
         if matches!(
             table.as_str(),
             "publication_consumer"
@@ -686,6 +687,7 @@ pub async fn dump_database(
                 | "maintenance_lease"
                 | "vector_index_debt"
                 | "publication_backlog"
+                | "retention"
         ) {
             continue;
         }

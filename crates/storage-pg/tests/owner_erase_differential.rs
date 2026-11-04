@@ -682,6 +682,9 @@ pub const DROPPED_TABLES: &[&str] = &[
     "vector_index_debt",
     // Added by 0052: the publisher's backlog estimate, about no owner.
     "publication_backlog",
+    // Added after the baseline by 0062: an owner's retention per schema.
+    // `tests/retention.rs` pins its export and erase.
+    "retention",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0007 added staged BLAKE3 identity after this frozen baseline;

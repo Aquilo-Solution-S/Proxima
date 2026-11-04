@@ -448,7 +448,13 @@ impl<A: SpiiceApp + 'static> Proxiima<A> {
             (Some(mcp), Some(allowlist)) => {
                 let edge =
                     resolve_mcp_edge(&app_ctx, &parts, owner_access, allowlist, &cancel, &config);
-                let service = build_router::<A>(app_ctx.clone(), &edge, &cancel, &config);
+                let service = build_router::<A>(
+                    app_ctx.clone(),
+                    &edge,
+                    &booted.system_authority,
+                    &cancel,
+                    &config,
+                );
                 (
                     Some(service),
                     Some(edge),
@@ -490,7 +496,13 @@ impl<A: SpiiceApp + 'static> Proxiima<A> {
             }
             let edge =
                 resolve_mcp_edge(&app_ctx, &parts, owner_access, allowlist, &cancel, &config);
-            let app = build_router::<A>(app_ctx.clone(), &edge, &cancel, &config);
+            let app = build_router::<A>(
+                app_ctx.clone(),
+                &edge,
+                &booted.system_authority,
+                &cancel,
+                &config,
+            );
             let listener = tokio::net::TcpListener::bind(mcp.bind)
                 .await
                 .map_err(|err| ProxiimaError::Mcp(err.into()))?;
@@ -655,7 +667,7 @@ impl Runtime {
         config: &crate::RuntimeConfig,
         mcp: FeatureDecision,
     ) -> Self {
-        let system_authority = Arc::new(booted.system_authority);
+        let system_authority = booted.system_authority;
         let objects = host
             .blobs
             .clone()
@@ -748,6 +760,22 @@ macro_rules! runtime_handle_methods {
         #[must_use]
         pub fn system_authority(&self) -> &SystemAuthority {
             &self.runtime.system_authority
+        }
+
+        /// Every owner's retention rows, for the host's retention clock
+        /// (docs/data-and-erasure.md).
+        ///
+        /// # Errors
+        ///
+        /// Storage faults.
+        pub async fn retention(
+            &self,
+        ) -> Result<Vec<proxiima_core::Retention>, proxiima_core::ProtocolError> {
+            self.runtime
+                .host
+                .engine
+                .all_retention(&self.runtime.system_authority)
+                .await
         }
 
         /// Boot-held authority for the registered host-state participant.
@@ -1254,6 +1282,7 @@ fn resolve_mcp_edge(
 fn build_router<A: SpiiceApp>(
     app_ctx: AppContext,
     edge: &crate::McpEdge,
+    system_authority: &Arc<SystemAuthority>,
     cancel: &CancellationToken,
     config: &crate::RuntimeConfig,
 ) -> Router {
@@ -1267,6 +1296,8 @@ fn build_router<A: SpiiceApp>(
     } else {
         Router::new()
     };
+    let retention_router =
+        crate::retention_http::router(app_ctx.host().engine.clone(), Arc::clone(system_authority));
     let app_router = A::mount_http(Router::new(), app_ctx);
     let auth_layer = proxiima_mcp_server::mcp_auth_layer_with_metadata(
         Arc::clone(&edge.edge_auth),
@@ -1276,6 +1307,7 @@ fn build_router<A: SpiiceApp>(
     let protected_router = Router::new()
         .nest_service(proxiima_mcp_server::MCP_PATH, edge.mcp_service())
         .merge(edge.rest_router.clone())
+        .merge(retention_router)
         .merge(app_router)
         .layer(auth_layer);
     let mut router = protected_router;

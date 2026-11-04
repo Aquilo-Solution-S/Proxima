@@ -1048,6 +1048,7 @@ const TABLES: &[(&str, Rows)] = &[
     ("publication_delivery", Rows::NoKind),
     ("publication_origin", Rows::NoKind),
     ("publication_outbox", Rows::NoKind),
+    ("retention", Rows::NoKind),
     ("sketch", Rows::Kind),
     ("source_cursors", Rows::NoKind),
     ("store_identity", Rows::NoKind),

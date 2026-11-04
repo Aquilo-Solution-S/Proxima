@@ -6,7 +6,7 @@ use super::handles::{
     EmbeddingWriteHandle, FactIngestHandle, GoalReadHandle, GoalWriteHandle, MemoryAuthoringHandle,
     MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
     OwnerEraseAuthorityHandle, OwnerInverseHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    SourceCursorHandle, WriteSessionFactoryHandle,
+    RetentionHandle, SourceCursorHandle, WriteSessionFactoryHandle,
 };
 use super::rejecting::RejectingStorage;
 
@@ -28,6 +28,7 @@ pub struct StoragePorts {
     owner_membership_admin: OwnerMembershipAdminHandle,
     owner_transfer: OwnerTransferHandle,
     source_cursor: SourceCursorHandle,
+    retention: RetentionHandle,
     owner_erase: OwnerInverseHandle,
     erase_authority: Option<OwnerEraseAuthorityHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
@@ -45,6 +46,11 @@ pub(crate) struct AccessAdminStoragePorts {
 #[derive(Clone)]
 pub(crate) struct SourceCursorStoragePorts {
     pub source_cursor: SourceCursorHandle,
+}
+
+#[derive(Clone)]
+pub(crate) struct RetentionStoragePorts {
+    pub retention: RetentionHandle,
 }
 
 #[derive(Clone)]
@@ -98,6 +104,7 @@ pub(crate) struct EngineStoragePorts {
     pub access_admin: AccessAdminStoragePorts,
     pub owner_inverse: OwnerInverseStoragePorts,
     pub source_cursor: SourceCursorStoragePorts,
+    pub retention: RetentionStoragePorts,
     pub goal_command: GoalCommandStoragePorts,
     pub ingest: IngestStoragePorts,
     pub memory_authoring: MemoryAuthoringStoragePorts,
@@ -124,6 +131,7 @@ pub struct StoragePortsBuilder {
     owner_membership_admin: Option<OwnerMembershipAdminHandle>,
     owner_transfer: Option<OwnerTransferHandle>,
     source_cursor: Option<SourceCursorHandle>,
+    retention: Option<RetentionHandle>,
     owner_erase: Option<OwnerInverseHandle>,
     erase_authority: Option<OwnerEraseAuthorityHandle>,
     owner_drop_proof: Option<OwnerDropProofHandle>,
@@ -168,6 +176,7 @@ impl StoragePorts {
             owner_membership_admin: rejecting.clone(),
             owner_transfer: rejecting.clone(),
             source_cursor: rejecting.clone(),
+            retention: rejecting.clone(),
             owner_erase: rejecting.clone(),
             erase_authority: None,
             owner_drop_proof: None,
@@ -244,6 +253,9 @@ impl From<StoragePorts> for EngineStoragePorts {
             },
             source_cursor: SourceCursorStoragePorts {
                 source_cursor: ports.source_cursor.clone(),
+            },
+            retention: RetentionStoragePorts {
+                retention: ports.retention.clone(),
             },
             goal_command: GoalCommandStoragePorts {
                 goal_write: ports.goal_write.clone(),
@@ -368,6 +380,12 @@ impl StoragePortsBuilder {
     }
 
     #[must_use]
+    pub fn retention(mut self, handle: RetentionHandle) -> Self {
+        self.retention = Some(handle);
+        self
+    }
+
+    #[must_use]
     pub fn owner_erase(mut self, handle: OwnerInverseHandle) -> Self {
         self.owner_erase = Some(handle);
         self
@@ -438,6 +456,7 @@ impl StoragePortsBuilder {
             owner_membership_admin,
             owner_transfer,
             source_cursor,
+            retention,
             owner_erase,
             write_session,
         ))

@@ -64,6 +64,16 @@ pub enum SeriesSelection {
         column: String,
         cutoff: time::OffsetDateTime,
     },
+    /// Every series of `schema` whose NEWEST version is older than `cutoff`
+    /// by the memory's own clock: its `occurred_at` for a Fact, else its
+    /// admission time (as [`Self::AdmittedBefore`] reads it). Oldest first,
+    /// up to the cap. A backfilled Fact ages by when it happened, and an
+    /// Abstraction or Perspective by when it was admitted. This is the
+    /// clock an owner's `retention` row ages a schema by.
+    OccurredBefore {
+        schema: SchemaId,
+        cutoff: time::OffsetDateTime,
+    },
 }
 
 impl SeriesSelection {
@@ -74,7 +84,8 @@ impl SeriesSelection {
             Self::Ids(_) => None,
             Self::AdmittedBefore { schema, .. }
             | Self::SidecarEquals { schema, .. }
-            | Self::DeclaredBefore { schema, .. } => Some(schema),
+            | Self::DeclaredBefore { schema, .. }
+            | Self::OccurredBefore { schema, .. } => Some(schema),
         }
     }
 }

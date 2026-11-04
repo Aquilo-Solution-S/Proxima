@@ -1,9 +1,10 @@
 # Data and erasure
 > Status: current.
 
-Proxiima supplies inverse operations for its declared storage. The host supplies
-authorization policy, retention schedules, obligations, downstream cleanup, and
-any record of an operation. The substrate makes no legal-compliance promise.
+Proxiima supplies inverse operations for its declared storage and holds each
+owner's retention per schema. The host supplies authorization policy, the
+retention clock, obligations, downstream cleanup, and any record of an
+operation. The substrate makes no legal-compliance promise.
 
 ## Ownership and lifecycle
 
@@ -118,21 +119,48 @@ owner, and a typed `SeriesSelection`. Admin or host system authority is required
 From a tool, the dispatched action must declare a destructive effect and belong
 to the spiice contract.
 
-Selections can name explicit admissions, admission-time cutoffs, typed sidecar
-predicates, or a declared timestamp column. A cutoff selects a whole series only
-when its newest version qualifies. Forgotten versions are included when the
-series is selected, and they keep their sidecar rows, so a sidecar predicate or
-a declared timestamp matches them as it matches live versions. Cross-owner, foreign-schema, or unerasable references refuse before
+Selections can name explicit admissions, admission-time cutoffs, a memory's
+own clock (`OccurredBefore`: a Fact's `occurred_at`, else the admission time),
+typed sidecar predicates, or a declared timestamp column. A cutoff selects a
+whole series only when its newest version qualifies. Forgotten versions are
+included when the series is selected, and they keep their sidecar rows, so a
+sidecar predicate or a declared timestamp matches them as it matches live
+versions. Cross-owner, foreign-schema, or unerasable references refuse before
 deletion. Reference closure and transaction bounds are part of the typed API.
 
 The erase is the unit's sole operation. Dry-run uses the same selection and
 rollback path. Bounded selections report remaining work; retrying an already
 erased series is a no-op. Rustdoc owns selection fields, caps, and receipt types.
 
-The host implements retention by scheduling these selections. Admission time
-and declared event time are different clocks: backfilled old events receive a
-new admission time. Choose the clock that matches the host's policy, and honor
-any hold in the host before calling the inverse.
+### Retention
+
+Retention is one `retention` row per owner and schema: `keep_days`, `1..=36500`
+(`KeepDays`). No row keeps for good, and nothing inherits: a group's row is its
+own. `core_set_retention` sets or, without days, removes a row, and
+`core_retention` lists the rows of every owner the caller administers. Both
+take the owner-admin gate `erase_own_series` takes: a person for their own
+rows, a group's admin for the group's; an editor, viewer or ingest member is
+refused. Owner export carries the rows, owner erase takes them, and transfer
+leaves them with their owner.
+
+The host runs the clock. `RunningProxiima::retention` reads every row under
+its system authority; for each, the host erases that owner's series of that
+schema with `OccurredBefore` at `now - keep_days`, so a backfilled event ages
+by when it happened. A row is the consent: honor any hold in the host before
+calling the inverse. In its own store the host calls
+`Engine::system_unit_of_work` and `erase_own_series` in process.
+
+Another store it reaches through that store's stock host:
+`POST /retention/erase` (`RETENTION_ERASE_PATH`) with
+`{"schema_id": …, "cutoff": RFC 3339}`. The stock host serves it for every
+spiice it composes, so a spiice writes no code for it. The call must carry a
+forwarded credential for the owner (the forwarder policy's verified `owner`
+claim) that also carries the signed claim `"vouch": "retention"`. The stock
+host then erases under its own system authority, page by page until no series
+remains, and answers the summed receipt. An ordinary caller, a forwarded call
+without the vouch (the forwarder's role is below admin and never erases), and
+a vouch it does not know are refused before anything is read, and so is a
+cutoff later than the stock host's clock.
 
 ## Receipts and export
 

@@ -29,8 +29,9 @@ const OUTPUT_SCHEMA_URL: &str = "https://proxiima.test/core-fact-output.json";
 /// Measured in bytes when set (#375): 71,509 before, 42,601 after; 39,048
 /// when proxiima-mcp stopped linking a spiice (#473); 41,175 when restore left
 /// `core_forget` for its own `core_restore`, after trimming both tools' prose;
-/// 41,267 when an unanswered store became `{store, why}` (#523).
-const TOOLS_LIST_BUDGET: usize = 42_500;
+/// 41,267 when an unanswered store became `{store, why}` (#523); 43,586 when
+/// retention added `core_retention` and `core_set_retention`, prose trimmed.
+const TOOLS_LIST_BUDGET: usize = 44_000;
 
 #[test]
 fn an_explicit_object_root_constrains_every_union_branch() {

@@ -23,6 +23,9 @@ pub use crate::migrations::{
 };
 pub use crate::owner_access::{ForwarderPolicy, OwnerRegistry};
 pub use crate::proxiima_host::ProxiimaHost;
+/// Retention rows ([`crate::RunningProxiima::retention`]) and the stock
+/// host's route that erases what a row's cutoff ages out.
+pub use crate::retention_http::RETENTION_ERASE_PATH;
 pub use crate::runtime::{
     BuiltProxiima, Proxiima, RunningProxiima, layered_router, layered_router_with_revalidation,
     run, serve,
@@ -168,6 +171,7 @@ pub use proxiima_core::{
     DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, MemoryTarget, SeriesHandle,
 };
 pub use proxiima_core::{FeatureControlError, FeatureStatus};
+pub use proxiima_core::{KeepDays, KeepDaysOutOfRange, Retention};
 /// Frozen-registry catalog element. [`SpiiceRegistryFrozen::list_mcp_tools`]
 /// already returns `&[McpToolDescriptor]`; without these names a host
 /// depending only on `proxiima` cannot write a typed signature or match

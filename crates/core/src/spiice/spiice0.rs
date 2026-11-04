@@ -923,6 +923,20 @@ const KERNEL_SURFACES: &[Surface] = &[
         completeness: None,
     },
     Surface {
+        table: "proxiima_core.retention",
+        key: KeyShape::Custom(&["owner_id", "schema_id"]),
+        owner_column: Some("owner_id"),
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep {
+            why: "retention is owner policy, not memory content",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Counted("retention"),
+        completeness: None,
+    },
+    Surface {
         table: "proxiima_core.delegated_authority_grants",
         key: KeyShape::Custom(&["delegation_id"]),
         owner_column: Some("owner_id"),
@@ -1189,6 +1203,14 @@ const TOOLS: &[ToolContract] = &[
     ToolContract {
         wire_name: tool::CORE_UPLOAD,
         actions: &["prepare", "complete", "abort", "read_url"],
+    },
+    ToolContract {
+        wire_name: tool::CORE_RETENTION,
+        actions: &[],
+    },
+    ToolContract {
+        wire_name: tool::CORE_SET_RETENTION,
+        actions: &[],
     },
 ];
 

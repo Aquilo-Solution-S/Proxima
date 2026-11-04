@@ -1414,6 +1414,7 @@ impl PgStorage {
             .owner_membership_admin(self.clone())
             .owner_transfer(self.clone())
             .source_cursor(self.clone())
+            .retention(self.clone())
             .owner_erase(self.clone())
             .write_session(self)
     }

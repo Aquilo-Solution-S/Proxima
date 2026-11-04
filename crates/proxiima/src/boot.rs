@@ -29,7 +29,7 @@ use crate::{
 /// A started engine plus the handles the runtime keeps from its boot.
 pub(crate) struct Booted {
     pub(crate) engine: Arc<Engine>,
-    pub(crate) system_authority: SystemAuthority,
+    pub(crate) system_authority: std::sync::Arc<SystemAuthority>,
     pub(crate) host_state_maintenance_authority:
         Option<proxiima_core::engine::HostStateMaintenanceAuthority>,
     pub(crate) delegation_runtime_authority: proxiima_core::DelegationRuntimeAuthority,
@@ -187,7 +187,7 @@ pub(crate) async fn boot<A: SpiiceBundle>(
     let registry = Arc::new(engine.registry().clone());
     Ok(Booted {
         engine,
-        system_authority,
+        system_authority: std::sync::Arc::new(system_authority),
         host_state_maintenance_authority,
         delegation_runtime_authority,
         handle,

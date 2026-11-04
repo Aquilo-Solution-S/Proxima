@@ -339,15 +339,34 @@ async fn installed_historical_example_upgrades_in_place_with_its_real_ledger() {
         .await
         .expect("old ledger absence");
     assert!(!old_exists);
-    for (ledger, before) in [
-        ("public._sqlx_migrations", core_rows),
-        (current_ledger, example_rows),
+    for (ledger, source, before) in [
+        ("public._sqlx_migrations", &core_source, core_rows),
+        (current_ledger, &source, example_rows),
     ] {
         let after = rename_ledger_snapshot(transaction.as_mut(), ledger).await;
+        // The upgrade appends the one catalog finalizer and every migration
+        // released after it, and nothing else.
+        let appended: Vec<MigrationPhase> = after
+            .iter()
+            .filter(|row| !before.contains(row))
+            .map(|(version, _)| {
+                let migration = source
+                    .iter()
+                    .find(|migration| migration.version == *version)
+                    .expect("an appended version is an embedded migration");
+                proxiima_storage_pg::migration_phase(source, migration)
+            })
+            .collect();
         assert_eq!(
-            after.len(),
-            before.len() + 1,
-            "exactly one catalog finalizer is appended"
+            appended.first(),
+            Some(&MigrationPhase::Finalize),
+            "exactly one catalog finalizer is appended first"
+        );
+        assert!(
+            appended[1..]
+                .iter()
+                .all(|phase| *phase == MigrationPhase::Current),
+            "only current migrations follow the finalizer: {appended:?}"
         );
         for row in before {
             assert!(

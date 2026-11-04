@@ -265,11 +265,30 @@ impl Idp {
         owner: Option<(Uuid, proxiima_core::WriterAttribution)>,
         application: Option<Value>,
     ) -> TestResult<String> {
+        let extra = application.map(|application| ("application", application));
+        self.bearer_with_claims(sub, owner, extra.as_slice())
+    }
+
+    /// A forwarder's credential for `owner` that also carries `vouch`.
+    fn bearer_vouched(&self, owner: Uuid, vouch: Value) -> TestResult<String> {
+        let writer = proxiima_core::WriterAttribution {
+            by: owner,
+            via: None,
+        };
+        self.bearer_with_claims(FORWARDER_SUB, Some((owner, writer)), &[("vouch", vouch)])
+    }
+
+    fn bearer_with_claims(
+        &self,
+        sub: &str,
+        owner: Option<(Uuid, proxiima_core::WriterAttribution)>,
+        extra: &[(&str, Value)],
+    ) -> TestResult<String> {
         let exp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 3600;
         let header = json!({"alg": "RS256", "kid": KID, "typ": "JWT"});
         let mut claims = json!({"iss": self.issuer, "aud": AUDIENCE, "sub": sub, "exp": exp});
-        if let Some(application) = application {
-            claims["application"] = application;
+        for (name, value) in extra {
+            claims[*name] = value.clone();
         }
         if let Some((owner, writer)) = owner {
             claims["owner"] = json!(owner);
@@ -357,8 +376,16 @@ impl Stack {
 
     /// Boot exactly as a stock host does, with `env` as its only input.
     async fn boot(&self, overrides: &[(&str, &str)]) -> TestResult<(RunningProxiima, String)> {
+        self.boot_app::<(SpiiceHost,)>(overrides).await
+    }
+
+    /// [`Self::boot`] composing `A` instead of the host alone.
+    async fn boot_app<A: SpiiceApp + 'static>(
+        &self,
+        overrides: &[(&str, &str)],
+    ) -> TestResult<(RunningProxiima, String)> {
         let env = self.env(overrides);
-        let running = Proxiima::<(SpiiceHost,)>::app()
+        let running = Proxiima::<A>::app()
             .from_lookup(move |key| env.get(key).cloned())?
             .run()
             .await?;
@@ -1103,4 +1130,172 @@ async fn sigterm_drains_the_request_in_flight_and_exits_ok() {
     .await;
     stack.cleanup();
     result.expect("SIGTERM drain test failed");
+}
+
+// --- the home's retention erase --------------------------------------------
+
+/// One note of `owner`'s notebook that happened at `at`.
+async fn note_at(
+    running: &RunningProxiima,
+    owner: Uuid,
+    notebook_id: Uuid,
+    key: &str,
+    at: time::OffsetDateTime,
+) -> TestResult<proxiima_core::MemoryId> {
+    let owner = proxiima_core::OwnerId::new(owner);
+    let authz = proxiima_core::test_fixtures::authenticated_context(
+        proxiima_core::AuthzContext::for_subject(owner.as_user(), proxiima::AuthPath::HostBearer),
+    );
+    let payload = proxiima_example::NoteV1 {
+        notebook_id,
+        key: key.to_owned(),
+        body: format!("note {key}"),
+        written_at: at,
+    };
+    Ok(running
+        .host()
+        .engine()
+        .ingest_fact(
+            &authz,
+            proxiima_core::FactWrite::new(owner, "retention-route", &payload).observed_at(at),
+        )
+        .await?
+        .memory_id)
+}
+
+async fn present(stack: &Stack, memory: proxiima_core::MemoryId) -> TestResult<bool> {
+    let pool = sqlx::PgPool::connect(&stack.database.admin_url()).await?;
+    let present: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxiima_core.memory WHERE t = $1)")
+            .bind(memory.into_inner())
+            .fetch_one(&pool)
+            .await?;
+    pool.close().await;
+    Ok(present)
+}
+
+async fn retention_erase(
+    client: &reqwest::Client,
+    base: &str,
+    bearer: &str,
+    cutoff: time::OffsetDateTime,
+) -> TestResult<(StatusCode, Value)> {
+    let response = client
+        .post(format!("{base}{}", proxiima::host::RETENTION_ERASE_PATH))
+        .header("Authorization", bearer)
+        .json(&json!({
+            "schema_id": <proxiima_example::NoteV1 as proxiima_core::FactPayload>::SCHEMA_ID,
+            "cutoff": cutoff.format(&time::format_description::well_known::Rfc3339)?,
+        }))
+        .send()
+        .await?;
+    let status = response.status();
+    Ok((status, response.json().await.unwrap_or(Value::Null)))
+}
+
+/// The home's retention reaches a Spiice's store through the stock host: a
+/// vouched forwarded call erases the vouched owner's aged series under the
+/// host's own authority. An unvouched forwarded call (the forwarder's role
+/// alone), an ordinary member and a vouch the host does not know erase
+/// nothing.
+#[tokio::test]
+async fn the_host_route_erases_only_the_vouched_owners_aged_series() {
+    let stack = Stack::new().await;
+    let result: TestResult = async {
+        let (running, base) = stack
+            .boot_app::<(SpiiceHost, proxiima_example::ExampleSpiice)>(&[])
+            .await?;
+        let client = reqwest::Client::new();
+        let now = time::OffsetDateTime::now_utc();
+        let cutoff = now - time::Duration::days(5);
+        let pool = sqlx::PgPool::connect(&stack.database.admin_url()).await?;
+        let mut seeded = Vec::new();
+        for _ in 0..2 {
+            let owner = stack.new_person().await?;
+            let notebook = proxiima_example::testkit::register_notebook(
+                &pool,
+                &proxiima_core::test_fixtures::owner_scope_for_tests(&[
+                    proxiima_core::OwnerId::new(owner),
+                ]),
+                proxiima_core::OwnerId::new(owner),
+                "retention notebook",
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+            let old = note_at(
+                &running,
+                owner,
+                notebook,
+                "old",
+                now - time::Duration::days(10),
+            )
+            .await?;
+            let new = note_at(
+                &running,
+                owner,
+                notebook,
+                "new",
+                now - time::Duration::days(1),
+            )
+            .await?;
+            seeded.push((owner, old, new));
+        }
+        pool.close().await;
+        let [(vouched, vouched_old, vouched_new), (other, other_old, _)] = seeded[..] else {
+            unreachable!("two owners were seeded");
+        };
+
+        for (who, bearer, expected) in [
+            (
+                "a forwarded call without the vouch",
+                stack.idp.bearer_for_owner(FORWARDER_SUB, other)?,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "a vouch this host does not know",
+                stack.idp.bearer_vouched(other, json!("everything"))?,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "an ordinary member",
+                stack.idp.bearer(MEMBER_SUB)?,
+                StatusCode::FORBIDDEN,
+            ),
+        ] {
+            let (status, body) = retention_erase(&client, &base, &bearer, cutoff).await?;
+            assert_eq!(status, expected, "{who}: {body}");
+        }
+        assert!(present(&stack, other_old).await?, "a refused call erased");
+
+        let bearer = stack.idp.bearer_vouched(vouched, json!("retention"))?;
+        let (status, body) =
+            retention_erase(&client, &base, &bearer, now + time::Duration::days(1)).await?;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "a cutoff in the future: {body}"
+        );
+        assert!(
+            present(&stack, vouched_new).await?,
+            "a refused cutoff erased"
+        );
+        let (status, body) = retention_erase(&client, &base, &bearer, cutoff).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["owner"], vouched.to_string(), "{body}");
+        assert_eq!(body["series_erased"], 1, "{body}");
+        assert!(!present(&stack, vouched_old).await?, "the aged note goes");
+        assert!(
+            present(&stack, vouched_new).await?,
+            "the younger note stays"
+        );
+        assert!(
+            present(&stack, other_old).await?,
+            "another owner's note stays"
+        );
+        running.shutdown().await;
+        Ok(())
+    }
+    .await;
+    stack.cleanup();
+    result.expect("the retention route");
 }

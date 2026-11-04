@@ -289,6 +289,9 @@ CASE (kind)::text
     ELSE ( SELECT COALESCE((NULLIF(current_setting('app.write_goal'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")
 END))));
 
+-- retention
+SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxiima_core', 'retention', 'owner_id', 'owner_id');
+
 -- source_cursors
 SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxiima_core', 'source_cursors', 'owner_id', 'owner_id');
 

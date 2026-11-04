@@ -833,6 +833,36 @@ impl OwnerTransferPort for MembershipStorage {
 }
 
 #[async_trait::async_trait]
+impl crate::storage_ports::RetentionPort for MembershipStorage {
+    async fn set_retention(
+        &self,
+        _permit: &crate::storage_ports::OwnerWritePermit,
+        _schema: &SchemaId,
+        _keep_days: Option<KeepDays>,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "MembershipStorage rejects writes".into(),
+        ))
+    }
+
+    async fn owner_retention(
+        &self,
+        _owner_scope: Option<&crate::OwnerScope>,
+        _owners: &[OwnerId],
+    ) -> Result<Vec<Retention>, StorageError> {
+        Err(StorageError::Internal(
+            "MembershipStorage rejects retention reads".into(),
+        ))
+    }
+
+    async fn all_retention(&self) -> Result<Vec<Retention>, StorageError> {
+        Err(StorageError::Internal(
+            "MembershipStorage rejects retention reads".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
 impl SourceCursorPort for MembershipStorage {
     async fn load_source_cursor(
         &self,
@@ -959,6 +989,7 @@ impl MembershipStorage {
             .owner_membership_admin(storage.clone())
             .owner_transfer(storage.clone())
             .source_cursor(storage.clone())
+            .retention(storage.clone())
             .owner_erase(storage.clone())
             .write_session(storage)
             .build()

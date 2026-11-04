@@ -27,6 +27,7 @@ pub use publication_outbox::{fresh_backlog_estimate_sql_for_tests, prune_publish
 pub mod query;
 pub mod query_timeseries;
 pub(crate) mod request_keys;
+pub(crate) mod retention;
 pub(crate) mod series_erase;
 pub(crate) mod sketch;
 pub(crate) mod source_cursors;

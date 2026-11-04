@@ -1,11 +1,12 @@
 use proxiima_core::storage_ports::{
     MembershipEndpointAuthority, MembershipMemberAuthority, MembershipWritePermit,
     OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort, OwnerWritePermit,
-    SourceCursorPort,
+    RetentionPort, SourceCursorPort,
 };
 
 use proxiima_core::{
-    Cursor, EntityId, GroupId, MembershipRow, OwnerId, Relation, StorageError, UserId,
+    Cursor, EntityId, GroupId, KeepDays, MembershipRow, OwnerId, Relation, Retention, SchemaId,
+    StorageError, UserId,
 };
 
 use super::validate_permit_owner;
@@ -343,6 +344,44 @@ impl SourceCursorPort for PgStorage {
         )
         .await?;
         let result = verbs::source_cursors::source_cursor_age(tx.as_mut(), owner, source).await;
+        crate::owner_scope::finish_transaction(tx, result).await
+    }
+}
+
+#[async_trait::async_trait]
+impl RetentionPort for PgStorage {
+    async fn set_retention(
+        &self,
+        permit: &OwnerWritePermit,
+        schema: &SchemaId,
+        keep_days: Option<KeepDays>,
+    ) -> Result<(), StorageError> {
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(permit.owner_scope())?,
+        )
+        .await?;
+        let result = verbs::retention::set_retention(tx.as_mut(), permit, schema, keep_days).await;
+        crate::owner_scope::finish_transaction(tx, result).await
+    }
+
+    async fn owner_retention(
+        &self,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
+        owners: &[OwnerId],
+    ) -> Result<Vec<Retention>, StorageError> {
+        let mut tx = crate::owner_scope::begin_owner_transaction(
+            &self.pool,
+            crate::owner_scope::require_owner_scope(owner_scope)?,
+        )
+        .await?;
+        let result = verbs::retention::read_retention(tx.as_mut(), Some(owners)).await;
+        crate::owner_scope::finish_transaction(tx, result).await
+    }
+
+    async fn all_retention(&self) -> Result<Vec<Retention>, StorageError> {
+        let mut tx = self.platform_transaction().await?;
+        let result = verbs::retention::read_retention(tx.as_mut(), None).await;
         crate::owner_scope::finish_transaction(tx, result).await
     }
 }

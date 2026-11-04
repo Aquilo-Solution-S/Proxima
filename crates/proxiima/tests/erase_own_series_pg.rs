@@ -15,10 +15,11 @@ use proxiima::spiice::{
     SeriesEraseRefusalKind, SeriesSelection, SidecarAtom,
 };
 use proxiima_core::{
-    AgentNoteV1, AuthPath, AuthzContext, Engine, ErrorCode, FactPayload, FactWrite, GroupId,
-    MemoryId, OwnerId, Role, SchemaId, SeriesHandle, UserId,
+    AbstractionPayload, AgentNoteV1, AuthPath, AuthzContext, DerivationIdentity, DerivedMemory,
+    Engine, ErrorCode, FactPayload, FactWrite, GroupId, InputContractId, MemoryId, MemoryTarget,
+    OperatorId, OwnerId, Role, SchemaId, SeriesHandle, UserId,
 };
-use proxiima_example::{NoteV1, SPIICE_ID};
+use proxiima_example::{DigestV1, NoteV1, SPIICE_ID};
 use uuid::Uuid;
 
 const EXAMPLE: &str = SPIICE_ID;
@@ -545,6 +546,121 @@ async fn admitted_before_takes_only_series_whose_newest_version_is_older() {
             [3, 0, 3, 3, 0],
             "a series with a newer version keeps all of its versions"
         );
+        Ok(())
+    })
+    .await;
+}
+
+/// `OccurredBefore` ages a Fact by when it happened, not when it was
+/// admitted: a backfilled note older than the cutoff goes though it was
+/// admitted after it, and a note that happened after the cutoff stays.
+#[tokio::test]
+async fn occurred_before_ages_a_fact_by_when_it_happened() {
+    run(async |h| {
+        let (owner, authz) = personal();
+        let notebook_id = h.notebook(&owner).await;
+        let now = time::OffsetDateTime::now_utc();
+        let cutoff = now - time::Duration::days(5);
+        let happened = |key: &str, at: time::OffsetDateTime| {
+            let payload = note(notebook_id, key);
+            let engine = &h.engine;
+            let authz = &authz;
+            async move {
+                engine
+                    .ingest_fact(
+                        authz,
+                        FactWrite::new(owner, "erase-fixture", &payload).observed_at(at),
+                    )
+                    .await
+                    .expect("the fixture note is admitted")
+                    .memory_id
+            }
+        };
+        let backfilled = happened("old", now - time::Duration::days(10)).await;
+        let recent = happened("new", now - time::Duration::days(1)).await;
+
+        let receipt = erase(
+            &h.engine,
+            &authz,
+            owner,
+            SeriesSelection::OccurredBefore {
+                schema: note_schema(),
+                cutoff,
+            },
+            EraseMode::Erase,
+        )
+        .await?;
+        assert_eq!(receipt.versions, vec![backfilled], "only the old Fact goes");
+        assert!(!receipt.more_remaining);
+        assert_eq!(
+            footprint(&h.pool, &[recent]).await[0],
+            1,
+            "the newer Fact stays"
+        );
+        Ok(())
+    })
+    .await;
+}
+
+/// An Abstraction has no `occurred_at`, so `OccurredBefore` ages it by its
+/// admission time.
+#[tokio::test]
+async fn occurred_before_ages_an_abstraction_by_admission() {
+    run(async |h| {
+        let (owner, authz) = personal();
+        let notebook_id = h.notebook(&owner).await;
+        let source = ingest(&h.engine, &authz, owner, &note(notebook_id, "src"), None).await;
+        let digest = |summary: &'static str| {
+            let engine = &h.engine;
+            let authz = &authz;
+            async move {
+                engine
+                    .derive_memory(
+                        authz,
+                        DerivedMemory::abstraction(
+                            MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
+                            owner,
+                            summary,
+                            DigestV1 {
+                                notebook_id,
+                                summary: summary.to_owned(),
+                            },
+                            [source],
+                            DerivationIdentity::new(
+                                OperatorId::new(Uuid::now_v7()),
+                                InputContractId::new(Uuid::now_v7()),
+                            ),
+                        )
+                        .expect("a typed digest"),
+                    )
+                    .await
+                    .expect("the digest is admitted")
+                    .memory_id
+            }
+        };
+        let old = digest("old digest").await;
+        let cutoff = next_millisecond().await;
+        next_millisecond().await;
+        let young = digest("young digest").await;
+
+        let receipt = erase(
+            &h.engine,
+            &authz,
+            owner,
+            SeriesSelection::OccurredBefore {
+                schema: SchemaId::new(DigestV1::SCHEMA_ID.into()),
+                cutoff,
+            },
+            EraseMode::Erase,
+        )
+        .await?;
+        assert_eq!(receipt.versions, vec![old], "the older admission goes");
+        let left: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM proxiima_core.memory WHERE t = $1")
+                .bind(young.into_inner())
+                .fetch_one(&h.pool)
+                .await?;
+        assert_eq!(left, 1, "the younger admission stays");
         Ok(())
     })
     .await;

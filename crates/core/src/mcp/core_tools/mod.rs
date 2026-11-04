@@ -21,6 +21,7 @@ pub mod memory;
 pub mod memory_counts;
 pub mod memory_spaces;
 pub(crate) mod other_stores;
+pub mod retention;
 pub mod transfer;
 pub mod upload;
 pub mod walk_memory_lineage;
@@ -36,6 +37,7 @@ pub use memory::{
 };
 pub use memory_spaces::MemorySpacesTool;
 pub use recall::RecallTool;
+pub use retention::{RetentionTool, SetRetentionTool};
 pub use search_memories::SearchMemoriesTool;
 pub use think::ThinkTool;
 pub use transfer::CoreTransferTool;
@@ -76,6 +78,8 @@ pub(crate) fn register_all(
     registry.try_add_mcp_tool::<CoreMembershipTool>("core")?;
     registry.try_add_mcp_tool::<CoreTransferTool>("core")?;
     registry.try_add_mcp_tool::<CoreUploadTool>("core")?;
+    registry.try_add_mcp_tool::<RetentionTool>("core")?;
+    registry.try_add_mcp_tool::<SetRetentionTool>("core")?;
     Ok(())
 }
 

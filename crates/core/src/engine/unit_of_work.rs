@@ -1445,7 +1445,9 @@ impl UnitOfWork<'_> {
             }));
         }
         let sidecar_table = match selection {
-            SeriesSelection::Ids(_) | SeriesSelection::AdmittedBefore { .. } => None,
+            SeriesSelection::Ids(_)
+            | SeriesSelection::AdmittedBefore { .. }
+            | SeriesSelection::OccurredBefore { .. } => None,
             SeriesSelection::SidecarEquals { predicates, .. } if predicates.is_empty() => {
                 return Err(ProtocolError::invalid_argument(
                     "selection",

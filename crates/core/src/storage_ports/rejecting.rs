@@ -11,6 +11,7 @@ use super::memory::{
 };
 use super::owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
 use super::proof::{MembershipWritePermit, OperatorMaintenanceProof, OwnerWritePermit};
+use super::retention::RetentionPort;
 use super::write_session::{WriteSession, WriteSessionFactory};
 
 use crate::access::AccessError;
@@ -871,6 +872,36 @@ impl WriteSessionFactory for RejectingStorage {
     ) -> Result<Box<dyn WriteSession>, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl RetentionPort for RejectingStorage {
+    async fn set_retention(
+        &self,
+        _permit: &OwnerWritePermit,
+        _schema: &crate::SchemaId,
+        _keep_days: Option<crate::KeepDays>,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects writes".into(),
+        ))
+    }
+
+    async fn owner_retention(
+        &self,
+        _owner_scope: Option<&crate::OwnerScope>,
+        _owners: &[OwnerId],
+    ) -> Result<Vec<crate::Retention>, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects retention reads".into(),
+        ))
+    }
+
+    async fn all_retention(&self) -> Result<Vec<crate::Retention>, StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects retention reads".into(),
         ))
     }
 }

@@ -6,7 +6,7 @@ extern crate self as proxiima_core;
 ///
 /// Deliberately not `CARGO_PKG_VERSION`: workspace crates are `0.1.0` with
 /// `publish = false`. Releases are git tags; bump this when cutting one.
-pub const RELEASE_VERSION: &str = "0.0.67";
+pub const RELEASE_VERSION: &str = "0.0.68";
 
 pub mod access;
 pub mod auth;
@@ -40,6 +40,7 @@ pub mod protocol;
 pub mod publication;
 pub mod quiesce;
 pub mod read_models;
+pub mod retention;
 pub mod scope;
 pub mod spiice;
 mod stage_timing;
@@ -107,6 +108,7 @@ pub use publication::{
 };
 pub use quiesce::{FeatureControlError, FeatureStatus, GateWorker, QuiesceGate};
 pub use read_models::*;
+pub use retention::{KeepDays, KeepDaysOutOfRange, Retention};
 pub use scope::{ScopeDecl, ScopeKind, ScopeRef, scope_set};
 pub use spiice::*;
 pub use storage::*;

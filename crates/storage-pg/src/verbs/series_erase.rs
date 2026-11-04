@@ -305,9 +305,9 @@ WITH own AS (
     SELECT DISTINCT handle FROM proxiima_core.memory
      WHERE owner_id = $1 AND schema_id = $2
 ), versions AS (
-    SELECT m.handle, m.t FROM proxiima_core.memory m JOIN own USING (handle)
+    SELECT m.handle, m.t, m.occurred_at FROM proxiima_core.memory m JOIN own USING (handle)
 ), newest AS (
-    SELECT DISTINCT ON (handle) t FROM versions ORDER BY handle, t DESC
+    SELECT DISTINCT ON (handle) t, occurred_at FROM versions ORDER BY handle, t DESC
 )
 "
     };
@@ -324,6 +324,19 @@ const ADMITTED_BEFORE_SQL: &str = concat!(
  WHERE t < $3
  ORDER BY t
  LIMIT $4"
+);
+
+/// Series of `schema` under `owner_id` whose newest version is older than
+/// the cutoff by its own clock: `occurred_at` (`$3`) where it has one, its
+/// admission `t` (below the floor `$4`) where it has none, oldest first. A
+/// schema is one kind, so its versions either all carry `occurred_at` (a
+/// Fact) or none do, and one ordering covers both clocks.
+const OCCURRED_BEFORE_SQL: &str = concat!(
+    newest_versions_cte!(),
+    "SELECT t FROM newest
+ WHERE COALESCE(occurred_at < $3, t < $4)
+ ORDER BY occurred_at, t
+ LIMIT $5"
 );
 
 /// The smallest `UUIDv8` of the millisecond `cutoff` falls in. A `t` below
@@ -461,6 +474,17 @@ async fn resolve_footprint(
             sqlx::query_scalar(ADMITTED_BEFORE_SQL)
                 .bind(owner_id)
                 .bind(schema.as_str())
+                .bind(memory_uuid_floor(*cutoff))
+                .bind(limit)
+                .fetch_all(tx.as_mut())
+                .await
+                .map_err(map_err)?
+        }
+        SeriesSelection::OccurredBefore { schema, cutoff } => {
+            sqlx::query_scalar(OCCURRED_BEFORE_SQL)
+                .bind(owner_id)
+                .bind(schema.as_str())
+                .bind(*cutoff)
                 .bind(memory_uuid_floor(*cutoff))
                 .bind(limit)
                 .fetch_all(tx.as_mut())

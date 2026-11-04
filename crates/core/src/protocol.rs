@@ -18,6 +18,8 @@ pub mod tool {
     pub const CORE_UPLOAD: &str = "core_upload";
     pub const CORE_FORGET: &str = "core_forget";
     pub const CORE_RESTORE: &str = "core_restore";
+    pub const CORE_RETENTION: &str = "core_retention";
+    pub const CORE_SET_RETENTION: &str = "core_set_retention";
 }
 
 pub mod action {

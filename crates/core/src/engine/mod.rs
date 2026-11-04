@@ -14,6 +14,7 @@ mod pin_read;
 mod pipeline;
 mod query;
 mod read_verbs;
+mod retention;
 mod sidecar_heads;
 mod source_cursors;
 #[cfg(test)]
