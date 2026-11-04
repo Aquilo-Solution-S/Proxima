@@ -116,6 +116,12 @@ the host must route deletion and export obligations to those systems itself.
 
 ## Spiice-scoped erase and retention
 
+An inverse-only `RetiredFactContract` retains table/key/owner metadata without
+the removed payload's active capabilities. See [build a spiice](build-a-spiice.md#3-declare-and-register-the-contract)
+for declaration and frozen metadata access, and the
+[retired-Fact decision](https://git.aquilo-cloud.com/AQS/uniiverse/src/branch/factory/docs/decisions/2026-11-04-5213-a-retired-fact-is-erased-before-its-schema-is-dropped.md)
+for lifecycle policy. Declaring retirement alone executes no erasure.
+
 `UnitOfWork::erase_own_series` accepts only the caller spiice's schemas, one
 owner, and a typed `SeriesSelection`. Admin or host system authority is required.
 From a tool, the dispatched action must declare a destructive effect and belong

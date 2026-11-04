@@ -1443,6 +1443,7 @@ const BESPOKE_TRANSFER_LEGS: &[&str] = &[
 /// ids (`core/agent-derivation-v1` registers as both Abstraction and
 /// Perspective), fifteen tools, twelve resources.
 pub const SPIICE_0: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: SPIICE_ID,
     ordinal: CORE_ORDINAL,
     schemas: &[

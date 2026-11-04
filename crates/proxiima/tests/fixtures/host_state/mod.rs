@@ -65,6 +65,7 @@ const AUXILIARY_SURFACE: Surface = Surface {
 const STATE_SURFACES: &[Surface] = &[EXECUTION_SURFACE, AUXILIARY_SURFACE];
 
 const CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "host_fixture",
     ordinal: 100,
     schemas: &[],

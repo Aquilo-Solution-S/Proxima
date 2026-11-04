@@ -1626,6 +1626,7 @@ mod tests {
         completeness: None,
     }];
     static HOST_STATE_TEST_CONTRACT: SpiiceContract = SpiiceContract {
+        retired_facts: &[],
         spiice_id: "host_state_test",
         ordinal: 97,
         schemas: &[],
@@ -1904,6 +1905,7 @@ mod tests {
         }
 
         static GATE_CONTRACT: SpiiceContract = SpiiceContract {
+            retired_facts: &[],
             spiice_id: GATE_SPIICE,
             ordinal: 96,
             schemas: &[],

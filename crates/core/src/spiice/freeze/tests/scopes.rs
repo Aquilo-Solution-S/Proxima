@@ -26,6 +26,7 @@ const fn scoped_contract(
     scopes: &'static [crate::ScopeDecl],
 ) -> SpiiceContract {
     SpiiceContract {
+        retired_facts: &[],
         spiice_id,
         ordinal,
         schemas: &[],

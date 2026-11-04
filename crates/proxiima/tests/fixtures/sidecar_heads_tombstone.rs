@@ -61,6 +61,7 @@ impl FactPayload for HeadObservation {
 }
 
 static CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "heads-fixture",
     ordinal: 79,
     schemas: &[SchemaContract {

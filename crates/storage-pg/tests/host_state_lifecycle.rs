@@ -125,6 +125,7 @@ const GENERIC_COUNT_SURFACE: Surface = Surface {
 };
 
 static CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: SPIICE_ID,
     ordinal: 88,
     schemas: &[],
@@ -146,6 +147,7 @@ const GENERIC_FACTS_SURFACE: Surface = Surface {
 };
 
 static DUPLICATE_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "test-host-lifecycle-duplicate",
     ordinal: 89,
     state_surfaces: &[FACTS_SURFACE],
@@ -153,6 +155,7 @@ static DUPLICATE_CONTRACT: SpiiceContract = SpiiceContract {
 };
 
 static OVERLAP_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "test-host-lifecycle-overlap",
     ordinal: 89,
     state_surfaces: &[GENERIC_FACTS_SURFACE],

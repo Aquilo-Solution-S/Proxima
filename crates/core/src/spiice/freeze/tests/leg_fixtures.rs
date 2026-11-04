@@ -315,6 +315,7 @@ pub(super) static UNREACHABLE_ALLOWLIST_EXPORT_SURFACE: SpiiceContract = erase_f
 /// table and names it `lexical_language`; a second name is a
 /// declaration nothing renders.
 pub(super) static PER_ROW_ON_THE_WRONG_COLUMN: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: FIXTURE_SPIICE,
     ordinal: 7,
     schemas: &[SchemaContract {

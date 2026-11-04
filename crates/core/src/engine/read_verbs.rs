@@ -726,6 +726,7 @@ mod tests {
 
     static TAG_PROBE_SPIICE: crate::spiice::contract::SpiiceContract =
         crate::spiice::contract::SpiiceContract {
+            retired_facts: &[],
             spiice_id: "tag-probe",
             ordinal: 92,
             schemas: &[TAG_PROBE_SCHEMA],

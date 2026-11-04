@@ -30,6 +30,7 @@ mod contracts;
 mod dispatcher;
 mod legs;
 mod projection;
+mod retired;
 mod schemas;
 
 #[cfg(test)]
@@ -44,6 +45,7 @@ impl SpiiceRegistry {
     /// Returns typed registry errors for invalid descriptors, unregistered
     /// references, ingress mismatches, unsatisfiable tags, and duplicate ids.
     pub fn try_freeze(self) -> Result<SpiiceRegistryFrozen, SpiiceRegistryError> {
+        self.validate_retired_facts()?;
         self.validate_schema_capability_tags_resolve()?;
         self.validate_spiice_descriptors()?;
         let mut seen_schemas = std::collections::HashSet::new();

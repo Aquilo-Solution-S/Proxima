@@ -980,6 +980,7 @@ const fn facade_memory_surface(table: &'static str) -> Surface {
 }
 
 static FACADE_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "facade-test",
     ordinal: 7,
     schemas: &[

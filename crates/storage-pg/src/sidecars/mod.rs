@@ -29,6 +29,7 @@ mod owner_rls;
 mod permit;
 mod read_ctx;
 mod registry;
+mod retired;
 mod sql;
 mod traits;
 
@@ -45,6 +46,7 @@ pub(crate) use read_ctx::read_own_sidecar;
 #[cfg(test)]
 pub(crate) use read_ctx::validate_sidecar_read_sql;
 pub use registry::PgSidecarRegistry;
+pub use retired::PgRetiredFactSidecar;
 pub use sql::{
     bytes32, int_to_u32, int_to_u64, memory_insert_sql, memory_select_batch_owner_pinned_sql,
     memory_select_batch_sql,

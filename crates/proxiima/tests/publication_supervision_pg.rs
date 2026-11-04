@@ -73,6 +73,7 @@ proxiima::spiice::pg_sidecar! {
 }
 
 static HEALTH_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "publisher-health",
     ordinal: 19,
     schemas: &[SchemaContract {

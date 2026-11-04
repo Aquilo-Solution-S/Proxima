@@ -318,6 +318,7 @@ const SCHEMALESS_PROBE_SCHEMAS: &[proxiima_core::spiice::contract::SchemaContrac
 /// of any shipped spiice.
 pub static PROBE_SPIICE: proxiima_core::spiice::contract::SpiiceContract =
     proxiima_core::spiice::contract::SpiiceContract {
+        retired_facts: &[],
         spiice_id: PROBE_SPIICE_ID,
         ordinal: 90,
         schemas: PROBE_SCHEMAS,
@@ -337,6 +338,7 @@ pub static PROBE_SPIICE: proxiima_core::spiice::contract::SpiiceContract =
 /// `json_schema()`. Registering it must fail freeze.
 pub static SCHEMALESS_PROBE_SPIICE: proxiima_core::spiice::contract::SpiiceContract =
     proxiima_core::spiice::contract::SpiiceContract {
+        retired_facts: &[],
         spiice_id: PROBE_SPIICE_ID,
         ordinal: 91,
         schemas: SCHEMALESS_PROBE_SCHEMAS,

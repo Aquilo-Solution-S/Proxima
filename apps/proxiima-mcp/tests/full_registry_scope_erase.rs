@@ -67,6 +67,7 @@ const COPY_SURFACE: Surface = Surface {
 };
 
 const TEST_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "test-scope-host-lifecycle",
     ordinal: 31,
     schemas: &[],

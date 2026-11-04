@@ -923,6 +923,7 @@ async fn restore_in_lifecycle(
     if locked_handle != handle || !reach.kinds.contains(&kind) {
         return Err(StorageError::NotFound);
     }
+    sidecars.ensure_schema_restorable(&schema_id)?;
     if forgotten {
         sqlx::query(
             "UPDATE proxiima_core.memory /* FORGET-POLICY: includes-forgotten (forget and restore see the row in either state) */

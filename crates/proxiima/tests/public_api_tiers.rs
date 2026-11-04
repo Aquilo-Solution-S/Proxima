@@ -451,6 +451,7 @@ fn spiice_sdk_constructs_contract_goal_and_session_values() {
         natural_key_columns: &[],
     };
     const CONTRACT: SpiiceContract = SpiiceContract {
+        retired_facts: &[],
         spiice_id: "sdk_test",
         ordinal: 7,
         schemas: &[SCHEMA],

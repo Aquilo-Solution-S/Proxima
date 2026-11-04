@@ -57,8 +57,8 @@ pub use proxiima_core::spiice::{
     CoreBandName, CounterRule, DbConstraint, DbTrigger, EmbedUnit, EmbeddingRecipe, EmbeddingSlot,
     Enforcement, EraseLeg, EraseRule, ExportRule, ForgetLeg, ForgetRule, HostStateEraseDisposition,
     KeyShape, LanguagePolicy, ProjectionDecl, ProjectionSpec, Provenance, RankSource,
-    ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT, SchemaContract, SchemaRef,
-    SearchProjectionDecl, SpiiceContract, SubstringArm, Surface,
+    ResolvedEmbedUnit, ResourceContract, RetiredFactContract, SLOT_DEFAULT, SchemaContract,
+    SchemaRef, SearchProjectionDecl, SpiiceContract, SubstringArm, Surface,
     TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
     TS_RANK_NORMALIZATION_SCALE, ToolContract, TransferLeg, TransferRule, WEIGHT_UNIFORM,
     WeightedField,
@@ -227,8 +227,8 @@ pub use proxiima_storage_pg::pg_sidecar;
 pub use proxiima_storage_pg::projection::{Artifact, ProjectionArtifacts, projection_artifacts};
 pub use proxiima_storage_pg::search_candidates::candidate_artifacts as search_candidate_artifacts;
 pub use proxiima_storage_pg::sidecars::{
-    PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgSidecarFuture,
-    PgSidecarReadCtx, SidecarInsertPermit, SidecarOwnerMode,
+    PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgRetiredFactSidecar,
+    PgSidecarFuture, PgSidecarReadCtx, SidecarInsertPermit, SidecarOwnerMode,
 };
 pub use proxiima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, register_core_pg_sidecars,

@@ -44,6 +44,7 @@ const fn fixture_schema(
 /// `contract =` optionally, and freeze refuses a spiice that omits it, so
 /// every fixture spiice that reaches a freeze carries one.
 static MACRO_SPIICE_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "proxiima-core",
     ordinal: FIXTURE_ORDINAL,
     schemas: &[
@@ -66,6 +67,7 @@ static MACRO_SPIICE_CONTRACT: SpiiceContract = SpiiceContract {
 /// The twin for the schema-less spiice below: same id, nothing declared,
 /// because that module registers nothing.
 static EMPTY_SPIICE_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "proxiima-core",
     ordinal: FIXTURE_ORDINAL,
     schemas: &[],

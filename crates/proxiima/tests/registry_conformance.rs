@@ -82,6 +82,7 @@ impl SpiiceApp for HostedConformanceApp {
 /// The declaration for the spiice below: freeze refuses a spiice that is
 /// linked and declares nothing.
 static CONFORMANCE_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "proxiima-conformance",
     // Non-zero: ordinal 0 is core's and cannot be claimed twice.
     ordinal: 7,

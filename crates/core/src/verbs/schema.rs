@@ -218,6 +218,15 @@ pub fn composed_schema_names(registry: &SpiiceRegistryFrozen) -> Vec<String> {
                 schemas.push(schema.to_owned());
             }
         }
+        for retired in contract.retired_facts {
+            for surface in retired.surfaces() {
+                if let Some((schema, _)) = surface.table.split_once('.')
+                    && !schemas.iter().any(|known| known == schema)
+                {
+                    schemas.push(schema.to_owned());
+                }
+            }
+        }
     }
     schemas.sort();
     schemas
@@ -654,6 +663,15 @@ pub(crate) fn contract_embed_units(
 }
 
 impl SpiiceRegistryFrozen {
+    /// Inverse-only Fact declarations from the same frozen composition.
+    /// These never enter the active schema catalog or typed ingress index.
+    pub fn retired_facts(
+        &self,
+    ) -> impl Iterator<Item = &'static crate::spiice::RetiredFactContract> + '_ {
+        self.contracts
+            .iter()
+            .flat_map(|contract| contract.retired_facts.iter())
+    }
     /// Freeze a `SpiiceRegistry` into its immutable, index-accelerated
     /// form — called by `SpiiceRegistry::try_freeze` after validation.
     /// Consumes the builder whole and rehomes

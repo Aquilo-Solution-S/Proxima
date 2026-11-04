@@ -318,6 +318,7 @@ mod tests {
         ordinal: u16,
     ) -> proxiima_core::spiice::SpiiceContract {
         proxiima_core::spiice::SpiiceContract {
+            retired_facts: &[],
             spiice_id,
             ordinal,
             schemas: &[],
@@ -338,6 +339,60 @@ mod tests {
     // ordinal are a freeze error.
     static ALPHA_CONTRACT: proxiima_core::spiice::SpiiceContract =
         empty_contract("proxiima-test-alpha", 7);
+
+    mod retired {
+        use crate::spiice::{
+            CounterRule, EraseRule, ExportRule, ForgetRule, KeyShape, RetiredFactContract,
+            SchemaRef, SpiiceContract, Surface, TransferRule,
+        };
+
+        static CONTRACT: SpiiceContract = SpiiceContract {
+            retired_facts: &[RetiredFactContract {
+                id: SchemaRef::new("proxiima-test-retired", "removed", 1),
+                sidecar: Surface {
+                    table: "proxiima_test_retired.removed_v1",
+                    key: KeyShape::MemoryT { column: "old_t" },
+                    owner_column: None,
+                    erase: EraseRule::ByKey,
+                    transfer: TransferRule::StaysOnKey,
+                    export: ExportRule::Rows,
+                    forget: ForgetRule::DumpThenDelete,
+                    lexical_language_column: None,
+                    counter: CounterRule::Counted("sidecar_rows"),
+                    completeness: None,
+                },
+                inverse_surfaces: &[],
+            }],
+            ..super::empty_contract("proxiima-test-retired", 8)
+        };
+
+        crate::spiice_bundle! {
+            bundle = RetiredBundle,
+            name = "proxiima-test-retired",
+            contract = &CONTRACT,
+        }
+    }
+
+    #[test]
+    fn bundle_composes_a_retired_fact_without_its_payload_type() {
+        let mut core = SpiiceRegistry::new();
+        retired::RetiredBundle::register(&mut core).unwrap();
+        let core = core.try_freeze().unwrap();
+        let mut pg = PgSidecarRegistry::new();
+        crate::spiice::register_core_pg_sidecars(&mut pg);
+        retired::RetiredBundle::register_pg_sidecars(&mut pg);
+        let pg = pg.freeze_against(&core).unwrap();
+        let [metadata] = pg.retired_fact_sidecars() else {
+            panic!("one inverse-only declaration");
+        };
+        assert_eq!(metadata.sidecar_table(), "proxiima_test_retired.removed_v1");
+        assert_eq!(metadata.memory_key_column(), "old_t");
+        assert!(!pg.contains(metadata.key()));
+        assert!(
+            core.lookup(&metadata.key().schema_id, metadata.key().schema_version)
+                .is_none()
+        );
+    }
 
     mod alpha {
         proxiima_core::proxiima_spiice! {

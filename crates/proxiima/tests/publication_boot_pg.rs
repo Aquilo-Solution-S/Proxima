@@ -83,6 +83,7 @@ proxiima::spiice::pg_sidecar! {
 }
 
 static PUB_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "pubtest",
     ordinal: 9,
     schemas: &[SchemaContract {

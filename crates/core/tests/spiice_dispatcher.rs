@@ -96,6 +96,7 @@ impl Tool for DispatchTool {
 /// dispatcher resolves its annotations per action and this one mixes a read
 /// with a write.
 static DISPATCH_SPIICE_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: SPIICE,
     // Non-zero: ordinal 0 is core's, and two claims on it are refused.
     ordinal: 7,

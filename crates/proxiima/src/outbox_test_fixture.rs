@@ -67,6 +67,7 @@ crate::spiice::pg_sidecar! {
 }
 
 static HEALTH_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: "publisher-supervision",
     ordinal: 19,
     schemas: &[SchemaContract {

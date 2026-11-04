@@ -174,6 +174,7 @@ const TOOLS: &[ToolContract] = &[ToolContract {
 /// Baseline schemas only (note + digest). Tutorial kit spiices that splice
 /// [`crate::BASELINE_SQL`] use this so stamp triggers are not required.
 pub static EXAMPLE_BASELINE_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: SPIICE_ID,
     ordinal: EXAMPLE_ORDINAL,
     schemas: &[NOTE_V1, DIGEST_V1],
@@ -191,6 +192,7 @@ pub static EXAMPLE_BASELINE_CONTRACT: SpiiceContract = SpiiceContract {
 
 /// Full example contract: baseline schemas plus the stamp Fact (`owner: follows`).
 pub static EXAMPLE_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: SPIICE_ID,
     ordinal: EXAMPLE_ORDINAL,
     schemas: &[NOTE_V1, DIGEST_V1, STAMP_V1, SEALED_STAMP_V1],

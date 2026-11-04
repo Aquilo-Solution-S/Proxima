@@ -3,7 +3,7 @@
 
 mod cross_checks;
 mod dispatcher;
-mod fixtures;
+pub(super) mod fixtures;
 mod leg_fixtures;
 mod projection_fixtures;
 mod scopes;

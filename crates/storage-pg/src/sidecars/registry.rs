@@ -260,7 +260,13 @@ impl PgSidecarRegistry {
         self.check_memory_key_against_contracts(registry)?;
         self.attach_projections(registry)?;
 
+        let retired_facts = registry
+            .retired_facts()
+            .map(super::PgRetiredFactSidecar::from_contract)
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(PgSidecarRegistryFrozen {
+            retired_facts: retired_facts.into(),
             entries: Arc::new(self.entries),
             spiice_schema_names: proxiima_core::composed_schema_names(registry)
                 .into_iter()
@@ -716,6 +722,7 @@ mod owner_mode_agreement_tests {
     #[test]
     fn freeze_refuses_follows_declared_retain_at_source() {
         static CONTRACT: SpiiceContract = SpiiceContract {
+            retired_facts: &[],
             spiice_id: SPIICE,
             ordinal: 91,
             schemas: &[SchemaContract {
@@ -782,6 +789,7 @@ mod owner_mode_agreement_tests {
     #[test]
     fn freeze_refuses_follows_declared_keep() {
         static CONTRACT: SpiiceContract = SpiiceContract {
+            retired_facts: &[],
             spiice_id: SPIICE,
             ordinal: 92,
             schemas: &[SchemaContract {
@@ -835,6 +843,7 @@ mod owner_mode_agreement_tests {
     #[test]
     fn freeze_admits_follows_with_follow_and_owner_column() {
         static CONTRACT: SpiiceContract = SpiiceContract {
+            retired_facts: &[],
             spiice_id: SPIICE,
             ordinal: 93,
             schemas: &[SchemaContract {
@@ -908,6 +917,7 @@ mod owner_mode_agreement_tests {
     #[test]
     fn freeze_refuses_follows_declared_follow_without_owner_column() {
         static CONTRACT: SpiiceContract = SpiiceContract {
+            retired_facts: &[],
             spiice_id: SPIICE,
             ordinal: 94,
             schemas: &[SchemaContract {
@@ -965,6 +975,7 @@ mod owner_mode_agreement_tests {
     #[test]
     fn freeze_refuses_none_declared_follow_with_owner_column() {
         static CONTRACT: SpiiceContract = SpiiceContract {
+            retired_facts: &[],
             spiice_id: SPIICE,
             ordinal: 95,
             schemas: &[SchemaContract {

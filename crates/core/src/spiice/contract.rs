@@ -1645,6 +1645,49 @@ impl SchemaContract {
     }
 }
 
+/// An inverse-only Fact declaration. No payload type, parser, loader,
+/// search recipe or publication capability is retained.
+///
+/// `sidecar` is the previously stamped primary surface; `inverse_surfaces`
+/// are any additional memory-keyed surfaces the erase must reach. Freeze
+/// validates ownership and by-key reach before exposing this declaration.
+/// The other lifecycle fields on [`Surface`] grant no active capability here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetiredFactContract {
+    pub id: SchemaRef,
+    pub sidecar: Surface,
+    pub inverse_surfaces: &'static [Surface],
+}
+
+impl RetiredFactContract {
+    /// All declared inverse surfaces, including the primary stamped sidecar.
+    pub fn surfaces(&self) -> impl Iterator<Item = Surface> {
+        std::iter::once(self.sidecar).chain(self.inverse_surfaces.iter().copied())
+    }
+}
+
+#[cfg(test)]
+pub(crate) const fn retired_fact_fixture() -> RetiredFactContract {
+    RetiredFactContract {
+        id: SchemaRef::new("test-spiice", "retired", 1),
+        sidecar: Surface {
+            table: "test_spiice.retired_v1",
+            key: KeyShape::MemoryT {
+                column: "memory_id",
+            },
+            owner_column: Some("owner_id"),
+            erase: EraseRule::ByKey,
+            transfer: TransferRule::StaysOnKey,
+            export: ExportRule::Excluded { why: "retired" },
+            forget: ForgetRule::Keep { why: "retired" },
+            lexical_language_column: None,
+            counter: CounterRule::Counted("sidecar_rows"),
+            completeness: None,
+        },
+        inverse_surfaces: &[],
+    }
+}
+
 /// A whole spiice's declaration. `ordinal` 0 is core, which is
 /// non-removable and the only declarer of resources.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1652,6 +1695,9 @@ pub struct SpiiceContract {
     pub spiice_id: &'static str,
     pub ordinal: u16,
     pub schemas: &'static [SchemaContract],
+    /// Retired Facts retain only their inverse declaration until erased.
+    /// Empty means this spiice declares no retirements.
+    pub retired_facts: &'static [RetiredFactContract],
     /// Spiice-owned state that is not a memory sidecar (`proxiima_notes.notebooks`,
     /// `proxiima_core.goal`). Same [`Surface`] rules; erase and transfer walk
     /// them identically.

@@ -167,6 +167,7 @@ pub(super) static NATURAL_KEY_DISAGREEMENT: SpiiceContract =
 /// disagreement between its schemas a boot refusal.
 pub(super) const fn uniformity_contract(schemas: &'static [SchemaContract]) -> SpiiceContract {
     SpiiceContract {
+        retired_facts: &[],
         spiice_id: FIXTURE_SPIICE,
         ordinal: 7,
         schemas,
@@ -242,6 +243,7 @@ pub(super) const fn reachability_schema(
 /// not core's.
 pub(super) const fn divergent_contract(schemas: &'static [SchemaContract]) -> SpiiceContract {
     SpiiceContract {
+        retired_facts: &[],
         spiice_id: FIXTURE_SPIICE,
         ordinal: 7,
         schemas,
@@ -324,6 +326,7 @@ pub(super) static EMBED_BODY: &[crate::spiice::contract::EmbedUnit] =
 /// A spiice whose only schema embeds, so it declares no projection.
 pub(super) const fn embedding_contract(schemas: &'static [SchemaContract]) -> SpiiceContract {
     SpiiceContract {
+        retired_facts: &[],
         spiice_id: FIXTURE_SPIICE,
         ordinal: 7,
         schemas,

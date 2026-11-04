@@ -147,6 +147,7 @@ const fn schema(
 }
 
 static TEST_SCOPE_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: TEST_SPIICE,
     ordinal: 78,
     schemas: &[

@@ -46,11 +46,11 @@ pub use contract::{
     DbTrigger, EmbedUnit, EmbeddingRecipe, EmbeddingSlot, Enforcement, EraseLeg, EraseRule,
     ExportRule, ForgetLeg, ForgetRule, HostStateEraseDisposition, KeyShape, LanguagePolicy,
     PROJECTION_MEMORY_COLUMN, PROJECTION_MEMORY_FK, PROJECTION_TABLE_NAME, ProjectionDecl,
-    ProjectionSpec, Provenance, RankSource, ResolvedEmbedUnit, ResourceContract, SLOT_DEFAULT,
-    SchemaContract, SchemaRef, SearchProjectionDecl, SpiiceContract, SubstringArm, Surface,
-    TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE, TS_RANK_NORMALIZATION_NONE,
-    TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract, TransferLeg, TransferRule,
-    WEIGHT_UNIFORM, WeightedField,
+    ProjectionSpec, Provenance, RankSource, ResolvedEmbedUnit, ResourceContract,
+    RetiredFactContract, SLOT_DEFAULT, SchemaContract, SchemaRef, SearchProjectionDecl,
+    SpiiceContract, SubstringArm, Surface, TS_RANK_NORMALIZATION_LOG_LENGTH_SCALE,
+    TS_RANK_NORMALIZATION_NONE, TS_RANK_NORMALIZATION_SCALE, TSVECTOR_WEIGHT_CLASSES, ToolContract,
+    TransferLeg, TransferRule, WEIGHT_UNIFORM, WeightedField,
 };
 pub use descriptor::{SpiiceDescriptor, SpiiceProvenance};
 pub use error::SpiiceRegistryError;

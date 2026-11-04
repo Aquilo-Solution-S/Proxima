@@ -4,6 +4,22 @@ use crate::ScopeKeyError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SpiiceRegistryError {
+    #[error("duplicate retired Fact declaration: {schema_id}")]
+    DuplicateRetiredFact { schema_id: SchemaId },
+    #[error("retired Fact {schema_id} also has an active schema or surface declaration")]
+    ActiveRetiredFactOverlap { schema_id: SchemaId },
+    #[error("spiice {spiice_id} cannot retire {schema_id}: {why}")]
+    RetiredFactOwnership {
+        spiice_id: &'static str,
+        schema_id: SchemaId,
+        why: &'static str,
+    },
+    #[error("retired Fact {schema_id} has unusable inverse surface {table}: {why}")]
+    RetiredFactInverse {
+        schema_id: SchemaId,
+        table: &'static str,
+        why: &'static str,
+    },
     #[error("duplicate schema registered: {schema_id} v{schema_version} {kind:?}")]
     DuplicateSchema {
         schema_id: SchemaId,

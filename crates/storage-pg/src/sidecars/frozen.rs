@@ -24,10 +24,44 @@ mod owner_transfer_differential_pg_tests;
 #[derive(Debug, Clone, Default)]
 pub struct PgSidecarRegistryFrozen {
     pub(super) entries: Arc<HashMap<PgSidecarKey, PgSidecarEntry>>,
+    pub(super) retired_facts: Arc<[super::PgRetiredFactSidecar]>,
     pub(super) spiice_schema_names: Arc<[String]>,
 }
 
 impl PgSidecarRegistryFrozen {
+    /// Inverse-only metadata; these declarations grant no active PG sidecar capability.
+    #[must_use]
+    pub fn retired_fact_sidecars(&self) -> &[super::PgRetiredFactSidecar] {
+        &self.retired_facts
+    }
+
+    /// Resolve a stamped table only when a frozen retired declaration owns it.
+    #[must_use]
+    pub fn retired_fact_surface(&self, table: &str) -> Option<&proxiima_core::spiice::Surface> {
+        self.retired_facts
+            .iter()
+            .flat_map(super::PgRetiredFactSidecar::surfaces)
+            .find(|surface| surface.table == table)
+    }
+
+    /// Refuse restore of a schema whose payload has been retired.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConstraintViolation` when the frozen composition declares the schema retired.
+    pub fn ensure_schema_restorable(&self, schema_id: &str) -> Result<(), StorageError> {
+        if self
+            .retired_facts
+            .iter()
+            .any(|retired| retired.key().schema_id.as_str() == schema_id)
+        {
+            return Err(StorageError::ConstraintViolation(format!(
+                "retired Fact schema {schema_id} cannot be restored"
+            )));
+        }
+        Ok(())
+    }
+
     /// Composed spiice schemas, in name order, excluding `proxiima_core`.
     #[must_use]
     pub fn spiice_schema_names(&self) -> &[String] {
@@ -175,6 +209,7 @@ impl PgSidecarRegistryFrozen {
         );
         Self {
             entries: Arc::new(entries),
+            retired_facts: self.retired_facts.clone(),
             spiice_schema_names: self.spiice_schema_names.clone(),
         }
     }

@@ -15,13 +15,14 @@ use crate::{SchemaId, SchemaVersion, SpiiceRegistry};
 
 pub(super) const FIXTURE_SPIICE: &str = "test-spiice";
 
-pub(super) const fn contract(
+pub(in crate::spiice::freeze) const fn contract(
     ordinal: u16,
     schemas: &'static [SchemaContract],
     tools: &'static [ToolContract],
     resources: &'static [ResourceContract],
 ) -> SpiiceContract {
     SpiiceContract {
+        retired_facts: &[],
         spiice_id: FIXTURE_SPIICE,
         ordinal,
         schemas,
@@ -38,7 +39,10 @@ pub(super) const fn contract(
     }
 }
 
-pub(super) const fn schema(id: SchemaRef, transfer: TransferRule) -> SchemaContract {
+pub(in crate::spiice::freeze) const fn schema(
+    id: SchemaRef,
+    transfer: TransferRule,
+) -> SchemaContract {
     SchemaContract {
         id,
         kind: PayloadKind::CitedObject,
@@ -200,6 +204,7 @@ pub(super) const fn transfer_fixture_at(
     bespoke: &'static [&'static str],
 ) -> SpiiceContract {
     SpiiceContract {
+        retired_facts: &[],
         spiice_id: FIXTURE_SPIICE,
         ordinal,
         schemas: &[],
@@ -230,6 +235,7 @@ pub(super) const fn erase_fixture_at(
     bespoke: &'static [&'static str],
 ) -> SpiiceContract {
     SpiiceContract {
+        retired_facts: &[],
         spiice_id: FIXTURE_SPIICE,
         ordinal,
         schemas: &[],

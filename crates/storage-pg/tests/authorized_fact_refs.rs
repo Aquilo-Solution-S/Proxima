@@ -116,6 +116,7 @@ const FACT_CONTRACT_SCHEMA: SchemaContract = SchemaContract {
 };
 
 static TEST_REFS_CONTRACT: SpiiceContract = SpiiceContract {
+    retired_facts: &[],
     spiice_id: TEST_SPIICE,
     ordinal: 77,
     schemas: &[FACT_CONTRACT_SCHEMA],

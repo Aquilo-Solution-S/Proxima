@@ -123,6 +123,27 @@ helpers and private permits bind reads/writes to admitted rows; do not query
 
 ## 3. Declare and register the contract
 
+For a removed Fact, put a `RetiredFactContract` in the contract's
+`retired_facts` slice and remove its type from the active schema lists.
+The declaration needs only its `SchemaRef`, the old `Surface` as `sidecar`,
+and any additional `inverse_surfaces`; it needs no payload type or PG trait.
+Each surface must declare a by-key memory inverse in the spiice's own SQL
+namespace (the spiice id with hyphens replaced by underscores). Freeze refuses
+active overlap, duplicate declarations, foreign ownership and unsupported
+inverse shapes. Use `retired_facts: &[]` when none are declared.
+
+`spiice_bundle!` carries the same contract through ordinary registration.
+PG freeze derives `PgRetiredFactSidecar` metadata from it automatically;
+do not add a typed sidecar registration for the retired schema. The frozen
+core registry's `retired_facts()` and the PG registry's
+`retired_fact_sidecars()` expose inverse metadata separately from active
+catalogs, readers and writers. `retired_fact_surface(table)` resolves only
+declared inverse tables; stored table names alone grant no capability.
+Restore refuses a retired schema.
+
+The declaration performs no erase. The lifecycle and rollout order are
+defined in the [retired-Fact decision](https://git.aquilo-cloud.com/AQS/uniiverse/src/branch/factory/docs/decisions/2026-11-04-5213-a-retired-fact-is-erased-before-its-schema-is-dropped.md).
+
 Follow `KIT_CONTRACT` in the executable example. Each schema declares kind,
 sidecar, search projection, embedding recipe, provenance, and transfer behavior.
 Each stored surface declares erase/export/transfer behavior. A surface that is
