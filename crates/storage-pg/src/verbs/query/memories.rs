@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::error::map_err;
 use crate::pg_enums::{PgMemoryKind, memory_payload_kind};
+use crate::pg_ident::PgIdent;
 use crate::sidecars::{PgSidecarKey, PgSidecarReadCtx, PgSidecarRegistryFrozen};
 
 use super::edges::query_edges;
@@ -45,7 +46,8 @@ pub(crate) async fn query_memories_on_connection(
         });
     }
     let single_memory_stream = is_single_memory_stream(req);
-    let mut rows = fetch_memory_page_on_connection(connection, req, &owner_ids).await?;
+    let mut rows =
+        fetch_memory_page_on_connection(connection, req, &owner_ids, schemas, sidecars).await?;
     let limit = usize::try_from(req.limit)
         .map_err(|_| StorageError::Internal("query limit does not fit usize".into()))?;
     let next_memory_cursor = if single_memory_stream && rows.len() > limit {
@@ -86,8 +88,10 @@ async fn fetch_memory_page_on_connection(
     connection: &mut PgConnection,
     req: &QueryRequest,
     owner_ids: &[Uuid],
+    schemas: &[MemorySchemaSpec],
+    sidecars: &PgSidecarRegistryFrozen,
 ) -> Result<Vec<MemoryRowDb>, StorageError> {
-    let filters = memory_filters(req);
+    let filters = memory_filters(req, schemas, sidecars)?;
     let sql = memory_page_sql(
         matches!(req.supersession, SupersessionStatus::HeadsOnly),
         &filters,
@@ -99,10 +103,17 @@ async fn fetch_memory_page_on_connection(
         q = match filter {
             MemoryFilter::Schema(schema_id) => q.bind(schema_id),
             // The kind is a literal in the SQL (see `MemoryFilter::predicate`).
-            MemoryFilter::Kind(_) => q,
+            MemoryFilter::Kind(_) | MemoryFilter::NoMatches => q,
             MemoryFilter::Ids(ids) => q.bind(ids),
             MemoryFilter::ReferencedGoalHandles(handles) => q.bind(handles),
             MemoryFilter::Cursor(t) => q.bind(t),
+            MemoryFilter::Tags { specs, tags, .. } => {
+                let mut q = q;
+                for spec in specs {
+                    q = q.bind(spec.schema_id);
+                }
+                q.bind(tags)
+            }
         };
     }
     q.fetch_all(&mut *connection).await.map_err(map_err)
@@ -117,11 +128,24 @@ async fn fetch_memory_page_on_connection(
 /// closed `PgMemoryKind` literals written into the SQL, so a generic plan
 /// can still prove a per-kind partial index predicate (a `$n` cannot).
 enum MemoryFilter {
+    NoMatches,
     Schema(String),
     Kind(PgMemoryKind),
     Ids(Vec<Uuid>),
     ReferencedGoalHandles(Vec<Uuid>),
     Cursor(Uuid),
+    Tags {
+        specs: Vec<TagSpec>,
+        tags: Vec<String>,
+        tag_match: proxiima_core::verbs::query::TagMatch,
+    },
+}
+
+struct TagSpec {
+    schema_id: String,
+    table: String,
+    key_column: String,
+    tag_column: String,
 }
 
 impl MemoryFilter {
@@ -131,9 +155,10 @@ impl MemoryFilter {
     /// Head kind/schema are immutable and checked against every inserted
     /// memory version. Filtering the ordered head stream avoids visiting
     /// versions that cannot be in this page.
-    fn predicate(&self, placeholder: u32, heads_only: bool) -> String {
+    fn predicate(&self, placeholder: usize, heads_only: bool) -> String {
         let alias = if heads_only { "h" } else { "m" };
         match self {
+            Self::NoMatches => " AND FALSE".to_owned(),
             Self::Schema(_) => format!(" AND {alias}.schema_id = ${placeholder}"),
             Self::Kind(kind) => {
                 let kind = kind.label();
@@ -148,12 +173,41 @@ impl MemoryFilter {
                    AND g.owner_id = ANY($1::uuid[]))"
             ),
             Self::Cursor(_) => format!(" AND {alias}.t < ${placeholder}"),
+            Self::Tags {
+                specs, tag_match, ..
+            } => {
+                let tags_placeholder = placeholder + specs.len();
+                let op = match tag_match {
+                    proxiima_core::verbs::query::TagMatch::Any => "&&",
+                    proxiima_core::verbs::query::TagMatch::All => "@>",
+                };
+                // Keep each lookup correlated to its memory key. Pulling
+                // this up can rescan the sidecar's RLS visibility relation
+                // per page; OFFSET 0 preserves the one-key probe.
+                let arms = specs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, spec)| {
+                        format!(
+                            "({alias}.schema_id = ${} AND EXISTS (SELECT 1 FROM {} c WHERE c.{} = {alias}.t AND c.{} {op} ${tags_placeholder}::text[] OFFSET 0))",
+                            placeholder + index,
+                            spec.table, spec.key_column, spec.tag_column
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                format!(" AND ({arms})")
+            }
         }
     }
 
     /// Whether this filter takes a bind (and so a placeholder number).
-    const fn binds(&self) -> bool {
-        !matches!(self, Self::Kind(_))
+    fn bind_count(&self) -> usize {
+        match self {
+            Self::Kind(_) | Self::NoMatches => 0,
+            Self::Tags { specs, .. } => specs.len() + 1,
+            Self::Schema(_) | Self::Ids(_) | Self::ReferencedGoalHandles(_) | Self::Cursor(_) => 1,
+        }
     }
 }
 
@@ -162,7 +216,11 @@ impl MemoryFilter {
 /// The single derivation of "what does this request filter on": the page
 /// query and [`memory_page_sql_for_tests`] both read it, so the test cannot
 /// assert against a shape production does not build.
-fn memory_filters(req: &QueryRequest) -> Vec<MemoryFilter> {
+fn memory_filters(
+    req: &QueryRequest,
+    schemas: &[MemorySchemaSpec],
+    sidecars: &PgSidecarRegistryFrozen,
+) -> Result<Vec<MemoryFilter>, StorageError> {
     let mut filters = Vec::new();
     if let Some(schema_id) = req.schema_id.as_ref() {
         filters.push(MemoryFilter::Schema(schema_id.as_str().to_owned()));
@@ -183,7 +241,47 @@ fn memory_filters(req: &QueryRequest) -> Vec<MemoryFilter> {
     if let Some(QueryCursor::Memory { memory_id, .. }) = &req.page.after {
         filters.push(MemoryFilter::Cursor(memory_id.into_inner()));
     }
-    filters
+    if !req.tags.is_empty() {
+        let mut specs = Vec::new();
+        for spec in schemas {
+            if req.entity_kind.is_some_and(|kind| kind != spec.kind)
+                || req
+                    .schema_id
+                    .as_ref()
+                    .is_some_and(|schema_id| schema_id != &spec.schema_id)
+            {
+                continue;
+            }
+            let Some(tag_column) = spec.tag_field.as_ref() else {
+                continue;
+            };
+            let Some(table) = spec.sidecar_table.as_ref() else {
+                continue;
+            };
+            let Some(key_column) = sidecars.memory_key_column(table) else {
+                continue;
+            };
+            PgIdent::table(table)?;
+            PgIdent::column(key_column)?;
+            PgIdent::column(tag_column)?;
+            specs.push(TagSpec {
+                schema_id: spec.schema_id.as_str().to_owned(),
+                table: table.clone(),
+                key_column: key_column.to_owned(),
+                tag_column: tag_column.clone(),
+            });
+        }
+        filters.push(if specs.is_empty() {
+            MemoryFilter::NoMatches
+        } else {
+            MemoryFilter::Tags {
+                specs,
+                tags: req.tags.clone(),
+                tag_match: req.tag_match,
+            }
+        });
+    }
+    Ok(filters)
 }
 
 /// Whether this request reads one memory stream, and so can be told a full
@@ -387,17 +485,13 @@ fn append_memory_filters(sql: &mut String, filters: &[MemoryFilter], heads_only:
     // `$1` is the owner array; the binding filters take the placeholders
     // after it, densely, in the order the caller binds them. A filter that
     // binds nothing (`Kind`) consumes no number.
-    let mut placeholder: u32 = 2;
+    let mut placeholder = 2;
     for filter in filters {
-        // Every arm of `MemoryFilter::predicate` is a literal; the only
-        // interpolations are a column picked between two literals by
-        // `heads_only`, this `u32` placeholder index, and a kind from the
-        // closed three-literal `PgMemoryKind` set. Caller text only binds.
-        // SQL-POLICY: fixed-fragment
+        // Identifiers come from the registered sidecars and pass PgIdent;
+        // request values bind. The other fragments are closed literals.
+        // SQL-POLICY: PgIdent
         sql.push_str(&filter.predicate(placeholder, heads_only));
-        if filter.binds() {
-            placeholder = placeholder.saturating_add(1);
-        }
+        placeholder += filter.bind_count();
     }
 }
 
@@ -434,7 +528,22 @@ fn validate_row_stamp(
 pub fn memory_page_sql_for_tests(req: &QueryRequest) -> Result<String, StorageError> {
     Ok(memory_page_sql(
         matches!(req.supersession, SupersessionStatus::HeadsOnly),
-        &memory_filters(req),
+        &memory_filters(req, &[], &PgSidecarRegistryFrozen::default())?,
+        page_fetch_limit(req),
+    ))
+}
+
+/// Render tagged query SQL with the frozen schema metadata used by production.
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+#[doc(hidden)]
+pub fn memory_page_sql_for_tests_with_schemas(
+    req: &QueryRequest,
+    schemas: &[MemorySchemaSpec],
+    sidecars: &PgSidecarRegistryFrozen,
+) -> Result<String, StorageError> {
+    Ok(memory_page_sql(
+        matches!(req.supersession, SupersessionStatus::HeadsOnly),
+        &memory_filters(req, schemas, sidecars)?,
         page_fetch_limit(req),
     ))
 }
@@ -538,7 +647,7 @@ mod tests {
             );
             assert!(sql.contains(&format!("{alias}.t < $4")), "{sql}");
             assert!(!sql.contains("$5"), "no placeholder past the binds: {sql}");
-            let binds = filters.iter().filter(|filter| filter.binds()).count();
+            let binds: usize = filters.iter().map(super::MemoryFilter::bind_count).sum();
             assert_eq!(binds, 3, "Kind binds nothing");
         }
         // Kind first: the next binding filter still takes $2.

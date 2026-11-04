@@ -381,14 +381,34 @@ pub struct QueryPage {
     pub after: Option<QueryCursor>,
 }
 
-/// One core-generic Query request. Spiice-typed filters
-/// per docs/protocol.md
-/// registers a sidecar (M3+).
+/// Filters and page position for owner-authorized entity enumeration.
+///
+/// Enumerate tagged current Facts without a search query or model client:
+///
+/// ```
+/// use proxiima_core::verbs::query::{EntityKind, QueryRequest, TagMatch};
+///
+/// let mut query = QueryRequest::readable();
+/// query.entity_kind = Some(EntityKind::Fact);
+/// query.tags = vec!["rust".into(), "storage".into()];
+/// query.tag_match = TagMatch::All;
+/// query.limit = 20;
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryRequest {
     pub entity_kind: Option<EntityKind>,
     pub schema_id: Option<SchemaId>,
     pub supersession: SupersessionStatus,
+    /// Exact payload tags, compared with the same array semantics as
+    /// [`MemorySearchRequest::tags`]. Empty applies no tag predicate.
+    /// Requires a single Fact, Abstraction, or Perspective stream. Only
+    /// schemas with a declared tag column can match, independently of
+    /// their search projection or embedding declarations.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Whether any or all requested tags must occur on the same memory.
+    #[serde(default)]
+    pub tag_match: TagMatch,
     /// Goal-stream state union. Empty selects all states; other streams ignore it.
     #[serde(default)]
     pub goal_states: BTreeSet<GoalState>,
@@ -434,6 +454,8 @@ impl QueryRequest {
             entity_kind: None,
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
+            tags: Vec::new(),
+            tag_match: TagMatch::Any,
             goal_states: BTreeSet::new(),
             goal_handles: Vec::new(),
             referenced_goal_handles: Vec::new(),

@@ -60,6 +60,7 @@ pub(super) static EMBEDDING_DISAGREEMENT: SpiiceContract = uniformity_contract(&
     sidecar_table: None,
     search: SearchProjectionDecl::None {
         why: "the embedding recipe is what this fixture is about",
+        tag_column: None,
     },
     embedding: EmbeddingRecipe::Units(&[crate::spiice::contract::EmbedUnit::stored(
         "embed_text",
@@ -84,6 +85,7 @@ pub(super) static EMBEDDING_NEVER_ON_AN_EMBEDDED_ID: SpiiceContract = uniformity
         sidecar_table: Some("test_spiice.thing_v1"),
         search: SearchProjectionDecl::None {
             why: "the embedding recipe is what this fixture is about",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Units(&[crate::spiice::contract::EmbedUnit::stored(
             "embed_text",
@@ -105,6 +107,7 @@ pub(super) static EMBEDDING_NEVER_ON_AN_EMBEDDED_ID: SpiiceContract = uniformity
         sidecar_table: Some("test_spiice.thing_v1"),
         search: SearchProjectionDecl::None {
             why: "the embedding recipe is what this fixture is about",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Never {
             why: "the reason the enqueue lane cannot act on",
@@ -130,6 +133,7 @@ pub(super) static EMPTY_EMBEDDING_UNITS: SpiiceContract = uniformity_contract(&[
     sidecar_table: Some("test_spiice.thing_v1"),
     search: SearchProjectionDecl::None {
         why: "the embedding recipe is what this fixture is about",
+        tag_column: None,
     },
     embedding: EmbeddingRecipe::Units(&[]),
     transfer: TransferRule::StaysOnKey,
@@ -147,6 +151,7 @@ pub(super) static NATURAL_KEY_DISAGREEMENT: SpiiceContract =
         sidecar_table: Some("test_spiice.thing_v1"),
         search: SearchProjectionDecl::None {
             why: "the natural key is what this fixture is about",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Never {
             why: "a fixture, not a memory",
@@ -300,6 +305,7 @@ pub(super) const fn embedding_schema(surfaces: &'static [Surface]) -> SchemaCont
         sidecar_table: Some("test_spiice.thing_v1"),
         search: SearchProjectionDecl::None {
             why: "the embed unit's key column is what this fixture is about",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Units(EMBED_BODY),
         transfer: TransferRule::StaysOnKey,

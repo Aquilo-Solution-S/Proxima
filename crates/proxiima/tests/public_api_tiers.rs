@@ -440,7 +440,10 @@ fn spiice_sdk_constructs_contract_goal_and_session_values() {
         id: SchemaRef::new("sdk_test", "goal", 1),
         kind: PayloadKind::Goal,
         sidecar_table: None,
-        search: SearchProjectionDecl::None { why: "fixture" },
+        search: SearchProjectionDecl::None {
+            why: "fixture",
+            tag_column: None,
+        },
         embedding: EmbeddingRecipe::Never { why: "fixture" },
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,

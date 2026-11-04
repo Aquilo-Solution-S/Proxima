@@ -132,7 +132,12 @@ not searchable or embeddable says so explicitly with its reason. See
 Core search includes every declared projection with comparable score bands and
 a supported projection renderer, both unscoped and when selected by schema.
 Tags narrow those results; they are not needed to reach a spiice's projection.
-A tag-filtered query requires the projection to declare its tag column.
+A tag-filtered search requires the projection to declare its tag column.
+Structured enumeration through `Engine::query` uses that same declaration
+without requiring a search projection. A schema with no search surface can
+declare `SearchProjectionDecl::None { why: "...", tag_column: Some("labels") }`;
+the named sidecar column contains `text[]` tags. Use `tag_column: None` when
+the schema has no filterable tags. The sidecar must be keyed by memory `t`.
 Migration authors can obtain the canonical projection DDL and its inverses
 through `proxiima::spiice::projection_artifacts(contract)`. Reuse
 `BAND_EXACT`, `BAND_RESCUE`, and `BAND_SUBSTRING` from the SDK when declaring

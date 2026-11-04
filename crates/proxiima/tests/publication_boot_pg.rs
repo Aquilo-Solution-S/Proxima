@@ -91,6 +91,7 @@ static PUB_CONTRACT: SpiiceContract = SpiiceContract {
         sidecar_table: Some("pubtest.probe_v1"),
         search: SearchProjectionDecl::None {
             why: "a publication fixture, not a search surface",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Never {
             why: "a publication fixture, not a memory",

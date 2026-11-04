@@ -320,6 +320,16 @@ permit; it does not accept the platform gateway's caller-selected footprint.
 
 ## Other stores and HTTP
 
+For exhaustive tag enumeration, call `Engine::query` with `QueryRequest::tags`
+and the existing `TagMatch` enum. Select one Fact, Abstraction, or Perspective
+stream; tags are exact payload values with the same matching semantics as
+`MemorySearchRequest`. Storage applies tag predicates before the page limit,
+and `page.after` continues that filtered stream. Keep the filters unchanged
+between pages. Empty tags leave the query unfiltered. A schema must declare
+its tag column, including when it declares no search projection; lexical
+search and embeddings are not prerequisites. See the executable
+[`QueryRequest` example](https://github.com/Aquilo-Solution-S/Proxiima/blob/main/crates/core/src/verbs/query.rs).
+
 Use `SpiiceApp::services` to expose a typed service, and
 `SpiiceApp::mount_http` to add host-owned routes. The host accessor provides a
 pool and the resolved query policy:

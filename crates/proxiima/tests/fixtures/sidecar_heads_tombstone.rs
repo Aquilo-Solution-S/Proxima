@@ -69,6 +69,7 @@ static CONTRACT: SpiiceContract = SpiiceContract {
         sidecar_table: Some("heads_fixture.observation_v1"),
         search: SearchProjectionDecl::None {
             why: "head listing uses the declared natural key",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Never {
             why: "the fixture carries state observations",

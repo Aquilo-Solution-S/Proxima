@@ -34,8 +34,9 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context authorizes no reads (a denied
-    /// context authorizes nothing), `InvalidArgument` when `req.limit == 0`,
-    /// or `Internal` when the storage query fails. A read set the host vetoes
+    /// context authorizes nothing), `InvalidArgument` when `req.limit == 0`
+    /// or a selector is used outside its supported stream, or `Internal`
+    /// when the storage query fails. A read set the host vetoes
     /// down to nothing answers an empty page, not an error.
     pub async fn query(
         &self,
@@ -270,6 +271,7 @@ pub(in crate::engine) async fn query_authorized(
     }
     validate_query_cursor(req)?;
     validate_goal_selectors(req)?;
+    validate_tag_selector(req)?;
     if read_owners.is_empty() {
         return Ok(QueryResponse {
             memories: Vec::new(),
@@ -321,6 +323,25 @@ fn validate_goal_selectors(req: &QueryRequest) -> Result<(), ProtocolError> {
         return Err(ProtocolError::invalid_argument(
             "referenced_goal_handles",
             "requires entity_kind Fact",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_tag_selector(req: &QueryRequest) -> Result<(), ProtocolError> {
+    if !req.tags.is_empty()
+        && !matches!(
+            req.entity_kind,
+            Some(
+                crate::EntityKind::Fact
+                    | crate::EntityKind::Abstraction
+                    | crate::EntityKind::Perspective
+            )
+        )
+    {
+        return Err(ProtocolError::invalid_argument(
+            "tags",
+            "requires entity_kind Fact, Abstraction, or Perspective",
         ));
     }
     Ok(())
@@ -380,7 +401,7 @@ pub(in crate::engine) async fn walk_memory_lineage_authorized(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_goal_selectors;
+    use super::{validate_goal_selectors, validate_tag_selector};
     use crate::verbs::query::QueryRequest;
     use crate::{EntityKind, ErrorCode};
 
@@ -435,5 +456,28 @@ mod tests {
     #[test]
     fn requests_without_goal_selectors_pass() {
         validate_goal_selectors(&request(None)).expect("no selector, no constraint");
+    }
+
+    #[test]
+    fn tag_selector_requires_one_memory_stream() {
+        for kind in [None, Some(EntityKind::Goal)] {
+            let mut req = request(kind);
+            req.tags = vec!["rust".into()];
+            let error = validate_tag_selector(&req).expect_err("no tagged Goal or mixed stream");
+            assert_eq!(error.code, ErrorCode::InvalidArgument, "{kind:?}");
+            assert!(error.message.contains("tags"), "{}", error.message);
+        }
+        for kind in [
+            EntityKind::Fact,
+            EntityKind::Abstraction,
+            EntityKind::Perspective,
+        ] {
+            let mut req = request(Some(kind));
+            req.tags = vec!["rust".into()];
+            validate_tag_selector(&req).expect("tagged memory stream");
+        }
+        validate_tag_selector(&request(None)).expect("empty tags leave mixed queries unchanged");
+        validate_tag_selector(&request(Some(EntityKind::Goal)))
+            .expect("empty tags leave Goal queries unchanged");
     }
 }

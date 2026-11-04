@@ -12,6 +12,35 @@
 
 use super::{SpiiceRegistry, SpiiceRegistryError};
 
+fn validate_tag_sidecar(
+    contract: &crate::spiice::contract::SpiiceContract,
+    schema: &crate::spiice::contract::SchemaContract,
+) -> Result<(), SpiiceRegistryError> {
+    if let crate::spiice::contract::SearchProjectionDecl::None {
+        tag_column: Some(tag_column),
+        ..
+    } = schema.search
+    {
+        let memory_keyed = schema.sidecar_table.is_some_and(|table| {
+            contract.all_surfaces().any(|surface| {
+                surface.table == table
+                    && matches!(
+                        surface.key,
+                        crate::spiice::contract::KeyShape::MemoryT { .. }
+                    )
+            })
+        });
+        if !memory_keyed {
+            return Err(SpiiceRegistryError::TagColumnNotMemoryKeyed {
+                spiice_id: contract.spiice_id,
+                schema_id: schema.schema_id(),
+                tag_column,
+            });
+        }
+    }
+    Ok(())
+}
+
 impl SpiiceRegistry {
     /// Cross-check the declarations against the registrations.
     ///
@@ -371,6 +400,7 @@ impl SpiiceRegistry {
                     schema_id,
                 });
             }
+            validate_tag_sidecar(contract, schema)?;
             // A NotTransferable that names no enforcement site is a comment,
             // not a contract: the refusal has to survive a code path that
             // forgets to ask.

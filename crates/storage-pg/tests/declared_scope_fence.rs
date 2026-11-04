@@ -134,6 +134,7 @@ const fn schema(
         sidecar_table: Some(table),
         search: SearchProjectionDecl::None {
             why: "the fence fixture is read by key, not searched",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Never {
             why: "the fence fixture carries identifiers, not searchable text",

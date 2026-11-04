@@ -1,5 +1,5 @@
 use proxiima_core::verbs::query::{
-    GoalAssignmentFilter, QueryPage, QueryRequest, SupersessionStatus,
+    GoalAssignmentFilter, QueryPage, QueryRequest, SupersessionStatus, TagMatch,
 };
 
 #[test]
@@ -19,6 +19,8 @@ fn query_request_defaults_to_heads_only_without_dead_tombstone_axis() {
     assert!(req.goal_states.is_empty());
     assert!(req.goal_handles.is_empty());
     assert!(req.referenced_goal_handles.is_empty());
+    assert!(req.tags.is_empty());
+    assert_eq!(req.tag_match, TagMatch::Any);
 }
 
 #[test]
@@ -57,8 +59,22 @@ fn omitted_goal_selectors_remain_unfiltered() {
     fields.remove("goal_states");
     fields.remove("goal_handles");
     fields.remove("referenced_goal_handles");
+    fields.remove("tags");
+    fields.remove("tag_match");
     assert_eq!(
         serde_json::from_value::<QueryRequest>(value).unwrap(),
         QueryRequest::readable()
     );
+}
+
+#[test]
+fn query_tags_use_search_tag_match_wire_semantics() {
+    let mut value = serde_json::to_value(QueryRequest::readable()).unwrap();
+    value["tags"] = serde_json::json!(["rust", "storage"]);
+    value["tag_match"] = serde_json::json!("all");
+    let request: QueryRequest = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(request.tags, ["rust", "storage"]);
+    assert_eq!(request.tag_match, TagMatch::All);
+    value["tag_match"] = serde_json::json!("unknown");
+    assert!(serde_json::from_value::<QueryRequest>(value).is_err());
 }

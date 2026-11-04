@@ -30,9 +30,9 @@ pub(crate) use lineage::{
     external_edges_on_connection, forgotten_nodes_on_connection, lineage_nodes_on_connection,
     walk_memory_lineage_on_connection,
 };
-#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
-pub use memories::memory_page_sql_for_tests;
 pub(crate) use memories::query_memories_on_connection;
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+pub use memories::{memory_page_sql_for_tests, memory_page_sql_for_tests_with_schemas};
 pub(crate) use search::search_memories_on_connection;
 pub(crate) use search::{
     SubstringCandidates, projection_candidate_statements, projection_substring_candidates,

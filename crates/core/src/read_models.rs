@@ -76,8 +76,9 @@ pub struct MemorySchemaSpec {
     /// declared `Text` search field that is not `title`. `None` when the
     /// schema declares no search projection.
     pub body_field: Option<String>,
-    /// Payload field a memory of this schema displays as its tags: the
-    /// declared `tag_column`, the field search filters tags on.
+    /// Payload field a memory of this schema displays as its tags. The
+    /// declaration is shared by search and structured enumeration; it may be
+    /// present even when the schema has no lexical search projection.
     pub tag_field: Option<String>,
 }
 

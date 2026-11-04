@@ -75,6 +75,7 @@ static HEALTH_CONTRACT: SpiiceContract = SpiiceContract {
         sidecar_table: Some("publisher_supervision.probe_v1"),
         search: SearchProjectionDecl::None {
             why: "a publisher supervision fixture, not a search surface",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Never {
             why: "a publisher supervision fixture, not a memory",

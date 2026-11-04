@@ -104,6 +104,7 @@ const FACT_CONTRACT_SCHEMA: SchemaContract = SchemaContract {
     sidecar_table: Some(FACT_TABLE),
     search: SearchProjectionDecl::None {
         why: "the acceptance payload is read by key, not searched",
+        tag_column: None,
     },
     embedding: EmbeddingRecipe::Never {
         why: "the acceptance payload carries identifiers, not searchable text",

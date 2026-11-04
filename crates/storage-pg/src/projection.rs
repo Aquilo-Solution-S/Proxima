@@ -833,7 +833,10 @@ mod tests {
 
     #[test]
     fn a_declared_non_surface_has_no_vector() {
-        let decl = SearchProjectionDecl::None { why: "a fixture" };
+        let decl = SearchProjectionDecl::None {
+            why: "a fixture",
+            tag_column: None,
+        };
         assert!(projection_vector_sql(&decl).is_err());
     }
 }

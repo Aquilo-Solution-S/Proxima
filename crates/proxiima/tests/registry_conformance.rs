@@ -91,6 +91,7 @@ static CONFORMANCE_CONTRACT: SpiiceContract = SpiiceContract {
         sidecar_table: Some("proxiima_conformance.fact_v1"),
         search: SearchProjectionDecl::None {
             why: "a conformance fixture, not a search surface",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Never {
             why: "a conformance fixture, not a memory",

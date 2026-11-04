@@ -488,7 +488,7 @@ pub enum SpiiceRegistryError {
         "spiice {spiice_id} declares {schema_id} as a search projection that \
          core_search_memories can never scan: {why}. Every write to it still pays a \
          projection row and a GIN index entry -- declare comparable CoreBands, \
-         declare SearchProjectionDecl::None {{ why }} \
+         declare SearchProjectionDecl::None {{ why, tag_column: None }} \
          if it is not a search surface, or declare \
          RankSource::SidecarWithProjectionOwner {{ why }} if the spiice's own tools \
          rank it"
@@ -554,6 +554,16 @@ pub enum SpiiceRegistryError {
         schema_id: SchemaId,
         declared: &'static str,
         projection_column: Option<&'static str>,
+    },
+    /// A declared tag column must be backed by a memory-keyed sidecar.
+    #[error(
+        "spiice {spiice_id} schema {schema_id} declares tag column {tag_column}, but its \
+         sidecar is not keyed by memory t"
+    )]
+    TagColumnNotMemoryKeyed {
+        spiice_id: &'static str,
+        schema_id: SchemaId,
+        tag_column: &'static str,
     },
     /// A spiice declaring `RankSource::Projection` is served by ONE
     /// statement per spiice, and a property that statement can only spell

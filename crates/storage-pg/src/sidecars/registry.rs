@@ -724,6 +724,7 @@ mod owner_mode_agreement_tests {
                 sidecar_table: Some(TABLE),
                 search: SearchProjectionDecl::None {
                     why: "owner-mode freeze fixture",
+                    tag_column: None,
                 },
                 embedding: EmbeddingRecipe::Never {
                     why: "owner-mode freeze fixture",
@@ -789,6 +790,7 @@ mod owner_mode_agreement_tests {
                 sidecar_table: Some(TABLE),
                 search: SearchProjectionDecl::None {
                     why: "owner-mode freeze fixture",
+                    tag_column: None,
                 },
                 embedding: EmbeddingRecipe::Never {
                     why: "owner-mode freeze fixture",
@@ -841,6 +843,7 @@ mod owner_mode_agreement_tests {
                 sidecar_table: Some(TABLE),
                 search: SearchProjectionDecl::None {
                     why: "owner-mode freeze fixture",
+                    tag_column: None,
                 },
                 embedding: EmbeddingRecipe::Never {
                     why: "owner-mode freeze fixture",
@@ -913,6 +916,7 @@ mod owner_mode_agreement_tests {
                 sidecar_table: Some(TABLE),
                 search: SearchProjectionDecl::None {
                     why: "owner-mode freeze fixture",
+                    tag_column: None,
                 },
                 embedding: EmbeddingRecipe::Never {
                     why: "owner-mode freeze fixture",
@@ -969,6 +973,7 @@ mod owner_mode_agreement_tests {
                 sidecar_table: Some(TABLE),
                 search: SearchProjectionDecl::None {
                     why: "owner-mode freeze fixture",
+                    tag_column: None,
                 },
                 embedding: EmbeddingRecipe::Never {
                     why: "owner-mode freeze fixture",

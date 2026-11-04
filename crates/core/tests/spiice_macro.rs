@@ -28,6 +28,7 @@ const fn fixture_schema(
         sidecar_table,
         search: SearchProjectionDecl::None {
             why: "a macro fixture, not a search surface",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Never {
             why: "a macro fixture, not a memory",

@@ -292,7 +292,12 @@ impl Band {
 pub enum SearchProjectionDecl {
     /// No projection row is ever written for this schema. STRUCTURAL, not a
     /// filter.
-    None { why: &'static str },
+    None {
+        why: &'static str,
+        /// Optional payload column containing display/filter tags. A
+        /// non-search schema may still expose tags without a projection.
+        tag_column: Option<&'static str>,
+    },
     Projected {
         fields: &'static [WeightedField],
         /// Sidecar column the projection's `tag` array is copied from.
@@ -392,8 +397,7 @@ impl SearchProjectionDecl {
     #[must_use]
     pub const fn tag_column(&self) -> Option<&'static str> {
         match self {
-            Self::None { .. } => None,
-            Self::Projected { tag_column, .. } => *tag_column,
+            Self::None { tag_column, .. } | Self::Projected { tag_column, .. } => *tag_column,
         }
     }
 

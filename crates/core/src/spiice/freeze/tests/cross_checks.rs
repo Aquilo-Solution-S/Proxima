@@ -8,10 +8,10 @@
 
 use super::fixtures::{
     CITATION_WITH_A_SIDECAR, DECLARES_A_RESOURCE, DUPLICATE_ORDINAL, EMPTY, FIXTURE_ACTIONS,
-    FIXTURE_EFFECT, FIXTURE_SPIICE, FOREIGN_SCHEMA, TOOL_ACTIONS_DISAGREE, TOOL_AGREES,
-    UNENFORCED_REFUSAL, UNREGISTERED_SCHEMA, UNREGISTERED_TOOL, register_fixture_schema,
-    register_fixture_schema_of_kind, register_fixture_tool, register_uniformity_schemas,
-    registration_without_a_contract,
+    FIXTURE_EFFECT, FIXTURE_SPIICE, FOREIGN_SCHEMA, TAG_WITHOUT_MEMORY_SURFACE,
+    TOOL_ACTIONS_DISAGREE, TOOL_AGREES, UNENFORCED_REFUSAL, UNREGISTERED_SCHEMA, UNREGISTERED_TOOL,
+    register_fixture_schema, register_fixture_schema_of_kind, register_fixture_tool,
+    register_uniformity_schemas, registration_without_a_contract,
 };
 use super::leg_fixtures::{
     BESPOKE_LEG_FOR_NOTHING, BESPOKE_LEG_OVER_A_CASCADE, BESPOKE_TRANSFER_LEG_FOR_NOTHING,
@@ -85,6 +85,14 @@ fn each_contract_cross_check_rejects_its_own_shape() {
         fn(&mut SpiiceRegistry),
         fn(&SpiiceRegistryError) -> bool,
     )> = vec![
+        (
+            "a tag column is not backed by a memory-keyed sidecar",
+            |registry| {
+                register_fixture_schema(registry, "thing", "test_spiice.thing_v1");
+                registry.contracts.push(&TAG_WITHOUT_MEMORY_SURFACE);
+            },
+            |err| matches!(err, SpiiceRegistryError::TagColumnNotMemoryKeyed { .. }),
+        ),
         (
             "a spiice other than #0 declares a proxiima:// resource",
             |registry| registry.contracts.push(&DECLARES_A_RESOURCE),

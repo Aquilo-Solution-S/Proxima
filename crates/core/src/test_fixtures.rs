@@ -292,6 +292,7 @@ const fn probe_schema(
         sidecar_table: None,
         search: SearchProjectionDecl::None {
             why: "a publication probe is not a retrievable surface",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Never {
             why: "a publication probe is not retrievable content",

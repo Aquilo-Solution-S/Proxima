@@ -105,7 +105,7 @@ const GOAL_NOT_TRANSFERABLE: TransferRule = TransferRule::NotTransferable {
 
 /// A memory sidecar keyed on `memory.t`: nothing to re-home, because the
 /// Memory carries the owner. A `None` `owner_column` is the claim.
-const fn memory_sidecar(
+pub(crate) const fn memory_sidecar(
     table: &'static str,
     lexical_language_column: Option<&'static str>,
     completeness: Option<DbConstraint>,
@@ -136,6 +136,7 @@ const WRITE_ACT_V1: SchemaContract = SchemaContract {
     sidecar_table: Some("proxiima_core.write_act_v1"),
     search: SearchProjectionDecl::None {
         why: "an episode token is two columns — t and episode_id — and neither is text",
+        tag_column: None,
     },
     embedding: EmbeddingRecipe::Never {
         why: "an episode token has no content; its render is a template",
@@ -161,6 +162,7 @@ const GOAL_CHANGE_V1: SchemaContract = SchemaContract {
     search: SearchProjectionDecl::None {
         why: "a goal change is ids and two closed enums, none of it text; \
               the goal's own title is what search finds",
+        tag_column: None,
     },
     embedding: EmbeddingRecipe::Never {
         why: "a goal change has no content; its render is a template",
@@ -259,6 +261,7 @@ const UPLOAD_V1: SchemaContract = SchemaContract {
     search: SearchProjectionDecl::None {
         why: "the Fact has no sidecar of its own; the artefact's typed description \
               is the cited object it names",
+        tag_column: None,
     },
     embedding: EmbeddingRecipe::Never {
         why: "the Fact is a receipt; the bytes are the blob. Tens of thousands of \
@@ -383,6 +386,7 @@ const SIMPLE_TEXT_GOAL_V1: SchemaContract = SchemaContract {
     search: SearchProjectionDecl::None {
         why: "search_memories returns empty for EntityKind::Goal; a goal is reached \
               through the goal read models, not the memory corpus",
+        tag_column: None,
     },
     embedding: EmbeddingRecipe::Never {
         why: "no embeddings row is ever keyed on a goal t",
@@ -399,6 +403,7 @@ const TASK_GOAL_V1: SchemaContract = SchemaContract {
     sidecar_table: Some("proxiima_core.task_goal_v1"),
     search: SearchProjectionDecl::None {
         why: "search_memories returns empty for EntityKind::Goal",
+        tag_column: None,
     },
     embedding: EmbeddingRecipe::Never {
         why: "no embeddings row is ever keyed on a goal t",
@@ -431,7 +436,10 @@ const fn citation_schema(name: &'static str, why: &'static str) -> SchemaContrac
         id: SchemaRef::new(SPIICE_ID, name, 1),
         kind: PayloadKind::CitedObject,
         sidecar_table: None,
-        search: SearchProjectionDecl::None { why },
+        search: SearchProjectionDecl::None {
+            why,
+            tag_column: None,
+        },
         embedding: EmbeddingRecipe::Never { why },
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
@@ -1563,7 +1571,7 @@ mod tests {
             .iter()
             .find(|schema| schema.id.name == "write-act")
             .expect("write-act is a spiice #0 schema");
-        let SearchProjectionDecl::None { why } = write_act.search else {
+        let SearchProjectionDecl::None { why, .. } = write_act.search else {
             panic!("write-act declares itself a non-surface");
         };
         assert!(!why.is_empty(), "a declared non-surface states why");

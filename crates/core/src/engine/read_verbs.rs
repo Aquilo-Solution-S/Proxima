@@ -408,13 +408,13 @@ impl Engine {
     /// converting in one step is what keeps an "impossible" arm off the
     /// `match` — there is no second place for the two lists to disagree.
     ///
-    /// Each spec also carries the schema's display fields, derived once from
-    /// its search declaration: the body is the first declared `Text` field
-    /// that is not `title`, the tags are the declared `tag_column`. Search
-    /// hits and by-id reads both display through these, so one memory reads
-    /// the same wherever it is reached from.
+    /// Each spec carries display fields from the schema contract: the body is
+    /// derived from a projected `Text` field, while tags use the declaration's
+    /// single `tag_column` accessor even when search is disabled. Search hits
+    /// and by-id reads therefore share one tag source.
     pub(in crate::engine) fn memory_schema_specs(&self) -> Vec<MemorySchemaSpec> {
         let projections = self.registry.search_projections();
+        let contracts = self.registry.contracts();
         self.registry
             .list()
             .into_iter()
@@ -435,7 +435,16 @@ impl Engine {
                         })
                         .map(|field| field.column.clone())
                 });
-                let tag_field = projection.and_then(|projection| projection.tag_column.clone());
+                let tag_field = contracts
+                    .iter()
+                    .flat_map(|contract| contract.schemas)
+                    .find(|declared| {
+                        declared.kind == schema.kind
+                            && declared.id.schema_id() == schema.schema_id
+                            && declared.id.schema_version() == schema.schema_version
+                    })
+                    .and_then(|declared| declared.search.tag_column())
+                    .map(str::to_owned);
                 Some(
                     MemorySchemaSpec::new(
                         kind,
@@ -687,6 +696,79 @@ mod tests {
         Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
     }
 
+    fn tag_probe_ingress(
+        _payload: &serde_json::Value,
+    ) -> Result<crate::verbs::schema::ProtocolPayload, String> {
+        Err("tag probe ingress is not used".to_owned())
+    }
+
+    const TAG_PROBE_SCHEMA: crate::spiice::contract::SchemaContract =
+        crate::spiice::contract::SchemaContract {
+            id: crate::spiice::contract::SchemaRef::new("tag-probe", "note", 1),
+            kind: crate::verbs::schema::PayloadKind::Fact,
+            sidecar_table: Some("proxiima_core.tag_probe_v1"),
+            search: crate::spiice::contract::SearchProjectionDecl::None {
+                why: "the tag probe has no lexical projection",
+                tag_column: Some("labels"),
+            },
+            embedding: crate::spiice::contract::EmbeddingRecipe::Never {
+                why: "the tag probe is metadata-only",
+            },
+            transfer: crate::spiice::contract::TransferRule::StaysOnKey,
+            provenance: crate::spiice::contract::Provenance::None,
+            surfaces: &[crate::spiice::spiice0::memory_sidecar(
+                "proxiima_core.tag_probe_v1",
+                None,
+                None,
+            )],
+            natural_key_columns: &[],
+        };
+
+    static TAG_PROBE_SPIICE: crate::spiice::contract::SpiiceContract =
+        crate::spiice::contract::SpiiceContract {
+            spiice_id: "tag-probe",
+            ordinal: 92,
+            schemas: &[TAG_PROBE_SCHEMA],
+            state_surfaces: &[],
+            scopes: &[],
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+            projection: crate::spiice::contract::ProjectionDecl::None {
+                why: "the tag probe has no search projection",
+            },
+        };
+
+    fn tag_probe_engine() -> Engine {
+        let mut registry = SpiiceRegistry::new();
+        registry.add_contract_or_panic_for_tests(&TAG_PROBE_SPIICE);
+        let schema_id = crate::SchemaId::new("tag-probe/note-v1".to_owned());
+        let schema_version = crate::SchemaVersion::new(1);
+        registry.schemas.push(crate::verbs::schema::SchemaInfo {
+            schema_id: schema_id.clone(),
+            schema_version,
+            kind: crate::verbs::schema::PayloadKind::Fact,
+            filter_keys: Vec::new(),
+            sidecar_table: Some("proxiima_core.tag_probe_v1".to_owned()),
+            natural_key_columns: Vec::new(),
+            tombstone: None,
+            has_typed_ingress: true,
+            listenable: false,
+        });
+        registry
+            .protocol_ingress
+            .push(crate::verbs::schema::ProtocolPayloadIngressEntry {
+                schema_id,
+                schema_version,
+                kind: crate::verbs::schema::PayloadKind::Fact,
+                ingress: tag_probe_ingress,
+                json_schema: None,
+            });
+        Engine::new(registry.freeze_or_panic_for_tests())
+    }
+
     /// #479 item 3: every core memory schema displays the field its search
     /// declaration indexes as its body, and its declared `tag_column` as its
     /// tags.
@@ -707,6 +789,25 @@ mod tests {
             fields("core/agent-derivation-v1"),
             (Some("body"), Some("tags"))
         );
+    }
+
+    #[test]
+    fn non_search_schema_uses_its_declared_tag_field() {
+        let engine = tag_probe_engine();
+        assert!(
+            engine
+                .registry
+                .search_projections()
+                .iter()
+                .all(|projection| projection.schema_id.as_str() != "tag-probe/note-v1")
+        );
+        let specs = engine.memory_schema_specs();
+        let spec = specs
+            .iter()
+            .find(|spec| spec.schema_id.as_str() == "tag-probe/note-v1")
+            .expect("tag probe schema is registered");
+        assert_eq!(spec.tag_field.as_deref(), Some("labels"));
+        assert_eq!(spec.display_tags(None), Vec::<String>::new());
     }
 
     fn owner() -> OwnerId {

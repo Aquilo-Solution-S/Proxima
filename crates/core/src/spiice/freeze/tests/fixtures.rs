@@ -45,6 +45,7 @@ pub(super) const fn schema(id: SchemaRef, transfer: TransferRule) -> SchemaContr
         sidecar_table: None,
         search: SearchProjectionDecl::None {
             why: "a fixture, not a surface",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Never {
             why: "a fixture, not a memory",
@@ -55,6 +56,28 @@ pub(super) const fn schema(id: SchemaRef, transfer: TransferRule) -> SchemaContr
         natural_key_columns: &[],
     }
 }
+
+pub(super) static TAG_WITHOUT_MEMORY_SURFACE: SpiiceContract = contract(
+    7,
+    &[SchemaContract {
+        id: SchemaRef::new(FIXTURE_SPIICE, "thing", 1),
+        kind: PayloadKind::Fact,
+        sidecar_table: Some("test_spiice.thing_v1"),
+        search: SearchProjectionDecl::None {
+            why: "tag validation fixture",
+            tag_column: Some("tags"),
+        },
+        embedding: EmbeddingRecipe::Never {
+            why: "tag validation fixture",
+        },
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: &[],
+    }],
+    &[],
+    &[],
+);
 
 pub(super) const RESOURCE: ResourceContract = ResourceContract {
     uri_template: "proxiima://fixture",
@@ -118,6 +141,7 @@ pub(super) static CITATION_WITH_A_SIDECAR: SpiiceContract = contract(
         sidecar_table: Some("test_spiice.thing_v1"),
         search: SearchProjectionDecl::None {
             why: "a fixture, not a surface",
+            tag_column: None,
         },
         embedding: EmbeddingRecipe::Never {
             why: "a fixture, not a memory",

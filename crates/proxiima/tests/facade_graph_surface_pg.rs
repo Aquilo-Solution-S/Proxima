@@ -1019,6 +1019,7 @@ static FACADE_CONTRACT: SpiiceContract = SpiiceContract {
             sidecar_table: None,
             search: SearchProjectionDecl::None {
                 why: "a sidecarless Memory has no payload text to project",
+                tag_column: None,
             },
             embedding: EmbeddingRecipe::Never {
                 why: "a sidecarless Memory has no payload text to embed",
@@ -1034,6 +1035,7 @@ static FACADE_CONTRACT: SpiiceContract = SpiiceContract {
             sidecar_table: Some("facade_surface.abstraction_v1"),
             search: SearchProjectionDecl::None {
                 why: "the fixture's search proof belongs to its version-two Fact",
+                tag_column: None,
             },
             embedding: EmbeddingRecipe::Never {
                 why: "the fixture proves derivation without an embedding client",

@@ -50,6 +50,7 @@ const NOTE_V1: SchemaContract = SchemaContract {
     sidecar_table: Some("proxiima_example.note_v1"),
     search: SearchProjectionDecl::None {
         why: "a test fixture: search is covered by core's own projection",
+        tag_column: None,
     },
     embedding: EmbeddingRecipe::Never {
         why: "a test fixture: embedding is covered by core's own schemas",
@@ -66,6 +67,7 @@ const DIGEST_V1: SchemaContract = SchemaContract {
     sidecar_table: Some("proxiima_example.digest_v1"),
     search: SearchProjectionDecl::None {
         why: "a test fixture for derived supersession, not a search surface",
+        tag_column: None,
     },
     embedding: EmbeddingRecipe::Never {
         why: "a test fixture for derived supersession, not a memory to embed",
@@ -85,6 +87,7 @@ const STAMP_V1: SchemaContract = SchemaContract {
     sidecar_table: Some("proxiima_example.stamp_v1"),
     search: SearchProjectionDecl::None {
         why: "a test fixture for owner:follows transfer, not a search surface",
+        tag_column: None,
     },
     embedding: EmbeddingRecipe::Never {
         why: "a test fixture for owner:follows transfer, not a memory to embed",
