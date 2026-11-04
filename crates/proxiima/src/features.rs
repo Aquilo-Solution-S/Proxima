@@ -757,7 +757,7 @@ fn spawn_embedding_worker(
                 if gate.checkpoint(cancel.cancelled()).await == Checkpoint::Cancelled {
                     return;
                 }
-                match engine.drain_embedding_jobs(policy.batch_size()).await {
+                match engine.drain_embedding_jobs(policy.drain_pass_size()).await {
                     Ok(outcome) => {
                         if !outcome.configuration_faults.is_empty() {
                             tracing::warn!(

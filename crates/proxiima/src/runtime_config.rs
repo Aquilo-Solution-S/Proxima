@@ -1740,7 +1740,7 @@ fn embedding_runtime_policy_env_is_set(lookup: &impl Fn(&str) -> Option<String>)
     [
         proxiima_core::PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
         proxiima_core::PROXIIMA_EMBED_BATCH_SIZE,
-        proxiima_core::PROXIIMA_EMBED_SEARCH_CONCURRENT,
+        proxiima_core::PROXIIMA_EMBED_DRAIN_CONCURRENCY,
         proxiima_core::PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS,
         proxiima_core::PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
     ]
@@ -2553,24 +2553,25 @@ mod tests {
     }
 
     #[test]
-    fn search_concurrency_alone_sets_the_embedding_policy_block() {
+    fn drain_concurrency_alone_sets_the_embedding_policy_block() {
         let builder = RuntimeBuilder::default()
             .apply_lookup(lookup(&[(
-                proxiima_core::PROXIIMA_EMBED_SEARCH_CONCURRENT,
-                "true",
+                proxiima_core::PROXIIMA_EMBED_DRAIN_CONCURRENCY,
+                "4",
             )]))
-            .expect("explicit query concurrency");
-        assert!(
+            .expect("explicit drain concurrency");
+        assert_eq!(
             builder
                 .embedding_runtime_policy
                 .expect("policy block present")
-                .search_concurrent()
+                .drain_concurrency(),
+            4
         );
         assert!(
             RuntimeBuilder::default()
                 .apply_lookup(lookup(&[(
-                    proxiima_core::PROXIIMA_EMBED_SEARCH_CONCURRENT,
-                    "invalid"
+                    proxiima_core::PROXIIMA_EMBED_DRAIN_CONCURRENCY,
+                    "0"
                 )]))
                 .is_err()
         );

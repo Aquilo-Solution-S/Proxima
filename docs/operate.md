@@ -214,17 +214,16 @@ pending and wait for backoff and any longer `Retry-After`. Configuration faults
 binding with a new client when configuration changes; mutating the same client
 does not reset the pause. Drains observe changed routes and clear faults once
 their old bindings are no longer active. Healthy clients continue draining.
-Calls through one original client serialize by default. With
-`PROXIIMA_EMBED_SEARCH_CONCURRENT=true`, search routes have one dispatch slot
-beside the background slot; each lane still serializes its own calls. Enable
-this only where the provider and host admission allow two concurrent requests.
-The HTTP adapter marks the explicit query operation with
-`x-proxiima-embedding-purpose: search`; ordinary single and batch operations
-send no purpose header. With the switch off, engine searches use the ordinary
-embedding operation and serialize with writes as before.
-Both lanes share configuration pauses and backoff; a call already in flight
-can finish, but its success cannot clear a newer refusal. The request deadline
-includes waiting for its dispatch slot and the provider call together.
+The engine does not queue provider calls: the provider queues or refuses what
+exceeds its capacity, and a 429 or 503 backs the client off. A drain pass sends
+up to `PROXIIMA_EMBED_DRAIN_CONCURRENCY` batches at once (default 1). A search
+embeds its query through the explicit query operation as soon as it is asked;
+the HTTP adapter marks it with `x-proxiima-embedding-purpose: search`, and
+ordinary single and batch operations send no purpose header. A search passes a
+backoff that indexing published, and its own transient failure goes back to
+the search without backing the client off. A configuration pause stops both.
+A call already in flight can finish, but its success cannot clear a newer
+refusal. The request deadline covers the provider call.
 
 `proxiima::serve` and `RunningProxiima::until_shutdown_signal` drain on
 SIGTERM/SIGINT: readiness fails, listeners stop accepting, requests and streams
@@ -333,11 +332,11 @@ name `stage`, `outcome` (`started`, `finished`, or `cancelled`), and
 and does not imply success. In particular, an embedding request's own
 `timeout_at` can return a timeout as `finished`; an outer deadline that drops
 the pending embedding call records `cancelled` instead.
-The stages separate query embedding, embedding-client mutex wait, provider work,
+The stages separate query embedding, provider work,
 and the storage search, payload, and neighbor port calls (SQL for the PostgreSQL
 backend). Search planning and authorization are timed too. Query and
 index spans identify the work, and local search/call identifiers distinguish
-concurrent operations; a process-local client number links a queued call to
-other work sharing its embedding client. Durations use a local monotonic clock; identifiers and
+concurrent operations; a process-local client number links a call to other
+work sharing its embedding client. Durations use a local monotonic clock; identifiers and
 parent spans do not propagate through remote transports. Query text, embedding
 inputs, credentials, and provider answers are never included.

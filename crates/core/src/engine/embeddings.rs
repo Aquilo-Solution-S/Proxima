@@ -84,22 +84,13 @@ impl Engine {
         &self,
         owner: &OwnerId,
     ) -> Result<EmbeddingRoute, EmbeddingRouteError> {
-        self.embedding_route_for(owner, control::Purpose::Background)
-            .await
-    }
-
-    async fn embedding_route_for(
-        &self,
-        owner: &OwnerId,
-        purpose: control::Purpose,
-    ) -> Result<EmbeddingRoute, EmbeddingRouteError> {
         let Some(router) = &self.embedding_router else {
             return Ok(EmbeddingRoute::none());
         };
         let route = router.route(owner).await?;
         Ok(self
             .embedding_control
-            .observe(*owner, route, self.embedding_runtime_policy, purpose))
+            .observe(*owner, route, self.embedding_runtime_policy))
     }
 
     /// Configuration faults on currently observed bindings. This snapshot
@@ -145,16 +136,14 @@ impl Engine {
     /// [`EmbeddingRoute::none`], so the search runs without a semantic arm
     /// instead of failing.
     pub async fn search_route(&self, owner: &OwnerId) -> EmbeddingRoute {
-        self.embedding_route_for(owner, control::Purpose::Search)
-            .await
-            .unwrap_or_else(|err| {
-                tracing::warn!(
-                    owner = %owner.to_string(),
-                    error = %err,
-                    "embedding route refused; searching without a semantic arm"
-                );
-                EmbeddingRoute::none()
-            })
+        self.embedding_route(owner).await.unwrap_or_else(|err| {
+            tracing::warn!(
+                owner = %owner.to_string(),
+                error = %err,
+                "embedding route refused; searching without a semantic arm"
+            );
+            EmbeddingRoute::none()
+        })
     }
 
     /// Best-effort Fact embedding. Missing text or missing embedding
@@ -291,6 +280,7 @@ impl Engine {
     /// Drain at most `limit` claimed jobs through each Owner's configured
     /// current and next clients. Stale spaces and missing text complete as
     /// no-ops. A heartbeat protects live claims; stale claims are reclaimed.
+    /// Up to the policy's `drain_concurrency` batches are in flight at once.
     ///
     /// Blocked clients release unsettled work and do not block other spaces.
     /// Only typed input refusals enter isolation and complete-coverage chunk
@@ -334,7 +324,7 @@ impl Engine {
         let mut outcome = EmbeddingDrainOutcome::default();
         let mut remaining = limit;
         while remaining > 0 {
-            let take = i64::try_from(remaining.min(policy.batch_size()))
+            let take = i64::try_from(remaining.min(policy.drain_pass_size()))
                 .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
             let now = tokio::time::Instant::now();
             let skip_owners = self.embedding_control.blocked_owners(now);
@@ -354,11 +344,23 @@ impl Engine {
                 claims.clone(),
                 policy.claim_heartbeat_interval(),
             );
-            if let Err(err) = self
-                .drain_claimed(claims.clone(), policy, &mut outcome)
-                .await
-            {
-                self.release_unsettled(&claims, &err).await;
+            let batches = claims.chunks(policy.batch_size()).map(|batch| async move {
+                let mut settled = EmbeddingDrainOutcome::default();
+                let result = self
+                    .drain_claimed(batch.to_vec(), policy, &mut settled)
+                    .await;
+                (batch, settled, result)
+            });
+            let mut failure = None;
+            for (batch, settled, result) in futures::future::join_all(batches).await {
+                outcome.processed += settled.processed;
+                outcome.failed += settled.failed;
+                if let Err(err) = result {
+                    self.release_unsettled(batch, &err).await;
+                    failure.get_or_insert(err);
+                }
+            }
+            if let Some(err) = failure {
                 return Err(err);
             }
         }

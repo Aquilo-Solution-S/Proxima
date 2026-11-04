@@ -281,7 +281,7 @@ impl BoundEmbeddingClient {
     pub async fn embed_query(&self, query: &str, task: QueryTask) -> Result<SpaceVector, LlmError> {
         let values = self
             .client
-            .embed(&self.query_instructions.render(query, task))
+            .embed_query(&self.query_instructions.render(query, task))
             .await?;
         self.vector(values)
             .map_err(|err| LlmError::retryable(err.to_string()))

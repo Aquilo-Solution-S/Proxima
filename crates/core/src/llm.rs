@@ -100,7 +100,7 @@ impl LlmError {
 }
 
 pub const PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS: &str = "PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS";
-pub const PROXIIMA_EMBED_SEARCH_CONCURRENT: &str = "PROXIIMA_EMBED_SEARCH_CONCURRENT";
+pub const PROXIIMA_EMBED_DRAIN_CONCURRENCY: &str = "PROXIIMA_EMBED_DRAIN_CONCURRENCY";
 pub const PROXIIMA_EMBED_BATCH_SIZE: &str = "PROXIIMA_EMBED_BATCH_SIZE";
 pub const PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS: &str = "PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS";
 pub const PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS: &str =
@@ -108,19 +108,23 @@ pub const PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS: &str =
 
 pub const DEFAULT_EMBED_REQUEST_TIMEOUT: Duration = Duration::from_mins(2);
 pub const DEFAULT_EMBED_BATCH_SIZE: usize = 32;
+pub const DEFAULT_EMBED_DRAIN_CONCURRENCY: usize = 1;
 pub const DEFAULT_EMBED_WORKER_INTERVAL: Duration = Duration::from_secs(5);
 pub const DEFAULT_EMBED_STALE_CLAIM_TIMEOUT: Duration = Duration::from_mins(15);
 
 pub const MAX_EMBED_REQUEST_TIMEOUT: Duration = Duration::from_hours(1);
 pub const MAX_EMBED_BATCH_SIZE: usize = 1_024;
+pub const MAX_EMBED_DRAIN_CONCURRENCY: usize = 64;
 pub const MAX_EMBED_WORKER_INTERVAL: Duration = Duration::from_hours(1);
 pub const MAX_EMBED_STALE_CLAIM_TIMEOUT: Duration = Duration::from_hours(24);
 
 /// Generic host policy for durable embedding work.
 ///
-/// The engine and maintenance boundaries apply one request deadline across
-/// waiting for the shared client's dispatch slot and the provider call. The
-/// shipped OpenAI-compatible adapter also applies its timeout at the HTTP layer.
+/// The engine and maintenance boundaries apply one request deadline to each
+/// provider call. The shipped OpenAI-compatible adapter also applies its
+/// timeout at the HTTP layer. Calls are not queued in the engine: a drain pass
+/// sends up to `drain_concurrency` batches at once, a search query goes out
+/// when it is asked, and the provider queues or refuses what exceeds its capacity.
 /// Claims are renewed on a separate task every third of
 /// `stale_claim_timeout`, so poison isolation and chunk rescue may make
 /// several bounded provider calls without looking abandoned to a concurrent
@@ -131,7 +135,7 @@ pub struct EmbeddingRuntimePolicy {
     batch_size: usize,
     worker_interval: Duration,
     stale_claim_timeout: Duration,
-    search_concurrent: bool,
+    drain_concurrency: usize,
 }
 
 impl Default for EmbeddingRuntimePolicy {
@@ -141,19 +145,17 @@ impl Default for EmbeddingRuntimePolicy {
             batch_size: DEFAULT_EMBED_BATCH_SIZE,
             worker_interval: DEFAULT_EMBED_WORKER_INTERVAL,
             stale_claim_timeout: DEFAULT_EMBED_STALE_CLAIM_TIMEOUT,
-            search_concurrent: false,
+            drain_concurrency: DEFAULT_EMBED_DRAIN_CONCURRENCY,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EmbeddingRuntimePolicyError {
-    #[error("{key} must be true or false, got {value:?}")]
-    MalformedBoolean { key: &'static str, value: String },
     #[error("{key} must be integer seconds, got {value:?}")]
     MalformedSeconds { key: &'static str, value: String },
     #[error("{key} must be a positive integer, got {value:?}")]
-    MalformedBatch { key: &'static str, value: String },
+    MalformedCount { key: &'static str, value: String },
     #[error("{field} must be in {min}..={max} seconds, got {actual}")]
     DurationOutOfRange {
         field: &'static str,
@@ -163,6 +165,8 @@ pub enum EmbeddingRuntimePolicyError {
     },
     #[error("batch size must be in 1..={max}, got {actual}")]
     BatchSizeOutOfRange { max: usize, actual: usize },
+    #[error("drain concurrency must be in 1..={max}, got {actual}")]
+    DrainConcurrencyOutOfRange { max: usize, actual: usize },
     #[error("{field} must be an integral number of seconds")]
     NonIntegralSeconds { field: &'static str },
     #[error(
@@ -220,7 +224,7 @@ impl EmbeddingRuntimePolicy {
             batch_size,
             worker_interval,
             stale_claim_timeout,
-            search_concurrent: false,
+            drain_concurrency: DEFAULT_EMBED_DRAIN_CONCURRENCY,
         })
     }
 
@@ -239,16 +243,13 @@ impl EmbeddingRuntimePolicy {
             PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS,
             defaults.request_timeout,
         )?;
-        let batch_size = match crate::env_value(lookup, PROXIIMA_EMBED_BATCH_SIZE) {
-            Some(raw) => {
-                raw.parse::<usize>()
-                    .map_err(|_| EmbeddingRuntimePolicyError::MalformedBatch {
-                        key: PROXIIMA_EMBED_BATCH_SIZE,
-                        value: raw,
-                    })?
-            }
-            None => defaults.batch_size,
-        };
+        let batch_size =
+            parse_count_setting(lookup, PROXIIMA_EMBED_BATCH_SIZE, defaults.batch_size)?;
+        let drain_concurrency = parse_count_setting(
+            lookup,
+            PROXIIMA_EMBED_DRAIN_CONCURRENCY,
+            defaults.drain_concurrency,
+        )?;
         let worker_interval = parse_duration_setting(
             lookup,
             PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS,
@@ -259,37 +260,44 @@ impl EmbeddingRuntimePolicy {
             PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
             defaults.stale_claim_timeout,
         )?;
-        let search_concurrent = crate::env_value(lookup, PROXIIMA_EMBED_SEARCH_CONCURRENT)
-            .map(|raw| match raw.as_str() {
-                "true" => Ok(true),
-                "false" => Ok(false),
-                _ => Err(EmbeddingRuntimePolicyError::MalformedBoolean {
-                    key: PROXIIMA_EMBED_SEARCH_CONCURRENT,
-                    value: raw,
-                }),
-            })
-            .transpose()?
-            .unwrap_or(false);
         Self::new(
             request_timeout,
             batch_size,
             worker_interval,
             stale_claim_timeout,
-        )
-        .map(|policy| policy.with_search_concurrent(search_concurrent))
+        )?
+        .with_drain_concurrency(drain_concurrency)
     }
 
-    /// Allow one search-route call beside one background call per original client.
-    /// Disabled by default. Both lanes retain shared backoff and configuration pauses.
-    #[must_use]
-    pub const fn with_search_concurrent(mut self, enabled: bool) -> Self {
-        self.search_concurrent = enabled;
-        self
+    /// How many claimed batches one drain pass sends to providers at once.
+    /// Default 1: batches go one after another.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a concurrency outside `1..=MAX_EMBED_DRAIN_CONCURRENCY`.
+    pub const fn with_drain_concurrency(
+        mut self,
+        concurrency: usize,
+    ) -> Result<Self, EmbeddingRuntimePolicyError> {
+        if concurrency == 0 || concurrency > MAX_EMBED_DRAIN_CONCURRENCY {
+            return Err(EmbeddingRuntimePolicyError::DrainConcurrencyOutOfRange {
+                max: MAX_EMBED_DRAIN_CONCURRENCY,
+                actual: concurrency,
+            });
+        }
+        self.drain_concurrency = concurrency;
+        Ok(self)
     }
 
     #[must_use]
-    pub const fn search_concurrent(self) -> bool {
-        self.search_concurrent
+    pub const fn drain_concurrency(self) -> usize {
+        self.drain_concurrency
+    }
+
+    /// The jobs one drain pass claims: a batch for each concurrent slot.
+    #[must_use]
+    pub const fn drain_pass_size(self) -> usize {
+        self.batch_size * self.drain_concurrency
     }
 
     #[must_use]
@@ -342,6 +350,18 @@ fn validate_duration(
     Ok(())
 }
 
+fn parse_count_setting(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &'static str,
+    default: usize,
+) -> Result<usize, EmbeddingRuntimePolicyError> {
+    let Some(raw) = crate::env_value(lookup, key) else {
+        return Ok(default);
+    };
+    raw.parse::<usize>()
+        .map_err(|_| EmbeddingRuntimePolicyError::MalformedCount { key, value: raw })
+}
+
 fn parse_duration_setting(
     lookup: &impl Fn(&str) -> Option<String>,
     key: &'static str,
@@ -366,8 +386,9 @@ pub const EMBEDDING_SEARCH_PURPOSE: &str = "search";
 pub trait EmbeddingClient: Send + Sync + std::fmt::Debug {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError>;
 
-    /// Embed an already-rendered search query. Providers may use the purpose
-    /// for scheduling; vector semantics remain the same as [`Self::embed`].
+    /// Embed an already-rendered search query. The engine sends every search
+    /// query through this operation; providers may use the purpose for
+    /// scheduling. Vector semantics remain the same as [`Self::embed`].
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         self.embed(text).await
     }
@@ -591,7 +612,7 @@ mod tests {
         DEFAULT_EMBED_REQUEST_TIMEOUT, DEFAULT_EMBED_STALE_CLAIM_TIMEOUT,
         DEFAULT_EMBED_WORKER_INTERVAL, EmbeddingClient, EmbeddingConfigurationFault,
         EmbeddingInputRefusal, EmbeddingRuntimePolicy, EmbeddingRuntimePolicyError, LlmError,
-        MIN_EMBED_INPUT_CAP_CHARS, PROXIIMA_EMBED_BATCH_SIZE,
+        MIN_EMBED_INPUT_CAP_CHARS, PROXIIMA_EMBED_BATCH_SIZE, PROXIIMA_EMBED_DRAIN_CONCURRENCY,
         PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS, PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS,
         PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS, embed_in_chunks, embed_in_chunks_after_failure,
         embed_in_chunks_after_failure_with_timeout, embed_in_chunks_with_timeout,
@@ -631,29 +652,17 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_search_policy_is_an_explicit_boolean_opt_in() {
-        use super::PROXIIMA_EMBED_SEARCH_CONCURRENT;
-        assert!(!EmbeddingRuntimePolicy::default().search_concurrent());
-        assert!(
-            !EmbeddingRuntimePolicy::from_lookup(&lookup(&[]))
-                .unwrap()
-                .search_concurrent()
-        );
-        for (raw, expected) in [("true", true), ("false", false)] {
-            let policy = EmbeddingRuntimePolicy::from_lookup(&lookup(&[(
-                PROXIIMA_EMBED_SEARCH_CONCURRENT,
-                raw,
-            )]))
-            .unwrap();
-            assert_eq!(policy.search_concurrent(), expected);
-        }
-        assert!(matches!(
-            EmbeddingRuntimePolicy::from_lookup(&lookup(&[(
-                PROXIIMA_EMBED_SEARCH_CONCURRENT,
-                "yes"
-            )])),
-            Err(EmbeddingRuntimePolicyError::MalformedBoolean { .. })
-        ));
+    fn drain_concurrency_defaults_to_one_batch_and_sizes_the_drain_pass() {
+        let policy = EmbeddingRuntimePolicy::default();
+        assert_eq!(policy.drain_concurrency(), 1);
+        assert_eq!(policy.drain_pass_size(), DEFAULT_EMBED_BATCH_SIZE);
+        let policy = EmbeddingRuntimePolicy::from_lookup(&lookup(&[
+            (PROXIIMA_EMBED_BATCH_SIZE, "8"),
+            (PROXIIMA_EMBED_DRAIN_CONCURRENCY, "4"),
+        ]))
+        .expect("valid policy");
+        assert_eq!(policy.drain_concurrency(), 4);
+        assert_eq!(policy.drain_pass_size(), 32);
     }
 
     #[test]
@@ -663,12 +672,19 @@ mod tests {
             (PROXIIMA_EMBED_REQUEST_TIMEOUT_SECONDS, "3601"),
             (PROXIIMA_EMBED_BATCH_SIZE, "0"),
             (PROXIIMA_EMBED_BATCH_SIZE, "1025"),
+            (PROXIIMA_EMBED_DRAIN_CONCURRENCY, "0"),
+            (PROXIIMA_EMBED_DRAIN_CONCURRENCY, "65"),
+            (PROXIIMA_EMBED_DRAIN_CONCURRENCY, "many"),
             (PROXIIMA_EMBED_WORKER_INTERVAL_SECONDS, "nope"),
             (PROXIIMA_EMBED_STALE_CLAIM_TIMEOUT_SECONDS, "86401"),
         ] {
             let err = EmbeddingRuntimePolicy::from_lookup(&lookup(&[(key, value)]))
                 .expect_err("invalid setting must fail");
-            assert!(err.to_string().contains(key) || err.to_string().contains("batch size"));
+            assert!(
+                err.to_string().contains(key)
+                    || err.to_string().contains("batch size")
+                    || err.to_string().contains("drain concurrency")
+            );
         }
 
         let err = EmbeddingRuntimePolicy::from_lookup(&lookup(&[

@@ -57,15 +57,12 @@ also starts configured listeners and background workers. Authenticated MCP
 requests carry a server-resolved `AuthzContext`; callers never supply a
 resolved owner or role.
 
-Embedding calls serialize per original client. A host that permits one search
-embedding beside background indexing sets
-`RuntimeBuilder::embedding_runtime_policy(EmbeddingRuntimePolicy::default().with_search_concurrent(true))`.
-The client's `EmbeddingClient::embed_query` operation distinguishes query
-purpose; its default uses the ordinary embedding algorithm. An HTTP adapter
-can carry that purpose to a host's admission boundary. Engine calls use it
-only when the policy enables concurrent search.
-This is an explicit capacity decision; both lanes still share provider backoff
-and configuration pauses ([operate](operate.md#probes-and-shutdown)).
+The engine does not queue embedding calls; the provider queues or refuses what
+exceeds its capacity. `EmbeddingRuntimePolicy::with_drain_concurrency` sets how
+many batches a drain pass sends at once. Every search query goes through the
+client's `EmbeddingClient::embed_query` operation; its default uses the
+ordinary embedding algorithm, and an HTTP adapter can carry the query purpose
+to a host's admission boundary ([operate](operate.md#probes-and-shutdown)).
 
 With an object store configured, the runtime sweeps expired uploads and drains
 object-purge debt itself (`RuntimeBuilder::object_purge_interval`, default 60

@@ -1991,6 +1991,92 @@ async fn retryable_jobs_complete_after_the_same_clients_window_passes() {
     result.expect("same-original retry expiry completion");
 }
 
+/// Answers a batch only once `width` batches are at the provider together.
+#[derive(Debug)]
+struct ConcurrentBatchesEmbedding {
+    together: tokio::sync::Barrier,
+}
+
+#[async_trait::async_trait]
+impl proxiima_core::llm::EmbeddingClient for ConcurrentBatchesEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, proxiima_core::llm::LlmError> {
+        Ok(vec![1.0; proxiima_core::llm::EmbeddingDim::D1024.width()])
+    }
+
+    async fn embed_many(
+        &self,
+        texts: &[String],
+    ) -> Result<Vec<Vec<f32>>, proxiima_core::llm::LlmError> {
+        self.together.wait().await;
+        Ok(texts
+            .iter()
+            .map(|_| vec![1.0; proxiima_core::llm::EmbeddingDim::D1024.width()])
+            .collect())
+    }
+
+    fn model_id(&self) -> &'static str {
+        "concurrent-batches"
+    }
+    fn dim(&self) -> usize {
+        proxiima_core::llm::EmbeddingDim::D1024.width()
+    }
+}
+
+/// With a drain concurrency of 2, one pass sends two batches at once: the
+/// provider answers neither until both arrived, so a pass that sent them one
+/// after another would never finish.
+#[tokio::test]
+async fn a_drain_pass_sends_its_concurrent_batches_at_once() {
+    use proxiima_core::llm::EmbeddingRuntimePolicy;
+    let split_db = clone_split_core_db("proxiima_core_drain_concurrency")
+        .await
+        .expect("PG required for tests");
+    let default = EmbeddingRuntimePolicy::default();
+    let policy = EmbeddingRuntimePolicy::new(
+        default.request_timeout(),
+        1,
+        default.worker_interval(),
+        default.stale_claim_timeout(),
+    )
+    .and_then(|policy| policy.with_drain_concurrency(2))
+    .expect("valid concurrent policy");
+    let fixture = TwoOwnerFixture::boot_with_policy(split_db.name(), policy)
+        .await
+        .expect("routing fixture");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let client = Arc::new(ConcurrentBatchesEmbedding {
+            together: tokio::sync::Barrier::new(2),
+        });
+        fixture.router.set_owner(
+            fixture.personal,
+            Some(proxiima_core::llm::BoundEmbeddingClient::bind(client).expect("lane width")),
+        );
+        let handles = [
+            fixture.remember("current", "needle concurrent first").await?,
+            fixture.remember("current", "needle concurrent second").await?,
+        ];
+        let engine = fixture.built.host().engine();
+        let drained = tokio::time::timeout(
+            RETRY_RECOVERY_PATIENCE,
+            engine.drain_embedding_jobs(policy.drain_pass_size()),
+        )
+        .await
+        .expect("both batches were at the provider together")?;
+        assert_eq!((drained.processed, drained.failed), (2, 0));
+        for handle in handles {
+            assert!(fixture.jobs(&handle).await?.is_empty());
+            assert_eq!(
+                fixture.stored_space(&handle).await?,
+                Some(("concurrent-batches".to_owned(), 1024))
+            );
+        }
+        Ok(())
+    }
+    .await;
+    fixture.shutdown().await;
+    result.expect("concurrent drain pass");
+}
+
 /// A store whose vectors live in a host index reached over the network form:
 /// the drain puts each memory's vectors there and keeps none locally, a
 /// semantic search narrows through the index, a transfer moves the entry's

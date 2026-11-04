@@ -1,4 +1,9 @@
 //! Shared client admission for embedding calls, plus observed queue routes.
+//!
+//! Admission never queues: a provider takes concurrent requests and queues or
+//! refuses what exceeds its capacity. Admission only refuses calls a client
+//! has been told to stop: a configuration fault stops every call, a transient
+//! backoff stops background work while search queries still go out.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -53,11 +58,11 @@ enum ClientState {
 }
 
 impl ClientState {
-    fn refusal(&self, now: Instant) -> Option<LlmError> {
-        match self {
-            Self::Ready => None,
-            Self::Paused(fault) => Some(LlmError::Configuration(*fault)),
-            Self::Waiting(wait) => {
+    fn refusal(&self, admission: Admission, now: Instant) -> Option<LlmError> {
+        match (self, admission) {
+            (Self::Ready, _) | (Self::Waiting(_), Admission::Query) => None,
+            (Self::Paused(fault), _) => Some(LlmError::Configuration(*fault)),
+            (Self::Waiting(wait), Admission::Background) => {
                 let remaining = wait.remaining(now);
                 (!remaining.is_zero()).then(|| LlmError::Retryable {
                     status: wait.status,
@@ -104,10 +109,16 @@ impl ClientState {
     }
 }
 
+/// What a call is, fixed by the operation the engine invokes: a search query
+/// through [`EmbeddingClient::embed_query`], anything else is background work.
 #[derive(Debug, Clone, Copy)]
-pub(super) enum Purpose {
+enum Admission {
+    /// Indexing and maintenance: owns the client's transient backoff.
     Background,
-    Search,
+    /// A search query: one small request a caller waits for. It passes a
+    /// backoff that background work published, and its own transient failure
+    /// goes back to its caller without backing the client off.
+    Query,
 }
 
 #[derive(Debug, Default)]
@@ -117,18 +128,29 @@ struct SharedState {
 }
 
 impl SharedState {
-    fn refusal(&self, now: Instant) -> Option<LlmError> {
-        self.value.refusal(now)
+    fn refusal(&self, admission: Admission, now: Instant) -> Option<LlmError> {
+        self.value.refusal(admission, now)
+    }
+
+    /// Whether the client may accept more background work.
+    fn blocked(&self, now: Instant) -> bool {
+        self.refusal(Admission::Background, now).is_some()
     }
 
     fn settle<T>(
         &mut self,
         result: &Result<T, LlmError>,
+        admission: Admission,
         generation: u64,
         base: Duration,
         now: Instant,
     ) {
-        // An in-flight success cannot clear a refusal published by the other lane.
+        if matches!(admission, Admission::Query)
+            && !matches!(result, Err(LlmError::Configuration(_)))
+        {
+            return;
+        }
+        // An in-flight success cannot clear a refusal published by a concurrent call.
         // Configuration pauses last until the original client binding is replaced.
         let refusal = matches!(
             result,
@@ -158,8 +180,6 @@ impl SharedState {
 #[derive(Debug)]
 struct ClientControl {
     trace_id: u64,
-    dispatch: tokio::sync::Mutex<()>,
-    search_dispatch: tokio::sync::Mutex<()>,
     state: Mutex<SharedState>,
 }
 
@@ -168,8 +188,6 @@ impl Default for ClientControl {
         static NEXT_CLIENT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             trace_id: NEXT_CLIENT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            dispatch: tokio::sync::Mutex::default(),
-            search_dispatch: tokio::sync::Mutex::default(),
             state: Mutex::default(),
         }
     }
@@ -179,42 +197,30 @@ impl ClientControl {
     async fn call<T>(
         &self,
         policy: EmbeddingRuntimePolicy,
-        purpose: Purpose,
+        admission: Admission,
         call: impl std::future::Future<Output = Result<T, LlmError>>,
     ) -> Result<T, LlmError> {
-        let deadline = Instant::now() + policy.request_timeout();
-        let timed_out = || {
-            LlmError::retryable(format!(
-                "request timed out after {} seconds",
-                policy.request_timeout().as_secs()
-            ))
-        };
-        let dispatch = if policy.search_concurrent() && matches!(purpose, Purpose::Search) {
-            &self.search_dispatch
-        } else {
-            &self.dispatch
-        };
-        let _dispatch = crate::stage_timing::timed(
-            "embedding_mutex_wait",
-            tokio::time::timeout_at(deadline, dispatch.lock()),
-        )
-        .await
-        .map_err(|_| timed_out())?;
         let generation = {
             let state = lock(&self.state);
-            if let Some(error) = state.refusal(Instant::now()) {
+            if let Some(error) = state.refusal(admission, Instant::now()) {
                 return Err(error);
             }
             state.refusal_generation
         };
         let result = crate::stage_timing::timed(
             "embedding_provider",
-            tokio::time::timeout_at(deadline, call),
+            tokio::time::timeout(policy.request_timeout(), call),
         )
         .await
-        .unwrap_or_else(|_| Err(timed_out()));
+        .unwrap_or_else(|_| {
+            Err(LlmError::retryable(format!(
+                "request timed out after {} seconds",
+                policy.request_timeout().as_secs()
+            )))
+        });
         lock(&self.state).settle(
             &result,
+            admission,
             generation,
             policy.worker_interval(),
             Instant::now(),
@@ -267,7 +273,6 @@ impl EmbeddingControl {
         owner: OwnerId,
         route: EmbeddingRoute,
         policy: EmbeddingRuntimePolicy,
-        purpose: Purpose,
     ) -> EmbeddingRoute {
         let mut registry = lock(&self.registry);
         registry
@@ -301,7 +306,6 @@ impl EmbeddingControl {
                 space,
                 control,
                 policy,
-                purpose,
             })
         });
         if bindings.is_empty() {
@@ -319,7 +323,7 @@ impl EmbeddingControl {
             .filter_map(|(owner, bindings)| {
                 bindings
                     .iter()
-                    .any(|binding| lock(&binding.control.state).refusal(now).is_some())
+                    .any(|binding| lock(&binding.control.state).blocked(now))
                     .then_some(*owner)
             })
             .collect()
@@ -332,7 +336,7 @@ impl EmbeddingControl {
             .flat_map(|(owner, bindings)| {
                 bindings
                     .iter()
-                    .filter(|binding| lock(&binding.control.state).refusal(now).is_some())
+                    .filter(|binding| lock(&binding.control.state).blocked(now))
                     .map(move |binding| (*owner, binding.space.clone()))
             })
             .collect()
@@ -391,7 +395,6 @@ struct ControlledClient {
     space: EmbeddingSpace,
     control: Arc<ClientControl>,
     policy: EmbeddingRuntimePolicy,
-    purpose: Purpose,
 }
 
 impl ControlledClient {
@@ -410,32 +413,43 @@ impl ControlledClient {
         }
         Ok(vector)
     }
+
+    async fn embed_one(
+        &self,
+        admission: Admission,
+        text: &str,
+        kind: &'static str,
+    ) -> Result<Vec<f32>, LlmError> {
+        use tracing::Instrument as _;
+        self.control
+            .call(self.policy, admission, async {
+                let vector = match admission {
+                    Admission::Background => self.inner.embed(text).await?,
+                    Admission::Query => self.inner.embed_query(text).await?,
+                };
+                self.validate(vector)
+            })
+            .instrument(
+                tracing::debug_span!(target: "proxiima::stage_timing", "embedding_call",
+                call = %uuid::Uuid::now_v7(), client = self.control.trace_id, kind),
+            )
+            .await
+    }
 }
 
 #[async_trait::async_trait]
 impl EmbeddingClient for ControlledClient {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-        use tracing::Instrument as _;
-        self.control
-            .call(self.policy, self.purpose, async {
-                let vector =
-                    if self.policy.search_concurrent() && matches!(self.purpose, Purpose::Search) {
-                        self.inner.embed_query(text).await?
-                    } else {
-                        self.inner.embed(text).await?
-                    };
-                self.validate(vector)
-            })
-            .instrument(
-                tracing::debug_span!(target: "proxiima::stage_timing", "embedding_call",
-                call = %uuid::Uuid::now_v7(), client = self.control.trace_id, kind = "single"),
-            )
-            .await
+        self.embed_one(Admission::Background, text, "single").await
+    }
+
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        self.embed_one(Admission::Query, text, "query").await
     }
 
     async fn embed_many(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, LlmError> {
         use tracing::Instrument as _;
-        self.control.call(self.policy, self.purpose, async {
+        self.control.call(self.policy, Admission::Background, async {
             let vectors = self.inner.embed_many(texts).await?;
             if vectors.len() != texts.len() {
                 return Err(LlmError::retryable(format!("embedding batch cardinality mismatch: sent {} texts but received {} vectors", texts.len(), vectors.len())));
@@ -578,18 +592,8 @@ mod tests {
             let owner_a = OwnerId::new(uuid::Uuid::now_v7());
             let owner_b = OwnerId::new(uuid::Uuid::now_v7());
             let policy = EmbeddingRuntimePolicy::default();
-            let a = control.observe(
-                owner_a,
-                EmbeddingRoute::current(bound(&old)),
-                policy,
-                Purpose::Background,
-            );
-            let b = control.observe(
-                owner_b,
-                EmbeddingRoute::current(bound(&old)),
-                policy,
-                Purpose::Background,
-            );
+            let a = control.observe(owner_a, EmbeddingRoute::current(bound(&old)), policy);
+            let b = control.observe(owner_b, EmbeddingRoute::current(bound(&old)), policy);
             assert!(
                 matches!(a.current_client().expect("current").embed("one").await, Err(LlmError::Configuration(actual)) if actual == fault)
             );
@@ -604,12 +608,7 @@ mod tests {
             assert_eq!(control.configuration_faults(), [fault]);
 
             *lock(&old.reply) = Reply::Accept;
-            let same = control.observe(
-                owner_a,
-                EmbeddingRoute::current(bound(&old)),
-                policy,
-                Purpose::Background,
-            );
+            let same = control.observe(owner_a, EmbeddingRoute::current(bound(&old)), policy);
             assert!(matches!(
                 same.current_client()
                     .expect("current")
@@ -624,12 +623,8 @@ mod tests {
             );
 
             let new = RecordingClient::new("shared", Reply::Accept);
-            let replacement = control.observe(
-                owner_a,
-                EmbeddingRoute::current(bound(&new)),
-                policy,
-                Purpose::Background,
-            );
+            let replacement =
+                control.observe(owner_a, EmbeddingRoute::current(bound(&new)), policy);
             replacement
                 .current_client()
                 .expect("current")
@@ -642,19 +637,14 @@ mod tests {
                 [fault],
                 "other owner still references old original"
             );
-            control.observe(owner_b, EmbeddingRoute::none(), policy, Purpose::Background);
+            control.observe(owner_b, EmbeddingRoute::none(), policy);
             assert!(
                 control.configuration_faults().is_empty(),
                 "no active observed old binding"
             );
             assert!(control.blocked_pairs(Instant::now()).is_empty());
 
-            let returned = control.observe(
-                owner_b,
-                EmbeddingRoute::current(bound(&old)),
-                policy,
-                Purpose::Background,
-            );
+            let returned = control.observe(owner_b, EmbeddingRoute::current(bound(&old)), policy);
             assert!(matches!(
                 returned
                     .current_client()
@@ -685,7 +675,6 @@ mod tests {
             owner,
             EmbeddingRoute::current(bound(&old)),
             EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
         );
         route
             .current_client()
@@ -697,7 +686,6 @@ mod tests {
             owner,
             EmbeddingRoute::none(),
             EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
         );
         drop(route);
         drop(old);
@@ -709,7 +697,6 @@ mod tests {
             owner,
             EmbeddingRoute::current(bound(&RecordingClient::new("new", Reply::Accept))),
             EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
         );
         assert_eq!(
             lock(&control.registry).clients.len(),
@@ -727,7 +714,6 @@ mod tests {
             owner,
             EmbeddingRoute::current(bound(&client)),
             EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
         );
         let client_bound = route.current_client().expect("current");
         assert!(
@@ -753,7 +739,6 @@ mod tests {
             owner,
             EmbeddingRoute::current(bound(&huge)),
             EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
         );
         route
             .current_client()
@@ -793,7 +778,6 @@ mod tests {
             OwnerId::new(uuid::Uuid::now_v7()),
             EmbeddingRoute::current(bound(&client)),
             policy,
-            Purpose::Background,
         );
         let bound = route.current_client().expect("current");
         bound
@@ -844,13 +828,11 @@ mod tests {
             owner,
             EmbeddingRoute::moving(Some(bound(&current)), bound(&next)).expect("different spaces"),
             EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
         );
         let other_route = control.observe(
             other,
             EmbeddingRoute::current(bound(&RecordingClient::new("current", Reply::Accept))),
             EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
         );
         route
             .current_client()
@@ -895,7 +877,6 @@ mod tests {
                 owner,
                 EmbeddingRoute::current(bound(&client)),
                 EmbeddingRuntimePolicy::default(),
-                Purpose::Background,
             );
             let client_bound = route.current_client().expect("current");
             assert!(matches!(
@@ -916,7 +897,6 @@ mod tests {
             OwnerId::new(uuid::Uuid::now_v7()),
             EmbeddingRoute::current(bound(&client)),
             EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
         );
         assert!(matches!(
             route
@@ -942,14 +922,8 @@ mod tests {
             owner,
             EmbeddingRoute::current(bound(&client)),
             EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
         );
-        let route = control.observe(
-            owner,
-            route,
-            EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
-        );
+        let route = control.observe(owner, route, EmbeddingRuntimePolicy::default());
         tokio::time::timeout(
             PATIENCE,
             route.current_client().expect("current").embed("one"),
@@ -958,229 +932,6 @@ mod tests {
         .expect("re-observation must not nest the same gate")
         .expect("valid response");
         assert_eq!(client.calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[derive(Debug, Default)]
-    struct HeldConfigurationClient {
-        entered: tokio::sync::Notify,
-        release: tokio::sync::Notify,
-        calls: AtomicUsize,
-    }
-
-    #[async_trait::async_trait]
-    impl EmbeddingClient for HeldConfigurationClient {
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.entered.notify_one();
-            self.release.notified().await;
-            Err(LlmError::Configuration(
-                EmbeddingConfigurationFault::Unauthorized,
-            ))
-        }
-        fn model_id(&self) -> &'static str {
-            "held"
-        }
-        fn dim(&self) -> usize {
-            384
-        }
-    }
-
-    #[tokio::test]
-    async fn already_waiting_call_cannot_follow_a_published_pause() {
-        let client = Arc::new(HeldConfigurationClient::default());
-        let original = BoundEmbeddingClient::bind(Arc::clone(&client) as Arc<dyn EmbeddingClient>)
-            .expect("supported");
-        let control = EmbeddingControl::default();
-        let a = control.observe(
-            OwnerId::new(uuid::Uuid::now_v7()),
-            EmbeddingRoute::current(original.clone()),
-            EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
-        );
-        let b = control.observe(
-            OwnerId::new(uuid::Uuid::now_v7()),
-            EmbeddingRoute::current(original),
-            EmbeddingRuntimePolicy::default(),
-            Purpose::Background,
-        );
-        let first =
-            tokio::spawn(async move { a.current_client().expect("current").embed("first").await });
-        tokio::time::timeout(PATIENCE, client.entered.notified())
-            .await
-            .expect("first entered");
-        let (started, receiver) = tokio::sync::oneshot::channel();
-        let second = tokio::spawn(async move {
-            started.send(()).expect("start marker");
-            b.current_client()
-                .expect("current")
-                .embed_many(&["second".into()])
-                .await
-        });
-        receiver.await.expect("second started");
-        client.release.notify_one();
-        assert!(matches!(
-            tokio::time::timeout(PATIENCE, first)
-                .await
-                .expect("first completed")
-                .expect("first task"),
-            Err(LlmError::Configuration(_))
-        ));
-        assert!(matches!(
-            tokio::time::timeout(PATIENCE, second)
-                .await
-                .expect("second completed")
-                .expect("second task"),
-            Err(LlmError::Configuration(_))
-        ));
-        assert_eq!(
-            client.calls.load(Ordering::SeqCst),
-            1,
-            "gate publishes pause before admitting the next call"
-        );
-    }
-
-    fn admission_timeout_policy() -> EmbeddingRuntimePolicy {
-        EmbeddingRuntimePolicy::new(
-            Duration::from_secs(30),
-            1,
-            Duration::from_secs(5),
-            Duration::from_mins(1),
-        )
-        .expect("bounded test policy")
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn queued_deadline_does_not_poll_provider_or_settle_in_flight_state() {
-        let control = Arc::new(ClientControl::default());
-        let dispatch = control.dispatch.lock().await;
-        let calls = Arc::new(AtomicUsize::new(0));
-        let policy = admission_timeout_policy();
-        let (started, waiting) = tokio::sync::oneshot::channel();
-        let queued_control = Arc::clone(&control);
-        let queued_calls = Arc::clone(&calls);
-        let entered = Instant::now();
-        let queued = tokio::spawn(async move {
-            started.send(()).expect("queued request marker");
-            queued_control
-                .call(policy, Purpose::Background, async {
-                    queued_calls.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                })
-                .await
-        });
-        tokio::time::timeout(PATIENCE, waiting)
-            .await
-            .expect("request entered")
-            .expect("start marker");
-        tokio::time::advance(Duration::from_secs(29)).await;
-        assert!(!queued.is_finished(), "queue keeps its remaining budget");
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert!(matches!(lock(&control.state).value, ClientState::Ready));
-        tokio::time::advance(Duration::from_secs(1)).await;
-        let error = tokio::time::timeout(PATIENCE, queued)
-            .await
-            .expect("queue timeout finishes")
-            .expect("queued task")
-            .expect_err("admission deadline");
-        assert!(matches!(
-            error,
-            LlmError::Retryable {
-                status: None,
-                retry_after: None,
-                ..
-            }
-        ));
-        assert_eq!(
-            Instant::now().saturating_duration_since(entered),
-            policy.request_timeout()
-        );
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            0,
-            "expired work never reaches the provider"
-        );
-        assert!(
-            matches!(lock(&control.state).value, ClientState::Ready),
-            "queue expiry cannot overwrite the in-flight request's state"
-        );
-        drop(dispatch);
-        control
-            .call(policy, Purpose::Background, async {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            })
-            .await
-            .expect("queue-only expiry did not back off the client");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn provider_receives_only_the_request_budget_remaining_after_admission() {
-        let control = Arc::new(ClientControl::default());
-        let dispatch = control.dispatch.lock().await;
-        let calls = Arc::new(AtomicUsize::new(0));
-        let policy = admission_timeout_policy();
-        let (started, waiting) = tokio::sync::oneshot::channel();
-        let (provider_entered, provider_started) = tokio::sync::oneshot::channel();
-        let queued_control = Arc::clone(&control);
-        let queued_calls = Arc::clone(&calls);
-        let entered = Instant::now();
-        let request = tokio::spawn(async move {
-            started.send(()).expect("queued request marker");
-            queued_control
-                .call(policy, Purpose::Background, async {
-                    queued_calls.fetch_add(1, Ordering::SeqCst);
-                    provider_entered
-                        .send(())
-                        .expect("provider admission marker");
-                    std::future::pending::<Result<(), LlmError>>().await
-                })
-                .await
-        });
-        tokio::time::timeout(PATIENCE, waiting)
-            .await
-            .expect("request entered")
-            .expect("start marker");
-        tokio::time::advance(Duration::from_secs(20)).await;
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            0,
-            "provider is not polled while queued"
-        );
-        assert!(matches!(lock(&control.state).value, ClientState::Ready));
-        drop(dispatch);
-        tokio::time::timeout(PATIENCE, provider_started)
-            .await
-            .expect("provider admitted before deadline")
-            .expect("provider marker");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        tokio::time::advance(Duration::from_secs(9)).await;
-        assert!(!request.is_finished(), "provider still has one second");
-        tokio::time::advance(Duration::from_secs(1)).await;
-        let error = tokio::time::timeout(PATIENCE, request)
-            .await
-            .expect("shared deadline finishes")
-            .expect("request task")
-            .expect_err("provider deadline");
-        assert!(matches!(
-            error,
-            LlmError::Retryable {
-                status: None,
-                retry_after: None,
-                ..
-            }
-        ));
-        assert_eq!(
-            Instant::now().saturating_duration_since(entered),
-            policy.request_timeout(),
-            "admission must not restart the provider's timeout"
-        );
-        let state = lock(&control.state);
-        let ClientState::Waiting(wait) = state.value else {
-            panic!("an admitted provider timeout must publish backoff: {state:?}");
-        };
-        assert_eq!(wait.delay, policy.worker_interval());
-        assert_eq!(wait.since, Instant::now());
     }
 
     #[test]
@@ -1202,33 +953,46 @@ mod tests {
                     retry_after: Some(Duration::from_mins(1)),
                     message: "busy".into(),
                 }),
+                Admission::Background,
                 0,
                 base,
                 start,
             );
-            state.settle(&Err::<(), _>(late), 0, base, start + Duration::from_secs(1));
-            assert!(
-                matches!(state.refusal(start + Duration::from_secs(59)), Some(LlmError::Retryable { retry_after: Some(remaining), .. }) if remaining == Duration::from_secs(1))
+            state.settle(
+                &Err::<(), _>(late),
+                Admission::Background,
+                0,
+                base,
+                start + Duration::from_secs(1),
             );
-            assert!(state.refusal(start + Duration::from_mins(1)).is_none());
+            assert!(
+                matches!(state.refusal(Admission::Background, start + Duration::from_secs(59)), Some(LlmError::Retryable { retry_after: Some(remaining), .. }) if remaining == Duration::from_secs(1))
+            );
+            assert!(
+                state
+                    .refusal(Admission::Background, start + Duration::from_mins(1))
+                    .is_none()
+            );
         }
         let mut state = SharedState::default();
         state.settle(
             &Err::<(), _>(LlmError::Configuration(
                 EmbeddingConfigurationFault::Unauthorized,
             )),
+            Admission::Background,
             0,
             base,
             start,
         );
         state.settle(
             &Err::<(), _>(LlmError::retryable("late refusal")),
+            Admission::Background,
             0,
             base,
             start,
         );
         assert!(matches!(
-            state.refusal(start + MAX_RETRY_AFTER),
+            state.refusal(Admission::Background, start + MAX_RETRY_AFTER),
             Some(LlmError::Configuration(
                 EmbeddingConfigurationFault::Unauthorized
             ))
@@ -1241,179 +1005,34 @@ mod tests {
         future.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
     }
 
-    #[tokio::test]
-    async fn search_lane_is_opt_in_and_cancellation_releases_each_slot() {
-        for concurrent in [false, true] {
-            let control = ClientControl::default();
-            let policy = EmbeddingRuntimePolicy::default().with_search_concurrent(concurrent);
-            let calls = AtomicUsize::new(0);
-            let held = || async {
-                calls.fetch_add(1, Ordering::SeqCst);
-                std::future::pending::<Result<(), LlmError>>().await
-            };
-            let mut background = Box::pin(control.call(policy, Purpose::Background, held()));
-            assert!(poll_once(background.as_mut()).is_pending());
-            assert_eq!(calls.load(Ordering::SeqCst), 1);
-
-            let mut second_background = Box::pin(control.call(policy, Purpose::Background, held()));
-            assert!(poll_once(second_background.as_mut()).is_pending());
-            assert_eq!(calls.load(Ordering::SeqCst), 1);
-            drop(second_background);
-            let mut search = Box::pin(control.call(policy, Purpose::Search, held()));
-            assert!(poll_once(search.as_mut()).is_pending());
-            assert_eq!(calls.load(Ordering::SeqCst), if concurrent { 2 } else { 1 });
-            let mut second_search = Box::pin(control.call(policy, Purpose::Search, async {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }));
-            assert!(poll_once(second_search.as_mut()).is_pending());
-            assert_eq!(calls.load(Ordering::SeqCst), if concurrent { 2 } else { 1 });
-            drop(search);
-            if concurrent {
-                tokio::time::timeout(PATIENCE, &mut second_search)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(calls.load(Ordering::SeqCst), 3);
-            } else {
-                assert!(poll_once(second_search.as_mut()).is_pending());
-            }
-            drop(background);
-            if !concurrent {
-                tokio::time::timeout(PATIENCE, second_search)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(calls.load(Ordering::SeqCst), 2);
-            }
-            control
-                .call(policy, Purpose::Background, async { Ok(()) })
-                .await
-                .unwrap();
+    fn busy(retry_after: Duration) -> LlmError {
+        LlmError::Retryable {
+            status: Some(429),
+            retry_after: Some(retry_after),
+            message: "busy".into(),
         }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_late_success_cannot_clear_the_other_lanes_pause_or_backoff() {
-        for configuration in [false, true] {
-            let control = ClientControl::default();
-            let policy = EmbeddingRuntimePolicy::default().with_search_concurrent(true);
-            let (release, held) = tokio::sync::oneshot::channel();
-            let mut background = Box::pin(control.call(policy, Purpose::Background, async {
-                held.await.unwrap();
-                Ok(())
-            }));
-            assert!(poll_once(background.as_mut()).is_pending());
-            let result = control
-                .call(policy, Purpose::Search, async {
-                    if configuration {
-                        Err::<(), _>(LlmError::Configuration(
-                            EmbeddingConfigurationFault::Unauthorized,
-                        ))
-                    } else {
-                        Err(LlmError::Retryable {
-                            status: Some(429),
-                            retry_after: Some(Duration::from_mins(1)),
-                            message: "busy".into(),
-                        })
-                    }
-                })
-                .await;
-            assert!(result.is_err());
-            release.send(()).unwrap();
-            background.await.unwrap();
-            let polls = AtomicUsize::new(0);
-            for purpose in [Purpose::Background, Purpose::Search] {
-                let result = control
-                    .call(policy, purpose, async {
-                        polls.fetch_add(1, Ordering::SeqCst);
-                        Ok(())
-                    })
-                    .await;
-                if configuration {
-                    assert!(matches!(
-                        result,
-                        Err(LlmError::Configuration(
-                            EmbeddingConfigurationFault::Unauthorized
-                        ))
-                    ));
-                } else {
-                    assert!(
-                        matches!(result, Err(LlmError::Retryable { status: Some(429), retry_after: Some(remaining), .. }) if remaining == Duration::from_mins(1))
-                    );
-                }
-            }
-            assert_eq!(polls.load(Ordering::SeqCst), 0);
-        }
-    }
-
-    #[tokio::test]
-    async fn observed_search_purpose_shares_control_with_single_text_background_work() {
-        let control = EmbeddingControl::default();
-        let original = Arc::new(HeldConfigurationClient::default());
-        let bound =
-            BoundEmbeddingClient::bind(Arc::clone(&original) as Arc<dyn EmbeddingClient>).unwrap();
-        let owner = OwnerId::new(uuid::Uuid::now_v7());
-        let policy = EmbeddingRuntimePolicy::default().with_search_concurrent(true);
-        let background = control.observe(
-            owner,
-            EmbeddingRoute::current(bound.clone()),
-            policy,
-            Purpose::Background,
-        );
-        let search = control.observe(
-            owner,
-            EmbeddingRoute::current(bound),
-            policy,
-            Purpose::Search,
-        );
-        let background_client = background.current_client().unwrap();
-        let search_client = search.current_client().unwrap();
-        let mut background_call = Box::pin(background_client.embed("one index text"));
-        let mut search_call = Box::pin(search_client.embed("query"));
-        assert!(poll_once(background_call.as_mut()).is_pending());
-        assert!(poll_once(search_call.as_mut()).is_pending());
-        assert_eq!(original.calls.load(Ordering::SeqCst), 2);
-        original.release.notify_one();
-        assert!(matches!(
-            background_call.await,
-            Err(LlmError::Configuration(_))
-        ));
-        drop(search_call);
-        assert_eq!(
-            control.configuration_faults(),
-            [EmbeddingConfigurationFault::Unauthorized]
-        );
-        assert!(matches!(
-            search_client.embed("next query").await,
-            Err(LlmError::Configuration(_))
-        ));
-        assert_eq!(original.calls.load(Ordering::SeqCst), 2);
     }
 
     #[derive(Debug)]
-    struct QueuedClient {
-        entered: tokio::sync::mpsc::UnboundedSender<String>,
-        writing_release: tokio::sync::Semaphore,
-        query_calls: AtomicUsize,
+    struct HeldWritesClient {
+        entered: AtomicUsize,
+        release: tokio::sync::Semaphore,
+        queries: AtomicUsize,
     }
 
     #[async_trait::async_trait]
-    impl EmbeddingClient for QueuedClient {
-        async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-            self.entered.send(text.to_owned()).unwrap();
-            self.writing_release.acquire().await.unwrap().forget();
+    impl EmbeddingClient for HeldWritesClient {
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            self.release.acquire().await.unwrap().forget();
             Ok(vec![1.0; 384])
         }
-
-        async fn embed_query(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-            self.query_calls.fetch_add(1, Ordering::SeqCst);
-            self.entered.send(text.to_owned()).unwrap();
+        async fn embed_query(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+            self.queries.fetch_add(1, Ordering::SeqCst);
             Ok(vec![1.0; 384])
         }
-
         fn model_id(&self) -> &'static str {
-            "queued"
+            "held-writes"
         }
         fn dim(&self) -> usize {
             384
@@ -1421,104 +1040,203 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_search_bypasses_six_queued_writes_while_switch_off_keeps_fifo() {
-        const QUEUED_WRITES: usize = 6;
-        for concurrent in [false, true] {
-            let (entered, mut events) = tokio::sync::mpsc::unbounded_channel();
-            let client = Arc::new(QueuedClient {
-                entered,
-                writing_release: tokio::sync::Semaphore::new(0),
-                query_calls: AtomicUsize::new(0),
-            });
-            let bound = BoundEmbeddingClient::bind(Arc::clone(&client) as Arc<dyn EmbeddingClient>)
+    async fn calls_reach_the_provider_concurrently_and_a_query_waits_for_none() {
+        const WRITES: usize = 6;
+        let client = Arc::new(HeldWritesClient {
+            entered: AtomicUsize::new(0),
+            release: tokio::sync::Semaphore::new(0),
+            queries: AtomicUsize::new(0),
+        });
+        let control = EmbeddingControl::default();
+        let route = control.observe(
+            OwnerId::new(uuid::Uuid::now_v7()),
+            EmbeddingRoute::current(
+                BoundEmbeddingClient::bind(Arc::clone(&client) as Arc<dyn EmbeddingClient>)
+                    .unwrap(),
+            ),
+            EmbeddingRuntimePolicy::default(),
+        );
+        let bound = route.current_client().unwrap();
+        let mut writes: Vec<_> = (0..WRITES)
+            .map(|_| Box::pin(bound.embed("write")))
+            .collect();
+        for write in &mut writes {
+            assert!(poll_once(write.as_mut()).is_pending());
+        }
+        assert_eq!(
+            client.entered.load(Ordering::SeqCst),
+            WRITES,
+            "every write is at the provider; none waits in the engine"
+        );
+        tokio::time::timeout(
+            PATIENCE,
+            bound.embed_query("query", crate::llm::QueryTask::DEFAULT),
+        )
+        .await
+        .expect("the query is not queued behind held writes")
+        .expect("query vector");
+        assert_eq!(
+            client.queries.load(Ordering::SeqCst),
+            1,
+            "a search goes out as a query"
+        );
+        client.release.add_permits(WRITES);
+        for write in writes {
+            tokio::time::timeout(PATIENCE, write)
+                .await
+                .unwrap()
                 .unwrap();
-            let control = EmbeddingControl::default();
-            let owner = OwnerId::new(uuid::Uuid::now_v7());
-            let policy = EmbeddingRuntimePolicy::default().with_search_concurrent(concurrent);
-            let writing = control.observe(
-                owner,
-                EmbeddingRoute::current(bound.clone()),
-                policy,
-                Purpose::Background,
-            );
-            let search = control.observe(
-                owner,
-                EmbeddingRoute::current(bound),
-                policy,
-                Purpose::Search,
-            );
-            let writing = writing.current_client().unwrap();
-            let search = search.current_client().unwrap();
-            let labels: Vec<_> = (0..=QUEUED_WRITES)
-                .map(|index| format!("write-{index}"))
-                .collect();
-            let mut writers: std::collections::VecDeque<_> = labels
-                .iter()
-                .map(|text| Box::pin(writing.embed(text)))
-                .collect();
-            for writer in &mut writers {
-                assert!(poll_once(writer.as_mut()).is_pending());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_query_passes_a_background_backoff_without_moving_it_and_stops_at_a_pause() {
+        let control = ClientControl::default();
+        let policy = EmbeddingRuntimePolicy::default();
+        let calls = AtomicUsize::new(0);
+        let provider = |reply: Result<(), LlmError>| {
+            let calls = &calls;
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                reply
             }
-            let mut order = vec![events.try_recv().unwrap()];
-            assert_eq!(order, ["write-0"]);
-            assert!(events.try_recv().is_err(), "all other writers are queued");
-            let mut query = Box::pin(search.embed("query"));
-            let mut query = if concurrent {
-                assert!(matches!(
-                    poll_once(query.as_mut()),
-                    std::task::Poll::Ready(Ok(_))
-                ));
-                order.push(events.try_recv().unwrap());
-                assert_eq!(
-                    order,
-                    ["write-0", "query"],
-                    "query reached its provider before the held writer released"
+        };
+        let backed_off = |result: Result<(), LlmError>, expected: Duration| matches!(result, Err(LlmError::Retryable { retry_after: Some(remaining), .. }) if remaining == expected);
+        control
+            .call(
+                policy,
+                Admission::Background,
+                provider(Err(busy(Duration::from_mins(1)))),
+            )
+            .await
+            .expect_err("busy");
+
+        control
+            .call(policy, Admission::Query, provider(Ok(())))
+            .await
+            .expect("a query passes the backoff");
+        assert!(
+            backed_off(
+                control
+                    .call(policy, Admission::Background, provider(Ok(())))
+                    .await,
+                Duration::from_mins(1)
+            ),
+            "a query's success does not heal the background backoff"
+        );
+        control
+            .call(
+                policy,
+                Admission::Query,
+                provider(Err(busy(Duration::from_hours(1)))),
+            )
+            .await
+            .expect_err("the query's own refusal goes to its caller");
+        assert!(
+            backed_off(
+                control
+                    .call(policy, Admission::Background, provider(Ok(())))
+                    .await,
+                Duration::from_mins(1)
+            ),
+            "a query's refusal does not extend the background backoff"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "refused calls never reach the provider"
+        );
+
+        control
+            .call(
+                policy,
+                Admission::Query,
+                provider(Err(LlmError::Configuration(
+                    EmbeddingConfigurationFault::Unauthorized,
+                ))),
+            )
+            .await
+            .expect_err("configuration");
+        for admission in [Admission::Background, Admission::Query] {
+            assert!(matches!(
+                control.call(policy, admission, provider(Ok(()))).await,
+                Err(LlmError::Configuration(
+                    EmbeddingConfigurationFault::Unauthorized
+                ))
+            ));
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            4,
+            "a query's configuration fault pauses every call"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_late_success_cannot_clear_a_concurrent_refusal() {
+        for refusal in [
+            busy(Duration::from_mins(1)),
+            LlmError::Configuration(EmbeddingConfigurationFault::Unauthorized),
+        ] {
+            let pause = matches!(refusal, LlmError::Configuration(_));
+            let control = ClientControl::default();
+            let policy = EmbeddingRuntimePolicy::default();
+            let (release, held) = tokio::sync::oneshot::channel();
+            let mut in_flight = Box::pin(control.call(policy, Admission::Background, async {
+                held.await.unwrap();
+                Ok(())
+            }));
+            assert!(poll_once(in_flight.as_mut()).is_pending());
+            control
+                .call(policy, Admission::Background, async {
+                    Err::<(), _>(refusal)
+                })
+                .await
+                .expect_err("refused");
+            release.send(()).unwrap();
+            in_flight.await.expect("the earlier call succeeds");
+            let result = control
+                .call(policy, Admission::Background, async { Ok(()) })
+                .await;
+            if pause {
+                assert!(matches!(result, Err(LlmError::Configuration(_))));
+            } else {
+                assert!(
+                    matches!(result, Err(LlmError::Retryable { retry_after: Some(remaining), .. }) if remaining == Duration::from_mins(1))
                 );
-                None
-            } else {
-                assert!(poll_once(query.as_mut()).is_pending());
-                assert!(events.try_recv().is_err());
-                Some(query)
-            };
-            while let Some(mut writer) = writers.pop_front() {
-                client.writing_release.add_permits(1);
-                tokio::time::timeout(PATIENCE, &mut writer)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                // Poll in reverse order: FIFO admission still gives only the oldest writer its turn.
-                for queued in writers.iter_mut().rev() {
-                    assert!(poll_once(queued.as_mut()).is_pending());
-                }
-                if let Some(query) = &mut query {
-                    assert!(poll_once(query.as_mut()).is_pending());
-                }
-                while let Ok(event) = events.try_recv() {
-                    order.push(event);
-                }
-            }
-            if let Some(query) = query {
-                client.writing_release.add_permits(1);
-                tokio::time::timeout(PATIENCE, query)
-                    .await
-                    .unwrap()
-                    .unwrap();
-            }
-            let background_order: Vec<_> = order
-                .iter()
-                .filter(|event| event.starts_with("write-"))
-                .cloned()
-                .collect();
-            assert_eq!(background_order, labels);
-            assert_eq!(
-                client.query_calls.load(Ordering::SeqCst),
-                usize::from(concurrent)
-            );
-            if concurrent {
-                assert_eq!(order[1], "query");
-            } else {
-                assert_eq!(order.last().unwrap(), "query");
             }
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_provider_call_past_the_request_deadline_backs_the_client_off() {
+        let control = ClientControl::default();
+        let policy = EmbeddingRuntimePolicy::default();
+        let started = Instant::now();
+        let error = control
+            .call(
+                policy,
+                Admission::Background,
+                std::future::pending::<Result<(), LlmError>>(),
+            )
+            .await
+            .expect_err("deadline");
+        assert!(matches!(
+            error,
+            LlmError::Retryable {
+                status: None,
+                retry_after: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            Instant::now().saturating_duration_since(started),
+            policy.request_timeout()
+        );
+        let state = lock(&control.state);
+        let ClientState::Waiting(wait) = state.value else {
+            panic!("a provider timeout must publish backoff: {state:?}");
+        };
+        assert_eq!(wait.delay, policy.worker_interval());
     }
 }
