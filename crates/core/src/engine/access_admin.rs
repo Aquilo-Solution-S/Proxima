@@ -4,6 +4,7 @@ use crate::authz::{
 };
 use crate::error::ProtocolError;
 use crate::owner_inverse::OwnerEraseTarget;
+use crate::spiice::TransferRule;
 use crate::storage::StorageError;
 use crate::storage_ports::{
     MembershipEndpointAuthority, MembershipMemberAuthority, MembershipWritePermit,
@@ -357,6 +358,12 @@ impl Engine {
     /// owner lookup or storage call. The `goal_head_t_only` trigger is the
     /// DDL backstop for the same rule.
     ///
+    /// A memory whose schema declares `TransferRule::NotTransferable` is
+    /// refused here too, kernel or Spiice, with the reason the schema
+    /// declared, once both sides authorize and before storage is reached;
+    /// the storage transfer refuses it again for a caller that bypasses the
+    /// engine.
+    ///
     /// Authorization is **admin on both sides**:
     /// * Owner admin on the entity's CURRENT owner — for a personal
     ///   owner that is the subject's own `Role::personal()`; for a group
@@ -384,7 +391,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `InvalidArgument` for a Goal entity and for a non-Group
+    /// Returns `InvalidArgument` for a Goal entity, for a memory whose schema
+    /// declares `NotTransferable`, and for a non-Group
     /// destination. Returns `NotFound` when the entity has no home owner
     /// (absent or tombstoned). Returns `Forbidden` when the caller lacks
     /// admin/manage authority on either side. Returns `InvalidArgument`
@@ -422,7 +430,7 @@ impl Engine {
         // same public NotFound outcome, while an authorized source remains
         // visible because admin roles include read access.
         let read = authz.readable_owners(AccessKind::Fact);
-        let (current_owner, _) = self
+        let (current_owner, _, schema) = self
             .storage()
             .access_admin
             .owner_access_read
@@ -430,7 +438,6 @@ impl Engine {
             .await
             .map_err(|err| storage_error("visible_home_owner", &err))?
             .ok_or_else(|| ProtocolError::not_found("entity not found"))?;
-
         let mut permit = self.authorize_owner_admin(authz, &current_owner).await?;
         if authz.subject().map(OwnerId::from) != Some(current_owner) {
             require_group_manage(authz, &current_owner)?;
@@ -439,6 +446,23 @@ impl Engine {
         // manage on it. A transfer needs consent from both owners.
         self.authorize_transfer_destination(authz, &to_owner)
             .await?;
+
+        // A schema that declares `NotTransferable` is refused once both
+        // sides authorize, so a caller who may not manage learns nothing of
+        // the schema. The refusal comes before the destination is named to
+        // the permit and before any storage call.
+        let surfaces = self.owner_surfaces();
+        if let Some(schema) = &schema
+            && let Some(why) = surfaces.untransferable_schema(schema.as_str())
+        {
+            return Err(ProtocolError::invalid_argument(
+                "entity",
+                format!(
+                    "memories of schema {schema} do not transfer: {}",
+                    TransferRule::refusal_headline(why)
+                ),
+            ));
+        }
 
         permit.authorize_transfer_to(to_owner);
 
@@ -470,7 +494,7 @@ impl Engine {
                 permit.owner_write_permit(),
                 entity,
                 to_owner,
-                &self.owner_surfaces(),
+                &surfaces,
                 &embedding_spaces,
             )
             .await

@@ -10,14 +10,15 @@ pub trait OwnerAccessReadPort: Send + Sync {
         member: &OwnerId,
     ) -> Result<Vec<MembershipRow>, StorageError>;
 
-    /// Home owner and kind of `entity` when its owner is in `read_owners`.
-    /// Absent and foreign are both `None`.
+    /// Home owner, kind and schema of `entity` when its owner is in
+    /// `read_owners`. Absent and foreign are both `None`. The schema is the
+    /// memory row's own `schema_id`; a goal has none.
     async fn visible_home_owner(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,
         entity: EntityId,
         read_owners: &[OwnerId],
-    ) -> Result<Option<(OwnerId, crate::AccessKind)>, StorageError>;
+    ) -> Result<Option<(OwnerId, crate::AccessKind, Option<crate::SchemaId>)>, StorageError>;
 
     /// [`Self::visible_home_owner`] of every entity in `entities`, in order.
     /// A store that can answer them together overrides this: the default asks
@@ -27,7 +28,8 @@ pub trait OwnerAccessReadPort: Send + Sync {
         owner_scope: Option<&crate::OwnerScope>,
         entities: &[EntityId],
         read_owners: &[OwnerId],
-    ) -> Result<Vec<Option<(OwnerId, crate::AccessKind)>>, StorageError> {
+    ) -> Result<Vec<Option<(OwnerId, crate::AccessKind, Option<crate::SchemaId>)>>, StorageError>
+    {
         let mut homes = Vec::with_capacity(entities.len());
         for entity in entities {
             homes.push(

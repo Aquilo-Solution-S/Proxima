@@ -320,6 +320,7 @@ fn the_bundle_is_the_hand_written_one() {
     let mut hand_written = PgSidecarRegistry::new();
     hand_written.add_fact::<NoteV1>();
     hand_written.add_fact::<proxiima_example::StampV1>();
+    hand_written.add_fact::<proxiima_example::SealedStampV1>();
     hand_written.add_abstraction::<proxiima_example::DigestV1>();
     assert_eq!(
         debug_entries(&format!("{registry:?}")),

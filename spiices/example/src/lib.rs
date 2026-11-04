@@ -4,7 +4,8 @@
 //!
 //! Stateful note Fact ([`payload::NoteV1`]), digest Abstraction
 //! ([`payload::DigestV1`]), stamp Fact that follows transfer
-//! ([`payload::StampV1`]), a notebook scope registry, an ownerless settings
+//! ([`payload::StampV1`]), a sealed stamp Fact that never transfers
+//! ([`payload::SealedStampV1`]), a notebook scope registry, an ownerless settings
 //! table, one read-only tool and one migration lane with its own ledger.
 
 pub mod contract;
@@ -17,7 +18,7 @@ pub mod testkit;
 
 pub use contract::{EXAMPLE_BASELINE_CONTRACT, EXAMPLE_CONTRACT, PG_SCHEMA, SPIICE_ID};
 pub use heads::note_heads;
-pub use payload::{DigestV1, NoteV1, StampV1};
+pub use payload::{DigestV1, NoteV1, SealedStampV1, StampV1};
 pub use tool::{ExampleStore, ListNotebooksTool};
 
 /// The spiice's embedded migrations.
@@ -90,7 +91,7 @@ proxiima::spiice_bundle! {
     bundle = ExampleSpiice,
     name = "proxiima-example",
     display_name = "Example",
-    fact_schemas = [payload::NoteV1, payload::StampV1],
+    fact_schemas = [payload::NoteV1, payload::StampV1, payload::SealedStampV1],
     abstraction_schemas = [payload::DigestV1],
     mcp_tools = [tool::ListNotebooksTool],
     contract = &contract::EXAMPLE_CONTRACT,

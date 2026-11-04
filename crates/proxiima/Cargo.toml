@@ -94,6 +94,10 @@ name = "stamp_follows_pg"
 required-features = ["testkit"]
 
 [[test]]
+name = "not_transferable_pg"
+required-features = ["testkit"]
+
+[[test]]
 name = "scope_fence_pg"
 required-features = ["testkit"]
 

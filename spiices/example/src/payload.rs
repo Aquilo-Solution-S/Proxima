@@ -1,5 +1,6 @@
 //! The example spiice's payloads: a stateful note Fact, a digest
-//! Abstraction, and a stamp Fact that follows its memory on transfer.
+//! Abstraction, a stamp Fact that follows its memory on transfer, and a
+//! sealed stamp Fact that never transfers.
 
 use proxiima::spiice::{AbstractionPayload, FactPayload, PayloadKeyBuilder, ScopeKind};
 use schemars::JsonSchema;
@@ -15,6 +16,8 @@ pub const NOTE_SCHEMA_ID: &str = "proxiima-example/note-v1";
 pub const DIGEST_SCHEMA_ID: &str = "proxiima-example/digest-v1";
 /// Schema id of [`StampV1`].
 pub const STAMP_SCHEMA_ID: &str = "proxiima-example/stamp-v1";
+/// Schema id of [`SealedStampV1`].
+pub const SEALED_STAMP_SCHEMA_ID: &str = "proxiima-example/sealed-stamp-v1";
 
 /// One note in a notebook. Stateful: a newer note with the same
 /// `(notebook_id, key)` supersedes the older one.
@@ -158,6 +161,57 @@ impl FactPayload for StampV1 {
 proxiima::spiice::pg_sidecar! {
     payload: StampV1,
     row: StampRow,
+    kinds: [Fact],
+    table: "proxiima_example.stamp_v1",
+    key: t,
+    owner: follows,
+    fields: {
+        mark => mark: (text),
+    },
+}
+
+/// A stamp on a memory that stays with its owner: it shares the stamp
+/// sidecar, whose rows would follow a transfer, and its schema declares
+/// `TransferRule::NotTransferable`, so a transfer of it is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SealedStampV1 {
+    /// Opaque mark text.
+    pub mark: String,
+}
+
+impl FactPayload for SealedStampV1 {
+    const SCHEMA_ID: &'static str = SEALED_STAMP_SCHEMA_ID;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn receipt_key(&self) -> Vec<u8> {
+        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        key.field_str("mark", &self.mark);
+        key.finish()
+    }
+
+    fn render(&self) -> String {
+        self.mark.clone()
+    }
+
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxiima_example.stamp_v1")
+    }
+
+    fn natural_key_columns() -> &'static [&'static str] {
+        &[]
+    }
+
+    fn json_schema() -> Option<serde_json::Value> {
+        Some(
+            serde_json::to_value(schemars::schema_for!(Self))
+                .expect("SealedStampV1 schema serializes"),
+        )
+    }
+}
+
+proxiima::spiice::pg_sidecar! {
+    payload: SealedStampV1,
+    row: SealedStampRow,
     kinds: [Fact],
     table: "proxiima_example.stamp_v1",
     key: t,

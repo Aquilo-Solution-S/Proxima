@@ -2,10 +2,11 @@
 
 use proxiima_core::owner_inverse::OwnerSurfaces;
 use proxiima_core::scope::ScopeKind;
-use proxiima_core::spiice::TransferLeg;
+use proxiima_core::spiice::{TransferLeg, TransferRule};
 use proxiima_core::storage_ports::{MembershipEndpointAuthority, MembershipMemberAuthority};
 use proxiima_core::{
-    AccessKind, EntityId, GroupId, MembershipRow, OwnerId, Relation, Role, StorageError, UserId,
+    AccessKind, EntityId, GroupId, MembershipRow, OwnerId, Relation, Role, SchemaId, StorageError,
+    UserId,
 };
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -1518,8 +1519,12 @@ pub(crate) async fn list_group_members_page(
         .collect())
 }
 
-/// Home owner and kind of each of `entities`, in order, when the row is in
-/// `read_owners`. Absent and foreign are both `None`.
+/// A visible entity's row, by `(is_goal, t)`: owner, stored kind, schema.
+type HomeRows = std::collections::HashMap<(bool, uuid::Uuid), (uuid::Uuid, String, Option<String>)>;
+
+/// Home owner, kind and schema of each of `entities`, in order, when the row
+/// is in `read_owners`. Absent and foreign are both `None`. A goal row has
+/// no schema.
 ///
 /// # Errors
 ///
@@ -1528,7 +1533,7 @@ pub(crate) async fn visible_home_owners(
     conn: &mut sqlx::PgConnection,
     entities: &[EntityId],
     read_owners: &[OwnerId],
-) -> Result<Vec<Option<(OwnerId, AccessKind)>>, StorageError> {
+) -> Result<Vec<Option<(OwnerId, AccessKind, Option<SchemaId>)>>, StorageError> {
     if read_owners.is_empty() {
         return Ok(vec![None; entities.len()]);
     }
@@ -1550,14 +1555,13 @@ pub(crate) async fn visible_home_owners(
     // its own spine. The candidate-owner uniqueness guard makes a malformed
     // duplicate `(entity, owner)` state fail closed instead of authorizing the
     // first row returned by PostgreSQL.
-    let mut homes: std::collections::HashMap<(bool, uuid::Uuid), (uuid::Uuid, String)> =
-        std::collections::HashMap::new();
+    let mut homes: HomeRows = std::collections::HashMap::new();
     if !memories.is_empty() {
-        let rows: Vec<(uuid::Uuid, uuid::Uuid, String)> = sqlx::query_as(
+        let rows: Vec<(uuid::Uuid, uuid::Uuid, String, String)> = sqlx::query_as(
             "WITH candidates AS (
-                 SELECT t, owner_id, kind FROM proxiima_core.memory WHERE t = ANY($1::uuid[]) /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
+                 SELECT t, owner_id, kind, schema_id FROM proxiima_core.memory WHERE t = ANY($1::uuid[]) /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
              )
-             SELECT c.t, c.owner_id, c.kind::text
+             SELECT c.t, c.owner_id, c.kind::text, c.schema_id
                FROM candidates c
               WHERE c.owner_id = ANY($2::uuid[])
                 AND NOT EXISTS (
@@ -1574,7 +1578,7 @@ pub(crate) async fn visible_home_owners(
         .map_err(map_err)?;
         homes.extend(
             rows.into_iter()
-                .map(|(t, owner, kind)| ((false, t), (owner, kind))),
+                .map(|(t, owner, kind, schema)| ((false, t), (owner, kind, Some(schema)))),
         );
     }
     if !goals.is_empty() {
@@ -1590,7 +1594,7 @@ pub(crate) async fn visible_home_owners(
         .map_err(map_err)?;
         homes.extend(
             rows.into_iter()
-                .map(|(t, owner)| ((true, t), (owner, "goal".to_owned()))),
+                .map(|(t, owner)| ((true, t), (owner, "goal".to_owned(), None))),
         );
     }
 
@@ -1603,7 +1607,13 @@ pub(crate) async fn visible_home_owners(
             };
             homes
                 .get(&key)
-                .map(|(owner, kind)| Ok((OwnerId::new(*owner), access_kind(kind)?)))
+                .map(|(owner, kind, schema)| {
+                    Ok((
+                        OwnerId::new(*owner),
+                        access_kind(kind)?,
+                        schema.clone().map(SchemaId::new),
+                    ))
+                })
                 .transpose()
         })
         .collect()
@@ -1640,14 +1650,16 @@ fn access_kind(stored: &str) -> Result<AccessKind, StorageError> {
 /// deleted so the prior owner can mint a new series.
 ///
 /// Goals do not transfer — the engine refuses them before storage; this
-/// backstop keeps a direct storage call from transferring one.
+/// backstop keeps a direct storage call from transferring one. The same
+/// holds for a memory whose schema declares `NotTransferable`, kernel or
+/// Spiice, decided from the memory row.
 ///
 /// # Errors
 ///
 /// `Conflict` when a cited blob is still referenced by another live series or
 /// the source owner still has an upload whose publication is unresolved.
-/// `ConstraintViolation` for a Goal entity, and for unique / check
-/// violations.
+/// `ConstraintViolation` for a Goal entity, for a memory whose schema
+/// declares `NotTransferable`, and for unique / check violations.
 pub(crate) async fn transfer_to_owner(
     pool: &PgPool,
     platform: &crate::PgPlatformScope,
@@ -1736,10 +1748,10 @@ fn refuse_untransferable_entity(surfaces: &OwnerSurfaces, table: &str) -> Storag
         // from `NotTransferable { why }` rather than restated beside it:
         // rewording the declaration moves this error, which is what the
         // transfer differential golden is for.
-        TransferLeg::Refused { why } => {
-            let headline = why.split_once(':').map_or(why, |(head, _)| head);
-            StorageError::ConstraintViolation(format!("{entity} do not transfer: {headline}"))
-        }
+        TransferLeg::Refused { why } => StorageError::ConstraintViolation(format!(
+            "{entity} do not transfer: {}",
+            TransferRule::refusal_headline(why)
+        )),
         _ => StorageError::Internal(format!(
             "{table} declares no transfer leg this substrate can perform"
         )),
@@ -1754,8 +1766,8 @@ async fn transfer_memory_t(
     to_owner: OwnerId,
     embeddings: RouteSpaces<'_>,
 ) -> Result<bool, StorageError> {
-    let handle: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT handle
+    let row: Option<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT handle, schema_id
            FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (transfer moves forgotten rows too) */
           WHERE t = $1 AND owner_id = $2",
     )
@@ -1764,9 +1776,19 @@ async fn transfer_memory_t(
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
-    let Some(handle) = handle else {
+    let Some((handle, schema_id)) = row else {
         return Ok(false);
     };
+    // The backstop for a schema's `NotTransferable`, kernel or Spiice, decided
+    // from the row this transaction read and before the destination owner is
+    // minted or any row is re-homed: a caller that bypasses the engine is
+    // refused, and the refusal commits with nothing.
+    if let Some(why) = surfaces.untransferable_schema(&schema_id) {
+        return Err(StorageError::ConstraintViolation(format!(
+            "memories of schema {schema_id} do not transfer: {}",
+            TransferRule::refusal_headline(why)
+        )));
+    }
     transfer_memory_handle(tx, surfaces, t, handle, from_id, to_owner, embeddings).await
 }
 
@@ -2912,7 +2934,6 @@ mod group_manager_race_pg_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxiima_core::spiice::TransferRule;
 
     fn shipped() -> OwnerSurfaces {
         let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
@@ -3128,7 +3149,7 @@ mod tests {
         else {
             panic!("an untransferable entity is a constraint the substrate holds");
         };
-        let headline = why.split_once(':').map_or(why, |(head, _)| head);
+        let headline = TransferRule::refusal_headline(why);
         assert!(
             message.ends_with(headline),
             "the refusal ({message}) should carry the declaration's headline ({headline})"

@@ -182,9 +182,52 @@ impl ExampleEngine {
     }
 }
 
+/// The storage over the example spiice that [`compose`] hands the Engine,
+/// on its own pools (sized by [`engine_pool_config`]) to an already migrated
+/// database. A suite that calls a storage port directly takes this.
+///
+/// # Panics
+///
+/// When Postgres is unavailable or the sidecars do not match `registry`.
+pub async fn storage_over(
+    runtime_url: &str,
+    platform_url: &str,
+    registry: &proxiima_core::SpiiceRegistryFrozen,
+) -> PgStorage {
+    let mut sidecars = PgSidecarRegistry::new();
+    register_core_pg_sidecars(&mut sidecars);
+    ExampleSpiice::register_pg_sidecars(&mut sidecars);
+    let sidecars = sidecars
+        .freeze_against(registry)
+        .expect("the example sidecars match the registry");
+    let platform_pool = expect_described(
+        "platform connection",
+        fixture_pool(platform_url, ENGINE_POOL_CONNECTIONS).await,
+    )
+    .await;
+    let platform_scope = expect_described(
+        "platform validation",
+        PgPlatformScope::new(platform_pool, &["proxiima_core", "proxiima_example"]).await,
+    )
+    .await;
+    expect_described(
+        "runtime connection",
+        PgStorage::connect_with_config(
+            runtime_url,
+            engine_pool_config(),
+            PgTuning::default(),
+            platform_scope,
+            0,
+        )
+        .await,
+    )
+    .await
+    .with_sidecars(sidecars)
+    .with_spiices(registry)
+}
+
 /// Compose an Engine over the example spiice plus whatever `extra`
-/// registers, on its own pools (sized by [`engine_pool_config`]) to an
-/// already migrated database. A suite
+/// registers, over [`storage_over`]. A suite
 /// that races two Engines on one database calls this once per task, so a
 /// task blocked on a lock never holds a connection the test's probes need.
 ///
@@ -201,36 +244,7 @@ pub async fn compose(
     ExampleSpiice::register(&mut registry).expect("the example spiice registers");
     extra(&mut registry);
     let registry = registry.freeze_or_panic_for_tests();
-    let mut sidecars = PgSidecarRegistry::new();
-    register_core_pg_sidecars(&mut sidecars);
-    ExampleSpiice::register_pg_sidecars(&mut sidecars);
-    let sidecars = sidecars
-        .freeze_against(&registry)
-        .expect("the example sidecars match the registry");
-    let platform_pool = expect_described(
-        "platform connection",
-        fixture_pool(platform_url, ENGINE_POOL_CONNECTIONS).await,
-    )
-    .await;
-    let platform_scope = expect_described(
-        "platform validation",
-        PgPlatformScope::new(platform_pool, &["proxiima_core", "proxiima_example"]).await,
-    )
-    .await;
-    let pg = expect_described(
-        "runtime connection",
-        PgStorage::connect_with_config(
-            runtime_url,
-            engine_pool_config(),
-            PgTuning::default(),
-            platform_scope,
-            0,
-        )
-        .await,
-    )
-    .await
-    .with_sidecars(sidecars)
-    .with_spiices(&registry);
+    let pg = storage_over(runtime_url, platform_url, &registry).await;
     Engine::new(registry).with_storage_ports(Arc::new(pg).storage_ports())
 }
 

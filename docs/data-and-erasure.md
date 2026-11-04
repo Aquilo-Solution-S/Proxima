@@ -10,8 +10,10 @@ operation. The substrate makes no legal-compliance promise.
 
 Every admission belongs to one stable owner. Transfer moves the live admission's
 ownership; it does not alter the independent original-owner attribution of a
-captured publication. Source attribution selects a source object within one
-owner, never a global content hash.
+captured publication. A schema that declares `NotTransferable`, the kernel's or
+a spiice's, is refused by the engine and again by the storage transfer, and a
+memory's refusal carries the reason its schema declared. Source attribution
+selects a source object within one owner, never a global content hash.
 
 | Operation | Effect |
 |---|---|

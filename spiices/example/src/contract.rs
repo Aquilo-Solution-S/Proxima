@@ -1,9 +1,9 @@
 //! The example spiice's contract. A test and tutorial fixture, not a product.
 
 use proxiima::spiice::{
-    CounterRule, DbConstraint, EmbeddingRecipe, EraseRule, ExportRule, ForgetRule, KeyShape,
-    ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, SpiiceContract,
-    Surface, ToolContract, TransferRule,
+    CounterRule, DbConstraint, EmbeddingRecipe, Enforcement, EraseRule, ExportRule, ForgetRule,
+    KeyShape, ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl,
+    SpiiceContract, Surface, ToolContract, TransferRule,
 };
 use proxiima::spiice::{PayloadKind, ScopeDecl};
 
@@ -81,6 +81,24 @@ const DIGEST_V1: SchemaContract = SchemaContract {
     natural_key_columns: &[],
 };
 
+/// The stamp sidecar, shared by the stamp and the sealed stamp: its rows
+/// follow their memory on transfer.
+const STAMP_SURFACE: Surface = Surface {
+    table: "proxiima_example.stamp_v1",
+    key: KeyShape::MemoryT { column: "t" },
+    owner_column: Some("owner_id"),
+    transfer: TransferRule::Follow,
+    erase: EraseRule::ByKey,
+    export: ExportRule::Rows,
+    forget: ForgetRule::DumpThenDelete,
+    lexical_language_column: None,
+    counter: CounterRule::Counted("sidecar_rows"),
+    completeness: Some(DbConstraint {
+        relation: "proxiima_example.stamp_v1",
+        name: "stamp_v1_t_fkey",
+    }),
+};
+
 const STAMP_V1: SchemaContract = SchemaContract {
     id: SchemaRef::new(SPIICE_ID, "stamp", 1),
     kind: PayloadKind::Fact,
@@ -94,21 +112,37 @@ const STAMP_V1: SchemaContract = SchemaContract {
     },
     transfer: TransferRule::Follow,
     provenance: Provenance::None,
-    surfaces: &[Surface {
-        table: "proxiima_example.stamp_v1",
-        key: KeyShape::MemoryT { column: "t" },
-        owner_column: Some("owner_id"),
-        transfer: TransferRule::Follow,
-        erase: EraseRule::ByKey,
-        export: ExportRule::Rows,
-        forget: ForgetRule::DumpThenDelete,
-        lexical_language_column: None,
-        counter: CounterRule::Counted("sidecar_rows"),
-        completeness: Some(DbConstraint {
-            relation: "proxiima_example.stamp_v1",
-            name: "stamp_v1_t_fkey",
-        }),
-    }],
+    surfaces: &[STAMP_SURFACE],
+    natural_key_columns: &[],
+};
+
+/// A stamp whose schema refuses transfer, over the stamp sidecar that would
+/// otherwise follow: the refusal comes from the schema's declaration at the
+/// two sites it names, not from the sidecar.
+const SEALED_STAMP_V1: SchemaContract = SchemaContract {
+    id: SchemaRef::new(SPIICE_ID, "sealed-stamp", 1),
+    kind: PayloadKind::Fact,
+    sidecar_table: Some("proxiima_example.stamp_v1"),
+    search: SearchProjectionDecl::None {
+        why: "a test fixture for NotTransferable, not a search surface",
+        tag_column: None,
+    },
+    embedding: EmbeddingRecipe::Never {
+        why: "a test fixture for NotTransferable, not a memory to embed",
+    },
+    transfer: TransferRule::NotTransferable {
+        why: "a sealed stamp cannot change owner: it stays with the owner that wrote it",
+        enforced_by: &[
+            Enforcement::EngineRefusal {
+                at: "core/src/engine/access_admin.rs::Engine::transfer_to_owner",
+            },
+            Enforcement::StorageBackstop {
+                at: "storage-pg/src/access/owner_columns.rs::transfer_to_owner",
+            },
+        ],
+    },
+    provenance: Provenance::None,
+    surfaces: &[STAMP_SURFACE],
     natural_key_columns: &[],
 };
 
@@ -159,7 +193,7 @@ pub static EXAMPLE_BASELINE_CONTRACT: SpiiceContract = SpiiceContract {
 pub static EXAMPLE_CONTRACT: SpiiceContract = SpiiceContract {
     spiice_id: SPIICE_ID,
     ordinal: EXAMPLE_ORDINAL,
-    schemas: &[NOTE_V1, DIGEST_V1, STAMP_V1],
+    schemas: &[NOTE_V1, DIGEST_V1, STAMP_V1, SEALED_STAMP_V1],
     state_surfaces: STATE_SURFACES,
     scopes: &[NOTEBOOK_SCOPE_DECL],
     kernel_surfaces: &[],

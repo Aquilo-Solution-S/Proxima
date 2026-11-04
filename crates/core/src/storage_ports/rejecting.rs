@@ -658,7 +658,7 @@ impl OwnerAccessReadPort for RejectingStorage {
         _owner_scope: Option<&crate::OwnerScope>,
         _entity: EntityId,
         _read_owners: &[OwnerId],
-    ) -> Result<Option<(OwnerId, crate::AccessKind)>, StorageError> {
+    ) -> Result<Option<(OwnerId, crate::AccessKind, Option<crate::SchemaId>)>, StorageError> {
         Ok(None)
     }
 

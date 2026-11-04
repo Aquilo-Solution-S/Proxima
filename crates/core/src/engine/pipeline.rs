@@ -423,8 +423,8 @@ impl Engine {
         homes
             .into_iter()
             .map(|home| {
-                let (owner, kind) = home
-                    .filter(|(owner, kind)| authz.may_read(owner, *kind))
+                let (owner, kind, _) = home
+                    .filter(|(owner, kind, _)| authz.may_read(owner, *kind))
                     .ok_or_else(|| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
                 self.veto_read_owner(authz, &owner, kind)
                     .map_err(|_| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;

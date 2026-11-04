@@ -86,7 +86,14 @@ impl OwnerAccessReadPort for PgStorage {
         owner_scope: Option<&proxiima_core::OwnerScope>,
         entity: EntityId,
         read_owners: &[OwnerId],
-    ) -> Result<Option<(OwnerId, proxiima_core::AccessKind)>, StorageError> {
+    ) -> Result<
+        Option<(
+            OwnerId,
+            proxiima_core::AccessKind,
+            Option<proxiima_core::SchemaId>,
+        )>,
+        StorageError,
+    > {
         let mut homes = self
             .visible_home_owners(owner_scope, &[entity], read_owners)
             .await?;
@@ -98,7 +105,16 @@ impl OwnerAccessReadPort for PgStorage {
         owner_scope: Option<&proxiima_core::OwnerScope>,
         entities: &[EntityId],
         read_owners: &[OwnerId],
-    ) -> Result<Vec<Option<(OwnerId, proxiima_core::AccessKind)>>, StorageError> {
+    ) -> Result<
+        Vec<
+            Option<(
+                OwnerId,
+                proxiima_core::AccessKind,
+                Option<proxiima_core::SchemaId>,
+            )>,
+        >,
+        StorageError,
+    > {
         let mut tx = crate::owner_scope::begin_owner_transaction(
             &self.pool,
             crate::owner_scope::require_owner_scope(owner_scope)?,

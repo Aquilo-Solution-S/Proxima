@@ -655,11 +655,16 @@ pub struct DbTrigger {
 pub enum Enforcement {
     Constraint(DbConstraint),
     Trigger(DbTrigger),
-    /// The engine verb refuses before storage is reached.
+    /// The engine verb refuses before storage is reached. Naming it on a
+    /// [`TransferRule::NotTransferable`] schema is true for every such
+    /// schema, kernel or spiice: `Engine::transfer_to_owner` refuses it.
     EngineRefusal {
         at: &'static str,
     },
-    /// Storage refuses even when a caller bypasses the engine.
+    /// Storage refuses even when a caller bypasses the engine. Naming it on
+    /// a [`TransferRule::NotTransferable`] schema is true for every such
+    /// schema, kernel or spiice: the storage transfer refuses it from the
+    /// memory row, in its own transaction.
     StorageBackstop {
         at: &'static str,
     },
@@ -696,7 +701,12 @@ pub enum TransferRule {
     RetainAtSource { why: &'static str },
     /// The entity does not transfer at all; the attempt is refused.
     /// `enforced_by` must be non-empty — the registry rejects a
-    /// `NotTransferable` that names no enforcement site.
+    /// `NotTransferable` that names no enforcement site. Freeze does not
+    /// ask whether a named site acts on the schema: the engine and the
+    /// storage transfer refuse every `NotTransferable` schema, so naming
+    /// [`Enforcement::EngineRefusal`] or [`Enforcement::StorageBackstop`]
+    /// is true, and any other site (a trigger, a constraint) is the
+    /// declarer's to provide.
     NotTransferable {
         why: &'static str,
         enforced_by: &'static [Enforcement],
@@ -723,6 +733,15 @@ impl TransferRule {
     #[must_use]
     pub const fn is_not_transferable(&self) -> bool {
         matches!(self, Self::NotTransferable { .. })
+    }
+
+    /// The sentence a caller needs from a [`Self::NotTransferable`] `why`.
+    /// A `why` is written headline-first: the headline, a colon, then the
+    /// rationale an operator needs. Both refusing sites build their message
+    /// from this, so rewording the declaration moves both errors.
+    #[must_use]
+    pub fn refusal_headline(why: &str) -> &str {
+        why.split_once(':').map_or(why, |(head, _)| head)
     }
 }
 

@@ -2514,14 +2514,15 @@ async fn visible_home_owners_answer_each_entity_in_order() {
         let homes =
             OwnerAccessReadPort::visible_home_owners(&pg, Some(&scope), &entities, &[reader])
                 .await?;
+        let note = Some(draft().schema_id);
         assert_eq!(
             homes,
             vec![
-                Some((reader, AccessKind::Fact)),
+                Some((reader, AccessKind::Fact, note.clone())),
                 None,
-                Some((reader, AccessKind::Goal)),
+                Some((reader, AccessKind::Goal, None)),
                 None,
-                Some((reader, AccessKind::Fact)),
+                Some((reader, AccessKind::Fact, note)),
             ]
         );
         for (entity, home) in entities.iter().zip(&homes) {

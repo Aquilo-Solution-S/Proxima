@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use crate::spiice::{
     CounterRule, EraseLeg, ExportRule, ForgetLeg, HostStateEraseDisposition, KeyShape, SchemaRef,
-    Surface, TransferLeg,
+    Surface, TransferLeg, TransferRule,
 };
 use crate::storage_ports::StateSurfaceName;
 use crate::{AuthPath, GroupId, OwnerId, SourceId, UserId};
@@ -35,6 +35,11 @@ pub struct OwnerSurfaces {
     legs: BTreeMap<&'static str, EraseLeg>,
     transfer_legs: BTreeMap<&'static str, TransferLeg>,
     forget_legs: BTreeMap<&'static str, ForgetLeg>,
+    /// The `why` of every schema whose contract declares
+    /// [`TransferRule::NotTransferable`], keyed by the rendered schema id.
+    /// The engine and the storage transfer both ask it, so a Spiice's
+    /// declaration is refused where its `enforced_by` says.
+    untransferable_schemas: BTreeMap<String, &'static str>,
     host_lifecycle: Vec<HostStateLifecycleSurface>,
     /// Keyed by the rendered schema id, so the forget/restore lane looks a
     /// declaration up without rendering every `SchemaRef` on every call. The
@@ -165,8 +170,12 @@ impl OwnerSurfaces {
         let mut ledger = HostLifecycleLedger::default();
         let mut state_tables = std::collections::BTreeSet::new();
         let mut cascaded_details: BTreeMap<String, Vec<CascadedDetail>> = BTreeMap::new();
+        let mut untransferable_schemas = BTreeMap::new();
         for contract in registry.contracts() {
             for schema in contract.schemas {
+                if let TransferRule::NotTransferable { why, .. } = schema.transfer {
+                    untransferable_schemas.insert(schema.id.render(), why);
+                }
                 for surface in schema.surfaces {
                     if matches!(surface.forget, crate::spiice::ForgetRule::DumpThenCascade)
                         && matches!(ForgetLeg::derive(surface), ForgetLeg::Marked)
@@ -217,6 +226,7 @@ impl OwnerSurfaces {
             legs,
             transfer_legs,
             forget_legs,
+            untransferable_schemas,
             host_lifecycle,
             cascaded_details,
         })
@@ -275,6 +285,7 @@ impl OwnerSurfaces {
             legs,
             transfer_legs,
             forget_legs,
+            untransferable_schemas: BTreeMap::new(),
             host_lifecycle,
             cascaded_details: BTreeMap::new(),
         })
@@ -343,6 +354,16 @@ impl OwnerSurfaces {
             .get(table)
             .copied()
             .unwrap_or(TransferLeg::Unreachable)
+    }
+
+    /// The declared `why` when the schema identified by `schema_id` declares
+    /// [`TransferRule::NotTransferable`]: every memory written under it
+    /// stays with its owner, kernel or Spiice. `None` for a schema that
+    /// transfers and for one this set does not carry; a set made with
+    /// [`Self::from_surfaces`] has no schema provenance and answers `None`.
+    #[must_use]
+    pub fn untransferable_schema(&self, schema_id: &str) -> Option<&'static str> {
+        self.untransferable_schemas.get(schema_id).copied()
     }
 
     /// What the forget does to `table`, as resolved at registry time.
@@ -918,5 +939,25 @@ mod generated_forget_order_tests {
         let jobs = index("proxiima_core.embedding_jobs");
         assert!(jobs < index("proxiima_core.embedding_heads"));
         assert!(jobs < index("proxiima_core.embeddings"));
+    }
+}
+
+#[cfg(test)]
+mod untransferable_schema_tests {
+    use super::OwnerSurfaces;
+
+    /// The set reads each schema's own `NotTransferable` declaration: the
+    /// goal schema answers its declared reason, and a schema that
+    /// transfers or that the registry does not carry answers nothing.
+    #[test]
+    fn a_schema_answers_the_reason_its_contract_declares() {
+        let surfaces =
+            OwnerSurfaces::for_registry(&crate::SpiiceRegistry::new().freeze_or_panic_for_tests());
+        let why = surfaces
+            .untransferable_schema("core/task-v1")
+            .expect("the goal schema declares NotTransferable");
+        assert!(why.starts_with("a goal series cannot change owner"));
+        assert_eq!(surfaces.untransferable_schema("core/agent-note-v1"), None);
+        assert_eq!(surfaces.untransferable_schema("nowhere/unknown-v1"), None);
     }
 }

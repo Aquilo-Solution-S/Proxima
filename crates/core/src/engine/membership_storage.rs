@@ -732,19 +732,24 @@ impl OwnerAccessReadPort for MembershipStorage {
         _owner_scope: Option<&crate::OwnerScope>,
         entity: EntityId,
         _read_owners: &[OwnerId],
-    ) -> Result<Option<(OwnerId, AccessKind)>, StorageError> {
+    ) -> Result<Option<(OwnerId, AccessKind, Option<SchemaId>)>, StorageError> {
         self.observed_entity_reads
             .lock()
             .expect("observed entity reads")
             .push(entity);
-        let kind = match entity {
-            EntityId::Goal(_) => AccessKind::Goal,
-            EntityId::Memory(_) => self.memory_kind.map_or(AccessKind::Fact, AccessKind::from),
+        // A kernel schema that transfers: the stand-in is never what a test
+        // is about, and a real store answers the memory row's own schema.
+        let (kind, schema) = match entity {
+            EntityId::Goal(_) => (AccessKind::Goal, None),
+            EntityId::Memory(_) => (
+                self.memory_kind.map_or(AccessKind::Fact, AccessKind::from),
+                Some(SchemaId::new("core/agent-note-v1".to_owned())),
+            ),
         };
         Ok(self
             .home_owner
             .filter(|_| self.entity_readable)
-            .map(|owner| (owner, kind)))
+            .map(|owner| (owner, kind, schema)))
     }
 
     async fn home_owner(

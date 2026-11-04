@@ -403,7 +403,9 @@ impl SpiiceRegistry {
             validate_tag_sidecar(contract, schema)?;
             // A NotTransferable that names no enforcement site is a comment,
             // not a contract: the refusal has to survive a code path that
-            // forgets to ask.
+            // forgets to ask. Freeze checks that a site is named, not that
+            // the site acts: the engine and the storage transfer refuse
+            // every NotTransferable schema, so naming either is true.
             if let crate::spiice::contract::TransferRule::NotTransferable { enforced_by, .. } =
                 schema.transfer
                 && enforced_by.is_empty()
