@@ -6,7 +6,7 @@ use super::{
     Arc, GoalId, HashMap, HashSet, MemoryId, PgSidecarEntry, PgSidecarKey, PgSidecarReadCtx,
     Postgres, SchemaInfo, SidecarPayload, StorageError, Transaction,
 };
-use sqlx::PgPool;
+use sqlx::PgConnection;
 
 #[derive(Debug, sqlx::FromRow)]
 struct NaturalKeySqlColumn {
@@ -107,7 +107,10 @@ impl PgSidecarRegistryFrozen {
     /// Returns a constraint violation when the live table does not implement
     /// the registered declaration, or an unavailable error when the catalog
     /// query fails.
-    pub(crate) async fn validate_natural_keys(&self, pool: &PgPool) -> Result<(), StorageError> {
+    pub(crate) async fn validate_natural_keys_on(
+        &self,
+        connection: &mut PgConnection,
+    ) -> Result<(), StorageError> {
         for entry in self.entries.values() {
             let declaration = entry.natural_key_declaration;
             if declaration.is_empty() {
@@ -125,7 +128,7 @@ impl PgSidecarRegistryFrozen {
                   ORDER BY a.attnum",
             )
             .bind(&entry.sidecar_table)
-            .fetch_all(pool)
+            .fetch_all(&mut *connection)
             .await
             .map_err(|error| StorageError::Unavailable(error.to_string()))?;
             for (column, kind) in declaration

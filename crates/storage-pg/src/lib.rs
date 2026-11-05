@@ -1149,11 +1149,11 @@ impl PgStorage {
         if matches!(vectors, vector_index::StoreVectors::Local) {
             ensure_pgvector_runtime_compatible_on(&mut conn, &tuning).await?;
         }
-        drop(conn);
         validate_store_number(persisted, store_number)?;
 
         let sidecars = core_pg_sidecars();
-        sidecars.validate_natural_keys(&pool).await?;
+        sidecars.validate_natural_keys_on(&mut conn).await?;
+        drop(conn);
         Ok(Self {
             store_number,
             pool,
@@ -1331,7 +1331,13 @@ impl PgStorage {
         mut self,
         sidecars: PgSidecarRegistryFrozen,
     ) -> Result<Self, StorageError> {
-        sidecars.validate_natural_keys(&self.pool).await?;
+        let mut connection = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|error| StorageError::Unavailable(error.to_string()))?;
+        sidecars.validate_natural_keys_on(&mut connection).await?;
+        drop(connection);
         self.sidecars = sidecars;
         Ok(self)
     }
