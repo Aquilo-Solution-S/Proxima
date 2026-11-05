@@ -11,8 +11,10 @@ the core supplies the durable graph and its write rules.
 | Need | Page |
 |---|---|
 | Understand the model | [Concepts](concepts.md) |
+| Map identity, groups, and ownership to a use case | [Identity and ownership](concepts.md#identity-and-ownership) |
 | Run a local server | [Get started](get-started.md) |
 | Connect a host application | [Host integration](host-integration.md) |
+| Follow authorization from credential to database | [Request flow](host-integration.md#authentication-and-owner-scope) |
 | Build a vocabulary crate | [Build a spiice](build-a-spiice.md) |
 | Operate a deployment | [Operate](operate.md) |
 | Find the one settings table | [Configuration](configuration.md) |

@@ -126,6 +126,42 @@ not `PgSidecarRegistryFrozen::default()`.
 
 ## Authentication and owner scope
 
+An ordinary bearer-authenticated write follows this path from credential to
+commit. Each stage can refuse before entering the next. The
+[conceptual model](concepts.md#identity-and-ownership) explains the identities
+and roles carried through it.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as Authentication
+    participant E as Transport and gate
+    participant G as Engine
+    participant P as PostgreSQL
+    C->>A: Bearer credential
+    A->>A: Verify token and map issuer/subject
+    A->>A: Resolve personal/group roles
+    A-->>E: Sealed AuthzContext / OwnerScope
+    E->>E: Select default owner or per-call space
+    E->>E: Check capability and owner role
+    E->>G: Command + authorized scope
+    G->>P: Transaction + scoped permit
+    P->>P: Enforce RLS and constraints
+    P-->>G: Commit result
+    G-->>C: Reply
+```
+
+An MCP session binds a transport session id to the authenticated principal and
+default owner; the credential's effective roles are kept unless the host
+confined them. It is routing state with an idle lifetime, not a new role
+grant. `WriterAttribution.via` is separate write provenance: `null` means a
+direct principal call; a UUID names the caller/session attested by the
+credential. Subsequent MCP requests reauthenticate and recheck the binding.
+Long-lived streams are revalidated for expiry, maximum stream
+lifetime, and the host's revocation epoch.
+
+### Credential verification and identity mapping
+
 Provide an `Authenticator` through `RuntimeBuilder::authenticator`, or use the
 OIDC adapter from `auth-oidc`. The authenticator validates the bearer, maps
 `(iss, sub)` to a `UserId`, and produces owner access for the request. The
@@ -140,6 +176,8 @@ Spiice interprets its application-specific fields. Owner selection and
 narrowing preserve the map, while each authentication supplies its own values.
 Custom authenticators may attach their already verified payload with
 `AuthzContext::with_verified_claims`; contexts without one return `None`.
+
+### OAuth discovery
 
 `ResourceServerMetadata` publishes the RFC 9728 documents that tell an MCP
 client where to sign in, and the client requests exactly their
@@ -177,6 +215,8 @@ then publishes RFC 8414 authorization-server metadata at both
 registration at `/oauth/register`. The upstream provider remains the issuer of
 authorization and token responses; the host only supplies discovery and echoes
 the registering client's redirect URIs.
+
+### Capability admission
 
 The scope gate judges the caller's role on the owner the call's `space`
 resolves to.
@@ -241,6 +281,8 @@ key and the action's `McpActionArgSpec::title` (`McpArgvActionSpec::title` for
 an argv dispatcher) for `tool:action`, so the host keeps no word list of its
 own.
 
+### Forwarded owner access
+
 An embedded host may install an `OwnerAccessPort` and an optional forwarder
 policy. Reads are set-based and owner-scoped; writes pass through the engine's
 authorization and command ports. Do not recreate owner predicates in a spiice
@@ -271,6 +313,35 @@ claim through the configured policy and registry. Host role shaping must
 preserve the owner and writer bindings. Replace implementations of the retired `GroupRegistry`
 with `OwnerRegistry::is_registered_owner` when upgrading.
 
+### Delegated work
+
+Delegated work is a durable, exact command grant for a worker. The issuing
+host stores a `DelegationId` with one owner, one registered tool/action, a
+recorded non-managing role ceiling, the issuer's writer attribution, a finite
+expiry no later than the source bearer, and the source authentication epoch.
+Issue checks current membership, role ceiling, command registration, caller
+scope, and deployment scope before inserting the grant
+([`DelegatedAuthorityService::issue`](https://github.com/Aquilo-Solution-S/proxiima/blob/main/crates/core/src/storage_ports/delegated_authority.rs)).
+
+At redemption, the worker supplies the `DelegationId`, expected owner, and
+exact command. The service rechecks revocation, expiry, current membership and
+role ceiling, current authentication epoch, command registration, and current
+deployment profile. It returns a non-cloneable, opaque `DelegatedPhase` whose
+effective role is the meet of the current role and the recorded ceiling. The
+Engine checks phase expiry again at the start of every delegated-capable
+operation; an expired phase cannot run
+([`redeem_phase`](https://github.com/Aquilo-Solution-S/proxiima/blob/main/crates/core/src/storage_ports/delegated_authority.rs),
+[`DelegatedPhase`](https://github.com/Aquilo-Solution-S/proxiima/blob/main/crates/core/src/authz.rs)).
+
+Management is never delegable. System contexts and verified forwarder
+credentials are separate authority paths and cannot issue delegated grants.
+Forwarding carries a verified owner claim and policy role, with the writer
+pair attested separately in the credential. Revocation prevents the next
+redemption; it does not cancel a phase already redeemed, although that phase
+still stops at its finite expiry.
+
+### Writer attribution
+
 Each memory or Goal revision records the writer captured in its sealed
 `OwnerScope`, separately from its owner, credential subject, payload author
 or grounding sources. A custom authenticator binds `WriterAttribution` with
@@ -280,6 +351,8 @@ context. For a forwarder it supplies the verified pair to
 Ordinary OIDC calls record their mapped principal with `via: null`.
 There are no author headers or caller-supplied author arguments. A host role
 shaper must preserve the attested pair, and a sealed context cannot replace it.
+
+### Membership and authority transactions
 
 Attaching a subgroup or changing its relation requires manage authority on
 both groups. Detaching it requires manage authority on either endpoint;

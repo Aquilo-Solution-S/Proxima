@@ -66,8 +66,10 @@ authenticated subject and session principal remain the forwarder. Ordinary
 subjects gain no selection or authority from this claim.
 
 Enforcers: [`AuthzContext`](https://github.com/Aquilo-Solution-S/proxiima/blob/main/crates/core/src/authz.rs),
-the engine command ports, and PostgreSQL owner RLS. See [concepts](concepts.md)
-and [host integration](host-integration.md).
+the engine command ports, and PostgreSQL owner RLS. See the
+[identity and ownership map](concepts.md#identity-and-ownership) for roles,
+nested groups, and use cases, and the
+[request flow](host-integration.md#authentication-and-owner-scope) for integration.
 
 ## Reads and consistency
 

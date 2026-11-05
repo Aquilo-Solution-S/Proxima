@@ -14,7 +14,8 @@ identity, event sources, model clients, scheduling, and effects.
 | Task | Start here |
 |---|---|
 | Run Postgres, connect an agent, remember and search | [Get started](docs/get-started.md) |
-| Understand identity, layering, pins, and Goals | [Concepts](docs/concepts.md) |
+| Understand identity, groups, roles, and ownership | [Identity and ownership](docs/concepts.md#identity-and-ownership) |
+| Understand memory identity, layering, pins, and Goals | [Concepts](docs/concepts.md) |
 | Embed the Rust facade | [Host integration](docs/host-integration.md) |
 | Build a linked vocabulary crate | [Build a spiice](docs/build-a-spiice.md) |
 | Discover actions, resources, and REST | [Protocol](docs/protocol.md) |
