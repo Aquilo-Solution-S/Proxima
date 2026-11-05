@@ -1,8 +1,8 @@
-//! Storage and engine boot: connect, migrate, compose, start.
+//! Storage and engine boot: connect, migrate, compose.
 //!
 //! Internal. Hosts boot through [`crate::Proxiima`] / [`crate::RuntimeBuilder`];
 //! this module turns one resolved [`RuntimeConfig`] plus its [`RuntimeParts`]
-//! into a started engine and the handles the runtime keeps from it.
+//! into a composed engine and the handles the runtime keeps from it.
 
 use std::sync::Arc;
 
@@ -10,9 +10,7 @@ use proxiima_core::authz::SystemAuthority;
 use proxiima_core::llm::{EmbeddingClient, EmbeddingRouter};
 use proxiima_core::storage_ports::OwnerDropProofHandle;
 use proxiima_core::storage_ports::publication::{OriginScope, PublicationOriginEligibilityPort};
-use proxiima_core::{
-    ColdObjectStore, Engine, EngineHandle, SpiiceRegistry, StorageError, composed_schema_names,
-};
+use proxiima_core::{ColdObjectStore, Engine, SpiiceRegistry, StorageError, composed_schema_names};
 use proxiima_storage_pg::{
     PgMigrationStorage, PgPlatformScope, PgSidecarRegistry, PgSidecarRegistryFrozen, PgStorage,
     VectorStorage, register_core_pg_sidecars,
@@ -26,14 +24,13 @@ use crate::{
     preflight_without_migrations_with_policy, run_core_and_spiice_migrations_with_policy,
 };
 
-/// A started engine plus the handles the runtime keeps from its boot.
+/// A composed engine, ready for host services and retirement before startup.
 pub(crate) struct Booted {
     pub(crate) engine: Arc<Engine>,
     pub(crate) system_authority: std::sync::Arc<SystemAuthority>,
     pub(crate) host_state_maintenance_authority:
         Option<proxiima_core::engine::HostStateMaintenanceAuthority>,
     pub(crate) delegation_runtime_authority: proxiima_core::DelegationRuntimeAuthority,
-    pub(crate) handle: EngineHandle,
     pub(crate) pool: PgPool,
     pub(crate) platform_scope: proxiima_storage_pg::PgPlatformScope,
     pub(crate) registry: Arc<proxiima_core::SpiiceRegistryFrozen>,
@@ -75,13 +72,12 @@ pub(crate) struct Booted {
 impl std::fmt::Debug for Booted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Booted")
-            .field("handle", &self.handle)
             .field("blobs", &self.blobs)
             .finish_non_exhaustive()
     }
 }
 
-/// Connect, migrate, compose, and start the engine for bundle `A`.
+/// Connect, migrate, and compose the engine for bundle `A`.
 ///
 /// Everything that can be refused without a connection is refused first:
 /// the registry freeze, the runtime-grant plan and the embedding width.
@@ -93,7 +89,7 @@ impl std::fmt::Debug for Booted {
 /// client, [`ProxiimaError::SchemaResetRequired`] when the target database does
 /// not match the current core baseline and definitions (see
 /// `docs/contributing.md#migrations`), and
-/// [`ProxiimaError::Engine`] when engine startup fails.
+/// [`ProxiimaError::Engine`] when binding runtime authorities fails.
 pub(crate) async fn boot<A: SpiiceBundle>(
     config: &RuntimeConfig,
     parts: &RuntimeParts,
@@ -179,18 +175,12 @@ pub(crate) async fn boot<A: SpiiceBundle>(
             .map_err(|error| ProxiimaError::Config(error.to_string()))?;
     }
     let engine = Arc::new(engine);
-    let handle = engine
-        .clone()
-        .start()
-        .await
-        .map_err(|e| ProxiimaError::Engine(e.into()))?;
     let registry = Arc::new(engine.registry().clone());
     Ok(Booted {
         engine,
         system_authority: std::sync::Arc::new(system_authority),
         host_state_maintenance_authority,
         delegation_runtime_authority,
-        handle,
         pool,
         platform_scope,
         registry,

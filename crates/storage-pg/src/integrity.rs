@@ -589,8 +589,20 @@ fn expected_declaration_triggers(
     registry: &PgSidecarRegistryFrozen,
 ) -> Result<Vec<ExpectedTrigger>, StorageError> {
     let mut declared: Vec<ExpectedTrigger> = Vec::new();
-    for table in registry.memory_sidecar_tables() {
-        let key = registry.memory_key_column(table).ok_or_else(|| {
+    // Retirement keeps the historical stamped sidecar and its integrity
+    // triggers until the later DROP release, without restoring payload access.
+    let sidecars = registry
+        .memory_sidecar_tables()
+        .into_iter()
+        .map(|table| (table, registry.memory_key_column(table)))
+        .chain(
+            registry
+                .retired_fact_sidecars()
+                .iter()
+                .map(|retired| (retired.sidecar_table(), Some(retired.memory_key_column()))),
+        );
+    for (table, key) in sidecars {
+        let key = key.ok_or_else(|| {
             StorageError::Internal(format!(
                 "{table} is a registered memory sidecar with no declared memory-key column; \
                  give its `pg_sidecar!` registration a `key:` and its contract a \
@@ -615,7 +627,14 @@ fn expected_declaration_triggers(
             relation: table.to_owned(),
             name: repoint,
         });
-        if !registry.is_owner_pinned_memory_sidecar_table(table) {
+        let owner_pinned = registry.is_owner_pinned_memory_sidecar_table(table)
+            || registry.retired_fact_surface(table).is_some_and(|surface| {
+                matches!(
+                    surface.transfer,
+                    proxiima_core::spiice::TransferRule::RetainAtSource { .. }
+                )
+            });
+        if !owner_pinned {
             let orphan = sidecar_trigger_name(table, DELETE_GUARD_TRIGGER_SUFFIX)?;
             declared.push(ExpectedTrigger {
                 definition: format!(
@@ -968,7 +987,99 @@ pub(crate) fn missing_stamped_rows_sql(
 
 #[cfg(test)]
 mod tests {
-    use super::declaration_trigger;
+    use super::{declaration_trigger, expected_declaration_triggers};
+
+    #[test]
+    fn retired_sidecars_keep_their_historical_integrity_triggers() {
+        use crate::PgSidecarRegistry;
+        use proxiima_core::SpiiceRegistry;
+        use proxiima_core::spiice::{
+            CounterRule, EraseRule, ExportRule, ForgetRule, KeyShape, ProjectionDecl,
+            RetiredFactContract, SchemaRef, SpiiceContract, Surface, TransferRule,
+        };
+
+        const FOLLOW: Surface = Surface {
+            table: "test_retired.follow_v1",
+            key: KeyShape::MemoryT { column: "memory_t" },
+            owner_column: Some("owner_id"),
+            transfer: TransferRule::Follow,
+            erase: EraseRule::ByKey,
+            export: ExportRule::Rows,
+            forget: ForgetRule::DumpThenDelete,
+            lexical_language_column: None,
+            counter: CounterRule::Counted("sidecar_rows"),
+            completeness: None,
+        };
+        static CONTRACT: SpiiceContract = SpiiceContract {
+            spiice_id: "test-retired",
+            ordinal: 94,
+            schemas: &[],
+            retired_facts: &[
+                RetiredFactContract {
+                    id: SchemaRef::new("test-retired", "follow", 1),
+                    sidecar: FOLLOW,
+                    inverse_surfaces: &[],
+                },
+                RetiredFactContract {
+                    id: SchemaRef::new("test-retired", "pinned", 1),
+                    sidecar: Surface {
+                        table: "test_retired.pinned_v1",
+                        transfer: TransferRule::RetainAtSource { why: "audit owner" },
+                        forget: ForgetRule::Keep {
+                            why: "audit record",
+                        },
+                        ..FOLLOW
+                    },
+                    inverse_surfaces: &[],
+                },
+            ],
+            state_surfaces: &[],
+            scopes: &[],
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+            projection: ProjectionDecl::None {
+                why: "inverse only",
+            },
+        };
+        let mut registry = SpiiceRegistry::new();
+        registry.try_add_contract(&CONTRACT).unwrap();
+        let mut pg = PgSidecarRegistry::new();
+        crate::register_core_pg_sidecars(&mut pg);
+        let frozen = pg.freeze_against(&registry.try_freeze().unwrap()).unwrap();
+        let triggers: Vec<_> = expected_declaration_triggers(&frozen)
+            .unwrap()
+            .into_iter()
+            .filter(|trigger| {
+                trigger.relation.starts_with("test_retired.")
+                    || trigger.name.starts_with("memory_declares_test_retired_")
+            })
+            .collect();
+        assert_eq!(triggers.len(), 6);
+        assert_eq!(
+            triggers
+                .iter()
+                .filter(|trigger| trigger.relation == "test_retired.follow_v1")
+                .count(),
+            3
+        );
+        assert_eq!(
+            triggers
+                .iter()
+                .filter(|trigger| trigger.relation == "test_retired.pinned_v1")
+                .count(),
+            2
+        );
+        assert!(
+            triggers
+                .iter()
+                .any(|trigger| trigger.relation == "proxiima_core.memory"
+                    && trigger.name
+                        == super::presence_trigger_name("test_retired.follow_v1").unwrap())
+        );
+    }
 
     /// The generator is a function of the DECLARATION, key column included.
     /// A literal `t` here would install a guard that reads NULL on every

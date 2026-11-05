@@ -53,9 +53,28 @@ async fn main() -> Result<(), proxiima::ProxiimaError> {
 The host normally implements `SpiiceBundle` and links one or more spiices;
 the tuple `SpiiceApp` implementation folds configuration, services, and HTTP
 mounts left to right. `build()` gives a booted runtime for embedding; `run()`
-also starts configured listeners and background workers. Authenticated MCP
+also binds configured listeners. Both start configured background workers. Authenticated MCP
 requests carry a server-resolved `AuthzContext`; callers never supply a
 resolved owner or role.
+
+Both entry points drain every frozen `RetiredFactContract` after the host-state
+participant, system authority, and host services are composed, before engine
+startup, listeners, background workers, or returned services can operate. The
+pass inventories owners in bounded pages and commits each owner's bounded
+series pages through `Engine::retired_fact_erase`, including forgotten versions,
+embeddings, and the registered exact-Fact host inverse. It also runs with
+`skip_migrations`: serving uses the validated runtime and platform pools, not a
+migration-role callback.
+
+Any inventory, scope, inverse, lock, or storage failure aborts startup through
+`ProxiimaError::Engine`, preserving the concrete error source. Committed pages
+stay erased; the next boot derives remaining work from the store. Database
+commit leaves external-object purge debt to the existing maintenance/readiness
+contract. Stop old emitters before deploying this erase-capable release, retain
+the inverse-only declaration and sidecars through its successful boot in each
+store, then deploy the later schema-only guarded DROP release. A migrate-only
+job cannot run host inverses. See [data and erasure](data-and-erasure.md#spiice-scoped-erase-and-retention)
+and [the transactional DROP guard](contributing.md#migrations).
 
 The engine does not queue embedding calls; the provider queues or refuses what
 exceeds its capacity. `EmbeddingRuntimePolicy::with_drain_concurrency` sets how

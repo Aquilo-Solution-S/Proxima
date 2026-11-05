@@ -439,10 +439,11 @@ impl<A: SpiiceApp + 'static> Proxiima<A> {
             parts,
             allowlist,
             booted,
+            handle,
             cancel,
             app_ctx,
             owner_access,
-        } = self.boot_common().await?;
+        } = Box::pin(self.boot_common()).await?;
 
         let (service, mcp_edge, mcp) = match (config.mcp, allowlist) {
             (Some(mcp), Some(allowlist)) => {
@@ -463,7 +464,7 @@ impl<A: SpiiceApp + 'static> Proxiima<A> {
             }
             _ => (None, None, FeatureDecision::mcp_off()),
         };
-        let runtime = Runtime::start::<A>(booted, app_ctx.host, cancel, &config, mcp);
+        let runtime = Runtime::start::<A>(booted, handle, app_ctx.host, cancel, &config, mcp);
         Ok(BuiltProxiima {
             runtime,
             service,
@@ -483,10 +484,11 @@ impl<A: SpiiceApp + 'static> Proxiima<A> {
             parts,
             allowlist,
             booted,
+            handle,
             cancel,
             app_ctx,
             owner_access,
-        } = self.boot_common().await?;
+        } = Box::pin(self.boot_common()).await?;
 
         let (mcp_addr, server, mcp) = if let (Some(mcp), Some(allowlist)) = (config.mcp, allowlist)
         {
@@ -533,7 +535,7 @@ impl<A: SpiiceApp + 'static> Proxiima<A> {
             (None, None, FeatureDecision::mcp_off())
         };
 
-        let runtime = Runtime::start::<A>(booted, app_ctx.host, cancel, &config, mcp);
+        let runtime = Runtime::start::<A>(booted, handle, app_ctx.host, cancel, &config, mcp);
         Ok(RunningProxiima {
             runtime,
             mcp_addr,
@@ -602,11 +604,20 @@ impl<A: SpiiceApp + 'static> Proxiima<A> {
             &booted.delegation_runtime_authority,
         )?;
         app_ctx.host.services = services;
+        // Keep the one-time erase transaction state out of the serving future.
+        Box::pin(drain_retired_facts(&booted)).await?;
+        let handle = booted
+            .engine
+            .clone()
+            .start()
+            .await
+            .map_err(|error| ProxiimaError::Engine(error.into()))?;
         Ok(BootedRuntime {
             config,
             parts,
             allowlist,
             booted,
+            handle,
             cancel,
             app_ctx,
             owner_access,
@@ -662,6 +673,7 @@ impl Runtime {
     /// runs after the last fallible boot step.
     fn start<A: SpiiceApp>(
         booted: Booted,
+        handle: EngineHandle,
         host: ProxiimaHost,
         cancel: CancellationToken,
         config: &crate::RuntimeConfig,
@@ -708,7 +720,7 @@ impl Runtime {
             host,
             system_authority,
             host_state_maintenance_authority: booted.host_state_maintenance_authority,
-            handle: booted.handle,
+            handle,
             _cancel_on_drop: cancel.clone().drop_guard(),
             cancel,
             insecure_single_owner: config.insecure_single_owner,
@@ -1132,6 +1144,7 @@ struct BootedRuntime {
     /// together so a tail can never serve MCP without its allowlists.
     allowlist: Option<ListenerAllowlists>,
     booted: Booted,
+    handle: EngineHandle,
     cancel: CancellationToken,
     /// Its host carries the composed service set.
     app_ctx: AppContext,
@@ -1226,6 +1239,44 @@ fn assemble_services<A: SpiiceApp>(
         ))?;
     }
     Ok(services)
+}
+
+/// Each page commits through the existing lifecycle inverse. Failures stop boot;
+/// a later boot inventories the remaining admissions rather than replaying work.
+async fn drain_retired_facts(booted: &Booted) -> Result<(), ProxiimaError> {
+    for retired in booted.registry.retired_facts() {
+        let retirement = booted
+            .engine
+            .retired_fact_erase(
+                &booted.system_authority,
+                retired.id.spiice,
+                &retired.id.schema_id(),
+            )
+            .map_err(|error| ProxiimaError::Engine(error.into()))?;
+        let mut after = None;
+        loop {
+            let owners = retirement
+                .owners(after)
+                .await
+                .map_err(|error| ProxiimaError::Engine(error.into()))?;
+            if owners.is_empty() {
+                break;
+            }
+            for owner in owners {
+                loop {
+                    let page = retirement
+                        .erase_page(owner)
+                        .await
+                        .map_err(|error| ProxiimaError::Engine(error.into()))?;
+                    if !page.more_remaining {
+                        break;
+                    }
+                }
+                after = Some(owner);
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn boot_app<A: SpiiceApp + 'static>(
