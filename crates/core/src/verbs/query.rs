@@ -701,59 +701,6 @@ impl<'a> ResolvedSidecarHeads<'a> {
     }
 }
 
-impl SidecarAtom {
-    /// Bind one JSON sidecar field as a series-handle atom.
-    ///
-    /// # Errors
-    ///
-    /// The value is not a UUID, text, bool, or integer.
-    pub fn from_json(column: &str, value: &serde_json::Value) -> Result<Self, String> {
-        match value {
-            serde_json::Value::String(text) => {
-                Ok(uuid::Uuid::parse_str(text)
-                    .map_or_else(|_| Self::Text(text.clone()), Self::Uuid))
-            }
-            serde_json::Value::Bool(flag) => Ok(Self::Bool(*flag)),
-            serde_json::Value::Number(number) => {
-                if let Some(n) = number.as_i64() {
-                    i32::try_from(n).map_or(Ok(Self::I64(n)), |n| Ok(Self::I32(n)))
-                } else {
-                    Err(format!("sidecar column {column} is not an integer atom"))
-                }
-            }
-            _ => Err(format!(
-                "sidecar column {column} is not a series-handle atom"
-            )),
-        }
-    }
-
-    /// Map a typed sidecar payload onto declared NK / series-key columns.
-    ///
-    /// # Errors
-    ///
-    /// The payload is not a JSON object, a declared column is missing, or a
-    /// value is not a sidecar atom.
-    pub fn bind_columns<P: serde::Serialize>(
-        payload: &P,
-        columns: &[&str],
-    ) -> Result<Vec<(String, Self)>, String> {
-        let value = serde_json::to_value(payload)
-            .map_err(|err| format!("sidecar payload is not JSON: {err}"))?;
-        let object = value
-            .as_object()
-            .ok_or_else(|| "sidecar payload must serialize as a JSON object".to_string())?;
-        columns
-            .iter()
-            .map(|column| {
-                let raw = object.get(*column).ok_or_else(|| {
-                    format!("sidecar payload missing natural-key column {column}")
-                })?;
-                Ok(((*column).to_string(), Self::from_json(column, raw)?))
-            })
-            .collect()
-    }
-}
-
 /// Edge listing filter. Every field is a narrowing predicate over the
 /// index; a request with none of them is refused by the read surface
 /// rather than dumping the graph.
@@ -815,7 +762,7 @@ pub struct QueryResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{SidecarAtom, like_pattern};
+    use super::like_pattern;
 
     #[test]
     fn search_result_serialization_flattens_required_writer() {
@@ -904,22 +851,5 @@ mod tests {
     #[test]
     fn like_pattern_escapes_wildcards() {
         assert_eq!(like_pattern("a_b%c\\d"), "%a\\_b\\%c\\\\d%");
-    }
-
-    #[test]
-    fn missing_column_is_refused_by_name() {
-        #[derive(serde::Serialize)]
-        struct Sample {
-            repo_id: uuid::Uuid,
-        }
-
-        let payload = Sample {
-            repo_id: uuid::Uuid::nil(),
-        };
-        let err = SidecarAtom::bind_columns(&payload, &["missing"]).unwrap_err();
-        assert!(
-            err.contains("missing"),
-            "the refusal names the column: {err}"
-        );
     }
 }

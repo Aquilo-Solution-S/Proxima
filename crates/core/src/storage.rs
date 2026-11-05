@@ -227,6 +227,32 @@ impl SidecarPayload {
         }
     }
 
+    /// Capture the declared natural-key fields without guessing their SQL types.
+    /// Storage binds these values using the registered sidecar's column types.
+    ///
+    /// # Errors
+    ///
+    /// The payload is not a JSON object or a declared column is missing.
+    pub fn natural_key_values(
+        &self,
+        columns: &[String],
+    ) -> Result<Vec<(String, serde_json::Value)>, String> {
+        let value = self.to_protocol_json()?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| "sidecar payload must serialize as a JSON object".to_string())?;
+        columns
+            .iter()
+            .map(|column| {
+                object
+                    .get(column)
+                    .cloned()
+                    .map(|value| (column.clone(), value))
+                    .ok_or_else(|| format!("sidecar payload missing natural-key column {column}"))
+            })
+            .collect()
+    }
+
     #[must_use]
     pub fn fact<T>(value: T) -> Self
     where
@@ -418,4 +444,22 @@ pub struct EmbeddingJobClaim {
     pub entity_id: MemoryId,
     pub space: crate::EmbeddingSpace,
     pub claim_token: Uuid,
+}
+
+#[cfg(test)]
+mod natural_key_tests {
+    use super::SidecarPayload;
+
+    #[test]
+    fn missing_column_is_refused_by_name() {
+        let payload = SidecarPayload::fact(crate::test_fixtures::ListenableProbeV1 {
+            probe_id: uuid::Uuid::nil(),
+            note: "note".into(),
+        });
+        let error = payload.natural_key_values(&["missing".into()]).unwrap_err();
+        assert!(
+            error.contains("missing"),
+            "the refusal names the column: {error}"
+        );
+    }
 }

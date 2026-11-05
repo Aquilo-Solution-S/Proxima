@@ -19,7 +19,7 @@ fn bind_fact_natural_key(
     draft: &FactWriteCommand,
     columns: &[String],
     sidecars: &[SidecarPayload],
-) -> Result<Option<Vec<(String, crate::verbs::query::SidecarAtom)>>, ProtocolError> {
+) -> Result<Option<Vec<(String, serde_json::Value)>>, ProtocolError> {
     if columns.is_empty() || draft.handle.is_some() {
         return Ok(None);
     }
@@ -39,11 +39,8 @@ fn bind_fact_natural_key(
             "natural-key binding requires exactly one matching typed Fact payload",
         ));
     }
-    let json = payload
-        .to_protocol_json()
-        .map_err(|err| ProtocolError::invalid_argument("sidecars", err))?;
-    let columns = columns.iter().map(String::as_str).collect::<Vec<_>>();
-    crate::verbs::query::SidecarAtom::bind_columns(&json, &columns)
+    payload
+        .natural_key_values(columns)
         .map(Some)
         .map_err(|err| ProtocolError::invalid_argument("natural_key", err))
 }

@@ -4,7 +4,6 @@
 //! docs/concepts.md. The storage-side body lives in
 //! `proxiima-storage-pg`.
 
-use crate::verbs::query::SidecarAtom;
 use uuid::Uuid;
 
 use crate::edge::EdgeEndpoint;
@@ -205,7 +204,7 @@ pub(crate) struct AuthorizedFactCore {
     draft: FactWriteCommand,
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
-    fact_natural_key_values: Option<Vec<(String, SidecarAtom)>>,
+    fact_natural_key_values: Option<Vec<(String, serde_json::Value)>>,
     /// [`crate::engine::FactWrite::reobserve_if_displaced`]. Only the typed Fact
     /// write sets it; both citing routes leave it `false`.
     reobserve_displaced: bool,
@@ -260,7 +259,7 @@ impl AuthorizedFactCore {
 
     pub(crate) fn with_natural_key_values(
         mut self,
-        values: Option<Vec<(String, SidecarAtom)>>,
+        values: Option<Vec<(String, serde_json::Value)>>,
     ) -> Self {
         self.fact_natural_key_values = values;
         self
@@ -486,7 +485,7 @@ impl AuthorizedFactWrite {
     /// Exact natural-key values captured from the typed payload during authorization.
     /// Storage compares them before automatic series selection.
     #[must_use]
-    pub fn fact_natural_key_values(&self) -> Option<&[(String, SidecarAtom)]> {
+    pub fn fact_natural_key_values(&self) -> Option<&[(String, serde_json::Value)]> {
         self.core.fact_natural_key_values.as_deref()
     }
 
@@ -642,7 +641,7 @@ impl AuthorizedFactWithCitation {
     /// Exact natural-key values captured from the typed payload during authorization.
     /// Storage compares them before automatic series selection.
     #[must_use]
-    pub fn fact_natural_key_values(&self) -> Option<&[(String, SidecarAtom)]> {
+    pub fn fact_natural_key_values(&self) -> Option<&[(String, serde_json::Value)]> {
         self.core.fact_natural_key_values.as_deref()
     }
 
@@ -734,7 +733,7 @@ impl AuthorizedFactWithCitationRef {
     /// Exact natural-key values captured from the typed payload during authorization.
     /// Storage compares them before automatic series selection.
     #[must_use]
-    pub fn fact_natural_key_values(&self) -> Option<&[(String, SidecarAtom)]> {
+    pub fn fact_natural_key_values(&self) -> Option<&[(String, serde_json::Value)]> {
         self.core.fact_natural_key_values.as_deref()
     }
 

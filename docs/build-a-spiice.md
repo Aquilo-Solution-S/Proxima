@@ -169,6 +169,11 @@ the projection's migration, alongside its owner/text and owner/tag GIN indexes.
 These generated functions return only candidates authorized by memory RLS;
 their declared schema sets and score bands come from the same contract.
 
+Automatic Fact writes bind natural keys by the registered sidecar's SQL column
+types. UUID-shaped text remains text; UUID columns bind UUIDs. Selection runs
+in the write transaction and follows the series' current owner, including
+earlier uncommitted writes in that unit of work.
+
 For a stateful Fact sidecar, use
 `proxiima::spiice::sidecar_heads_by_key::<YourPayload>` to list current series
 heads without core SQL. Prefix values match the first natural-key columns in

@@ -20,7 +20,6 @@ use std::pin::Pin;
 use proxiima_core::verbs::fact_ingest::{
     AuthorizedInlineCitedObject, AuthorizedNodeLinks, FactIngestOutcome, FactWriteCommand,
 };
-use proxiima_core::verbs::query::SidecarAtom;
 use proxiima_core::verbs::schema::PayloadKind;
 use proxiima_core::{
     AuthorizedFactWithCitation, AuthorizedFactWithCitationRef, AuthorizedFactWrite, MemoryId,
@@ -78,7 +77,7 @@ pub(crate) fn fact_natural_key(
     draft: &FactWriteCommand,
     sidecar_table: Option<&str>,
     columns: &[String],
-    authorized_values: Option<&[(String, SidecarAtom)]>,
+    authorized_values: Option<&[(String, serde_json::Value)]>,
     reobserve_displaced: bool,
     payloads: &[SidecarPayload],
     registry: &PgSidecarRegistryFrozen,
@@ -112,12 +111,9 @@ pub(crate) fn fact_natural_key(
             "natural-key selection requires exactly one matching typed Fact payload".into(),
         ));
     }
-    let names = columns.iter().map(String::as_str).collect::<Vec<_>>();
-    let json = payload
-        .to_protocol_json()
+    let values = payload
+        .natural_key_values(columns)
         .map_err(StorageError::ConstraintViolation)?;
-    let values =
-        SidecarAtom::bind_columns(&json, &names).map_err(StorageError::ConstraintViolation)?;
     if let Some(expected) = authorized_values {
         if expected != values.as_slice() {
             return Err(StorageError::ConstraintViolation(

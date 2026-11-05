@@ -176,3 +176,7 @@ required-features = ["testkit"]
 [[test]]
 name = "owner_rls_table_pg"
 required-features = ["testkit"]
+
+[[test]]
+name = "automatic_natural_key_pg"
+required-features = ["testkit"]

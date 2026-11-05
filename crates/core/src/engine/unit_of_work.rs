@@ -29,6 +29,7 @@ use crate::{
 
 /// One typed observation addressed to an explicit destination owner.
 /// Natural-key handle reuse includes earlier writes in the same transaction.
+/// Key atoms use the registered SQL column types, so UUID-shaped text stays text.
 /// Facts declare reference pins, never derivation origins.
 #[derive(Clone)]
 pub struct FactWrite<'a, P: FactPayload> {
