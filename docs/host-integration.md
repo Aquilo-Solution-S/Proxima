@@ -47,6 +47,16 @@ same series. `fork_memory` creates an independent series from an exact source
 version; a schema's PG registration must explicitly permit typed copies.
 Unsupported or owner-pinned payloads refuse generic copying.
 
+Cited Abstractions retain their citation on a fork. A cross-owner fork creates
+or deduplicates the destination's blob row and mounts the existing uploaded
+object in the admission transaction; it never moves the source or copies the
+file bytes. The destination citation has its own owner-scoped identity, and
+the existing shared-object erase rules apply. Request replays create no new
+citation or upload rows.
+When source authority comes from a Goal publication, only its captured upload
+is mounted; later private uploads of the same bytes are not copied into the
+destination's metadata.
+
 Pass the copied memory's version ID as `supersedes` to `core_derive` or
 `core_interpret` to revise that line. A revision may retain the fork's exact
 grounding without reading ancestor payloads; new source IDs still require the

@@ -1040,10 +1040,6 @@ pub(crate) async fn materialize_prepared_memory_admission_after_locks(
         receipt_id: None,
         memory_id: MemoryId::new(prepared.t),
         idempotent_replay: false,
-        // Reports the blob this admission actually persisted. The predecessor
-        // always returned `None` here and left `ingest_core` to fill it in;
-        // every other caller passes a draft with no `blob_id`, so this is a
-        // narrowing of that gap rather than a change any caller observes.
         cited_object_id: prepared.draft.blob_id,
         handle: prepared.handle,
         forgotten: false,

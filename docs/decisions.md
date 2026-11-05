@@ -154,8 +154,8 @@ revocation and erasure. Source-owner/controller changes must invalidate prior
 authorisations without A-to-B-to-A resurrection.
 
 The [collaboration model](concepts.md#goal-collaboration) owns the explanation
-and examples. Runtime implementation is in progress; its permission contract
-must amend the kernel before the new authorisation path is enabled.
+and examples. Its permission contract is stated in the kernel and enforced
+by the runtime's typed command permits and owner-scoped storage paths.
 
 Publication consent covers the Goal’s managed audience, including future
 invitees. Existing Roles on the Goal's owning Group apply automatically,

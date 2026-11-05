@@ -6,6 +6,7 @@ mod example_engine;
 
 use example_engine::ExampleEngine;
 use proxiima::spiice::SpiiceBundle;
+use proxiima_core::memory::payloads::AgentDerivationV1;
 use proxiima_core::owner_inverse::{EraseAuthorization, OwnerEraseTarget, OwnerSurfaces};
 use proxiima_core::storage_ports::OwnerInversePort;
 use proxiima_core::test_fixtures::authenticated_context;
@@ -15,12 +16,14 @@ use proxiima_core::verbs::query::{
     EdgeFilter, EdgeReadRequest, EntityKind, QueryRequest, SupersessionStatus,
 };
 use proxiima_core::{
-    AccessKind, AuthPath, AuthzContext, DerivedMemory, EdgeKind, EntityRef, FactWrite,
-    ForkMemoryRequest, GoalAudienceGrantInput, GoalHandle, GoalPublicationInput,
-    InterpretationSubjectKind, InterpretationV1, MemoryDestination, MemoryId, MemoryTarget,
-    OwnerId, PublicationUse, Role, SeriesHandle, SimpleTextGoalV1, SpiiceRegistry, UserId,
+    AccessKind, AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, EdgeKind, EntityRef,
+    FactWrite, ForkMemoryRequest, GoalAudienceGrantInput, GoalHandle, GoalPublicationInput,
+    InputContractId, InterpretationSubjectKind, InterpretationV1, MemoryDestination, MemoryId,
+    MemoryTarget, OperatorId, OwnerId, PublicationUse, Role, SeriesHandle, SimpleTextGoalV1,
+    SpiiceRegistry, UserId,
 };
 use proxiima_example::NoteV1;
+use proxiima_storage_pg::test_fixtures::cited_abstraction_from_template;
 use uuid::Uuid;
 
 fn direct(subject: UserId) -> AuthzContext {
@@ -37,6 +40,160 @@ fn interpretation(fact: MemoryId, claim: &str) -> InterpretationV1 {
         client_name: "fork-test".into(),
         client_version: "1".into(),
     }
+}
+
+fn fork_identity() -> DerivationIdentity {
+    DerivationIdentity::new(
+        OperatorId::new(Uuid::now_v7()),
+        InputContractId::new(Uuid::now_v7()),
+    )
+}
+
+async fn seed_fork_blob(
+    pool: &sqlx::PgPool,
+    owner: OwnerId,
+    hash: &[u8],
+) -> Result<(Uuid, Uuid), sqlx::Error> {
+    let blob_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
+         VALUES ($1, 'core/uploaded-blob-v1', $2) RETURNING blob_id",
+    )
+    .bind(owner.into_inner())
+    .bind(hash)
+    .fetch_one(pool)
+    .await?;
+    let upload_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxiima_core.blob_uploads
+             (owner_id, bucket, object_store, object_key, filename, mime,
+              expected_byte_len, status, blob_id, sha256, content_hash,
+              expires_at, completed_at)
+         VALUES ($1, 'bucket', 's3:test/bucket', 'placeholder', 'fork.bin',
+                 'application/octet-stream', 3, 'completed', $2, $3, $3,
+                 now() + interval '1 day', now())
+         RETURNING upload_id",
+    )
+    .bind(owner.into_inner())
+    .bind(blob_id)
+    .bind(hash)
+    .fetch_one(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE proxiima_core.blob_uploads
+            SET object_key = 'objects/' || upload_id::text
+          WHERE upload_id = $1",
+    )
+    .bind(upload_id)
+    .execute(pool)
+    .await?;
+    Ok((blob_id, upload_id))
+}
+
+struct CitedAbstraction {
+    memory: MemoryId,
+    blob: Uuid,
+    upload: Uuid,
+}
+
+async fn cited_abstraction_source(
+    host: &ExampleEngine,
+    auth: &AuthzContext,
+    owner: OwnerId,
+) -> CitedAbstraction {
+    let notebook = host.notebook(&owner).await;
+    let mut unit = host
+        .engine
+        .unit_of_work(auth)
+        .await
+        .expect("open source unit");
+    let fact = unit
+        .ingest_fact(FactWrite::new(
+            owner,
+            "fork-citation",
+            &NoteV1 {
+                notebook_id: notebook,
+                key: "source fact".into(),
+                body: "source evidence".into(),
+                written_at: time::OffsetDateTime::now_utc(),
+            },
+        ))
+        .await
+        .expect("source fact")
+        .memory_id;
+    let template = unit
+        .derive_memory(
+            DerivedMemory::abstraction(
+                MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
+                owner,
+                "cited abstraction",
+                AgentDerivationV1 {
+                    title: "cited abstraction".into(),
+                    body: "source body".into(),
+                    tags: Vec::new(),
+                    idempotency_key: None,
+                    source_memory_ids: vec![fact.into_inner()],
+                    model_id: "fork-test".into(),
+                    client_name: "fork-test".into(),
+                    client_version: "1".into(),
+                },
+                [fact],
+                fork_identity(),
+            )
+            .expect("typed abstraction"),
+        )
+        .await
+        .expect("source abstraction")
+        .memory_id;
+    unit.commit().await.expect("commit source");
+    let hash = [71_u8; 32];
+    let (blob, upload) = seed_fork_blob(&host.pool, owner, &hash)
+        .await
+        .expect("seed cited source blob");
+    let memory = cited_abstraction_from_template(&host.pool, template, blob)
+        .await
+        .expect("cited abstraction fixture");
+    CitedAbstraction {
+        memory,
+        blob,
+        upload,
+    }
+}
+
+async fn assert_citation_mount(
+    host: &ExampleEngine,
+    source: &CitedAbstraction,
+    fork: MemoryId,
+    destination: OwnerId,
+) -> Uuid {
+    let (fork_blob, owner, schema, hash): (Uuid, Uuid, String, Vec<u8>) = sqlx::query_as(
+        "SELECT m.blob_id, b.owner_id, b.schema_id, b.content_hash
+           FROM proxiima_core.memory m
+           JOIN proxiima_core.blob b ON b.blob_id = m.blob_id
+          WHERE m.t = $1",
+    )
+    .bind(fork.into_inner())
+    .fetch_one(&host.pool)
+    .await
+    .expect("fork citation metadata");
+    assert_ne!(fork_blob, source.blob);
+    assert_eq!(owner, destination.into_inner());
+    assert_eq!(schema, "core/uploaded-blob-v1");
+    assert_eq!(hash, [71_u8; 32]);
+    let (source_key, fork_key, mounted_from): (String, String, Uuid) = sqlx::query_as(
+        "SELECT source.object_key, mounted.object_key, mounted.mounted_from_upload_id
+           FROM proxiima_core.blob_uploads source
+           JOIN proxiima_core.blob_uploads mounted
+             ON mounted.blob_id = $2 AND mounted.owner_id = $3
+          WHERE source.upload_id = $1",
+    )
+    .bind(source.upload)
+    .bind(fork_blob)
+    .bind(destination.into_inner())
+    .fetch_one(&host.pool)
+    .await
+    .expect("source and mounted upload rows");
+    assert_eq!(fork_key, source_key);
+    assert_eq!(mounted_from, source.upload);
+    fork_blob
 }
 
 async fn erase_grounding_and_clean_fork(
@@ -163,6 +320,51 @@ async fn create_goal(
     GoalHandle::new(handle)
 }
 
+async fn publish_cited_fork(
+    host: &ExampleEngine,
+    auth: &AuthzContext,
+    memory: MemoryId,
+    recipient: UserId,
+) -> GoalHandle {
+    let owner = OwnerId::from(auth.subject().expect("source subject"));
+    let goal = create_goal(host, auth, owner, "citation fork").await;
+    host.engine
+        .grant_goal_access(
+            auth,
+            &GoalAudienceGrantInput {
+                goal,
+                subject: recipient,
+                role: Role::editor(),
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("grant fork editor");
+    host.engine
+        .publish_to_goal(
+            auth,
+            &GoalPublicationInput {
+                goal,
+                memory,
+                permitted_use: PublicationUse::Fork,
+            },
+        )
+        .await
+        .expect("publish fork source");
+    goal
+}
+
+async fn citation_row_counts(pool: &sqlx::PgPool) -> (i64, i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT count(*) FROM proxiima_core.memory),
+                (SELECT count(*) FROM proxiima_core.blob),
+                (SELECT count(*) FROM proxiima_core.blob_uploads)",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("memory and citation census")
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn typed_perspective_fork_is_a_new_series_and_replays_by_key() {
     let host = ExampleEngine::new("proxiima_memory_fork", |_| {}).await;
@@ -225,6 +427,187 @@ async fn typed_perspective_fork_is_a_new_series_and_replays_by_key() {
     assert_eq!(replay.memory_id, first.memory_id);
     assert!(replay.idempotent_replay);
     host.pool.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cross_owner_abstraction_fork_mounts_citation_without_copying_bytes() {
+    let host = ExampleEngine::new("proxiima_memory_fork_citation", |_| {}).await;
+    let alice = UserId::new(Uuid::now_v7());
+    let bob = UserId::new(Uuid::now_v7());
+    let alice_owner = OwnerId::from(alice);
+    let bob_owner = OwnerId::from(bob);
+    let alice_auth = direct(alice);
+    let bob_auth = direct(bob);
+    let source = cited_abstraction_source(&host, &alice_auth, alice_owner).await;
+
+    publish_cited_fork(&host, &alice_auth, source.memory, bob).await;
+
+    let request = ForkMemoryRequest {
+        source: source.memory,
+        destination: MemoryDestination::Owner(bob_owner),
+        request_id: IdempotencyKey::new("cited-abstraction-fork").expect("fork key"),
+    };
+    let fork = host
+        .engine
+        .fork_memory(&bob_auth, &request)
+        .await
+        .expect("cross-owner cited abstraction fork");
+
+    let fork_blob = assert_citation_mount(&host, &source, fork.memory_id, bob_owner).await;
+
+    let upload_count_before: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxiima_core.blob_uploads WHERE blob_id = $1",
+    )
+    .bind(fork_blob)
+    .fetch_one(&host.pool)
+    .await
+    .expect("fork upload count");
+    let replay = host
+        .engine
+        .fork_memory(&bob_auth, &request)
+        .await
+        .expect("idempotent cited fork replay");
+    assert!(replay.idempotent_replay);
+    assert_eq!(replay.memory_id, fork.memory_id);
+    let upload_count_after: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM proxiima_core.blob_uploads WHERE blob_id = $1",
+    )
+    .bind(fork_blob)
+    .fetch_one(&host.pool)
+    .await
+    .expect("replayed fork upload count");
+    assert_eq!(upload_count_after, upload_count_before);
+
+    let another = host
+        .engine
+        .fork_memory(
+            &bob_auth,
+            &ForkMemoryRequest {
+                request_id: IdempotencyKey::new("another-cited-fork").expect("fork key"),
+                ..request
+            },
+        )
+        .await
+        .expect("another fork deduplicates the destination citation");
+    assert_ne!(another.memory_id, fork.memory_id);
+    let another_blob = assert_citation_mount(&host, &source, another.memory_id, bob_owner).await;
+    assert_eq!(another_blob, fork_blob);
+    assert_eq!(citation_row_counts(&host.pool).await.2, 2);
+
+    let source_owner_after: Uuid =
+        sqlx::query_scalar("SELECT owner_id FROM proxiima_core.blob WHERE blob_id = $1")
+            .bind(source.blob)
+            .fetch_one(&host.pool)
+            .await
+            .expect("source blob survives");
+    assert_eq!(source_owner_after, alice_owner.into_inner());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn same_owner_abstraction_fork_reuses_its_citation() {
+    let host = ExampleEngine::new("proxiima_fork_citation_same_owner", |_| {}).await;
+    let user = UserId::new(Uuid::now_v7());
+    let owner = OwnerId::from(user);
+    let auth = direct(user);
+    let source = cited_abstraction_source(&host, &auth, owner).await;
+    let before = citation_row_counts(&host.pool).await;
+    let fork = host
+        .engine
+        .fork_memory(
+            &auth,
+            &ForkMemoryRequest {
+                source: source.memory,
+                destination: MemoryDestination::Owner(owner),
+                request_id: IdempotencyKey::new("same-owner-citation").expect("fork key"),
+            },
+        )
+        .await
+        .expect("fork with same-owner citation");
+    let cited: Uuid = sqlx::query_scalar("SELECT blob_id FROM proxiima_core.memory WHERE t=$1")
+        .bind(fork.memory_id.into_inner())
+        .fetch_one(&host.pool)
+        .await
+        .expect("fork citation");
+    assert_eq!(cited, source.blob);
+    assert_eq!(
+        citation_row_counts(&host.pool).await,
+        (before.0 + 1, before.1, before.2)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_missing_captured_upload_refuses_the_fork_atomically() {
+    let host = ExampleEngine::new("proxiima_fork_citation_missing_upload", |_| {}).await;
+    let alice = UserId::new(Uuid::now_v7());
+    let bob = UserId::new(Uuid::now_v7());
+    let auth = direct(alice);
+    let source = cited_abstraction_source(&host, &auth, OwnerId::from(alice)).await;
+    let goal = publish_cited_fork(&host, &auth, source.memory, bob).await;
+    sqlx::query("UPDATE proxiima_core.goal_memory_publication SET cited_upload_id=NULL WHERE goal_handle=$1 AND memory_t=$2")
+        .bind(goal.into_inner()).bind(source.memory.into_inner())
+        .execute(&host.pool).await.expect("simulate missing captured upload");
+    let before = citation_row_counts(&host.pool).await;
+    let result = host
+        .engine
+        .fork_memory(
+            &direct(bob),
+            &ForkMemoryRequest {
+                source: source.memory,
+                destination: MemoryDestination::Owner(OwnerId::from(bob)),
+                request_id: IdempotencyKey::new("missing-captured-upload").expect("fork key"),
+            },
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "missing publication capture must not select private uploads"
+    );
+    assert_eq!(
+        citation_row_counts(&host.pool).await,
+        before,
+        "failed fork leaves no memory or mount"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_foreign_owner_citation_refuses_the_fork_atomically() {
+    let host = ExampleEngine::new("proxiima_fork_citation_foreign_owner", |_| {}).await;
+    let alice = UserId::new(Uuid::now_v7());
+    let bob = UserId::new(Uuid::now_v7());
+    let auth = direct(alice);
+    let owner = OwnerId::from(alice);
+    let source = cited_abstraction_source(&host, &auth, owner).await;
+    create_goal(
+        &host,
+        &direct(bob),
+        OwnerId::from(bob),
+        "register blob owner",
+    )
+    .await;
+    let (foreign_blob, _) = seed_fork_blob(&host.pool, OwnerId::from(bob), &[72; 32])
+        .await
+        .expect("foreign-owner citation fixture");
+    let malformed = cited_abstraction_from_template(&host.pool, source.memory, foreign_blob)
+        .await
+        .expect("simulate a stored citation with a foreign owner");
+    let before = citation_row_counts(&host.pool).await;
+    let result = host
+        .engine
+        .fork_memory(
+            &auth,
+            &ForkMemoryRequest {
+                source: malformed,
+                destination: MemoryDestination::Owner(owner),
+                request_id: IdempotencyKey::new("foreign-citation").expect("fork key"),
+            },
+        )
+        .await;
+    assert!(result.is_err(), "fork must refuse a foreign-owner citation");
+    assert_eq!(
+        citation_row_counts(&host.pool).await,
+        before,
+        "failed fork leaves no memory or mount"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

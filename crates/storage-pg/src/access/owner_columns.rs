@@ -2517,56 +2517,15 @@ async fn transfer_one_cited_blob(
     blob_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     let DedupeLeg { dedupe_key, remaps } = leg;
-    let Some((schema_id, content_hash)) = sqlx::query_as::<_, (String, Vec<u8>)>(
-        "SELECT schema_id, content_hash
-           FROM proxiima_core.blob
-          WHERE blob_id = $1 AND owner_id = $2
-          FOR UPDATE",
-    )
-    .bind(blob_id)
-    .bind(from_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?
-    else {
-        return Err(StorageError::ConstraintViolation(
-            "memory cites a blob outside its source owner".into(),
-        ));
-    };
-
-    if schema_id == proxiima_core::UPLOADED_BLOB_SCHEMA_ID
-        && !has_only_exact_upload_publications(tx, blob_id, from_id, &content_hash).await?
-    {
-        return Err(StorageError::ConstraintViolation(
-            "uploaded blob does not have an exact-only completed source-owner publication set"
-                .into(),
-        ));
-    }
+    let (schema_id, content_hash, _) =
+        load_cited_blob_source(tx, blob_id, from_id, CitedBlobUploads::Owner).await?;
 
     // Case 1: the destination already owns an identical row. The three
     // columns compared are `blob`'s declared `dedupe_key`, read off the
     // contract rather than restated here.
     // SQL-POLICY: generated
-    let existing: Option<uuid::Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(dedupe_lookup_sql(
-        BLOB_SURFACE,
-        "blob_id",
-        dedupe_key,
-    )?))
-    .bind(to_id)
-    .bind(&schema_id)
-    .bind(&content_hash)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_err)?;
+    let existing = find_destination_blob(tx, dedupe_key, to_id, &schema_id, &content_hash).await?;
     if let Some(dest_blob_id) = existing {
-        if schema_id == proxiima_core::UPLOADED_BLOB_SCHEMA_ID
-            && !has_only_exact_upload_publications(tx, dest_blob_id, to_id, &content_hash).await?
-        {
-            return Err(StorageError::ConstraintViolation(
-                "destination uploaded blob does not have an exact-only completed publication set"
-                    .into(),
-            ));
-        }
         if dest_blob_id != blob_id {
             remap_handle_refs(tx, remaps, handle, blob_id, dest_blob_id).await?;
         }
@@ -2597,19 +2556,142 @@ async fn transfer_one_cited_blob(
             .await;
     }
 
-    mount_blob_for_destination(
+    let dest_blob_id = mount_blob_for_destination(
         tx,
-        remaps,
-        handle,
         to_id,
         BlobMountSource {
             owner_id: from_id,
             blob_id,
             schema_id: &schema_id,
             content_hash: &content_hash,
+            selected_upload_id: None,
+        },
+    )
+    .await?;
+    remap_handle_refs(tx, remaps, handle, blob_id, dest_blob_id).await
+}
+
+/// Which upload metadata the caller is authorized to preserve.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CitedBlobUploads {
+    Owner,
+    Publication(Option<uuid::Uuid>),
+}
+
+/// Preserve a citation with destination-owned metadata over the existing object.
+pub(crate) async fn copy_cited_blob_for_owner(
+    tx: &mut Transaction<'_, Postgres>,
+    surfaces: &OwnerSurfaces,
+    from_id: uuid::Uuid,
+    to_id: uuid::Uuid,
+    blob_id: uuid::Uuid,
+    uploads: CitedBlobUploads,
+) -> Result<uuid::Uuid, StorageError> {
+    let leg = dedupe_leg(surfaces, BLOB_SURFACE)?;
+    let (schema_id, content_hash, selected_upload_id) =
+        load_cited_blob_source(tx, blob_id, from_id, uploads).await?;
+    if from_id == to_id {
+        return Ok(blob_id);
+    }
+    let existing =
+        find_destination_blob(tx, leg.dedupe_key, to_id, &schema_id, &content_hash).await?;
+    if let Some(dest_blob_id) = existing {
+        return Ok(dest_blob_id);
+    }
+    mount_blob_for_destination(
+        tx,
+        to_id,
+        BlobMountSource {
+            owner_id: from_id,
+            blob_id,
+            schema_id: &schema_id,
+            content_hash: &content_hash,
+            selected_upload_id,
         },
     )
     .await
+}
+
+async fn load_cited_blob_source(
+    tx: &mut Transaction<'_, Postgres>,
+    blob_id: uuid::Uuid,
+    owner_id: uuid::Uuid,
+    uploads: CitedBlobUploads,
+) -> Result<(String, Vec<u8>, Option<uuid::Uuid>), StorageError> {
+    let object_keys = blob_upload_object_keys(tx, &[blob_id]).await?;
+    lock_object_keys_tx(tx, &object_keys).await?;
+    let Some((schema_id, content_hash)) = sqlx::query_as::<_, (String, Vec<u8>)>(
+        "SELECT schema_id, content_hash FROM proxiima_core.blob
+          WHERE blob_id = $1 AND owner_id = $2 FOR UPDATE",
+    )
+    .bind(blob_id)
+    .bind(owner_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?
+    else {
+        return Err(StorageError::ConstraintViolation(
+            "memory cites a blob outside its source owner".into(),
+        ));
+    };
+    let selected_upload_id = match uploads {
+        CitedBlobUploads::Publication(Some(upload_id)) => Some(upload_id),
+        CitedBlobUploads::Publication(None)
+            if schema_id == proxiima_core::UPLOADED_BLOB_SCHEMA_ID =>
+        {
+            return Err(StorageError::ConstraintViolation(
+                "fork publication has no captured upload".into(),
+            ));
+        }
+        CitedBlobUploads::Owner | CitedBlobUploads::Publication(None) => None,
+    };
+    let valid_uploads = has_only_exact_upload_publications(
+        tx,
+        blob_id,
+        owner_id,
+        &content_hash,
+        selected_upload_id,
+    )
+    .await?;
+    if schema_id == proxiima_core::UPLOADED_BLOB_SCHEMA_ID && !valid_uploads {
+        return Err(StorageError::ConstraintViolation(
+            "uploaded blob does not have an exact-only completed source-owner publication set"
+                .into(),
+        ));
+    }
+    Ok((schema_id, content_hash, selected_upload_id))
+}
+
+async fn find_destination_blob(
+    tx: &mut Transaction<'_, Postgres>,
+    dedupe_key: &'static [&'static str],
+    owner_id: uuid::Uuid,
+    schema_id: &str,
+    content_hash: &[u8],
+) -> Result<Option<uuid::Uuid>, StorageError> {
+    // SQL-POLICY: generated
+    let existing: Option<uuid::Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(dedupe_lookup_sql(
+        BLOB_SURFACE,
+        "blob_id",
+        dedupe_key,
+    )?))
+    .bind(owner_id)
+    .bind(schema_id)
+    .bind(content_hash)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if let Some(dest_blob_id) = existing
+        && schema_id == proxiima_core::UPLOADED_BLOB_SCHEMA_ID
+        && !has_only_exact_upload_publications(tx, dest_blob_id, owner_id, content_hash, None)
+            .await?
+    {
+        return Err(StorageError::ConstraintViolation(
+            "destination uploaded blob does not have an exact-only completed publication set"
+                .into(),
+        ));
+    }
+    Ok(existing)
 }
 
 /// A blob's completed upload rows are a readable publication set only when at
@@ -2622,6 +2704,7 @@ async fn has_only_exact_upload_publications(
     blob_id: uuid::Uuid,
     owner_id: uuid::Uuid,
     content_hash: &[u8],
+    selected_upload_id: Option<uuid::Uuid>,
 ) -> Result<bool, StorageError> {
     sqlx::query_scalar(
         "SELECT EXISTS (
@@ -2639,12 +2722,14 @@ async fn has_only_exact_upload_publications(
                 AND btrim(u.mime) <> ''
                 AND u.object_key =
                     'objects/' || COALESCE(u.mounted_from_upload_id, u.upload_id)::text
+                AND ($4::uuid IS NULL OR u.upload_id = $4)
          ) AND NOT EXISTS (
              SELECT 1
                FROM proxiima_core.blob_uploads u
               WHERE u.blob_id = $1
                 AND u.owner_id = $2
                 AND u.status = 'completed'
+                AND ($4::uuid IS NULL OR u.upload_id = $4)
                 AND (
                     u.completed_at IS NULL
                     OR u.content_hash IS DISTINCT FROM $3
@@ -2663,6 +2748,7 @@ async fn has_only_exact_upload_publications(
     .bind(blob_id)
     .bind(owner_id)
     .bind(content_hash)
+    .bind(selected_upload_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(map_err)
@@ -2755,21 +2841,21 @@ struct BlobMountSource<'a> {
     blob_id: uuid::Uuid,
     schema_id: &'a str,
     content_hash: &'a [u8],
+    selected_upload_id: Option<uuid::Uuid>,
 }
 
 /// Case 3: the destination gets its own row over the source's object.
 async fn mount_blob_for_destination(
     tx: &mut Transaction<'_, Postgres>,
-    remaps: &'static [&'static str],
-    handle: uuid::Uuid,
     to_id: uuid::Uuid,
     source: BlobMountSource<'_>,
-) -> Result<(), StorageError> {
+) -> Result<uuid::Uuid, StorageError> {
     let BlobMountSource {
         owner_id: from_id,
         blob_id,
         schema_id,
         content_hash,
+        selected_upload_id,
     } = source;
     let dest_blob_id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO proxiima_core.blob (owner_id, schema_id, content_hash)
@@ -2819,13 +2905,15 @@ async fn mount_blob_for_destination(
             AND btrim(u.filename) <> ''
             AND btrim(u.mime) <> ''
             AND u.object_key =
-                'objects/' || COALESCE(u.mounted_from_upload_id, u.upload_id)::text",
+                'objects/' || COALESCE(u.mounted_from_upload_id, u.upload_id)::text
+            AND ($6::uuid IS NULL OR u.upload_id = $6)",
     )
     .bind(blob_id)
     .bind(to_id)
     .bind(dest_blob_id)
     .bind(from_id)
     .bind(content_hash)
+    .bind(selected_upload_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?
@@ -2835,7 +2923,7 @@ async fn mount_blob_for_destination(
             "uploaded blob has no source-owner publication row to mount".into(),
         ));
     }
-    remap_handle_refs(tx, remaps, handle, blob_id, dest_blob_id).await
+    Ok(dest_blob_id)
 }
 
 /// Repoint this series' referring columns from one row to another.

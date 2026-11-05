@@ -57,6 +57,9 @@ mod reconcile_claims;
 #[path = "blob_roundtrip_pg/goal_publication.rs"]
 mod goal_publication;
 
+#[path = "blob_roundtrip_pg/fork_citation.rs"]
+mod fork_citation;
+
 /// The transfer's registry-resolved legs, exactly as the engine assembles
 /// them. Passing a hand-built set here would test a registry production
 /// never sees.

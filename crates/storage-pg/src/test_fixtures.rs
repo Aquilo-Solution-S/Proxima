@@ -5,12 +5,14 @@ use proxiima_storage_pg::{
     PgPlatformScope, PgPoolConfig, PgStorage, PgTuning, VectorStorage, core_migrator_for,
 };
 
+use proxiima_core::{MemoryId, memory_store_number, new_memory_uuid};
 use proxiima_pg_testkit::{
     DbGuard, FNV_OFFSET_BASIS, TemplateFamily, create_db_from_template,
     create_named_db_from_template, db_url, drop_db, ensure_template, ensure_template_in,
     fnv1a64_extend, split_role_urls, split_role_urls_without_pgvector,
 };
 use sqlx::Connection;
+use uuid::Uuid;
 
 /// The test roles for `database`; a host-index database gets no `vector`
 /// extension.
@@ -222,6 +224,73 @@ async fn serving_platform_pool(platform_url: &str) -> Result<sqlx::PgPool, Stora
     sqlx::PgPool::connect(platform_url)
         .await
         .map_err(|error| StorageError::Unavailable(error.to_string()))
+}
+
+/// Clone a typed Abstraction admission with a citation present at INSERT.
+///
+/// This fixture exists because production Abstraction authoring currently
+/// does not expose citation input, while the append-only memory trigger
+/// intentionally rejects retrofitting `blob_id` onto an existing admission.
+/// The clone preserves the template's owner, content, pins, and sidecar
+/// payload, but receives fresh canonical identities and the supplied blob.
+///
+/// # Errors
+///
+/// Returns database errors when the template, citation, or cloned sidecar
+/// cannot be admitted atomically.
+#[cfg(feature = "test-fixtures")]
+pub async fn cited_abstraction_from_template(
+    pool: &sqlx::PgPool,
+    template: MemoryId,
+    blob_id: Uuid,
+) -> Result<MemoryId, sqlx::Error> {
+    let handle = new_memory_uuid(memory_store_number(template.into_inner()));
+    let memory = new_memory_uuid(memory_store_number(template.into_inner()));
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory_head
+             (handle, kind, schema_id, owner_id, t, publication_sequence)
+         SELECT $1, kind, schema_id, owner_id, $2, 0
+           FROM proxiima_core.memory_head
+          WHERE handle = (SELECT handle FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (fixture clones the exact stored template) */ WHERE t = $3)",
+    )
+    .bind(handle)
+    .bind(memory)
+    .bind(template.into_inner())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory /* FORGET-POLICY: includes-forgotten (fixture preserves the template's forgotten state) */
+             (handle, t, kind, owner_id, schema_id, source_id, ingest_key,
+              blob_id, content_id, origins, refs, sidecar_tables, goal_refs,
+              guided_by, occurred_at, by, via, lexical_language, forgotten_at)
+         SELECT $1, $2, kind, owner_id, schema_id, NULL, NULL,
+                $3, content_id, origins, refs, sidecar_tables, goal_refs,
+                guided_by, occurred_at, by, via, lexical_language, forgotten_at
+           FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (fixture clones the exact stored template) */
+          WHERE t = $4",
+    )
+    .bind(handle)
+    .bind(memory)
+    .bind(blob_id)
+    .bind(template.into_inner())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.agent_derivation_v1
+             (t, title, body, tags, idempotency_key, source_memory_ids,
+              model_id, client_name, client_version)
+         SELECT $1, title, body, tags, NULL, source_memory_ids,
+                model_id, client_name, client_version
+           FROM proxiima_core.agent_derivation_v1
+          WHERE t = $2",
+    )
+    .bind(memory)
+    .bind(template.into_inner())
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(MemoryId::new(memory))
 }
 
 /// Connect a disposable database through the real split-role boot sequence.

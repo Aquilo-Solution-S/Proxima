@@ -9,6 +9,7 @@ use proxiima_core::{
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
 
+use crate::access::owner_columns::CitedBlobUploads;
 use crate::ports::goal_collaboration::source_reads::{SourceReads, lock_goal_footprint};
 use crate::ports::goal_collaboration::{
     current_goal_role, current_role, fenced_roles, role_for_goal, source_admin,
@@ -17,6 +18,7 @@ use crate::{PgStorage, error::map_err};
 
 struct ForkSource {
     source_owner: OwnerId,
+    cited_blob: Option<Uuid>,
     memory_kind: MemoryKind,
     entity_kind: EntityKind,
     schema_id: String,
@@ -34,10 +36,14 @@ struct ForkAuthority {
     reads: SourceReads,
     roles: proxiima_core::OwnerRoles,
     same_owner_destination: bool,
+    cited_uploads: CitedBlobUploads,
 }
 
 struct ForkAdmission<'a> {
+    source_owner: OwnerId,
     target_owner: OwnerId,
+    cited_blob: Option<Uuid>,
+    cited_uploads: CitedBlobUploads,
     memory_kind: MemoryKind,
     schema_id: &'a str,
     draft: &'a FactWriteCommand,
@@ -54,7 +60,7 @@ async fn load_fork_source(
     target_owner: OwnerId,
 ) -> Result<ForkSource, StorageError> {
     crate::owner_scope::bind_owner_scope(tx, permit.scope()).await?;
-    let source = sqlx::query("SELECT m.kind::text,m.owner_id,m.schema_id,m.origins,m.refs,m.goal_refs,m.lexical_language::text
+    let source = sqlx::query("SELECT m.kind::text,m.owner_id,m.schema_id,m.origins,m.refs,m.goal_refs,m.lexical_language::text,m.blob_id
         FROM proxiima_core.memory m /* FORGET-POLICY: live-only (exact fork source) */ WHERE m.t=$1 AND m.forgotten_at IS NULL")
         .bind(request.source.into_inner())
         .fetch_optional(&mut **tx)
@@ -124,6 +130,7 @@ async fn load_fork_source(
     let external_references: Vec<Uuid> = sqlx::query_scalar("SELECT memory FROM proxiima_core.memory_external_origin WHERE t=$1 AND edge_kind='reference' ORDER BY memory").bind(request.source.into_inner()).fetch_all(&mut **tx).await.map_err(map_err)?;
     Ok(ForkSource {
         source_owner,
+        cited_blob: source.get("blob_id"),
         memory_kind,
         entity_kind,
         schema_id,
@@ -163,20 +170,26 @@ async fn authorize_fork(
     check_destination(tx, permit, &roles, AccessKind::from(source.entity_kind)).await?;
     let same_owner_destination = matches!(permit.destination(), ForkDestinationPermit::Owner(_))
         && target_owner == source.source_owner;
-    if !same_owner_destination && !source_admin(permit.scope(), &roles, source.source_owner) {
-        check_fork_consent(
-            tx,
-            permit,
-            &roles,
-            source.consent,
-            AccessKind::from(source.entity_kind),
-        )
-        .await?;
-    }
+    let cited_uploads =
+        if !same_owner_destination && !source_admin(permit.scope(), &roles, source.source_owner) {
+            CitedBlobUploads::Publication(
+                check_fork_consent(
+                    tx,
+                    permit,
+                    &roles,
+                    source.consent,
+                    AccessKind::from(source.entity_kind),
+                )
+                .await?,
+            )
+        } else {
+            CitedBlobUploads::Owner
+        };
     Ok(ForkAuthority {
         reads,
         roles,
         same_owner_destination,
+        cited_uploads,
     })
 }
 
@@ -188,7 +201,10 @@ async fn admit_fork(
     admission: ForkAdmission<'_>,
 ) -> Result<proxiima_core::verbs::fact_ingest::FactIngestOutcome, StorageError> {
     let ForkAdmission {
+        source_owner,
         target_owner,
+        cited_blob,
+        cited_uploads,
         memory_kind,
         schema_id,
         draft,
@@ -226,6 +242,20 @@ async fn admit_fork(
     let outcome = match prepared {
         super::memory_timeseries::PreparedMemoryAdmission::Replay(outcome) => outcome,
         super::memory_timeseries::PreparedMemoryAdmission::New(prepared) => {
+            let blob_id = match cited_blob {
+                Some(blob_id) => Some(
+                    crate::access::owner_columns::copy_cited_blob_for_owner(
+                        tx,
+                        &storage.surfaces,
+                        source_owner.into_inner(),
+                        target_owner.into_inner(),
+                        blob_id,
+                        cited_uploads,
+                    )
+                    .await?,
+                ),
+                None => None,
+            };
             let content_row = super::content::ensure_content_from_payloads(
                 tx,
                 target_owner.into_inner(),
@@ -238,7 +268,7 @@ async fn admit_fork(
                 super::memory_timeseries::materialize_prepared_memory_admission_after_locks(
                     tx,
                     prepared,
-                    None,
+                    blob_id,
                     content_row,
                 )
                 .await?;
@@ -337,6 +367,7 @@ async fn fork_once(
     let source = load_fork_source(storage, &mut tx, request, permit, target_owner).await?;
     let authority = authorize_fork(storage, &mut tx, permit, &source, target_owner).await?;
     let source_owner = source.source_owner;
+    let cited_blob = source.cited_blob;
     let memory_kind = source.memory_kind;
     let entity_kind = source.entity_kind;
     let schema_id = source.schema_id.clone();
@@ -346,6 +377,7 @@ async fn fork_once(
     let reads = authority.reads;
     let roles = authority.roles;
     let same_owner_destination = authority.same_owner_destination;
+    let cited_uploads = authority.cited_uploads;
     let access_kind = AccessKind::from(entity_kind);
     let (origins, references, external_origins, external_references) = (
         source.origins,
@@ -379,7 +411,10 @@ async fn fork_once(
         request,
         permit,
         ForkAdmission {
+            source_owner,
             target_owner,
+            cited_blob,
+            cited_uploads,
             memory_kind,
             schema_id: &schema_id,
             draft: &draft,
@@ -438,27 +473,28 @@ async fn check_fork_consent(
     roles: &proxiima_core::OwnerRoles,
     consent: Option<(GoalHandle, OwnerId)>,
     kind: AccessKind,
-) -> Result<(), StorageError> {
+) -> Result<Option<Uuid>, StorageError> {
     let (goal, controller) = consent.ok_or(StorageError::NotFound)?;
-    let generation: Option<i64> = sqlx::query_scalar("SELECT gh.authority_generation FROM proxiima_core.goal_memory_publication p
+    let publication = sqlx::query("SELECT gh.authority_generation,p.cited_upload_id FROM proxiima_core.goal_memory_publication p
         JOIN proxiima_core.goal_head gh ON gh.handle=p.goal_handle AND gh.owner_id=$3 AND gh.authority_generation=p.controller_generation
         JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (fork consent under owner RLS) */ ON m.t=p.memory_t AND m.owner_id=p.source_owner AND m.forgotten_at IS NULL
         JOIN proxiima_core.memory_head mh ON mh.handle=m.handle AND mh.owner_id=p.source_owner AND mh.authority_generation=p.source_generation
         WHERE p.goal_handle=$1 AND p.memory_t=$2 AND p.source_owner=$4 AND p.permitted_use='fork'")
-        .bind(goal.into_inner()).bind(permit.source().into_inner()).bind(controller.into_inner()).bind(permit.source_owner().into_inner()).fetch_optional(&mut **tx).await.map_err(map_err)?;
+        .bind(goal.into_inner()).bind(permit.source().into_inner()).bind(controller.into_inner()).bind(permit.source_owner().into_inner()).fetch_optional(&mut **tx).await.map_err(map_err)?
+        .ok_or(StorageError::NotFound)?;
     let role = role_for_goal(
         tx,
         permit.scope(),
         roles,
         goal,
         controller,
-        generation.ok_or(StorageError::NotFound)?,
+        publication.get("authority_generation"),
     )
     .await?;
     if !role.is_some_and(|role| role.may_read(kind)) {
         return Err(StorageError::NotFound);
     }
-    Ok(())
+    Ok(publication.get("cited_upload_id"))
 }
 
 async fn copied_memory_endpoints(

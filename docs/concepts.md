@@ -552,6 +552,14 @@ still require read permission. Withdrawing a publication removes that access
 route. An independently authorised fork remains the destination owner's
 knowledge, subject to its own erase and retention rules.
 
+An Abstraction fork preserves its citation. Within one owner it reuses the
+citation; across owners it creates or reuses destination-owned citation
+metadata pointing to the same immutable attachment bytes. Forking does not
+upload a second file or clone the referenced memory graph. Erasing the source
+keeps the shared object while the destination still retains it; removing the
+last reference allows the existing purge process to delete it. Perspectives
+never carry citations.
+
 For one company playbook, two teams may intentionally edit the same series
 through their Goals. They share its drafts and history. For customer-specific
 pricing, use independent series or forks. Two Goals linked to one editable
