@@ -19,7 +19,7 @@ use proxiima_core::owner_inverse::OwnerSurfaces;
 use proxiima_core::spiice::KeyShape;
 use proxiima_core::verbs::own_erase::{
     SeriesEraseOutcome, SeriesEraseRefusal, SeriesEraseRefusalKind, SeriesEraseReport,
-    SeriesEraseRequest, SeriesSelection,
+    SeriesEraseRequest, SeriesEraseSelection, SeriesSelection,
 };
 use proxiima_core::{MemoryId, OwnerId, StorageError};
 use sqlx::{Postgres, Transaction};
@@ -66,6 +66,7 @@ SELECT n.nspname || '.' || cl.relname AS tbl, a.attname::text AS col
 async fn reference_pairs(
     tx: &mut Transaction<'_, Postgres>,
     surfaces: &OwnerSurfaces,
+    sidecars: &PgSidecarRegistryFrozen,
 ) -> Result<Vec<ReferencePair>, StorageError> {
     let keys: Vec<(String, String)> = sqlx::query_as(REFERENCE_KEYS_SQL)
         .fetch_all(tx.as_mut())
@@ -74,12 +75,19 @@ async fn reference_pairs(
     Ok(keys
         .into_iter()
         .filter_map(|(table, column)| {
-            let key = surfaces.surfaces().iter().find_map(|surface| {
-                match (surface.table == table, surface.key) {
+            let key = surfaces
+                .surfaces()
+                .iter()
+                .chain(
+                    sidecars
+                        .retired_fact_sidecars()
+                        .iter()
+                        .flat_map(crate::sidecars::PgRetiredFactSidecar::surfaces),
+                )
+                .find_map(|surface| match (surface.table == table, surface.key) {
                     (true, KeyShape::MemoryT { column }) => Some(column),
                     _ => None,
-                }
-            });
+                });
             (key != Some(column.as_str())).then_some(ReferencePair { table, column, key })
         })
         .collect())
@@ -469,7 +477,23 @@ async fn resolve_footprint(
 ) -> Result<Result<(Footprint, bool), SeriesEraseRefusal>, StorageError> {
     // One past the cap, so a full list of seeds knows whether more wait.
     let limit = i64::try_from(request.max_series.saturating_add(1)).unwrap_or(i64::MAX);
-    let seeds: Vec<Uuid> = match request.selection {
+    let selection = match request.selection {
+        SeriesEraseSelection::Own(selection) => selection,
+        SeriesEraseSelection::RetiredSchema(schema) => {
+            let seeds = sqlx::query_scalar(concat!(
+                newest_versions_cte!(),
+                "SELECT t FROM newest ORDER BY t LIMIT $3"
+            )) /* FORGET-POLICY: includes-forgotten (retirement selects every version's series) */
+            .bind(owner_id)
+            .bind(schema.as_str())
+            .bind(limit)
+            .fetch_all(tx.as_mut())
+            .await
+            .map_err(map_err)?;
+            return page_footprint(tx, pairs, owner_id, request, seeds).await;
+        }
+    };
+    let seeds: Vec<Uuid> = match selection {
         SeriesSelection::Ids(ids) => {
             let seeds: Vec<Uuid> = ids.iter().map(|id| id.into_inner()).collect();
             let footprint = close_footprint(tx, pairs, &seeds).await?;
@@ -842,7 +866,7 @@ pub(crate) async fn erase_series(
     request: &SeriesEraseRequest<'_>,
 ) -> Result<(SeriesEraseOutcome, ColdPurgePlan), StorageError> {
     let owner_id = owner.into_inner();
-    let pairs = reference_pairs(tx, &context.surfaces).await?;
+    let pairs = reference_pairs(tx, &context.surfaces, sidecars).await?;
     let (footprint, more_remaining) =
         match resolve_footprint(tx, sidecars, &pairs, owner_id, request).await? {
             Ok(resolved) => resolved,

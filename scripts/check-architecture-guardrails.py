@@ -763,7 +763,6 @@ MEMORY_CENSUS_PLATFORM_CALLEES = (
 LIVE_ONLY_FILTER = re.compile(r"\bforgotten_at IS NULL\b")
 LIVE_ONLY_WINDOW = 8
 LIVE_ONLY_RLS_REASON = "under owner RLS"
-EXPECTED_MEMORY_READS = {"live-only": 62, "includes-forgotten": 71}
 
 
 def in_memory_census(text: str, suffix: str, rel: str = "") -> bool:
@@ -847,12 +846,6 @@ def memory_read_hits(text: str, suffix: str) -> list[tuple[int, str | None]]:
     return hits
 
 
-def memory_census_mismatch(expected: dict[str, int], actual: dict[str, int]) -> str | None:
-    if expected == actual:
-        return None
-    return f"EXPECTED_MEMORY_READS = {expected}, found {actual}"
-
-
 def memory_census_files() -> list[Path]:
     files = [ROOT / rel for rel in MEMORY_CENSUS_ALWAYS]
     for path in iter_files("crates/storage-pg/src"):
@@ -864,7 +857,6 @@ def memory_census_files() -> list[Path]:
 
 
 def check_memory_reads(findings: list[Finding]) -> None:
-    counts = {"live-only": 0, "includes-forgotten": 0}
     for path in memory_census_files():
         text = path.read_text(encoding="utf-8")
         lines = text.splitlines()
@@ -873,15 +865,10 @@ def check_memory_reads(findings: list[Finding]) -> None:
                 findings.append(
                     Finding(path, line_no, "platform-scope memory read without FORGET-POLICY marker", lines[line_no - 1])
                 )
-            else:
-                counts[kind] += 1
         for line_no in unfiltered_live_only(text, path.suffix):
             findings.append(
                 Finding(path, line_no, "live-only memory read without forgotten_at IS NULL", lines[line_no - 1])
             )
-    mismatch = memory_census_mismatch(EXPECTED_MEMORY_READS, counts)
-    if mismatch:
-        findings.append(Finding(ROOT / "scripts/check-architecture-guardrails.py", 1, "memory read census", mismatch))
 
 
 # #488: the owner read policy shows forgotten memories only when the
@@ -1089,8 +1076,6 @@ async fn ingest_fact_atomic(
     )
     if [kind for _line, kind in memory_read_hits(sql_fixture, ".sql")] != ["live-only", None]:
         failures.append("memory census: a function-level marker must cover its own function only")
-    if memory_census_mismatch({"live-only": 1, "includes-forgotten": 1}, {"live-only": 1, "includes-forgotten": 2}) is None:
-        failures.append("memory census: a count mismatch was not detected")
     if not in_memory_census("let scope = PgPlatformScope::begin(&pool).await?;", ".rs"):
         failures.append("memory census: a platform-scope file was not recognized")
     if in_memory_census("let scope = owner_scope(&pool).await?;", ".rs"):

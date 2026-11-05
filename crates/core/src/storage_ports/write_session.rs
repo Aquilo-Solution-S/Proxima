@@ -83,6 +83,18 @@ pub trait WriteSessionFactory: Send + Sync {
         owner_scope: Option<&crate::OwnerScope>,
     ) -> Result<Box<dyn WriteSession>, StorageError>;
 
+    /// Bounded platform inventory of owners with raw rows of a declared retired
+    /// schema, including forgotten admissions and every version. No payloads.
+    async fn retired_fact_owners(
+        &self,
+        _schema: &SchemaId,
+        _after: Option<crate::OwnerId>,
+    ) -> Result<Vec<crate::OwnerId>, StorageError> {
+        Err(StorageError::Unavailable(
+            "this backend has no retired Fact inventory".into(),
+        ))
+    }
+
     /// Begin the transaction one spiice-scoped erase runs in
     /// ([`WriteSession::erase_series`]).
     ///

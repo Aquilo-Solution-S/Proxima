@@ -15,6 +15,7 @@ mod pipeline;
 mod query;
 mod read_verbs;
 mod retention;
+mod retired_fact;
 mod sidecar_heads;
 mod source_cursors;
 #[cfg(test)]
@@ -51,6 +52,7 @@ pub use read_verbs::{
     GetGraphReadResponse, GetMemoriesReadRequest, GetMemoriesReadResponse, GetMemoryReadRequest,
     GetMemoryReadResponse, SearchReadRequest, SearchReadResponse,
 };
+pub use retired_fact::RetiredFactErase;
 pub use unit_of_work::{FactWrite, HostStateMaintenanceAuthority, HostStateUnitOfWork, UnitOfWork};
 pub use upload::{UploadCompleted, UploadCompletionExpectation};
 

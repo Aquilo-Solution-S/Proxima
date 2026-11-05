@@ -580,6 +580,15 @@ async fn delete_memory_dependents(
 ) -> Result<(), StorageError> {
     let mut legs: Vec<(&str, &str)> = Vec::with_capacity(sidecar_tables.len() + 4);
     for table in sidecar_tables {
+        if let Some(surface) = sidecars.retired_fact_surface(table) {
+            let proxiima_core::spiice::KeyShape::MemoryT { column } = surface.key else {
+                return Err(StorageError::Internal(
+                    "retired inverse has no memory key".into(),
+                ));
+            };
+            legs.push((table.as_str(), column));
+            continue;
+        }
         if !sidecars.is_memory_sidecar_table(table) {
             return Err(StorageError::ConstraintViolation(format!(
                 "stamped sidecar table {table} is not registered"
@@ -617,6 +626,23 @@ async fn delete_memory_dependents(
             ForgetLeg::Deleted { .. } | ForgetLeg::Cascaded { .. } | ForgetLeg::Unreachable => "t",
         };
         legs.push((table.as_str(), key_column));
+    }
+    for retired in sidecars.retired_fact_sidecars() {
+        if sidecar_tables
+            .iter()
+            .any(|table| table == retired.sidecar_table())
+        {
+            for surface in retired.surfaces() {
+                if !sidecar_tables.iter().any(|table| table == surface.table) {
+                    let proxiima_core::spiice::KeyShape::MemoryT { column } = surface.key else {
+                        return Err(StorageError::Internal(
+                            "retired inverse has no memory key".into(),
+                        ));
+                    };
+                    legs.push((surface.table, column));
+                }
+            }
+        }
     }
     legs.extend(surfaces.generated_forget_legs());
     legs.extend(erase_kept_memory_legs(surfaces));

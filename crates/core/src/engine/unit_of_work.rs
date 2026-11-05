@@ -19,7 +19,7 @@ use crate::verbs::goal_write::{
 use crate::verbs::own_erase::{
     EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,
     SeriesEraseOutcome, SeriesEraseReceipt, SeriesEraseRefusal, SeriesEraseRefusalKind,
-    SeriesEraseReport, SeriesEraseRequest, SeriesSelection,
+    SeriesEraseReport, SeriesEraseRequest, SeriesEraseSelection, SeriesSelection,
 };
 use crate::verbs::query::SidecarAtom;
 use crate::{
@@ -1294,10 +1294,30 @@ impl<'a> UnitOfWork<'a> {
         }
         let (contract, own_schemas, sidecar_table) =
             self.admit_series_erase(spiice_id, &selection)?;
+        self.erase_series_page(
+            contract.spiice_id,
+            owner,
+            &own_schemas,
+            SeriesEraseSelection::Own(&selection),
+            sidecar_table,
+            mode,
+        )
+        .await
+    }
+
+    pub(super) async fn erase_series_page(
+        &mut self,
+        spiice_id: &'static str,
+        owner: OwnerId,
+        own_schemas: &[String],
+        selection: SeriesEraseSelection<'_>,
+        sidecar_table: Option<&str>,
+        mode: EraseMode,
+    ) -> Result<SeriesEraseReceipt, SeriesEraseError> {
         let permit = authorize_series_erase(self.engine, &self.authorization, owner).await?;
         let request = SeriesEraseRequest {
-            own_schemas: &own_schemas,
-            selection: &selection,
+            own_schemas,
+            selection,
             sidecar_table,
             max_series: MAX_ERASE_SERIES_PER_CALL,
             max_versions: MAX_ERASE_VERSIONS_PER_CALL,
@@ -1308,7 +1328,8 @@ impl<'a> UnitOfWork<'a> {
         // An empty id list is authorized and answered here. It erases
         // nothing, so it takes no lock: a caller paging through a scope asks
         // with an empty page to learn it may erase at all.
-        let report = if matches!(&selection, SeriesSelection::Ids(ids) if ids.is_empty()) {
+        let report = if matches!(selection, SeriesEraseSelection::Own(SeriesSelection::Ids(ids)) if ids.is_empty())
+        {
             SeriesEraseReport::default()
         } else {
             let mut session = self
@@ -1334,7 +1355,7 @@ impl<'a> UnitOfWork<'a> {
             report
         };
         Ok(SeriesEraseReceipt {
-            spiice_id: contract.spiice_id,
+            spiice_id,
             owner: *permit.owner(),
             mode,
             series_erased: report.series_erased,
@@ -1495,7 +1516,7 @@ async fn authorize_series_erase(
 
 /// The Fact, Abstraction and Perspective schema ids a spiice declares:
 /// the only series its erase may reach.
-fn own_memory_schemas(contract: &crate::SpiiceContract) -> Vec<String> {
+pub(super) fn own_memory_schemas(contract: &crate::SpiiceContract) -> Vec<String> {
     use crate::verbs::schema::PayloadKind;
     let mut schemas: Vec<String> = contract
         .schemas

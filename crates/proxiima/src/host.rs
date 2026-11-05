@@ -68,7 +68,7 @@ pub use proxiima_core::cursor::Cursor;
 /// its declared tag column; for example, a book tag selects one book's corpus.
 pub use proxiima_core::engine::{
     FactWrite, HostStateCommand, HostStateMaintenanceAuthority, HostStateOutcome,
-    HostStateUnitOfWork, SearchReadRequest, SearchReadResponse, UnitOfWork,
+    HostStateUnitOfWork, RetiredFactErase, SearchReadRequest, SearchReadResponse, UnitOfWork,
 };
 /// The owner-authorized batch Memory read already exposed by
 /// [`proxiima_core::Engine::get_memories`].
@@ -440,6 +440,7 @@ pub use proxiima_core::{
     goal_write::GoalReplayOutcome, goal_write::GoalReplayRequest,
     goal_write::ModifyGoalAtomicRequest, goal_write::TransitionGoalAtomicRequest,
     own_erase::SeriesEraseOutcome, own_erase::SeriesEraseReport, own_erase::SeriesEraseRequest,
+    own_erase::SeriesEraseSelection,
 };
 /// Host authentication: the argument and error types of
 /// [`Authenticator::authenticate`], and [`authenticate`], the one mint of the

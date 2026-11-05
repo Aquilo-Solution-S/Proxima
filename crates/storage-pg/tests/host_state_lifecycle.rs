@@ -10,8 +10,8 @@ use proxiima_core::owner_inverse::{
     OwnerExportTarget, OwnerSurfaces,
 };
 use proxiima_core::spiice::{
-    CounterRule, EraseRule, ExportRule, ForgetRule, KeyShape, ProjectionDecl, SpiiceContract,
-    SpiiceDescriptor, SpiiceProvenance, Surface, TransferRule,
+    CounterRule, EraseRule, ExportRule, ForgetRule, KeyShape, ProjectionDecl, RetiredFactContract,
+    SchemaRef, SpiiceContract, SpiiceDescriptor, SpiiceProvenance, Surface, TransferRule,
 };
 use proxiima_core::storage_ports::publication::{
     PublicationOriginEligibility, PublicationOriginEligibilityPort,
@@ -141,6 +141,33 @@ static CONTRACT: SpiiceContract = SpiiceContract {
     bespoke_transfer_legs: &[],
 };
 
+const RETIRED_SPIICE: &str = "test-host-retired";
+const RETIRED_SCHEMA: &str = "test-host-retired/removed-v1";
+const RETIRED_TABLE: &str = "test_host_retired.removed_v1";
+
+static RETIRED_CONTRACT: SpiiceContract = SpiiceContract {
+    spiice_id: RETIRED_SPIICE,
+    ordinal: 90,
+    state_surfaces: &[],
+    retired_facts: &[RetiredFactContract {
+        id: SchemaRef::new(RETIRED_SPIICE, "removed", 1),
+        sidecar: Surface {
+            table: RETIRED_TABLE,
+            key: KeyShape::MemoryT { column: "memory_t" },
+            owner_column: Some("owner_id"),
+            transfer: TransferRule::Follow,
+            erase: EraseRule::ByKey,
+            export: ExportRule::Rows,
+            forget: ForgetRule::DumpThenDelete,
+            lexical_language_column: None,
+            counter: CounterRule::Counted("sidecar_rows"),
+            completeness: None,
+        },
+        inverse_surfaces: &[],
+    }],
+    ..CONTRACT
+};
+
 const GENERIC_FACTS_SURFACE: Surface = Surface {
     erase: EraseRule::ByOwner,
     ..FACTS_SURFACE
@@ -208,6 +235,7 @@ struct Lifecycle {
     erase_fault: Mutex<EraseFault>,
     export_fault: Mutex<ExportFault>,
     last_request: Mutex<Option<HostStateEraseRequest>>,
+    exact_fact_fences_held: Mutex<Option<bool>>,
     erase_gate: Mutex<Option<Arc<CallbackGate>>>,
     export_gate: Mutex<Option<Arc<CallbackGate>>>,
 }
@@ -220,6 +248,7 @@ impl Lifecycle {
             erase_fault: Mutex::new(EraseFault::None),
             export_fault: Mutex::new(ExportFault::None),
             last_request: Mutex::new(None),
+            exact_fact_fences_held: Mutex::new(None),
             erase_gate: Mutex::new(None),
             export_gate: Mutex::new(None),
         }
@@ -279,6 +308,29 @@ impl PgHostStateLifecyclePort for Lifecycle {
             .iter()
             .map(|id| id.into_inner())
             .collect::<Vec<_>>();
+        if request.scope() == &HostStateEraseScope::ExactFacts {
+            let held: Option<bool> = sqlx::query_scalar(
+                "SELECT bool_and(EXISTS (
+                     SELECT 1 FROM pg_locks l
+                      WHERE l.locktype = 'advisory' AND l.pid = pg_backend_pid()
+                        AND l.granted AND l.mode = 'ExclusiveLock' AND l.objsubid = 1
+                        AND l.classid::bigint = ((k.lock_key >> 32) & 4294967295)
+                        AND l.objid::bigint = (k.lock_key & 4294967295)
+                 ))
+                 FROM (
+                     SELECT hashtextextended('proxiima-forget:' || id::text, 0) AS lock_key
+                       FROM unnest($1::uuid[]) id
+                 ) k",
+            )
+            .bind(&selected_ids)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|error| pg_error(&error))?;
+            *self
+                .exact_fact_fences_held
+                .lock()
+                .expect("fence observation mutex") = held;
+        }
         let original_copy_owner_ids = request
             .selection()
             .original_copies()
@@ -1435,6 +1487,184 @@ async fn exact_physical_erase_invokes_global_copy_inverse_only_for_selected_fact
     .await;
     close_pg(&db_name).await;
     result.expect("exact physical Fact inverse oracle failed");
+}
+
+/// Retirement must keep the exact-Fact callback inside the existing lifecycle
+/// fence and roll the whole page back when its registered participant refuses.
+#[tokio::test]
+async fn retired_page_holds_the_fact_fence_and_rolls_back_every_inverse_on_callback_failure() {
+    let (db_name, pg, lifecycle) = fresh_pg(4).await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pool = pg.pool_for_tests().clone();
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let fact = MemoryId::new(proxiima_core::new_memory_uuid(90));
+        let handle = Uuid::now_v7();
+        sqlx::raw_sql(
+            "CREATE SCHEMA test_host_retired AUTHORIZATION proxiima_test_platform;
+             CREATE TABLE test_host_retired.removed_v1 (
+                 memory_t uuid PRIMARY KEY REFERENCES proxiima_core.memory(t),
+                 owner_id uuid NOT NULL, payload bytea NOT NULL
+             );
+             ALTER TABLE test_host_retired.removed_v1 OWNER TO proxiima_test_platform;
+             ALTER TABLE test_host_retired.removed_v1 ENABLE ROW LEVEL SECURITY;
+             ALTER TABLE test_host_retired.removed_v1 FORCE ROW LEVEL SECURITY;
+             CREATE POLICY proxiima_platform ON test_host_retired.removed_v1
+                 TO proxiima_test_platform
+                 USING (current_setting('app.proxiima_scope', true) = 'platform')
+                 WITH CHECK (current_setting('app.proxiima_scope', true) = 'platform');
+             INSERT INTO proxiima_core.spiice_surface (table_name, spiice_id)
+                 VALUES ('test_host_retired.removed_v1', 'test-host-retired');",
+        )
+        .execute(&pool)
+        .await?;
+        // A historical admission is inserted with its original stamp: retirement
+        // deliberately retains no payload writer, and memory is append-only.
+        let mut seed = pool.begin().await?;
+        sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+            .bind(owner.into_inner())
+            .execute(&mut *seed)
+            .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+                 VALUES ($1, 'fact', $2, $3, $4)",
+        )
+        .bind(handle)
+        .bind(RETIRED_SCHEMA)
+        .bind(owner.into_inner())
+        .bind(fact.into_inner())
+        .execute(&mut *seed)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.memory
+                    (handle, t, kind, owner_id, schema_id, sidecar_tables, occurred_at, \"by\", via)
+                 VALUES ($1, $2, 'fact', $3, $4, ARRAY[$5], now(), $3, NULL)",
+        )
+        .bind(handle)
+        .bind(fact.into_inner())
+        .bind(owner.into_inner())
+        .bind(RETIRED_SCHEMA)
+        .bind(RETIRED_TABLE)
+        .execute(&mut *seed)
+        .await?;
+        sqlx::query(
+            "INSERT INTO test_host_retired.removed_v1 VALUES ($1, $2, decode('aaff', 'hex'))",
+        )
+        .bind(fact.into_inner())
+        .bind(owner.into_inner())
+        .execute(&mut *seed)
+        .await?;
+        seed.commit().await?;
+        seed_host_fact(&pool, owner, fact, "retired-source", &[42]).await;
+        sqlx::query(
+            "INSERT INTO proxiima_core.embeddings
+                 (entity_id, model_id, dim, embedding_version, vec, owner_id)
+             VALUES ($1, 'retired-test', 1024, 1, array_fill(1::real, ARRAY[1024])::vector, $2)",
+        )
+        .bind(fact.into_inner())
+        .bind(owner.into_inner())
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.embedding_heads
+                 (entity_id, model_id, dim, embedding_version, owner_id)
+             VALUES ($1, 'retired-test', 1024, 1, $2)",
+        )
+        .bind(fact.into_inner())
+        .bind(owner.into_inner())
+        .execute(&pool)
+        .await?;
+
+        let registry = frozen_registry_with(Some(&RETIRED_CONTRACT));
+        let mut sidecars = proxiima_storage_pg::PgSidecarRegistry::new();
+        proxiima_storage_pg::register_core_pg_sidecars(&mut sidecars);
+        let retired_pg = Arc::new(
+            pg.as_ref()
+                .clone()
+                .with_sidecars(sidecars.freeze_against(&registry)?)
+                .try_with_spiices(&registry)?,
+        );
+        let (engine, system) = proxiima_core::Engine::new(registry)
+            .with_storage_ports(retired_pg.storage_ports())
+            .into_system_authority();
+        let schema = SchemaId::new(RETIRED_SCHEMA.to_owned());
+        let target = engine.retired_fact_erase(&system, RETIRED_SPIICE, &schema)?;
+        for fault in [
+            EraseFault::CallbackError,
+            EraseFault::ForeignPhysicalSelection,
+        ] {
+            lifecycle.set_erase_fault(fault);
+            assert!(
+                target.erase_page(owner).await.is_err(),
+                "{fault:?} refuses the page"
+            );
+            assert_eq!(core_fact_count(&pool, fact).await, 1);
+            assert_eq!(host_fact_count(&pool, owner).await, 1);
+            let sidecar: Vec<u8> = sqlx::query_scalar(
+                "SELECT payload FROM test_host_retired.removed_v1 WHERE memory_t = $1",
+            )
+            .bind(fact.into_inner())
+            .fetch_one(&pool)
+            .await?;
+            assert_eq!(sidecar, vec![0xaa, 0xff]);
+            let vectors: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM proxiima_core.embeddings WHERE entity_id = $1",
+            )
+            .bind(fact.into_inner())
+            .fetch_one(&pool)
+            .await?;
+            let heads: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM proxiima_core.embedding_heads WHERE entity_id = $1",
+            )
+            .bind(fact.into_inner())
+            .fetch_one(&pool)
+            .await?;
+            assert_eq!(
+                (vectors, heads),
+                (1, 1),
+                "vector inverse rolls back with the page"
+            );
+        }
+        lifecycle.set_erase_fault(EraseFault::None);
+        *lifecycle
+            .exact_fact_fences_held
+            .lock()
+            .expect("fence observation mutex") = None;
+        let receipt = target.erase_page(owner).await?;
+        assert_eq!(
+            *lifecycle
+                .exact_fact_fences_held
+                .lock()
+                .expect("fence observation mutex"),
+            Some(true),
+            "the exact Fact lifecycle fence is held inside the callback",
+        );
+        assert_eq!(receipt.versions, vec![fact]);
+        let request = lifecycle
+            .last_request
+            .lock()
+            .expect("request mutex")
+            .clone()
+            .expect("retirement dispatches the registered participant");
+        assert_eq!(request.scope(), &HostStateEraseScope::ExactFacts);
+        assert_eq!(request.selected_fact_ids(), &[fact]);
+        assert_eq!(core_fact_count(&pool, fact).await, 0);
+        assert_eq!(host_fact_count(&pool, owner).await, 0);
+        let remaining: (i64, i64, i64) = sqlx::query_as(
+            "SELECT
+                    (SELECT count(*) FROM test_host_retired.removed_v1 WHERE memory_t = $1),
+                    (SELECT count(*) FROM proxiima_core.embeddings WHERE entity_id = $1),
+                    (SELECT count(*) FROM proxiima_core.embedding_heads WHERE entity_id = $1)",
+        )
+        .bind(fact.into_inner())
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(remaining, (0, 0, 0));
+        Ok(())
+    }
+    .await;
+    lifecycle.set_erase_fault(EraseFault::None);
+    close_pg(&db_name).await;
+    result.expect("retirement preserves the exact lifecycle transaction");
 }
 
 #[tokio::test]

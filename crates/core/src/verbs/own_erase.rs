@@ -239,13 +239,21 @@ impl From<SeriesEraseError> for ProtocolError {
     }
 }
 
+/// Selection resolved by the engine for the physical series inverse.
+#[derive(Debug, Clone, Copy)]
+pub enum SeriesEraseSelection<'a> {
+    Own(&'a SeriesSelection),
+    /// All series of a frozen retired Fact, with no clock or retention row.
+    RetiredSchema(&'a SchemaId),
+}
+
 /// The backend half of one erase: what the engine resolved and authorized.
 #[derive(Debug, Clone, Copy)]
 pub struct SeriesEraseRequest<'a> {
     /// The named spiice's memory schema ids. Every erased version's series
     /// must carry one of them.
     pub own_schemas: &'a [String],
-    pub selection: &'a SeriesSelection,
+    pub selection: SeriesEraseSelection<'a>,
     /// The selection schema's sidecar table, off the spiice contract. Set
     /// for [`SeriesSelection::SidecarEquals`] and
     /// [`SeriesSelection::DeclaredBefore`], the selections that read it.
