@@ -17,6 +17,7 @@ sqlx = { workspace = true, features = ["json", "rust_decimal"] }
 pgvector = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
@@ -41,4 +42,3 @@ proxiima-pg-testkit = { path = "../pg-testkit" }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 time = { workspace = true }
-serde = { workspace = true }

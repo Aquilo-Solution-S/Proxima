@@ -24,6 +24,21 @@ impl FactPayload for FacadeMacroFact {
     }
 }
 
+impl proxiima::spiice::PayloadProjection for FacadeMacroFact {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay {
+            body: Some(self.note.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder.field("note", &self.note)?;
+        Ok(builder.finish())
+    }
+}
+
 proxiima::spiice::pg_sidecar! {
     payload: FacadeMacroFact,
     row: FacadeMacroFactRow,
@@ -67,6 +82,21 @@ impl FactPayload for FacadeFollowsFact {
 
     fn sidecar_table() -> Option<&'static str> {
         Some("public.facade_follows_fact_v1")
+    }
+}
+
+impl proxiima::spiice::PayloadProjection for FacadeFollowsFact {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay {
+            body: Some(self.mark.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder.field("mark", &self.mark)?;
+        Ok(builder.finish())
     }
 }
 

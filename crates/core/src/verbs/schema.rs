@@ -42,6 +42,7 @@ pub(crate) struct ProtocolPayloadIngressEntry {
     pub kind: PayloadKind,
     pub ingress: ProtocolPayloadIngress,
     pub json_schema: Option<serde_json::Value>,
+    pub natural_key_declaration: crate::NaturalKeyDeclaration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
@@ -943,6 +944,22 @@ impl SpiiceRegistryFrozen {
                 .protocol_ingress_by_key
                 .get(&(schema_id.clone(), schema_version, kind))?;
         self.protocol_ingress[position].json_schema.as_ref()
+    }
+
+    /// The typed natural-key declaration captured when this ingress was registered.
+    #[must_use]
+    pub fn natural_key_declaration(
+        &self,
+        kind: PayloadKind,
+        schema_id: &SchemaId,
+        schema_version: SchemaVersion,
+    ) -> Option<crate::NaturalKeyDeclaration> {
+        let position =
+            *self
+                .index
+                .protocol_ingress_by_key
+                .get(&(schema_id.clone(), schema_version, kind))?;
+        Some(self.protocol_ingress[position].natural_key_declaration)
     }
 
     #[must_use]

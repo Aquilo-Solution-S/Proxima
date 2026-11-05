@@ -398,11 +398,11 @@ pub enum SpiiceRegistryError {
         spiice_id: &'static str,
         schema_id: SchemaId,
     },
-    /// A schema's contract names different natural key columns than the
-    /// payload trait the ingest actually reads.
+    /// A contract's natural key disagrees with its registered typed payload,
+    /// or names one column more than once.
     #[error(
-        "spiice {spiice_id} declares natural key columns for {schema_id} that are \
-         not the ones the ingest reads off the payload trait"
+        "spiice {spiice_id} declares an inconsistent natural key for {schema_id}: \
+         payload type, schema, ordered typed fields and unique column names must agree"
     )]
     NaturalKeyDisagreement {
         spiice_id: &'static str,

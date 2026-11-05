@@ -125,6 +125,8 @@ pub(crate) async fn boot<A: SpiiceBundle>(
     ensure_pg_sidecars(&pg, &registry, &pg_sidecars).await?;
     let pg = pg
         .with_sidecars(pg_sidecars.as_ref().clone())
+        .await
+        .map_err(|error| ProxiimaError::Storage(error.into()))?
         .try_with_spiices(&registry)
         .map_err(|error| ProxiimaError::Storage(error.into()))?
         .with_embedding_runtime_policy(config.embedding_runtime_policy);

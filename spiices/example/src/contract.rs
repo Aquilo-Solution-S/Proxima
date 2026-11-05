@@ -2,8 +2,8 @@
 
 use proxiima::spiice::{
     CounterRule, DbConstraint, EmbeddingRecipe, Enforcement, EraseRule, ExportRule, ForgetRule,
-    KeyShape, ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl,
-    SpiiceContract, Surface, ToolContract, TransferRule,
+    KeyShape, NaturalKeyDeclaration, ProjectionDecl, Provenance, SchemaContract, SchemaRef,
+    SearchProjectionDecl, SpiiceContract, Surface, ToolContract, TransferRule,
 };
 use proxiima::spiice::{PayloadKind, ScopeDecl};
 
@@ -58,7 +58,7 @@ const NOTE_V1: SchemaContract = SchemaContract {
     transfer: TransferRule::StaysOnKey,
     provenance: Provenance::None,
     surfaces: &[memory_sidecar("proxiima_example.note_v1", "note_v1_t_fkey")],
-    natural_key_columns: &["notebook_id", "key"],
+    natural_key_columns: NaturalKeyDeclaration::of::<crate::payload::NoteV1>(),
 };
 
 const DIGEST_V1: SchemaContract = SchemaContract {
@@ -78,7 +78,7 @@ const DIGEST_V1: SchemaContract = SchemaContract {
         "proxiima_example.digest_v1",
         "digest_v1_t_fkey",
     )],
-    natural_key_columns: &[],
+    natural_key_columns: NaturalKeyDeclaration::EMPTY,
 };
 
 /// The stamp sidecar, shared by the stamp and the sealed stamp: its rows
@@ -113,7 +113,7 @@ const STAMP_V1: SchemaContract = SchemaContract {
     transfer: TransferRule::Follow,
     provenance: Provenance::None,
     surfaces: &[STAMP_SURFACE],
-    natural_key_columns: &[],
+    natural_key_columns: NaturalKeyDeclaration::EMPTY,
 };
 
 /// A stamp whose schema refuses transfer, over the stamp sidecar that would
@@ -143,7 +143,7 @@ const SEALED_STAMP_V1: SchemaContract = SchemaContract {
     },
     provenance: Provenance::None,
     surfaces: &[STAMP_SURFACE],
-    natural_key_columns: &[],
+    natural_key_columns: NaturalKeyDeclaration::EMPTY,
 };
 
 const STATE_SURFACES: &[Surface] = &[Surface {

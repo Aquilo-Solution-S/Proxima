@@ -82,6 +82,25 @@ impl FactPayload for ReferencedFactV1 {
     }
 }
 
+impl proxiima_core::PayloadProjection for ReferencedFactV1 {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay {
+            body: Some(self.logical_id.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder.field("logical_id", &self.logical_id)?;
+        builder
+            .field("fact_id", &self.fact_id)?
+            .field("goal_id", &self.goal_id)?;
+        builder.field("target_kind", &self.target_kind)?;
+        Ok(builder.finish())
+    }
+}
+
 const FACT_SURFACE: Surface = Surface {
     table: "test_refs.referenced_fact_v1",
     key: KeyShape::MemoryT { column: "t" },
@@ -112,7 +131,7 @@ const FACT_CONTRACT_SCHEMA: SchemaContract = SchemaContract {
     transfer: TransferRule::StaysOnKey,
     provenance: Provenance::None,
     surfaces: &[FACT_SURFACE],
-    natural_key_columns: &[],
+    natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
 };
 
 static TEST_REFS_CONTRACT: SpiiceContract = SpiiceContract {
@@ -223,6 +242,7 @@ async fn bootstrap() -> (String, PgStorage, proxiima_core::SpiiceRegistryFrozen)
         .await?;
         let pg = pg
             .with_sidecars(sidecars(&registry))
+            .await?
             .with_spiices(&registry);
         Ok::<_, Box<dyn std::error::Error>>((pg, registry))
     }

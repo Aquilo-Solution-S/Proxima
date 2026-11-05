@@ -17,6 +17,18 @@ impl proxiima::spiice::GoalPayload for SdkGoalPayload {
     }
 }
 
+impl proxiima::spiice::PayloadProjection for SdkGoalPayload {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay::default()
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder.field("key", &self.key)?;
+        Ok(builder.finish())
+    }
+}
+
 /// A host that holds its own transaction resolves roles on it through the
 /// facade: the connection-taking probes, not a second copy of the queries.
 #[test]
@@ -448,7 +460,7 @@ fn spiice_sdk_constructs_contract_goal_and_session_values() {
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
     };
     const CONTRACT: SpiiceContract = SpiiceContract {
         retired_facts: &[],
@@ -640,15 +652,28 @@ impl proxiima::spiice::FactPayload for TierStatefulFact {
         Some("proxiima_tier.stateful_v1")
     }
 
-    fn natural_key_columns() -> &'static [&'static str] {
-        &["slot"]
-    }
-
     fn tombstone() -> Option<proxiima::spiice::FactTombstone> {
         Some(proxiima::spiice::FactTombstone {
             column: "state",
             value: "Tombstone",
         })
+    }
+}
+
+impl proxiima::spiice::PayloadProjection for TierStatefulFact {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] =
+        &[proxiima::spiice::KeyField::text("slot", |payload| {
+            &payload.slot
+        })];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay::default()
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder
+            .field("slot", &self.slot)?
+            .field("state", &self.state)?;
+        Ok(builder.finish())
     }
 }
 
@@ -666,8 +691,11 @@ fn spiice_sdk_exposes_the_stateful_fact_tombstone() {
 
     // The other half of the stateful contract travels with it.
     assert_eq!(
-        <TierStatefulFact as FactPayload>::natural_key_columns(),
-        &["slot"]
+        <TierStatefulFact as proxiima::spiice::PayloadProjection>::KEY_FIELDS
+            .iter()
+            .map(proxiima::spiice::KeyField::name)
+            .collect::<Vec<_>>(),
+        vec!["slot"]
     );
 }
 
@@ -836,6 +864,21 @@ impl proxiima::spiice::AbstractionPayload for TierAbstraction {
 
     fn sidecar_table() -> &'static str {
         "proxiima_tier.abstraction_v1"
+    }
+}
+
+impl proxiima::spiice::PayloadProjection for TierAbstraction {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay {
+            body: Some(self.note.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder.field("note", &self.note)?;
+        Ok(builder.finish())
     }
 }
 

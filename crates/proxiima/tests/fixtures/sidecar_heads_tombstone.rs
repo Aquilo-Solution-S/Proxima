@@ -48,15 +48,31 @@ impl FactPayload for HeadObservation {
         Some("heads_fixture.observation_v1")
     }
 
-    fn natural_key_columns() -> &'static [&'static str] {
-        &["key"]
-    }
-
     fn tombstone() -> Option<FactTombstone> {
         Some(FactTombstone {
             column: "state",
             value: "deleted",
         })
+    }
+}
+
+impl proxiima::spiice::PayloadProjection for HeadObservation {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] =
+        &[proxiima::spiice::KeyField::text("key", |payload| {
+            &payload.key
+        })];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay {
+            body: Some(self.state.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut fields = proxiima::spiice::DurablePayloadBuilder::new();
+        fields
+            .field("key", &self.key)?
+            .field("state", &self.state)?;
+        Ok(fields.finish())
     }
 }
 
@@ -94,7 +110,7 @@ static CONTRACT: SpiiceContract = SpiiceContract {
                 name: "observation_v1_admission_id_fkey",
             }),
         }],
-        natural_key_columns: &["key"],
+        natural_key_columns: proxiima::spiice::NaturalKeyDeclaration::of::<HeadObservation>(),
     }],
     state_surfaces: &[],
     scopes: &[],
@@ -202,6 +218,7 @@ pub async fn assert_tombstone_head() -> TestResult {
     let storage = fixture_storage(&db)
         .await?
         .with_sidecars(sidecars)
+        .await?
         .with_spiices(&registry);
     let engine =
         proxiima::Engine::new(registry).with_storage_ports(Arc::new(storage).storage_ports());

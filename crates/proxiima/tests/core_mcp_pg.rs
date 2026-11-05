@@ -390,6 +390,18 @@ impl CitedObjectPayload for TestCitedObject {
     }
 }
 
+impl proxiima::spiice::PayloadProjection for TestCitedObject {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay::default()
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder.field("locator", &self.locator)?;
+        Ok(builder.finish())
+    }
+}
+
 impl SpiiceBundle for EmptyApp {
     fn register(_registry: &mut SpiiceRegistry) -> Result<(), proxiima_core::SpiiceRegistryError> {
         Ok(())

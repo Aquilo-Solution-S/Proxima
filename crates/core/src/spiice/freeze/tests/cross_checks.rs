@@ -7,10 +7,11 @@
 //! accepted twin proves only that freeze can fail.
 
 use super::fixtures::{
-    CITATION_WITH_A_SIDECAR, DECLARES_A_RESOURCE, DUPLICATE_ORDINAL, EMPTY, FIXTURE_ACTIONS,
-    FIXTURE_EFFECT, FIXTURE_SPIICE, FOREIGN_SCHEMA, TAG_WITHOUT_MEMORY_SURFACE,
-    TOOL_ACTIONS_DISAGREE, TOOL_AGREES, UNENFORCED_REFUSAL, UNREGISTERED_SCHEMA, UNREGISTERED_TOOL,
-    register_fixture_schema, register_fixture_schema_of_kind, register_fixture_tool,
+    CITATION_WITH_A_SIDECAR, DECLARES_A_RESOURCE, DUPLICATE_ORDINAL, DuplicateKeyFact, EMPTY,
+    FIXTURE_ACTIONS, FIXTURE_EFFECT, FIXTURE_SPIICE, FOREIGN_SCHEMA, SameKeyDifferentKindFact,
+    SameKeyDifferentTypeFact, TAG_WITHOUT_MEMORY_SURFACE, TOOL_ACTIONS_DISAGREE, TOOL_AGREES,
+    UNENFORCED_REFUSAL, UNREGISTERED_SCHEMA, UNREGISTERED_TOOL, register_fixture_schema,
+    register_fixture_schema_of_kind, register_fixture_schema_with_key, register_fixture_tool,
     register_uniformity_schemas, registration_without_a_contract,
 };
 use super::leg_fixtures::{
@@ -23,15 +24,94 @@ use super::leg_fixtures::{
     UNREACHABLE_ALLOWLIST_EXPORT_SURFACE, UNREACHABLE_EXPORT_SURFACE,
 };
 use super::projection_fixtures::{
-    BANDS_NOT_UNIFORM, EMBEDDED_SIDECAR_RIGHT_KEY, EMBEDDED_SIDECAR_WRONG_KEY,
-    EMBEDDING_DISAGREEMENT, EMBEDDING_NEVER_ON_AN_EMBEDDED_ID, EMPTY_EMBEDDING_UNITS,
-    LANGUAGE_NOT_UNIFORM, NATURAL_KEY_DISAGREEMENT, PROJECTED_SIDECAR_UNDECLARED,
-    PROJECTED_SIDECAR_WRONG_KEY, PROJECTION_A_QUERY_REACHES, PROJECTION_OUTSIDE_THE_MERGE,
-    PROJECTION_WITHOUT_TAGS, TOO_MANY_WEIGHT_LEVELS, WEIGHTS_NOT_UNIFORM,
+    BANDS_NOT_UNIFORM, DUPLICATE_NATURAL_KEY, EMBEDDED_SIDECAR_RIGHT_KEY,
+    EMBEDDED_SIDECAR_WRONG_KEY, EMBEDDING_DISAGREEMENT, EMBEDDING_NEVER_ON_AN_EMBEDDED_ID,
+    EMPTY_EMBEDDING_UNITS, LANGUAGE_NOT_UNIFORM, NATURAL_KEY_DISAGREEMENT,
+    PROJECTED_SIDECAR_UNDECLARED, PROJECTED_SIDECAR_WRONG_KEY, PROJECTION_A_QUERY_REACHES,
+    PROJECTION_OUTSIDE_THE_MERGE, PROJECTION_WITHOUT_TAGS, TOO_MANY_WEIGHT_LEVELS,
+    WEIGHTS_NOT_UNIFORM,
 };
 use crate::mcp::ToolEffect;
 use crate::verbs::schema::PayloadKind;
 use crate::{SpiiceRegistry, SpiiceRegistryError};
+
+#[test]
+fn opaque_citation_contract_freezes_without_a_typed_ingress() {
+    let mut registry = SpiiceRegistry::new();
+    let schema = &UNREGISTERED_SCHEMA.schemas[0];
+    registry.add_opaque_cited_object_schema(schema.schema_id(), schema.schema_version());
+    registry.contracts.push(&UNREGISTERED_SCHEMA);
+    registry
+        .try_freeze()
+        .expect("an opaque citation declares an empty natural key");
+}
+
+#[test]
+fn matching_typed_natural_key_declarations_freeze() {
+    let mut registry = SpiiceRegistry::new();
+    register_fixture_schema_with_key(
+        &mut registry,
+        "thing",
+        "test_spiice.thing_v1",
+        PayloadKind::Fact,
+        crate::NaturalKeyDeclaration::of::<super::fixtures::NaturalKeyFixtureFact>(),
+    );
+    registry.contracts.push(&NATURAL_KEY_DISAGREEMENT);
+    registry
+        .try_freeze()
+        .expect("matching typed key declarations must freeze");
+}
+
+#[test]
+fn freeze_rejects_same_key_columns_with_a_different_scalar_kind() {
+    let mut registry = SpiiceRegistry::new();
+    register_fixture_schema_with_key(
+        &mut registry,
+        "thing",
+        "test_spiice.thing_v1",
+        PayloadKind::Fact,
+        crate::NaturalKeyDeclaration::of::<SameKeyDifferentKindFact>(),
+    );
+    registry.contracts.push(&NATURAL_KEY_DISAGREEMENT);
+    assert!(matches!(
+        registry.try_freeze(),
+        Err(SpiiceRegistryError::NaturalKeyDisagreement { .. })
+    ));
+}
+
+#[test]
+fn freeze_rejects_same_key_columns_from_a_different_payload_type() {
+    let mut registry = SpiiceRegistry::new();
+    register_fixture_schema_with_key(
+        &mut registry,
+        "thing",
+        "test_spiice.thing_v1",
+        PayloadKind::Fact,
+        crate::NaturalKeyDeclaration::of::<SameKeyDifferentTypeFact>(),
+    );
+    registry.contracts.push(&NATURAL_KEY_DISAGREEMENT);
+    assert!(matches!(
+        registry.try_freeze(),
+        Err(SpiiceRegistryError::NaturalKeyDisagreement { .. })
+    ));
+}
+
+#[test]
+fn freeze_rejects_duplicate_natural_key_columns() {
+    let mut registry = SpiiceRegistry::new();
+    register_fixture_schema_with_key(
+        &mut registry,
+        "thing",
+        "test_spiice.thing_v1",
+        PayloadKind::Fact,
+        crate::NaturalKeyDeclaration::of::<DuplicateKeyFact>(),
+    );
+    registry.contracts.push(&DUPLICATE_NATURAL_KEY);
+    assert!(matches!(
+        registry.try_freeze(),
+        Err(SpiiceRegistryError::NaturalKeyDisagreement { .. })
+    ));
+}
 
 /// Register a fixture contract's schema, the way the typed
 /// `add_*_schema` methods would.
@@ -381,9 +461,15 @@ fn each_contract_cross_check_rejects_its_own_shape() {
             |err| matches!(err, SpiiceRegistryError::EmptyEmbeddingUnits { .. }),
         ),
         (
-            "a contract names natural key columns the ingest does not read",
+            "a contract's typed natural-key declaration disagrees with registration",
             |registry| {
-                register_fixture_schema(registry, "thing", "test_spiice.thing_v1");
+                register_fixture_schema_with_key(
+                    registry,
+                    "thing",
+                    "test_spiice.thing_v1",
+                    PayloadKind::Fact,
+                    crate::NaturalKeyDeclaration::EMPTY,
+                );
                 registry.contracts.push(&NATURAL_KEY_DISAGREEMENT);
             },
             |err| matches!(err, SpiiceRegistryError::NaturalKeyDisagreement { .. }),

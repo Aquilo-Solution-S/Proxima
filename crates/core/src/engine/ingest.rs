@@ -16,11 +16,19 @@ use crate::{EntityKind, MemoryId, OwnerId, SidecarPayload};
 
 /// Capture only the values which can select a natural series; body replay semantics are unchanged.
 fn bind_fact_natural_key(
+    registry: &crate::SpiiceRegistryFrozen,
     draft: &FactWriteCommand,
-    columns: &[String],
     sidecars: &[SidecarPayload],
-) -> Result<Option<Vec<(String, serde_json::Value)>>, ProtocolError> {
-    if columns.is_empty() || draft.handle.is_some() {
+) -> Result<Option<crate::NaturalKeySnapshot>, ProtocolError> {
+    if draft.handle.is_some() {
+        return Ok(None);
+    }
+    let declaration = registry
+        .natural_key_declaration(PayloadKind::Fact, &draft.schema_id, draft.schema_version)
+        .ok_or_else(|| {
+            ProtocolError::internal("registered Fact is missing its typed key declaration")
+        })?;
+    if declaration.is_empty() {
         return Ok(None);
     }
     let mut matches = sidecars.iter().filter(|payload| {
@@ -28,21 +36,24 @@ fn bind_fact_natural_key(
             && payload.schema_id == draft.schema_id
             && payload.schema_version == draft.schema_version
     });
-    let Some(payload) = matches.next() else {
-        // An ownerless raw command can be authorized without a typed payload;
-        // automatic NK selection later refuses a missing binding.
-        return Ok(None);
-    };
+    let payload = matches.next().ok_or_else(|| {
+        ProtocolError::invalid_argument(
+            "sidecars",
+            "automatic natural-key selection requires a matching typed Fact payload",
+        )
+    })?;
     if matches.next().is_some() {
         return Err(ProtocolError::invalid_argument(
             "sidecars",
             "natural-key binding requires exactly one matching typed Fact payload",
         ));
     }
-    payload
-        .natural_key_values(columns)
-        .map(Some)
-        .map_err(|err| ProtocolError::invalid_argument("natural_key", err))
+    declaration.capture(payload).map(Some).ok_or_else(|| {
+        ProtocolError::invalid_argument(
+            "sidecars",
+            "typed Fact payload does not match the registered natural-key declaration",
+        )
+    })
 }
 
 /// The one check every Fact authorization path runs on the draft before it
@@ -187,8 +198,7 @@ impl Engine {
                 session_visible_kinds,
             )
             .await?;
-        let natural_key_values =
-            bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
+        let natural_key_values = bind_fact_natural_key(&self.registry, &draft, sidecars)?;
         let publication =
             self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWrite::new(
@@ -244,8 +254,7 @@ impl Engine {
             .authorize_fact_node_links(authority, &draft, sidecars, &[], &[])
             .await?;
 
-        let natural_key_values =
-            bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
+        let natural_key_values = bind_fact_natural_key(&self.registry, &draft, sidecars)?;
         let publication =
             self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWithCitation::new(
@@ -298,8 +307,7 @@ impl Engine {
             .authorize_fact_node_links(authority, &draft, sidecars, &[], &[])
             .await?;
 
-        let natural_key_values =
-            bind_fact_natural_key(&draft, &fact_natural_key_columns, sidecars)?;
+        let natural_key_values = bind_fact_natural_key(&self.registry, &draft, sidecars)?;
         let publication =
             self.resolve_publication(authority, fact_info, *permit.owner(), sidecars)?;
         Ok(AuthorizedFactWithCitationRef::new(
@@ -864,6 +872,21 @@ mod tests {
         }
     }
 
+    impl crate::PayloadProjection for TestFact {
+        const KEY_FIELDS: &'static [crate::KeyField<Self>] = &[];
+        fn display(&self) -> crate::PayloadDisplay {
+            crate::PayloadDisplay {
+                body: Some(self.fact_id.clone()),
+                ..Default::default()
+            }
+        }
+        fn durable(&self) -> Result<crate::DurablePayload, String> {
+            let mut builder = crate::DurablePayloadBuilder::new();
+            builder.field("fact_id", &self.fact_id)?;
+            Ok(builder.finish())
+        }
+    }
+
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct ReferencedTestFact {
         fact_id: String,
@@ -894,6 +917,23 @@ mod tests {
                     target,
                 })
                 .collect()
+        }
+    }
+
+    impl crate::PayloadProjection for ReferencedTestFact {
+        const KEY_FIELDS: &'static [crate::KeyField<Self>] = &[];
+        fn display(&self) -> crate::PayloadDisplay {
+            crate::PayloadDisplay {
+                body: Some(self.fact_id.clone()),
+                ..Default::default()
+            }
+        }
+        fn durable(&self) -> Result<crate::DurablePayload, String> {
+            let mut builder = crate::DurablePayloadBuilder::new();
+            builder
+                .field("fact_id", &self.fact_id)?
+                .field("targets", &self.targets)?;
+            Ok(builder.finish())
         }
     }
 

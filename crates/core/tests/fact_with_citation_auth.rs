@@ -36,6 +36,23 @@ impl FactPayload for TestFact {
     }
 }
 
+impl proxiima_core::PayloadProjection for TestFact {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay {
+            body: Some(self.value.clone()),
+            ..Default::default()
+        }
+    }
+
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder.field("value", &self.value)?;
+        Ok(builder.finish())
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct TestCitedObject {
     body: String,
@@ -47,6 +64,23 @@ impl CitedObjectPayload for TestCitedObject {
 
     fn idempotency_key(&self) -> [u8; 32] {
         *blake3::hash(self.body.as_bytes()).as_bytes()
+    }
+}
+
+impl proxiima_core::PayloadProjection for TestCitedObject {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay {
+            body: Some(self.body.clone()),
+            ..Default::default()
+        }
+    }
+
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder.field("body", &self.body)?;
+        Ok(builder.finish())
     }
 }
 

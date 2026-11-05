@@ -509,6 +509,8 @@ async fn maintenance_storage(
             .await
             .map_err(|err| ProxiimaError::Storage(err.into()))?
             .with_sidecars(sidecars)
+            .await
+            .map_err(|error| ProxiimaError::Storage(error.into()))?
             .with_embedding_runtime_policy(embedding_policy);
     Ok(storage)
 }

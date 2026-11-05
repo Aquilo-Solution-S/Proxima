@@ -729,7 +729,7 @@ mod tests {
                 None,
                 None,
             )],
-            natural_key_columns: &[],
+            natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
         };
 
     static TAG_PROBE_SPIICE: crate::spiice::contract::SpiiceContract =
@@ -774,6 +774,7 @@ mod tests {
                 kind: crate::verbs::schema::PayloadKind::Fact,
                 ingress: tag_probe_ingress,
                 json_schema: None,
+                natural_key_declaration: crate::NaturalKeyDeclaration::EMPTY,
             });
         Engine::new(registry.freeze_or_panic_for_tests())
     }

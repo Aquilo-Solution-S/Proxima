@@ -344,7 +344,7 @@ pub(super) static PER_ROW_ON_THE_WRONG_COLUMN: SpiiceContract = SpiiceContract {
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
     }],
     state_surfaces: &[],
     scopes: &[],

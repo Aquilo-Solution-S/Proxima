@@ -681,11 +681,10 @@ async fn natural_key_selection_uses_the_authorized_payload() {
             .await
             .expect_err("ambiguous matching payloads must be rejected at authorization");
         assert!(err.message.contains("exactly one"), "{err}");
-        let missing = engine.authorize_fact_ingest(&authz, draft, &[]).await?;
         let err = engine
-            .ingest_fact_with_typed_sidecar(&missing)
+            .authorize_fact_ingest(&authz, draft, &[])
             .await
-            .expect_err("automatic NK selection requires authorization-time values");
+            .expect_err("automatic NK selection requires a typed binding before authorization");
         assert!(err.message.contains("typed Fact payload"), "{err}");
         assert!(
             engine
@@ -775,9 +774,29 @@ impl FactPayload for FacadeFact {
     fn sidecar_table() -> Option<&'static str> {
         Some("facade_surface.fact_v1")
     }
+}
 
-    fn natural_key_columns() -> &'static [&'static str] {
-        &["note_id"]
+impl proxiima::spiice::PayloadProjection for FacadeFact {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] =
+        &[proxiima::spiice::KeyField::uuid("note_id", |payload| {
+            payload.note_id
+        })];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay {
+            title: Some(self.title.clone()),
+            body: Some(self.body.clone()),
+            tags: self.tags.clone(),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder
+            .field("note_id", &self.note_id)?
+            .field("title", &self.title)?
+            .field("body", &self.body)?
+            .field("tags", &self.tags)?;
+        Ok(builder.finish())
     }
 }
 
@@ -861,6 +880,23 @@ impl FactPayload for FacadeSidecarlessFact {
     }
 }
 
+impl proxiima::spiice::PayloadProjection for FacadeSidecarlessFact {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay {
+            body: Some(self.body.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder
+            .field("observation_id", &self.observation_id)?
+            .field("body", &self.body)?;
+        Ok(builder.finish())
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct FacadeAbstraction {
     title: String,
@@ -888,6 +924,26 @@ impl AbstractionPayload for FacadeAbstraction {
             EntityKind::Fact,
             MemoryId::new(self.observed_entity),
         )]
+    }
+}
+
+impl proxiima::spiice::PayloadProjection for FacadeAbstraction {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay {
+            title: Some(self.title.clone()),
+            body: Some(self.body.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder
+            .field("title", &self.title)?
+            .field("body", &self.body)?
+            .field("source_count", &self.source_count)?
+            .field("observed_entity", &self.observed_entity)?;
+        Ok(builder.finish())
     }
 }
 
@@ -1012,7 +1068,7 @@ static FACADE_CONTRACT: SpiiceContract = SpiiceContract {
             transfer: TransferRule::StaysOnKey,
             provenance: Provenance::None,
             surfaces: &[facade_memory_surface("facade_surface.fact_v1")],
-            natural_key_columns: &["note_id"],
+            natural_key_columns: proxiima::spiice::NaturalKeyDeclaration::of::<FacadeFact>(),
         },
         SchemaContract {
             id: SchemaRef::new("facade-test", "sidecarless-fact", 3),
@@ -1028,7 +1084,7 @@ static FACADE_CONTRACT: SpiiceContract = SpiiceContract {
             transfer: TransferRule::StaysOnKey,
             provenance: Provenance::None,
             surfaces: &[],
-            natural_key_columns: &[],
+            natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
         },
         SchemaContract {
             id: SchemaRef::new("facade-test", "abstraction", 1),
@@ -1044,7 +1100,7 @@ static FACADE_CONTRACT: SpiiceContract = SpiiceContract {
             transfer: TransferRule::StaysOnKey,
             provenance: Provenance::OriginEdges,
             surfaces: &[facade_memory_surface("facade_surface.abstraction_v1")],
-            natural_key_columns: &[],
+            natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
         },
     ],
     state_surfaces: &[],

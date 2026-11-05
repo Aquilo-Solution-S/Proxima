@@ -61,6 +61,8 @@ pub struct PgSidecarEntry {
     /// `t` and a sidecar keyed on anything else can never be found through
     /// it. Freeze checks it against the contract's `Surface`.
     pub memory_key_column: Option<&'static str>,
+    /// Typed natural-key declaration emitted by the Fact payload projection.
+    pub natural_key_declaration: proxiima_core::NaturalKeyDeclaration,
     pub(super) memory_insert: Option<PgMemorySidecarInserter>,
     pub(super) memory_load: Option<PgMemoryPayloadLoader>,
     pub(super) memory_load_batch: Option<PgMemoryPayloadBatchLoader>,

@@ -428,6 +428,7 @@ mod tests {
                     *version,
                     Cow::Owned(format!("test {version}")),
                     MigrationType::Simple,
+                    // SQL-POLICY: fixed-fragment — version is an i64, formatted as decimal.
                     sqlx::AssertSqlSafe(format!("SELECT {version};")).into_sql_str(),
                     false,
                 )

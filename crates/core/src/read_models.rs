@@ -117,45 +117,25 @@ impl MemorySchemaSpec {
         self
     }
 
-    /// The one body rule, shared by search hits and by-id reads: the payload
-    /// string at [`Self::body_field`]; otherwise the legacy payload `body`,
-    /// then `text` keys (schemas that declare no projection); otherwise
-    /// `fallback` (text the read path already holds, such as a sketch).
+    /// The schema-owned typed body, shared by search hits and by-id reads,
+    /// or text the read path already holds, such as a sketch.
     #[must_use]
     pub fn display_body(
         &self,
         payload: Option<&SidecarPayload>,
         fallback: Option<&str>,
     ) -> Option<String> {
-        let json = payload.and_then(|payload| payload.to_protocol_json().ok());
-        let field = |key: &str| {
-            json.as_ref()
-                .and_then(|value| value.get(key)?.as_str().map(ToOwned::to_owned))
-        };
-        self.body_field
-            .as_deref()
-            .and_then(field)
-            .or_else(|| field("body"))
-            .or_else(|| field("text"))
+        payload
+            .and_then(|payload| payload.display().body)
             .or_else(|| fallback.map(ToOwned::to_owned))
     }
 
-    /// The one tags rule, shared by search hits and by-id reads: the payload
-    /// string array at [`Self::tag_field`], so a memory reports exactly the
-    /// tags search filters it on. A schema that declares no `tag_column`
-    /// keeps the legacy payload `tags` key, so its tags are not dropped.
+    /// The schema-owned typed tags, shared by search hits and by-id reads.
+    /// SQL filter columns remain schema metadata; display never probes them.
     #[must_use]
     pub fn display_tags(&self, payload: Option<&SidecarPayload>) -> Vec<String> {
-        let key = self.tag_field.as_deref().unwrap_or("tags");
         payload
-            .and_then(|payload| payload.to_protocol_json().ok())
-            .and_then(|value| {
-                value.get(key)?.as_array().map(|tags| {
-                    tags.iter()
-                        .filter_map(|tag| tag.as_str().map(ToOwned::to_owned))
-                        .collect()
-                })
-            })
+            .map(|payload| payload.display().tags)
             .unwrap_or_default()
     }
 }
@@ -227,8 +207,10 @@ mod tests {
     /// unrelated `tags` field, and whose body field is `claim`.
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct LabelledFact {
+        #[serde(rename = "wire_claim")]
         claim: String,
         body: String,
+        #[serde(rename = "wire_labels")]
         labels: Vec<String>,
         tags: Vec<String>,
     }
@@ -248,6 +230,63 @@ mod tests {
         }
     }
 
+    impl crate::PayloadProjection for LabelledFact {
+        const KEY_FIELDS: &'static [crate::KeyField<Self>] = &[];
+
+        fn display(&self) -> crate::PayloadDisplay {
+            crate::PayloadDisplay {
+                body: Some(self.claim.clone()),
+                tags: self.labels.clone(),
+                ..crate::PayloadDisplay::default()
+            }
+        }
+
+        fn durable(&self) -> Result<crate::DurablePayload, String> {
+            let mut fields = crate::DurablePayloadBuilder::new();
+            fields
+                .field("claim", &self.claim)?
+                .field("body", &self.body)?
+                .field("labels", &self.labels)?
+                .field("tags", &self.tags)?;
+            Ok(fields.finish())
+        }
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct LegacyFact {
+        body: String,
+        tags: Vec<String>,
+    }
+
+    impl crate::FactPayload for LegacyFact {
+        const SCHEMA_ID: &'static str = "test/legacy-fact";
+        const SCHEMA_VERSION: u32 = 1;
+        fn receipt_key(&self) -> Vec<u8> {
+            Vec::new()
+        }
+        fn render(&self) -> String {
+            self.body.clone()
+        }
+    }
+
+    impl crate::PayloadProjection for LegacyFact {
+        const KEY_FIELDS: &'static [crate::KeyField<Self>] = &[];
+        fn display(&self) -> crate::PayloadDisplay {
+            crate::PayloadDisplay {
+                body: Some(self.body.clone()),
+                tags: self.tags.clone(),
+                ..crate::PayloadDisplay::default()
+            }
+        }
+        fn durable(&self) -> Result<crate::DurablePayload, String> {
+            let mut fields = crate::DurablePayloadBuilder::new();
+            fields
+                .field("body", &self.body)?
+                .field("tags", &self.tags)?;
+            Ok(fields.finish())
+        }
+    }
+
     fn labelled() -> crate::SidecarPayload {
         crate::SidecarPayload::fact(LabelledFact {
             claim: "the claim".into(),
@@ -257,8 +296,15 @@ mod tests {
         })
     }
 
+    fn legacy() -> crate::SidecarPayload {
+        crate::SidecarPayload::fact(LegacyFact {
+            body: "legacy body".into(),
+            tags: vec!["legacy".into()],
+        })
+    }
+
     #[test]
-    fn display_reads_the_declared_body_and_tag_fields() {
+    fn display_reads_typed_fields_independently_of_protocol_names() {
         let declared = spec(EntityKind::Fact, "test/labelled-fact", 1)
             .with_display_fields(Some("claim".into()), Some("labels".into()));
         let payload = labelled();
@@ -271,14 +317,14 @@ mod tests {
     }
 
     #[test]
-    fn display_without_declared_fields_keeps_the_legacy_keys() {
-        let undeclared = spec(EntityKind::Fact, "test/labelled-fact", 1);
-        let payload = labelled();
+    fn display_without_sql_field_metadata_uses_the_typed_projection() {
+        let undeclared = spec(EntityKind::Fact, "test/legacy-fact", 1);
+        let payload = legacy();
 
         assert_eq!(
             undeclared.display_tags(Some(&payload)),
-            vec!["not-filterable".to_owned()],
-            "no tag_column: the payload `tags` key is kept, not dropped"
+            vec!["legacy".to_owned()],
+            "no SQL tag_column: typed tags still display"
         );
         assert_eq!(
             undeclared.display_body(Some(&payload), Some("sketch")),

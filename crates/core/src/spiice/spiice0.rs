@@ -148,7 +148,7 @@ const WRITE_ACT_V1: SchemaContract = SchemaContract {
         None,
         Some(t_fkey("proxiima_core.write_act_v1", "write_act_v1_t_fkey")),
     )],
-    natural_key_columns: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
 };
 
 /// Written by every goal write, in the goal's own transaction, when the
@@ -177,7 +177,7 @@ const GOAL_CHANGE_V1: SchemaContract = SchemaContract {
             "goal_change_v1_t_fkey",
         )),
     )],
-    natural_key_columns: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
 };
 
 const AGENT_NOTE_V1: SchemaContract = SchemaContract {
@@ -220,7 +220,7 @@ const AGENT_NOTE_V1: SchemaContract = SchemaContract {
             "agent_note_v1_t_fkey",
         )),
     )],
-    natural_key_columns: &["note_id"],
+    natural_key_columns: crate::NaturalKeyDeclaration::of::<crate::AgentNoteV1>(),
 };
 
 /// Utterances ARE searchable in this tree, with their own band set. What is
@@ -251,7 +251,7 @@ const UTTERANCE_V1: SchemaContract = SchemaContract {
         None,
         Some(t_fkey("proxiima_core.utterance_v1", "utterance_v1_t_fkey")),
     )],
-    natural_key_columns: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
 };
 
 const UPLOAD_V1: SchemaContract = SchemaContract {
@@ -271,7 +271,7 @@ const UPLOAD_V1: SchemaContract = SchemaContract {
     transfer: TransferRule::StaysOnKey,
     provenance: Provenance::None,
     surfaces: &[],
-    natural_key_columns: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
 };
 
 const AGENT_DERIVATION_SEARCH: SearchProjectionDecl = SearchProjectionDecl::Projected {
@@ -321,7 +321,7 @@ const AGENT_DERIVATION_V1_A: SchemaContract = SchemaContract {
     transfer: TransferRule::StaysOnKey,
     provenance: Provenance::OriginEdges,
     surfaces: &[AGENT_DERIVATION_SURFACE],
-    natural_key_columns: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
 };
 
 const AGENT_DERIVATION_V1_P: SchemaContract = SchemaContract {
@@ -335,7 +335,7 @@ const AGENT_DERIVATION_V1_P: SchemaContract = SchemaContract {
     // The Abstraction registration owns the surface: one table, declared
     // once, so erase and forget cannot delete it twice.
     surfaces: &[],
-    natural_key_columns: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
 };
 
 /// An interpretation grounds through payload columns and writes no `origin`
@@ -376,7 +376,7 @@ const INTERPRETATION_V1: SchemaContract = SchemaContract {
             "interpretation_v1_t_fkey",
         )),
     )],
-    natural_key_columns: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
 };
 
 const SIMPLE_TEXT_GOAL_V1: SchemaContract = SchemaContract {
@@ -394,7 +394,7 @@ const SIMPLE_TEXT_GOAL_V1: SchemaContract = SchemaContract {
     transfer: GOAL_NOT_TRANSFERABLE,
     provenance: Provenance::None,
     surfaces: &[],
-    natural_key_columns: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
 };
 
 const TASK_GOAL_V1: SchemaContract = SchemaContract {
@@ -425,7 +425,7 @@ const TASK_GOAL_V1: SchemaContract = SchemaContract {
         counter: CounterRule::Counted("sidecar_rows"),
         completeness: Some(t_fkey("proxiima_core.task_goal_v1", "task_goal_v1_t_fkey")),
     }],
-    natural_key_columns: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
 };
 
 /// Cited objects carry no sidecar of their own in core: the citation is
@@ -444,7 +444,7 @@ const fn citation_schema(name: &'static str, why: &'static str) -> SchemaContrac
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
     }
 }
 

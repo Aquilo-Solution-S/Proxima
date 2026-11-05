@@ -4,7 +4,7 @@ use super::{
     DecomposeGoalOutcome, DecomposedGoalOutcome, DraftFromPayload, GoalAuthorship, GoalChange,
     GoalId, GoalState, GoalWriteOutcome, LifecycleWrite, MemoryId, ModifyGoalAtomicRequest,
     OwnerWritePermit, PgPool, PgSidecarRegistryFrozen, PostLockGuard, PreparedGoalInsert,
-    RowColumns, StorageError, SystemOrigin, TransitionGoalAtomicRequest,
+    ReplayDeclaration, RowColumns, StorageError, SystemOrigin, TransitionGoalAtomicRequest,
     achieve_replay_declaration, carried_evidence, child_draft, create_replay_declaration,
     decompose_replay_declarations, draft_from_payload, draft_from_stored, insert_or_replay_goal,
     internal, lifecycle_outcome, load_prior_goal, lock_prepared_goal_writes,
@@ -519,7 +519,7 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
     let mut prepared_children: Vec<(
         PreparedGoalInsert<'_>,
         Vec<super::EvidenceTarget>,
-        &serde_json::Value,
+        &ReplayDeclaration,
     )> = Vec::with_capacity(req.children.len());
     for (child, declaration) in req.children.iter().zip(&declarations) {
         let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &child.evidence).await?;

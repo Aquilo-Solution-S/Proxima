@@ -23,6 +23,7 @@ impl SpiiceRegistry {
         schema_info: SchemaInfo,
         ingress: ProtocolPayloadIngress,
         json_schema: Option<serde_json::Value>,
+        natural_key_declaration: crate::NaturalKeyDeclaration,
     ) {
         let schema_id = schema_info.schema_id.clone();
         let schema_version = schema_info.schema_version;
@@ -34,6 +35,7 @@ impl SpiiceRegistry {
             kind,
             ingress,
             json_schema,
+            natural_key_declaration,
         });
     }
 
@@ -61,9 +63,9 @@ impl SpiiceRegistry {
                 kind: PayloadKind::Fact,
                 filter_keys: vec![],
                 sidecar_table: F::sidecar_table().map(std::string::ToString::to_string),
-                natural_key_columns: F::natural_key_columns()
+                natural_key_columns: F::KEY_FIELDS
                     .iter()
-                    .map(|s| (*s).to_string())
+                    .map(|field| field.name().to_string())
                     .collect(),
                 tombstone: F::tombstone().map(|t| crate::verbs::schema::SchemaTombstone {
                     column: t.column.to_string(),
@@ -74,6 +76,7 @@ impl SpiiceRegistry {
             },
             ingest_fact_payload::<F>,
             F::json_schema(),
+            crate::NaturalKeyDeclaration::of::<F>(),
         );
         Ok(())
     }
@@ -106,6 +109,7 @@ impl SpiiceRegistry {
             },
             ingest_abstraction_payload::<A>,
             A::json_schema(),
+            crate::NaturalKeyDeclaration::EMPTY,
         );
         Ok(())
     }
@@ -138,6 +142,7 @@ impl SpiiceRegistry {
             },
             ingest_perspective_payload::<P>,
             P::json_schema(),
+            crate::NaturalKeyDeclaration::EMPTY,
         );
         Ok(())
     }
@@ -168,6 +173,7 @@ impl SpiiceRegistry {
             },
             ingest_goal_payload::<G>,
             G::json_schema(),
+            crate::NaturalKeyDeclaration::EMPTY,
         );
         Ok(())
     }
@@ -199,6 +205,7 @@ impl SpiiceRegistry {
             },
             ingest_cited_object_payload::<C>,
             C::json_schema(),
+            crate::NaturalKeyDeclaration::EMPTY,
         );
         Ok(())
     }

@@ -223,6 +223,8 @@ pub async fn storage_over(
     )
     .await
     .with_sidecars(sidecars)
+    .await
+    .expect("typed sidecar key schema")
     .with_spiices(registry)
 }
 

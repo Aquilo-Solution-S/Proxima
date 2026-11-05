@@ -15,7 +15,10 @@
 //! the artefact, they are written together or not at all
 //! ([`crate::engine::UploadCompleted`]).
 
-use crate::{FactPayload, PayloadKeyBuilder};
+use crate::{
+    DurablePayloadBuilder, FactPayload, KeyField, PayloadDisplay, PayloadKeyBuilder,
+    PayloadProjection,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -72,4 +75,42 @@ impl FactPayload for UploadV1 {
     // how a reader reaches it. A sidecar here would be a second
     // copy of that row under a second identity, and the two would disagree
     // the first time one of them was corrected.
+}
+
+impl PayloadProjection for UploadV1 {
+    const KEY_FIELDS: &'static [KeyField<Self>] = &[];
+    fn display(&self) -> PayloadDisplay {
+        PayloadDisplay {
+            body: Some(self.render()),
+            sketch: Some(self.render()),
+            ..PayloadDisplay::default()
+        }
+    }
+    fn durable(&self) -> Result<crate::DurablePayload, String> {
+        let mut fields = DurablePayloadBuilder::new();
+        fields
+            .field("filename", &self.filename)?
+            .field("mime", &self.mime)?
+            .field("byte_len", &self.byte_len)?
+            .field("content_hash", &self.content_hash)?;
+        Ok(fields.finish())
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    #[test]
+    fn durable_matches_current_wire_encoding() {
+        let value = UploadV1 {
+            filename: "file.txt".into(),
+            mime: "text/plain".into(),
+            byte_len: 3,
+            content_hash: "hash".into(),
+        };
+        assert_eq!(
+            value.durable().expect("durable").canonical_bytes(),
+            crate::canonical_json_bytes(&serde_json::to_value(&value).expect("wire"))
+        );
+    }
 }

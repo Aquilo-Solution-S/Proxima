@@ -20,6 +20,18 @@ impl GoalPayload for FacadeGoalPayload {
     }
 }
 
+impl proxiima::spiice::PayloadProjection for FacadeGoalPayload {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay::default()
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder.field("key", &self.key)?;
+        Ok(builder.finish())
+    }
+}
+
 #[test]
 fn facade_reexports_typed_goalwrite_surface_for_embedded_hosts() {
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));

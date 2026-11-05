@@ -224,6 +224,23 @@ impl proxiima_core::FactPayload for ListenableProbeV1 {
     }
 }
 
+impl proxiima_core::PayloadProjection for ListenableProbeV1 {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay {
+            body: Some(self.note.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder
+            .field("probe_id", &self.probe_id)?
+            .field("note", &self.note)?;
+        Ok(builder.finish())
+    }
+}
+
 /// The non-listenable twin of [`ListenableProbeV1`]: identical in every
 /// respect a write path can see, so a difference in outcome is the
 /// declaration and nothing else.
@@ -250,6 +267,23 @@ impl proxiima_core::FactPayload for UnlistenableProbeV1 {
     }
 }
 
+impl proxiima_core::PayloadProjection for UnlistenableProbeV1 {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay {
+            body: Some(self.note.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder
+            .field("probe_id", &self.probe_id)?
+            .field("note", &self.note)?;
+        Ok(builder.finish())
+    }
+}
+
 /// A listenable schema that forgot its JSON Schema — the shape freeze must
 /// refuse with `ListenableWithoutSchema`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -268,6 +302,18 @@ impl proxiima_core::FactPayload for SchemalessListenableProbeV1 {
 
     fn render(&self) -> String {
         self.probe_id.to_string()
+    }
+}
+
+impl proxiima_core::PayloadProjection for SchemalessListenableProbeV1 {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay::default()
+    }
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder.field("probe_id", &self.probe_id)?;
+        Ok(builder.finish())
     }
 }
 
@@ -302,7 +348,7 @@ const fn probe_schema(
         },
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
     }
 }
 

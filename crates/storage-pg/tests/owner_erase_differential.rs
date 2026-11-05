@@ -889,7 +889,9 @@ pub async fn boot(url: &str) -> Result<PgStorage, Box<dyn std::error::Error>> {
     // payload by its own `(kind, schema_id, version)` through this registry.
     // Erase and export are unaffected: both are driven by `OwnerSurfaces`
     // off the contract, and neither reads the PG sidecar registry.
-    Ok(pg.with_sidecars(proxiima_storage_pg::core_pg_sidecars()))
+    Ok(pg
+        .with_sidecars(proxiima_storage_pg::core_pg_sidecars())
+        .await?)
 }
 
 pub async fn teardown(db_name: &str) {

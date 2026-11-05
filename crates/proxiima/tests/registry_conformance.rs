@@ -39,6 +39,21 @@ impl FactPayload for ConformanceFactV1 {
     }
 }
 
+impl proxiima::spiice::PayloadProjection for ConformanceFactV1 {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay {
+            body: Some(self.value.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder.field("value", &self.value)?;
+        Ok(builder.finish())
+    }
+}
+
 #[derive(Debug)]
 struct EmbeddedConsumerSpiice;
 
@@ -100,7 +115,7 @@ static CONFORMANCE_CONTRACT: SpiiceContract = SpiiceContract {
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
     }],
     state_surfaces: &[],
     scopes: &[],

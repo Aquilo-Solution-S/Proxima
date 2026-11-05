@@ -57,7 +57,7 @@ pub(in crate::spiice::freeze) const fn schema(
         transfer,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
     }
 }
 
@@ -77,7 +77,7 @@ pub(super) static TAG_WITHOUT_MEMORY_SURFACE: SpiiceContract = contract(
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
     }],
     &[],
     &[],
@@ -153,7 +153,7 @@ pub(super) static CITATION_WITH_A_SIDECAR: SpiiceContract = contract(
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
     }],
     &[],
     &[],
@@ -351,7 +351,13 @@ pub(super) fn fixture_ingress(
 }
 
 pub(super) fn register_fixture_schema(registry: &mut SpiiceRegistry, name: &str, table: &str) {
-    register_fixture_schema_of_kind(registry, name, table, PayloadKind::Fact);
+    register_fixture_schema_with_key(
+        registry,
+        name,
+        table,
+        PayloadKind::Fact,
+        crate::NaturalKeyDeclaration::EMPTY,
+    );
 }
 
 pub(super) fn register_fixture_schema_of_kind(
@@ -359,6 +365,22 @@ pub(super) fn register_fixture_schema_of_kind(
     name: &str,
     table: &str,
     kind: PayloadKind,
+) {
+    register_fixture_schema_with_key(
+        registry,
+        name,
+        table,
+        kind,
+        crate::NaturalKeyDeclaration::EMPTY,
+    );
+}
+
+pub(super) fn register_fixture_schema_with_key(
+    registry: &mut SpiiceRegistry,
+    name: &str,
+    table: &str,
+    kind: PayloadKind,
+    natural_key_declaration: crate::NaturalKeyDeclaration,
 ) {
     let schema_id = SchemaId::new(format!("{FIXTURE_SPIICE}/{name}-v1"));
     let schema_version = SchemaVersion::new(1);
@@ -368,7 +390,11 @@ pub(super) fn register_fixture_schema_of_kind(
         kind,
         filter_keys: Vec::new(),
         sidecar_table: Some(table.to_owned()),
-        natural_key_columns: Vec::new(),
+        natural_key_columns: natural_key_declaration
+            .column_names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
         tombstone: None,
         has_typed_ingress: true,
         listenable: false,
@@ -381,8 +407,13 @@ pub(super) fn register_fixture_schema_of_kind(
             kind,
             ingress: fixture_ingress,
             json_schema: None,
+            natural_key_declaration,
         });
 }
+
+pub(super) use key_payloads::{
+    DuplicateKeyFact, NaturalKeyFixtureFact, SameKeyDifferentKindFact, SameKeyDifferentTypeFact,
+};
 
 /// The two schemas every uniformity fixture declares.
 pub(super) fn register_uniformity_schemas(registry: &mut SpiiceRegistry) {
@@ -404,5 +435,153 @@ pub(super) fn registration_without_a_contract() -> SchemaInfo {
         tombstone: None,
         has_typed_ingress: false,
         listenable: false,
+    }
+}
+
+#[cfg(test)]
+mod key_payloads {
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    pub(crate) struct NaturalKeyFixtureFact {
+        pub(super) thing_key: String,
+    }
+
+    impl crate::FactPayload for NaturalKeyFixtureFact {
+        const SCHEMA_ID: &'static str = "test-spiice/thing-v1";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn receipt_key(&self) -> Vec<u8> {
+            self.thing_key.as_bytes().to_vec()
+        }
+        fn render(&self) -> String {
+            self.thing_key.clone()
+        }
+    }
+
+    impl crate::PayloadProjection for NaturalKeyFixtureFact {
+        const KEY_FIELDS: &'static [crate::KeyField<Self>] =
+            &[crate::KeyField::text("thing_key", |payload| {
+                &payload.thing_key
+            })];
+        fn display(&self) -> crate::PayloadDisplay {
+            crate::PayloadDisplay {
+                body: Some(self.thing_key.clone()),
+                ..Default::default()
+            }
+        }
+        fn durable(&self) -> Result<crate::DurablePayload, String> {
+            let mut builder = crate::DurablePayloadBuilder::new();
+            builder.field("thing_key", &self.thing_key)?;
+            Ok(builder.finish())
+        }
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    pub(crate) struct SameKeyDifferentTypeFact {
+        pub(super) thing_key: String,
+    }
+
+    impl crate::FactPayload for SameKeyDifferentTypeFact {
+        const SCHEMA_ID: &'static str = "test-spiice/thing-v1";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn receipt_key(&self) -> Vec<u8> {
+            self.thing_key.as_bytes().to_vec()
+        }
+        fn render(&self) -> String {
+            self.thing_key.clone()
+        }
+    }
+
+    impl crate::PayloadProjection for SameKeyDifferentTypeFact {
+        const KEY_FIELDS: &'static [crate::KeyField<Self>] =
+            &[crate::KeyField::text("thing_key", |payload| {
+                &payload.thing_key
+            })];
+
+        fn display(&self) -> crate::PayloadDisplay {
+            crate::PayloadDisplay {
+                body: Some(self.thing_key.clone()),
+                ..Default::default()
+            }
+        }
+
+        fn durable(&self) -> Result<crate::DurablePayload, String> {
+            let mut builder = crate::DurablePayloadBuilder::new();
+            builder.field("thing_key", &self.thing_key)?;
+            Ok(builder.finish())
+        }
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    pub(crate) struct SameKeyDifferentKindFact {
+        pub(super) thing_key: i32,
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    pub(crate) struct DuplicateKeyFact {
+        pub(super) first: String,
+        pub(super) second: String,
+    }
+
+    impl crate::FactPayload for DuplicateKeyFact {
+        const SCHEMA_ID: &'static str = "test-spiice/thing-v1";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn receipt_key(&self) -> Vec<u8> {
+            self.first.as_bytes().to_vec()
+        }
+        fn render(&self) -> String {
+            self.first.clone()
+        }
+    }
+
+    impl crate::PayloadProjection for DuplicateKeyFact {
+        const KEY_FIELDS: &'static [crate::KeyField<Self>] = &[
+            crate::KeyField::text("thing_key", |payload| &payload.first),
+            crate::KeyField::text("thing_key", |payload| &payload.second),
+        ];
+
+        fn display(&self) -> crate::PayloadDisplay {
+            crate::PayloadDisplay::default()
+        }
+
+        fn durable(&self) -> Result<crate::DurablePayload, String> {
+            let mut builder = crate::DurablePayloadBuilder::new();
+            builder.field("first", &self.first)?;
+            builder.field("second", &self.second)?;
+            Ok(builder.finish())
+        }
+    }
+
+    impl crate::FactPayload for SameKeyDifferentKindFact {
+        const SCHEMA_ID: &'static str = "test-spiice/thing-v1";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn receipt_key(&self) -> Vec<u8> {
+            self.thing_key.to_be_bytes().to_vec()
+        }
+        fn render(&self) -> String {
+            self.thing_key.to_string()
+        }
+    }
+
+    impl crate::PayloadProjection for SameKeyDifferentKindFact {
+        const KEY_FIELDS: &'static [crate::KeyField<Self>] =
+            &[crate::KeyField::i32("thing_key", |payload| {
+                payload.thing_key
+            })];
+
+        fn display(&self) -> crate::PayloadDisplay {
+            crate::PayloadDisplay {
+                body: Some(self.thing_key.to_string()),
+                ..Default::default()
+            }
+        }
+
+        fn durable(&self) -> Result<crate::DurablePayload, String> {
+            let mut builder = crate::DurablePayloadBuilder::new();
+            builder.field("thing_key", &self.thing_key)?;
+            Ok(builder.finish())
+        }
     }
 }

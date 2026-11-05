@@ -1581,6 +1581,7 @@ async fn retired_page_holds_the_fact_fence_and_rolls_back_every_inverse_on_callb
             pg.as_ref()
                 .clone()
                 .with_sidecars(sidecars.freeze_against(&registry)?)
+                .await?
                 .try_with_spiices(&registry)?,
         );
         let (engine, system) = proxiima_core::Engine::new(registry)

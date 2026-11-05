@@ -29,6 +29,24 @@ boundary, returning a typed error. Recheck facts that can become stale at the
 commit boundary. Tests should prove intent and boundary refusal, not duplicate
 the implementation.
 
+Typed payloads keep their semantic projections typed through authorization,
+storage and read models. Protocol JSON is decoded or emitted at the boundary;
+inner code does not serialize a payload and inspect JSON to recover natural-key,
+display or schema meaning. `PayloadProjection` and the frozen
+`NaturalKeyDeclaration` are the compiler-visible seam. Every payload trait
+(including cited-object payloads) implements that supertrait; its `KEY_FIELDS`,
+`display`, and `durable` methods
+are explicit typed fields, not recovered from protocol JSON. Wire names
+therefore remain separate from durable identity codecs, which are explicit
+compatibility formats. Use `KeyField::padded_text` only for PostgreSQL `CHAR(n)`
+columns; ordinary `text` fields must use `KeyField::text`.
+
+`NaturalKeyDeclaration::of::<P>()` is reserved for a stateful Fact whose
+projection declares the key; stateless schemas use
+`NaturalKeyDeclaration::EMPTY`. PG sidecar installation is an async fallible
+boundary: `with_sidecars(...).await` validates declared key columns against
+the real SQL schema and must be awaited and propagated during boot.
+
 Do not add a runtime spiice registry, raw spiice SQL against core tables,
 caller-supplied owner authorization, a third edge kind, generic JSON payload
 escape hatches, or compatibility aliases for removed ontology. If a feature

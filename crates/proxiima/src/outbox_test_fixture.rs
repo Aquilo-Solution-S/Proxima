@@ -54,6 +54,23 @@ impl FactPayload for OutboxProbeV1 {
     }
 }
 
+impl proxiima_core::PayloadProjection for OutboxProbeV1 {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay {
+            body: Some(self.note.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder
+            .field("probe_id", &self.probe_id)?
+            .field("note", &self.note)?;
+        Ok(builder.finish())
+    }
+}
+
 crate::spiice::pg_sidecar! {
     payload: OutboxProbeV1,
     row: OutboxProbeRow,
@@ -84,7 +101,7 @@ static HEALTH_CONTRACT: SpiiceContract = SpiiceContract {
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
     }],
     state_surfaces: &[],
     scopes: &[],

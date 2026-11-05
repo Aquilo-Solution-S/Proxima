@@ -37,6 +37,7 @@ pub mod owner;
 pub mod owner_inverse;
 pub mod owner_scope;
 pub mod payload;
+pub mod payload_projection;
 pub mod protocol;
 pub mod publication;
 pub mod quiesce;
@@ -100,6 +101,10 @@ pub use owner_inverse::{
 };
 pub use owner_scope::OwnerScope;
 pub use payload::*;
+pub use payload_projection::{
+    DurablePayload, DurablePayloadBuilder, KeyField, KeyScalarKind, NaturalKeyDeclaration,
+    NaturalKeySnapshot, PayloadDisplay, PayloadProjection,
+};
 pub use publication::{
     CLOUDEVENTS_DATA_CONTENT_TYPE, CLOUDEVENTS_SPEC_VERSION, DEFAULT_MAX_PAYLOAD_BYTES,
     DEFAULT_MAX_PENDING, ExtensionValue, MAX_EXTENSION_NAME_CHARS, MAX_EXTENSION_VALUE_BYTES,

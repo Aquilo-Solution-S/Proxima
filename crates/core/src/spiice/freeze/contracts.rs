@@ -42,6 +42,22 @@ fn validate_tag_sidecar(
 }
 
 impl SpiiceRegistry {
+    fn registered_natural_key_declaration(
+        &self,
+        info: &crate::verbs::schema::SchemaInfo,
+    ) -> Option<crate::NaturalKeyDeclaration> {
+        if !info.has_typed_ingress {
+            // Opaque citations have neither a typed parser nor a natural key.
+            return Some(crate::NaturalKeyDeclaration::EMPTY);
+        }
+        self.protocol_ingress.iter().find_map(|entry| {
+            (entry.schema_id == info.schema_id
+                && entry.schema_version == info.schema_version
+                && entry.kind == info.kind)
+                .then_some(entry.natural_key_declaration)
+        })
+    }
+
     /// Cross-check the declarations against the registrations.
     ///
     /// This is the check that makes "everything is a spiice" structural
@@ -319,19 +335,18 @@ impl SpiiceRegistry {
     fn validate_registration_agreement(
         contract: &crate::spiice::contract::SpiiceContract,
         schema: &crate::spiice::contract::SchemaContract,
-        info: &crate::verbs::schema::SchemaInfo,
+        actual: crate::NaturalKeyDeclaration,
     ) -> Result<(), SpiiceRegistryError> {
         let schema_id = schema.schema_id();
-        // `natural_key_columns` is declared twice — on the contract and on
-        // the payload trait — and the ingest reads the trait's copy, so
-        // without this the contract's copy is a description of the ingest
-        // that can stop being true with no test noticing.
-        if schema.natural_key_columns.len() != info.natural_key_columns.len()
-            || !schema
-                .natural_key_columns
-                .iter()
-                .zip(&info.natural_key_columns)
-                .all(|(declared, registered)| *declared == registered.as_str())
+        let columns = schema.natural_key_columns.column_names();
+        let mut seen = std::collections::HashSet::new();
+        let duplicate = columns.iter().find(|column| !seen.insert(**column));
+        if schema
+            .natural_key_columns
+            .schema_id()
+            .is_some_and(|id| id != schema_id.as_str())
+            || duplicate.is_some()
+            || actual != schema.natural_key_columns
         {
             return Err(SpiiceRegistryError::NaturalKeyDisagreement {
                 spiice_id: contract.spiice_id,
@@ -519,7 +534,14 @@ impl SpiiceRegistry {
                     kind: schema.kind,
                 });
             };
-            Self::validate_registration_agreement(contract, schema, info)?;
+            let actual = self.registered_natural_key_declaration(info).ok_or(
+                SpiiceRegistryError::SchemaIngressMismatch {
+                    schema_id: schema_id.clone(),
+                    schema_version: schema.schema_version(),
+                    kind: schema.kind,
+                },
+            )?;
+            Self::validate_registration_agreement(contract, schema, actual)?;
         }
         for info in &self.schemas {
             if !info.schema_id.as_str().starts_with(&prefix) {

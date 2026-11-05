@@ -22,6 +22,20 @@ impl GoalPayload for ProductGoalPayload {
     }
 }
 
+impl proxiima_core::PayloadProjection for ProductGoalPayload {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay::default()
+    }
+
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder.field("stable_key", &self.stable_key)?;
+        Ok(builder.finish())
+    }
+}
+
 #[test]
 fn typed_goal_payload_write_rejects_invalid_display_fields() {
     let err = GoalPayloadWrite::from_payload(
@@ -102,4 +116,70 @@ fn goal_topology_normalizes_duplicate_perspective_motivations() {
     let topology = GoalTopologyWrite::new(vec![perspective, perspective], Vec::new(), Vec::new())
         .expect("duplicate motivations normalize");
     assert_eq!(topology.motivated_by(), &[perspective]);
+}
+
+#[test]
+fn goal_topology_deserialization_uses_the_validating_constructor() {
+    let goal_id = uuid::Uuid::now_v7();
+    let wire = serde_json::json!({
+        "motivated_by": [],
+        "dependencies": [
+            {"goal_id": goal_id},
+            {"goal_id": goal_id}
+        ],
+        "evidence": []
+    });
+
+    let error = serde_json::from_value::<GoalTopologyWrite>(wire)
+        .expect_err("duplicate dependencies must be refused at deserialization");
+    assert!(error.to_string().contains("duplicate goal dependency"));
+}
+
+#[test]
+fn goal_topology_deserialization_refuses_duplicate_evidence() {
+    let memory_id = uuid::Uuid::now_v7();
+    let wire = serde_json::json!({
+        "motivated_by": [],
+        "dependencies": [],
+        "evidence": [
+            {"memory_id": memory_id},
+            {"memory_id": memory_id}
+        ]
+    });
+
+    let error = serde_json::from_value::<GoalTopologyWrite>(wire)
+        .expect_err("duplicate evidence must be refused at deserialization");
+    assert!(error.to_string().contains("duplicate goal evidence"));
+}
+
+#[test]
+fn goal_topology_deserialization_preserves_motivation_normalization() {
+    let perspective_id = uuid::Uuid::now_v7();
+    let wire = serde_json::json!({
+        "motivated_by": [
+            {"perspective_id": perspective_id},
+            {"perspective_id": perspective_id}
+        ],
+        "dependencies": [],
+        "evidence": []
+    });
+
+    let topology = serde_json::from_value::<GoalTopologyWrite>(wire)
+        .expect("duplicate motivations are normalized");
+    assert_eq!(topology.motivated_by().len(), 1);
+    assert_eq!(
+        topology.motivated_by()[0].perspective_id(),
+        MemoryId::new(perspective_id)
+    );
+}
+
+#[test]
+fn goal_topology_serialization_round_trips_through_the_wire_shape() {
+    let perspective = GoalMotivationRef::perspective(MemoryId::new(uuid::Uuid::now_v7()));
+    let topology =
+        GoalTopologyWrite::new(vec![perspective], Vec::new(), Vec::new()).expect("valid topology");
+    let wire = serde_json::to_value(&topology).expect("serialize topology");
+    let decoded: GoalTopologyWrite =
+        serde_json::from_value(wire).expect("deserialize valid topology");
+    assert_eq!(decoded, topology);
 }

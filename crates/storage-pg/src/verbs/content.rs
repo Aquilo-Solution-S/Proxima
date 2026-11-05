@@ -1,13 +1,13 @@
 //! Owner-scoped Content upsert.
 
 use proxiima_core::count_u64;
-use proxiima_core::{SidecarPayload, StorageError, canonical_json_bytes};
+use proxiima_core::{SidecarPayload, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::map_err;
 
-/// Blake3-32 of canonical JSON for each payload, in `schema_id` order.
+/// Blake3-32 of each schema's durable encoding, in `schema_id` order.
 pub fn hash_sidecar_payloads(payloads: &[SidecarPayload]) -> Result<[u8; 32], StorageError> {
     if payloads.is_empty() {
         return Err(StorageError::ConstraintViolation(
@@ -16,12 +16,12 @@ pub fn hash_sidecar_payloads(payloads: &[SidecarPayload]) -> Result<[u8; 32], St
     }
     let mut parts = Vec::with_capacity(payloads.len());
     for payload in payloads {
-        let json = payload
-            .to_protocol_json()
+        let durable = payload
+            .durable()
             .map_err(StorageError::ConstraintViolation)?;
         parts.push((
             payload.schema_id.as_str().to_owned(),
-            canonical_json_bytes(&json),
+            durable.canonical_bytes(),
         ));
     }
     parts.sort_by(|a, b| a.0.cmp(&b.0));
@@ -185,4 +185,68 @@ pub async fn gc_unreferenced_content_batch(
     .await
     .map_err(map_err)?
     .rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hash_sidecar_payloads;
+    use proxiima_core::{
+        DurablePayload, DurablePayloadBuilder, FactPayload, KeyField, PayloadDisplay,
+        PayloadProjection, SidecarPayload,
+    };
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct AliasedFact {
+        #[serde(rename = "wire_body")]
+        body: String,
+    }
+
+    impl FactPayload for AliasedFact {
+        const SCHEMA_ID: &'static str = "test/content-alias";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn receipt_key(&self) -> Vec<u8> {
+            self.body.as_bytes().to_vec()
+        }
+
+        fn render(&self) -> String {
+            self.body.clone()
+        }
+    }
+
+    impl PayloadProjection for AliasedFact {
+        const KEY_FIELDS: &'static [KeyField<Self>] = &[];
+
+        fn display(&self) -> PayloadDisplay {
+            PayloadDisplay {
+                body: Some(self.body.clone()),
+                ..PayloadDisplay::default()
+            }
+        }
+
+        fn durable(&self) -> Result<DurablePayload, String> {
+            let mut fields = DurablePayloadBuilder::new();
+            fields.field("body", &self.body)?;
+            Ok(fields.finish())
+        }
+    }
+
+    #[test]
+    fn content_identity_keeps_v1_bytes_when_protocol_fields_are_renamed() {
+        let payload = SidecarPayload::fact(AliasedFact { body: "x".into() });
+        assert_eq!(payload.to_protocol_json().unwrap()["wire_body"], "x");
+
+        // The pre-rename persisted v1 frame: canonical {"body":"x"}.
+        let bytes = br#"{"body":"x"}"#;
+        let mut legacy = blake3::Hasher::new();
+        legacy.update(b"proxiima-content-v1\0");
+        legacy.update(b"test/content-alias\0");
+        legacy.update(&12_u64.to_le_bytes());
+        legacy.update(bytes);
+        legacy.update(b"\0");
+        assert_eq!(
+            hash_sidecar_payloads(&[payload]).unwrap(),
+            *legacy.finalize().as_bytes()
+        );
+    }
 }

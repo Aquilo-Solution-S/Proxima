@@ -25,6 +25,18 @@ impl FactPayload for ConformanceFact {
     }
 }
 
+impl proxiima::spiice::PayloadProjection for ConformanceFact {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay::default()
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder.field("id", &self.id)?;
+        Ok(builder.finish())
+    }
+}
+
 #[test]
 fn duplicate_schema_tool_and_spiice_return_typed_errors() {
     let mut registry = SpiiceRegistry::new();

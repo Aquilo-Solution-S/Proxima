@@ -75,6 +75,23 @@ impl FactPayload for ScopedFactV1 {
     }
 }
 
+impl proxiima_core::PayloadProjection for ScopedFactV1 {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay {
+            body: Some(self.logical_id.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder
+            .field("logical_id", &self.logical_id)?
+            .field("thing_id", &self.thing_id)?;
+        Ok(builder.finish())
+    }
+}
+
 /// The same shape, belonging to nothing. Its admission must take no scope
 /// fence at all — a substrate that fenced every write would serialize
 /// unrelated writers behind one erase.
@@ -99,6 +116,21 @@ impl FactPayload for UnscopedFactV1 {
 
     fn sidecar_table() -> Option<&'static str> {
         Some(UNSCOPED_TABLE)
+    }
+}
+
+impl proxiima_core::PayloadProjection for UnscopedFactV1 {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay {
+            body: Some(self.logical_id.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder.field("logical_id", &self.logical_id)?;
+        Ok(builder.finish())
     }
 }
 
@@ -142,7 +174,7 @@ const fn schema(
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: surface,
-        natural_key_columns: &[],
+        natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
     }
 }
 
@@ -288,6 +320,7 @@ async fn bootstrap() -> (String, PgStorage, proxiima_core::SpiiceRegistryFrozen)
         .await?;
         let pg = pg
             .with_sidecars(sidecars(&registry))
+            .await?
             .with_spiices(&registry);
         Ok::<_, Box<dyn std::error::Error>>((pg, registry))
     }
@@ -355,6 +388,8 @@ fn spawn_scoped_ingest(
                     .await
                     .map_err(|err| err.to_string())?
                     .with_sidecars(sidecars(&registry))
+                    .await
+                    .map_err(|error| error.to_string())?
                     .with_spiices(&registry);
                 let engine = engine(&pg, &registry);
                 let authz =
@@ -455,6 +490,8 @@ async fn an_unscoped_payload_takes_no_scope_fence() {
                         .await
                         .map_err(|err| err.to_string())?
                         .with_sidecars(sidecars(&unscoped_registry))
+                        .await
+                        .map_err(|error| error.to_string())?
                         .with_spiices(&unscoped_registry);
                     let engine = engine(&pg, &unscoped_registry);
                     let authz = authenticated_context(AuthzContext::single_owner(

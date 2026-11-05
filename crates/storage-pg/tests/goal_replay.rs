@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use serde::ser::SerializeStruct;
+
 use proxiima_core::publication::{
     PublicationExtensions, PublicationLimits, PublicationSource, PublicationStamp,
 };
@@ -21,8 +23,9 @@ use proxiima_core::verbs::goal_write::{
     TransitionGoalAtomicRequest,
 };
 use proxiima_core::{
-    AccessKind, EdgeEndpoint, EntityKind, GoalId, GoalPayload, InputContractId, ModelId,
-    OperatorId, OwnerId, PendingWork, PromptVersion, SchemaId, SchemaVersion, SimpleTextGoalV1,
+    AccessKind, DurablePayload, DurablePayloadBuilder, EdgeEndpoint, EntityKind, GoalId,
+    GoalPayload, InputContractId, KeyField, ModelId, OperatorId, OwnerId, PayloadDisplay,
+    PayloadProjection, PendingWork, PromptVersion, SchemaId, SchemaVersion, SimpleTextGoalV1,
     SpiiceRegistry, StorageError, ToolId, UserId,
 };
 use proxiima_core::{GoalEditPermit, MemoryKind};
@@ -198,6 +201,53 @@ async fn erase_target(
 
 type ReplayState = (i64, i64, i64, i64, i64, i64, i64);
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct WireGoal<const RENAMED: bool> {
+    #[serde(alias = "wire_body")]
+    body: String,
+}
+
+impl<const RENAMED: bool> serde::Serialize for WireGoal<RENAMED> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("WireGoal", 1)?;
+        if RENAMED {
+            state.serialize_field("wire_body", &self.body)?;
+        } else {
+            state.serialize_field("body", &self.body)?;
+        }
+        state.end()
+    }
+}
+
+impl<const RENAMED: bool> GoalPayload for WireGoal<RENAMED> {
+    const SCHEMA_ID: &'static str = SimpleTextGoalV1::SCHEMA_ID;
+    const SCHEMA_VERSION: u32 = SimpleTextGoalV1::SCHEMA_VERSION;
+
+    fn goal_key(&self) -> Vec<u8> {
+        proxiima_core::schema_only_key(Self::SCHEMA_ID, Self::SCHEMA_VERSION)
+    }
+}
+
+impl<const RENAMED: bool> PayloadProjection for WireGoal<RENAMED> {
+    const KEY_FIELDS: &'static [KeyField<Self>] = &[];
+
+    fn display(&self) -> PayloadDisplay {
+        PayloadDisplay {
+            body: Some(self.body.clone()),
+            ..PayloadDisplay::default()
+        }
+    }
+
+    fn durable(&self) -> Result<DurablePayload, String> {
+        let mut builder = DurablePayloadBuilder::new();
+        builder.field("body", &self.body)?;
+        Ok(builder.finish())
+    }
+}
+
 async fn replay_state(pg: &PgStorage, owner: OwnerId) -> Result<ReplayState, sqlx::Error> {
     sqlx::query_as(
         "SELECT
@@ -215,6 +265,109 @@ async fn replay_state(pg: &PgStorage, owner: OwnerId) -> Result<ReplayState, sql
     .bind(owner.into_inner())
     .fetch_one(pg.pool_for_tests())
     .await
+}
+
+#[tokio::test]
+async fn goal_replay_identity_uses_durable_body_across_wire_field_rename() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
+        let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
+        let topology = || GoalTopologyWrite::new(Vec::new(), Vec::new(), Vec::new());
+
+        let old_wire = GoalDraft::active_from_payload_write(
+            owner,
+            GoalPayloadWrite::from_payload(
+                "wire title",
+                "wire text",
+                WireGoal::<false> {
+                    body: "same".into(),
+                },
+            )?,
+            topology()?,
+            GoalAuthorship::User,
+            IdempotencyKey::new("wire-field-rename")?,
+        );
+        let first = pg
+            .create_goal_atomic(
+                &CreateGoalAtomicRequest {
+                    draft: old_wire,
+                    context: context(&registry),
+                    write_act_t: None,
+                },
+                &permit,
+            )
+            .await?;
+
+        let renamed_wire = GoalDraft::active_from_payload_write(
+            owner,
+            GoalPayloadWrite::from_payload(
+                "wire title",
+                "wire text",
+                WireGoal::<true> {
+                    body: "same".into(),
+                },
+            )?,
+            topology()?,
+            GoalAuthorship::User,
+            IdempotencyKey::new("wire-field-rename")?,
+        );
+        let replay = pg
+            .create_goal_atomic(
+                &CreateGoalAtomicRequest {
+                    draft: renamed_wire,
+                    context: context(&registry),
+                    write_act_t: None,
+                },
+                &permit,
+            )
+            .await?;
+        assert_exact_replay(&first, &replay);
+
+        let declaration: serde_json::Value = sqlx::query_scalar(
+            "SELECT declaration FROM proxiima_core.goal_replay_declaration WHERE goal_t = $1",
+        )
+        .bind(first.goal_id.into_inner())
+        .fetch_one(pg.pool_for_tests())
+        .await?;
+        assert_eq!(declaration["draft"]["sidecar"]["payload"]["body"], "same");
+        assert!(
+            declaration["draft"]["sidecar"]["payload"]
+                .get("wire_body")
+                .is_none()
+        );
+
+        let changed = GoalDraft::active_from_payload_write(
+            owner,
+            GoalPayloadWrite::from_payload(
+                "wire title",
+                "wire text",
+                WireGoal::<true> {
+                    body: "changed".into(),
+                },
+            )?,
+            topology()?,
+            GoalAuthorship::User,
+            IdempotencyKey::new("wire-field-rename")?,
+        );
+        let error = pg
+            .create_goal_atomic(
+                &CreateGoalAtomicRequest {
+                    draft: changed,
+                    context: context(&registry),
+                    write_act_t: None,
+                },
+                &permit,
+            )
+            .await
+            .expect_err("semantic durable-body changes must conflict");
+        assert!(matches!(error, StorageError::IdempotencyConflict { .. }));
+        Ok(())
+    }
+    .await;
+    drop_db(&db_name).await.expect("drop test database");
+    result.expect("goal replay wire rename test");
 }
 
 /// With `core/goal-change-v1` listenable, every verb that inserts a goal row

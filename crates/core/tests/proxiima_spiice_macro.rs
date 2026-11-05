@@ -15,6 +15,23 @@ impl PerspectivePayload for DemoSelfPayload {
     }
 }
 
+impl proxiima_core::PayloadProjection for DemoSelfPayload {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay {
+            body: Some(self.display_name.clone()),
+            ..Default::default()
+        }
+    }
+
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder.field("display_name", &self.display_name)?;
+        Ok(builder.finish())
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct DemoOutputPayload {
     summary: String,
@@ -26,6 +43,23 @@ impl PerspectivePayload for DemoOutputPayload {
 
     fn sidecar_table() -> &'static str {
         "proxiima_test.out_v1"
+    }
+}
+
+impl proxiima_core::PayloadProjection for DemoOutputPayload {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay {
+            body: Some(self.summary.clone()),
+            ..Default::default()
+        }
+    }
+
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder.field("summary", &self.summary)?;
+        Ok(builder.finish())
     }
 }
 

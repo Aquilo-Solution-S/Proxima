@@ -134,6 +134,8 @@ async fn harness() -> Harness {
     .await
     .unwrap()
     .with_sidecars(sidecars)
+    .await
+    .expect("typed sidecar key schema")
     .with_spiices(&registry);
     let engine = Engine::new(registry).with_storage_ports(Arc::new(pg).storage_ports());
     Harness { engine, pool, db }

@@ -6,6 +6,15 @@ use super::{
     Arc, GoalId, HashMap, HashSet, MemoryId, PgSidecarEntry, PgSidecarKey, PgSidecarReadCtx,
     Postgres, SchemaInfo, SidecarPayload, StorageError, Transaction,
 };
+use sqlx::PgPool;
+
+#[derive(Debug, sqlx::FromRow)]
+struct NaturalKeySqlColumn {
+    name: String,
+    type_name: String,
+    not_null: bool,
+    deterministic: bool,
+}
 
 // The two suites that write a sidecar row through the registry deliberately —
 // to prove the projection row follows it, and that a transfer moves both.
@@ -87,6 +96,83 @@ impl PgSidecarRegistryFrozen {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Validate registered natural-key columns against the live `PostgreSQL`
+    /// schema once during boot. Writes consume the typed declaration and do
+    /// not rediscover these types per admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns a constraint violation when the live table does not implement
+    /// the registered declaration, or an unavailable error when the catalog
+    /// query fails.
+    pub(crate) async fn validate_natural_keys(&self, pool: &PgPool) -> Result<(), StorageError> {
+        for entry in self.entries.values() {
+            let declaration = entry.natural_key_declaration;
+            if declaration.is_empty() {
+                continue;
+            }
+            let rows = sqlx::query_as::<_, NaturalKeySqlColumn>(
+                "SELECT a.attname AS name, t.typname AS type_name, a.attnotnull AS not_null,
+                        COALESCE(coll.collisdeterministic, true) AS deterministic
+                   FROM pg_attribute a
+                   JOIN pg_class c ON c.oid = a.attrelid
+                   JOIN pg_type t ON t.oid = a.atttypid
+                   LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
+                  WHERE c.oid = to_regclass($1)
+                    AND a.attnum > 0 AND NOT a.attisdropped
+                  ORDER BY a.attnum",
+            )
+            .bind(&entry.sidecar_table)
+            .fetch_all(pool)
+            .await
+            .map_err(|error| StorageError::Unavailable(error.to_string()))?;
+            for (column, kind) in declaration
+                .column_names()
+                .into_iter()
+                .zip(declaration.scalar_kinds())
+            {
+                let row = rows.iter().find(|row| row.name == column);
+                let Some(row) = row else {
+                    return Err(StorageError::ConstraintViolation(format!(
+                        "natural-key column {column} missing from {}",
+                        entry.sidecar_table
+                    )));
+                };
+                let typname = row.type_name.as_str();
+                if !row.not_null {
+                    return Err(StorageError::ConstraintViolation(format!(
+                        "natural-key column {column} on {} is nullable",
+                        entry.sidecar_table
+                    )));
+                }
+                if !row.deterministic {
+                    return Err(StorageError::ConstraintViolation(format!(
+                        "natural-key column {column} on {} uses a nondeterministic collation",
+                        entry.sidecar_table
+                    )));
+                }
+                let compatible = match kind {
+                    proxiima_core::KeyScalarKind::Uuid => typname == "uuid",
+                    proxiima_core::KeyScalarKind::Text => {
+                        matches!(typname, "text" | "varchar")
+                    }
+                    proxiima_core::KeyScalarKind::PaddedText => typname == "bpchar",
+                    proxiima_core::KeyScalarKind::I16 => typname == "int2",
+                    proxiima_core::KeyScalarKind::I32 => typname == "int4",
+                    proxiima_core::KeyScalarKind::I64 => typname == "int8",
+                    proxiima_core::KeyScalarKind::Bool => typname == "bool",
+                };
+                if !compatible {
+                    return Err(StorageError::ConstraintViolation(format!(
+                        "natural-key column {column} on {} has PostgreSQL type {typname}, incompatible with {kind:?}",
+                        entry.sidecar_table
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -209,6 +295,7 @@ impl PgSidecarRegistryFrozen {
                 owner: crate::sidecars::SidecarOwnerMode::None,
                 fork: crate::sidecars::ForkPolicy::Refuse,
                 memory_key_column: Some(memory_key_column),
+                natural_key_declaration: proxiima_core::NaturalKeyDeclaration::EMPTY,
                 memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
                 memory_load: None,
                 memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
@@ -975,6 +1062,7 @@ mod language_bind_tests {
             owner: crate::sidecars::SidecarOwnerMode::None,
             fork: crate::sidecars::ForkPolicy::Refuse,
             memory_key_column: Some("t"),
+            natural_key_declaration: proxiima_core::NaturalKeyDeclaration::EMPTY,
             memory_insert: None,
             memory_load: None,
             memory_load_batch: None,

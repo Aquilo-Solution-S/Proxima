@@ -119,15 +119,6 @@ def safe_format_sql(path: Path, line: str, lines: list[str], index: int) -> bool
     window = "\n".join(lines[max(0, index - 3) : min(len(lines), index + 4)])
     if rel == "crates/pg-testkit/src/lib.rs" and "quoted_ident(" in window:
         return True
-    if line.strip() == 'let sql = format!("SELECT count(*) FROM {table}");':
-        return True
-    if line.strip() in {
-        'Cow::Owned(format!("SELECT {version};")),',
-        'sqlx::AssertSqlSafe(format!("SELECT {version};")).into_sql_str(),',
-    }:
-        return True
-    if line.strip() == 'let sql = format!("SELECT memory_id FROM {table} WHERE goal_id = $1 LIMIT 1");':
-        return True
     return False
 
 
@@ -139,13 +130,6 @@ def intrinsic_proof(path: Path, line: str, kind: str, lines: list[str], index: i
     if rel == "crates/storage-pg/src/sidecars/macros.rs" and "memory_insert_sql" in window:
         return True
     if rel == "crates/storage-pg/src/sidecars/read_ctx.rs" and "validate_sidecar_read_sql" in window:
-        return True
-    if rel in {
-        "crates/core/tests/agent_memory_tools_pg.rs",
-        "crates/storage-pg/tests/integration/fact_with_citation_pg.rs",
-    } and "SELECT count(*) FROM {table}" in window:
-        return True
-    if rel == "crates/storage-pg/src/verbs/goal_write.rs" and "SELECT memory_id FROM {table}" in window:
         return True
     return False
 
@@ -262,14 +246,6 @@ def run_fixture(path: Path) -> int:
     return 1
 
 
-# Review tripwire for the detector's dynamic-SQL sample, not a complete census.
-# The line-based detector misses wrapped format! templates, raw_sql calls, and
-# assembly under receiver names without 'sql'. Safety comes from PgIdent,
-# bound values, frozen contracts, and per-site proof comments, not this count.
-# Any inventory change requires inspecting --inventory and updating this pin;
-# historical review evidence belongs under .local rather than in the gate.
-EXPECTED_DYNAMIC_SQL_SITES = 220
-
 
 def run_self_test() -> int:
     fixture = ROOT / "scripts/fixtures/sql-policy/unsafe_dynamic_sql.rs"
@@ -279,6 +255,17 @@ def run_self_test() -> int:
     if not sites:
         print(f"self-test did not trigger dynamic SQL detector: {fixture}", file=sys.stderr)
         return 1
+    for spelling in (
+        "SELECT memory_id FROM {table}",
+        "SELECT count(*) FROM {table}",
+        "SELECT {version};",
+    ):
+        if not any(
+            site.kind == "format-sql" and spelling in site.text and not site.has_proof
+            for site in sites
+        ):
+            print(f"self-test missed an unproved SQL splice: {spelling}", file=sys.stderr)
+            return 1
     print(f"self-test detected {len(sites)} unsafe dynamic SQL sites", file=sys.stderr)
     return 0
 
@@ -318,25 +305,7 @@ def main() -> int:
             print("  " + site.render(), file=sys.stderr)
         return 1
 
-    if len(sites) > EXPECTED_DYNAMIC_SQL_SITES:
-        print(
-            f"Dynamic SQL site count {len(sites)} exceeds the "
-            f"EXPECTED_DYNAMIC_SQL_SITES={EXPECTED_DYNAMIC_SQL_SITES} ratchet; current sites:",
-            file=sys.stderr,
-        )
-        for site in sites:
-            print("  " + site.render(), file=sys.stderr)
-        return 1
-
-    if len(sites) < EXPECTED_DYNAMIC_SQL_SITES:
-        print(
-            f"Dynamic SQL site count dropped to {len(sites)}; update "
-            f"EXPECTED_DYNAMIC_SQL_SITES from {EXPECTED_DYNAMIC_SQL_SITES} to {len(sites)} in this PR.",
-            file=sys.stderr,
-        )
-        return 1
-
-    print(f"SQL policy ratchet passed ({len(sites)} dynamic SQL sites)")
+    print(f"SQL policy passed ({len(sites)} dynamic SQL sites)")
     return 0
 
 

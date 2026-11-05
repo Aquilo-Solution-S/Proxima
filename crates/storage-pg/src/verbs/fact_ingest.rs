@@ -77,7 +77,7 @@ pub(crate) fn fact_natural_key(
     draft: &FactWriteCommand,
     sidecar_table: Option<&str>,
     columns: &[String],
-    authorized_values: Option<&[(String, serde_json::Value)]>,
+    authorized_values: Option<&proxiima_core::NaturalKeySnapshot>,
     reobserve_displaced: bool,
     payloads: &[SidecarPayload],
     registry: &PgSidecarRegistryFrozen,
@@ -111,11 +111,9 @@ pub(crate) fn fact_natural_key(
             "natural-key selection requires exactly one matching typed Fact payload".into(),
         ));
     }
-    let values = payload
-        .natural_key_values(columns)
-        .map_err(StorageError::ConstraintViolation)?;
+    let values = payload.natural_key();
     if let Some(expected) = authorized_values {
-        if expected != values.as_slice() {
+        if Some(expected) != values.as_ref() {
             return Err(StorageError::ConstraintViolation(
                 "natural-key binding differs from the authorized Fact sidecar".into(),
             ));
@@ -126,10 +124,13 @@ pub(crate) fn fact_natural_key(
                 .into(),
         ));
     }
+    let snapshot = values.ok_or_else(|| {
+        StorageError::ConstraintViolation("typed Fact payload has no natural-key projection".into())
+    })?;
     Ok(Some(super::memory_timeseries::MemoryNaturalKey {
         sidecar_table: table.to_owned(),
         memory_key_column: key_column.to_owned(),
-        columns: values,
+        snapshot,
         reobserve_displaced,
     }))
 }

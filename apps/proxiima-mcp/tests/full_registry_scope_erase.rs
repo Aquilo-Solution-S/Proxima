@@ -393,6 +393,7 @@ async fn exercise_full_registry_erase(
         .await?
         .with_host_state_participant(Arc::new(Participant(Arc::new(Lifecycle))))
         .with_sidecars(sidecars)
+        .await?
         .try_with_spiices(built.host().registry())?;
     let user_id = owner.as_user();
     let source_auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalSourceScope {

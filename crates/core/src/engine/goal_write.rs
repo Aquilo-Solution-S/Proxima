@@ -805,6 +805,16 @@ mod tests {
         }
     }
 
+    impl crate::PayloadProjection for TestGoalPayload {
+        const KEY_FIELDS: &'static [crate::KeyField<Self>] = &[];
+        fn display(&self) -> crate::PayloadDisplay {
+            crate::PayloadDisplay::default()
+        }
+        fn durable(&self) -> Result<crate::DurablePayload, String> {
+            Ok(crate::DurablePayloadBuilder::new().finish())
+        }
+    }
+
     fn engine() -> Engine {
         Engine::new(SpiiceRegistry::new().freeze_or_panic_for_tests())
     }

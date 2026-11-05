@@ -1,4 +1,7 @@
-use crate::{EntityKind, MemoryId, PayloadReference, PerspectivePayload};
+use crate::{
+    DurablePayloadBuilder, EntityKind, KeyField, MemoryId, PayloadDisplay, PayloadProjection,
+    PayloadReference, PerspectivePayload,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -97,6 +100,63 @@ impl PerspectivePayload for InterpretationV1 {
             serde_json::to_value(schemars::schema_for!(Self))
                 .expect("InterpretationV1 schema serializes"),
         )
+    }
+}
+
+impl PayloadProjection for InterpretationV1 {
+    const KEY_FIELDS: &'static [KeyField<Self>] = &[];
+    fn display(&self) -> PayloadDisplay {
+        PayloadDisplay {
+            body: Some(self.claim.clone()),
+            sketch: Some(self.claim.clone()),
+            ..PayloadDisplay::default()
+        }
+    }
+    fn durable(&self) -> Result<crate::DurablePayload, String> {
+        let subject_kinds = self
+            .subject_kinds
+            .iter()
+            .map(|kind| match kind {
+                InterpretationSubjectKind::Fact => "Fact",
+                InterpretationSubjectKind::Abstraction => "Abstraction",
+                InterpretationSubjectKind::Perspective => "Perspective",
+            })
+            .collect::<Vec<_>>();
+        let mut fields = DurablePayloadBuilder::new();
+        fields
+            .field("claim", &self.claim)?
+            .field("confidence", &self.confidence)?
+            .field("subject_memory_ids", &self.subject_memory_ids)?
+            .field("subject_kinds", &subject_kinds)?
+            .field("model_id", &self.model_id)?
+            .field("client_name", &self.client_name)?
+            .field("client_version", &self.client_version)?;
+        Ok(fields.finish())
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    #[test]
+    fn durable_matches_current_wire_encoding() {
+        let value = InterpretationV1 {
+            claim: "claim".into(),
+            confidence: 80,
+            subject_memory_ids: vec![uuid::Uuid::nil(); 3],
+            subject_kinds: vec![
+                InterpretationSubjectKind::Fact,
+                InterpretationSubjectKind::Abstraction,
+                InterpretationSubjectKind::Perspective,
+            ],
+            model_id: "model".into(),
+            client_name: "client".into(),
+            client_version: "1".into(),
+        };
+        assert_eq!(
+            value.durable().expect("durable").canonical_bytes(),
+            crate::canonical_json_bytes(&serde_json::to_value(&value).expect("wire"))
+        );
     }
 }
 

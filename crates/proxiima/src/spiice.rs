@@ -159,6 +159,11 @@ pub use proxiima_core::{
 pub use proxiima_core::{
     DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, EntityKind, MemoryTarget, SeriesHandle,
 };
+/// Typed semantic projections for payload keys, display and durable identity.
+pub use proxiima_core::{
+    DurablePayload, DurablePayloadBuilder, KeyField, KeyScalarKind, NaturalKeyDeclaration,
+    NaturalKeySnapshot, PayloadDisplay, PayloadProjection,
+};
 /// The connection vocabulary a spiice is allowed to speak (docs/concepts.md).
 ///
 /// A spiice never writes an edge, so none of these is a write surface.

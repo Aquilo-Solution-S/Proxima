@@ -125,7 +125,13 @@ fn atom_from_row(row: &PgRow, index: usize) -> Result<SidecarAtom, StorageError>
     }
     match raw.type_info().name() {
         "UUID" => row.try_get(index).map(SidecarAtom::Uuid),
-        "TEXT" | "VARCHAR" | "BPCHAR" => row.try_get(index).map(SidecarAtom::Text),
+        "TEXT" | "VARCHAR" => row.try_get(index).map(SidecarAtom::Text),
+        // SQLx reports PostgreSQL `CHAR(n)` as `CHAR`. Its comparison
+        // semantics ignore right-padding, so the read projection must expose
+        // the same canonical text used by the padded key declaration.
+        "CHAR" | "BPCHAR" => row
+            .try_get::<String, _>(index)
+            .map(|value| SidecarAtom::Text(value.trim_end_matches(' ').to_owned())),
         "INT2" => row
             .try_get::<i16, _>(index)
             .map(|value| SidecarAtom::I32(i32::from(value))),

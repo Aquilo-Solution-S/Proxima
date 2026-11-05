@@ -620,6 +620,49 @@ pub struct SidecarHeadsPage {
     pub next_cursor: Option<MemoryId>,
 }
 
+fn bind_key_prefix_atom(kind: crate::KeyScalarKind, atom: &SidecarAtom) -> Option<SidecarAtom> {
+    use crate::KeyScalarKind;
+    match kind {
+        KeyScalarKind::Uuid => match atom {
+            SidecarAtom::Uuid(value) => Some(SidecarAtom::Uuid(*value)),
+            _ => None,
+        },
+        KeyScalarKind::Text => match atom {
+            SidecarAtom::Text(value) => Some(SidecarAtom::Text(value.clone())),
+            _ => None,
+        },
+        KeyScalarKind::PaddedText => match atom {
+            SidecarAtom::Text(value) => {
+                Some(SidecarAtom::Text(value.trim_end_matches(' ').to_owned()))
+            }
+            _ => None,
+        },
+        KeyScalarKind::I16 => match atom {
+            SidecarAtom::I32(value) => i16::try_from(*value)
+                .ok()
+                .map(|value| SidecarAtom::I32(i32::from(value))),
+            SidecarAtom::I64(value) => i16::try_from(*value)
+                .ok()
+                .map(|value| SidecarAtom::I32(i32::from(value))),
+            _ => None,
+        },
+        KeyScalarKind::I32 => match atom {
+            SidecarAtom::I32(value) => Some(SidecarAtom::I32(*value)),
+            SidecarAtom::I64(value) => i32::try_from(*value).ok().map(SidecarAtom::I32),
+            _ => None,
+        },
+        KeyScalarKind::I64 => match atom {
+            SidecarAtom::I32(value) => Some(SidecarAtom::I64(i64::from(*value))),
+            SidecarAtom::I64(value) => Some(SidecarAtom::I64(*value)),
+            _ => None,
+        },
+        KeyScalarKind::Bool => match atom {
+            SidecarAtom::Bool(value) => Some(SidecarAtom::Bool(*value)),
+            _ => None,
+        },
+    }
+}
+
 /// A sidecar head query resolved against the frozen spiice contracts.
 ///
 /// Storage can inspect this descriptor but only core can construct it;
@@ -629,8 +672,8 @@ pub struct ResolvedSidecarHeads<'a> {
     schema_id: &'a SchemaId,
     table: &'static str,
     memory_key_column: &'static str,
-    natural_key_columns: &'static [&'static str],
-    prefix: &'a [SidecarAtom],
+    natural_key_columns: Vec<&'static str>,
+    prefix: Vec<SidecarAtom>,
     after: Option<MemoryId>,
     limit: u32,
 }
@@ -670,18 +713,32 @@ impl<'a> ResolvedSidecarHeads<'a> {
         let memory_key_column = contract.sidecar_memory_key_column(table).ok_or_else(|| {
             ProtocolError::invalid_argument("schema_id", "sidecar is not memory-keyed")
         })?;
-        if request.key_prefix.len() > schema.natural_key_columns.len() {
+        let natural_key_columns = schema.natural_key_columns.column_names();
+        if request.key_prefix.len() > natural_key_columns.len() {
             return Err(ProtocolError::invalid_argument(
                 "key_prefix",
                 "prefix has more values than the declared natural key",
             ));
         }
+        let prefix = request
+            .key_prefix
+            .iter()
+            .zip(schema.natural_key_columns.scalar_kinds())
+            .map(|(value, kind)| {
+                bind_key_prefix_atom(kind, value).ok_or_else(|| {
+                    ProtocolError::invalid_argument(
+                        "key_prefix",
+                        format!("value does not match declared {kind:?} key field"),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             schema_id: &request.schema_id,
             table,
             memory_key_column,
-            natural_key_columns: schema.natural_key_columns,
-            prefix: &request.key_prefix,
+            natural_key_columns,
+            prefix,
             after: request.after,
             limit: request.limit.min(MAX_SIDECAR_HEAD_PAGE_LIMIT),
         })
@@ -700,12 +757,12 @@ impl<'a> ResolvedSidecarHeads<'a> {
         self.memory_key_column
     }
     #[must_use]
-    pub const fn key_columns(&self) -> &'static [&'static str] {
-        self.natural_key_columns
+    pub fn key_columns(&self) -> &[&'static str] {
+        &self.natural_key_columns
     }
     #[must_use]
-    pub const fn key_prefix(&self) -> &[SidecarAtom] {
-        self.prefix
+    pub fn key_prefix(&self) -> &[SidecarAtom] {
+        &self.prefix
     }
     #[must_use]
     pub const fn after(&self) -> Option<MemoryId> {
@@ -868,5 +925,36 @@ mod tests {
     #[test]
     fn like_pattern_escapes_wildcards() {
         assert_eq!(like_pattern("a_b%c\\d"), "%a\\_b\\%c\\\\d%");
+    }
+    #[test]
+    fn key_prefix_is_parsed_by_declared_type_and_equality() {
+        use super::{SidecarAtom, bind_key_prefix_atom};
+        use crate::KeyScalarKind;
+        assert_eq!(
+            bind_key_prefix_atom(
+                KeyScalarKind::Text,
+                &SidecarAtom::Text(uuid::Uuid::nil().to_string())
+            ),
+            Some(SidecarAtom::Text(uuid::Uuid::nil().to_string()))
+        );
+        assert!(
+            bind_key_prefix_atom(
+                KeyScalarKind::Uuid,
+                &SidecarAtom::Text(uuid::Uuid::nil().to_string())
+            )
+            .is_none()
+        );
+        assert_eq!(
+            bind_key_prefix_atom(KeyScalarKind::PaddedText, &SidecarAtom::Text("x  ".into())),
+            Some(SidecarAtom::Text("x".into()))
+        );
+        assert_eq!(
+            bind_key_prefix_atom(KeyScalarKind::I64, &SidecarAtom::I32(1)),
+            Some(SidecarAtom::I64(1))
+        );
+        assert!(bind_key_prefix_atom(KeyScalarKind::I16, &SidecarAtom::I32(32768)).is_none());
+        assert!(
+            bind_key_prefix_atom(KeyScalarKind::Bool, &SidecarAtom::Text("true".into())).is_none()
+        );
     }
 }

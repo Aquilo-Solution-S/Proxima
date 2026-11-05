@@ -46,7 +46,7 @@ pub(super) const fn uniformity_schema(
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
     }
 }
 
@@ -69,7 +69,7 @@ pub(super) static EMBEDDING_DISAGREEMENT: SpiiceContract = uniformity_contract(&
     transfer: TransferRule::StaysOnKey,
     provenance: Provenance::None,
     surfaces: &[],
-    natural_key_columns: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
 }]);
 
 /// A `Never` arm on an id another layer of the same id embeds.
@@ -99,7 +99,7 @@ pub(super) static EMBEDDING_NEVER_ON_AN_EMBEDDED_ID: SpiiceContract = uniformity
         // the table and declares no surface of its own, which is the
         // `surface_for` rule (one table, one declaring registration).
         surfaces: MEMORY_KEYED_SIDECAR,
-        natural_key_columns: &[],
+        natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
     },
     SchemaContract {
         id: SchemaRef::new(FIXTURE_SPIICE, "thing", 1),
@@ -115,7 +115,7 @@ pub(super) static EMBEDDING_NEVER_ON_AN_EMBEDDED_ID: SpiiceContract = uniformity
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
     },
 ]);
 
@@ -139,11 +139,12 @@ pub(super) static EMPTY_EMBEDDING_UNITS: SpiiceContract = uniformity_contract(&[
     transfer: TransferRule::StaysOnKey,
     provenance: Provenance::None,
     surfaces: &[],
-    natural_key_columns: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
 }]);
 
-/// A contract naming natural key columns the ingest does not read: the
-/// registration's list is empty, and the ingest reads the registration.
+/// A contract derives a typed natural-key declaration while the registration
+/// omits that declaration. The mismatch is now between typed authorities,
+/// rather than a manually written column-name list and an ingest path.
 pub(super) static NATURAL_KEY_DISAGREEMENT: SpiiceContract =
     uniformity_contract(&[SchemaContract {
         id: SchemaRef::new(FIXTURE_SPIICE, "thing", 1),
@@ -159,8 +160,27 @@ pub(super) static NATURAL_KEY_DISAGREEMENT: SpiiceContract =
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &["thing_key"],
+        natural_key_columns: crate::NaturalKeyDeclaration::of::<
+            super::fixtures::NaturalKeyFixtureFact,
+        >(),
     }]);
+
+pub(super) static DUPLICATE_NATURAL_KEY: SpiiceContract = uniformity_contract(&[SchemaContract {
+    id: SchemaRef::new(FIXTURE_SPIICE, "thing", 1),
+    kind: PayloadKind::Fact,
+    sidecar_table: Some("test_spiice.thing_v1"),
+    search: SearchProjectionDecl::None {
+        why: "the duplicate natural key is what this fixture is about",
+        tag_column: None,
+    },
+    embedding: EmbeddingRecipe::Never {
+        why: "a fixture, not a memory",
+    },
+    transfer: TransferRule::StaysOnKey,
+    provenance: Provenance::None,
+    surfaces: &[],
+    natural_key_columns: crate::NaturalKeyDeclaration::of::<super::fixtures::DuplicateKeyFact>(),
+}]);
 
 /// The `RankSource::Projection` wrapper the three uniformity fixtures
 /// share: one statement serves the whole spiice, which is what makes
@@ -234,7 +254,7 @@ pub(super) const fn reachability_schema(
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces,
-        natural_key_columns: &[],
+        natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
     }
 }
 
@@ -313,7 +333,7 @@ pub(super) const fn embedding_schema(surfaces: &'static [Surface]) -> SchemaCont
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces,
-        natural_key_columns: &[],
+        natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
     }
 }
 
@@ -514,7 +534,7 @@ pub(super) static TOO_MANY_WEIGHT_LEVELS: SpiiceContract = contract(
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: crate::NaturalKeyDeclaration::EMPTY,
     }],
     &[],
     &[],

@@ -39,6 +39,15 @@ macro_rules! pg_sidecar_row_ty {
     (bool) => {
         bool
     };
+    (i16) => {
+        i16
+    };
+    (i32) => {
+        i32
+    };
+    (i64) => {
+        i64
+    };
     (f32) => {
         f32
     };
@@ -201,6 +210,15 @@ macro_rules! pg_sidecar_bind {
     ((bool), $self:ident, $field:ident) => {
         $self.$field
     };
+    ((i16), $self:ident, $field:ident) => {
+        $self.$field
+    };
+    ((i32), $self:ident, $field:ident) => {
+        $self.$field
+    };
+    ((i64), $self:ident, $field:ident) => {
+        $self.$field
+    };
     ((f32), $self:ident, $field:ident) => {
         $self.$field
     };
@@ -327,6 +345,15 @@ macro_rules! pg_sidecar_decode {
         $row.$field
     };
     ((bool), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((i16), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((i32), $row:ident, $field:ident) => {
+        $row.$field
+    };
+    ((i64), $row:ident, $field:ident) => {
         $row.$field
     };
     ((f32), $row:ident, $field:ident) => {

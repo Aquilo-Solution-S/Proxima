@@ -60,6 +60,23 @@ impl FactPayload for HealthProbeV1 {
     }
 }
 
+impl proxiima::spiice::PayloadProjection for HealthProbeV1 {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay {
+            body: Some(self.note.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder
+            .field("probe_id", &self.probe_id)?
+            .field("note", &self.note)?;
+        Ok(builder.finish())
+    }
+}
+
 proxiima::spiice::pg_sidecar! {
     payload: HealthProbeV1,
     row: PublisherHealthProbeRow,
@@ -90,7 +107,7 @@ static HEALTH_CONTRACT: SpiiceContract = SpiiceContract {
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
     }],
     state_surfaces: &[],
     scopes: &[],

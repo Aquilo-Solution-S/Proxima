@@ -385,11 +385,29 @@ impl GoalDependencyRef {
 /// [`crate::EdgeKind::Reference`] index row per entry inside the goal
 /// write's own transaction (docs/concepts.md). No relation is
 /// named and no kind is chosen: the declaration is the whole statement.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct GoalTopologyWrite {
     motivated_by: Vec<GoalMotivationRef>,
     dependencies: Vec<GoalDependencyRef>,
     evidence: Vec<GoalEvidenceRef>,
+}
+
+#[derive(serde::Deserialize)]
+struct GoalTopologyWire {
+    motivated_by: Vec<GoalMotivationRef>,
+    dependencies: Vec<GoalDependencyRef>,
+    evidence: Vec<GoalEvidenceRef>,
+}
+
+impl<'de> serde::Deserialize<'de> for GoalTopologyWrite {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = GoalTopologyWire::deserialize(deserializer)?;
+        Self::new(wire.motivated_by, wire.dependencies, wire.evidence)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl GoalTopologyWrite {
@@ -565,18 +583,6 @@ impl<P> GoalCreateRequest<P> {
             authorship: GoalAuthorship::User,
             author_self_perspective_id: None,
         }
-    }
-
-    #[must_use]
-    pub fn with_evidence(mut self, evidence: Vec<GoalEvidenceRef>) -> Self {
-        self.topology.evidence = evidence;
-        self
-    }
-
-    #[must_use]
-    pub fn with_dependency(mut self, dependency: GoalDependencyRef) -> Self {
-        self.topology.dependencies.push(dependency);
-        self
     }
 
     #[must_use]

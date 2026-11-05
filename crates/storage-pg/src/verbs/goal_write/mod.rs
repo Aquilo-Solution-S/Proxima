@@ -41,9 +41,10 @@ use prior::{
     validate_active_head, validate_goal_achievement, validate_goal_transition,
 };
 use replay::{
-    achieve_replay_declaration, create_replay_declaration, decompose_replay_declarations,
-    modify_replay_declaration, record_goal_replay_declaration, require_goal_replay,
-    resolve_decompose_replay_set, resolve_goal_replay, transition_replay_declaration,
+    ReplayDeclaration, achieve_replay_declaration, create_replay_declaration,
+    decompose_replay_declarations, modify_replay_declaration, record_goal_replay_declaration,
+    require_goal_replay, resolve_decompose_replay_set, resolve_goal_replay,
+    transition_replay_declaration,
 };
 use types::{EvidenceTarget, InsertedGoal, RowColumns, StoredGoal};
 

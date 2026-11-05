@@ -1,4 +1,7 @@
-use crate::{FactPayload, PayloadKeyBuilder};
+use crate::{
+    DurablePayloadBuilder, FactPayload, KeyField, PayloadDisplay, PayloadKeyBuilder,
+    PayloadProjection,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -49,5 +52,42 @@ impl FactPayload for UtteranceV1 {
 
     fn sidecar_table() -> Option<&'static str> {
         Some("proxiima_core.utterance_v1")
+    }
+}
+
+impl PayloadProjection for UtteranceV1 {
+    const KEY_FIELDS: &'static [KeyField<Self>] = &[];
+    fn display(&self) -> PayloadDisplay {
+        PayloadDisplay {
+            title: Some(self.conversation_id.clone()),
+            body: Some(self.text.clone()),
+            sketch: Some(self.text.clone()),
+            ..PayloadDisplay::default()
+        }
+    }
+    fn durable(&self) -> Result<crate::DurablePayload, String> {
+        let mut fields = DurablePayloadBuilder::new();
+        fields
+            .field("speaker", &self.speaker.as_str())?
+            .field("conversation_id", &self.conversation_id)?
+            .field("text", &self.text)?;
+        Ok(fields.finish())
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    #[test]
+    fn durable_matches_current_wire_encoding() {
+        let value = UtteranceV1 {
+            speaker: Speaker::Agent,
+            conversation_id: "conversation".into(),
+            text: "text".into(),
+        };
+        assert_eq!(
+            value.durable().expect("durable").canonical_bytes(),
+            crate::canonical_json_bytes(&serde_json::to_value(&value).expect("wire"))
+        );
     }
 }

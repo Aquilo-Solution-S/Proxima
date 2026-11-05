@@ -1637,7 +1637,7 @@ pub struct SchemaContract {
     /// The physical surfaces this schema owns. Usually one (its sidecar);
     /// empty for a schema with no storage of its own.
     pub surfaces: &'static [Surface],
-    pub natural_key_columns: &'static [&'static str],
+    pub natural_key_columns: crate::NaturalKeyDeclaration,
 }
 
 impl SchemaContract {

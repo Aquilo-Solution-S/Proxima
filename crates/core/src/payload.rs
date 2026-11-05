@@ -490,7 +490,7 @@ pub struct FactTombstone {
 }
 
 pub trait FactPayload:
-    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+    crate::PayloadProjection + serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
@@ -580,14 +580,6 @@ pub trait FactPayload:
     fn sidecar_table() -> Option<&'static str> {
         None
     }
-    /// Natural-key columns on the sidecar table for stateful Fact
-    /// schemas. Default empty = stateless (every observation is a
-    /// distinct head). When non-empty, the schema participates in
-    /// head-by-natural-key queries (docs/build-a-spiice.md).
-    #[must_use]
-    fn natural_key_columns() -> &'static [&'static str] {
-        &[]
-    }
     /// Optional catalog discriminator for stateful Fact deletion observations.
     /// The deletion observation remains the current hot head; core Query does
     /// not filter it.
@@ -606,7 +598,7 @@ pub trait FactPayload:
 }
 
 pub trait AbstractionPayload:
-    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+    crate::PayloadProjection + serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
@@ -666,7 +658,7 @@ pub trait AbstractionPayload:
 }
 
 pub trait PerspectivePayload:
-    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+    crate::PayloadProjection + serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
@@ -730,7 +722,7 @@ pub trait PerspectivePayload:
 ///
 /// See docs/concepts.md
 pub trait GoalPayload:
-    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+    crate::PayloadProjection + serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
@@ -770,7 +762,7 @@ pub trait GoalPayload:
 /// hash. Citation schemas, typed or opaque, have no sidecar table. See
 /// docs/data-and-erasure.md
 pub trait CitedObjectPayload:
-    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+    crate::PayloadProjection + serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;

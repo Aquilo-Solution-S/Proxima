@@ -65,6 +65,21 @@ impl FactPayload for StatelessFactV1 {
     }
 }
 
+impl proxiima::spiice::PayloadProjection for StatelessFactV1 {
+    const KEY_FIELDS: &'static [proxiima::spiice::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima::spiice::PayloadDisplay {
+        proxiima::spiice::PayloadDisplay {
+            body: Some(self.value.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut builder = proxiima::spiice::DurablePayloadBuilder::new();
+        builder.field("value", &self.value)?;
+        Ok(builder.finish())
+    }
+}
+
 /// A content hash distinct per payload; the cited object only has to name
 /// one.
 fn content_hash(payload: &[u8]) -> [u8; 32] {

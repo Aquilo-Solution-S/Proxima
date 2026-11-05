@@ -204,7 +204,7 @@ pub(crate) struct AuthorizedFactCore {
     draft: FactWriteCommand,
     fact_sidecar_table: Option<String>,
     fact_natural_key_columns: Vec<String>,
-    fact_natural_key_values: Option<Vec<(String, serde_json::Value)>>,
+    fact_natural_key_values: Option<crate::NaturalKeySnapshot>,
     /// [`crate::engine::FactWrite::reobserve_if_displaced`]. Only the typed Fact
     /// write sets it; both citing routes leave it `false`.
     reobserve_displaced: bool,
@@ -259,7 +259,7 @@ impl AuthorizedFactCore {
 
     pub(crate) fn with_natural_key_values(
         mut self,
-        values: Option<Vec<(String, serde_json::Value)>>,
+        values: Option<crate::NaturalKeySnapshot>,
     ) -> Self {
         self.fact_natural_key_values = values;
         self
@@ -485,8 +485,8 @@ impl AuthorizedFactWrite {
     /// Exact natural-key values captured from the typed payload during authorization.
     /// Storage compares them before automatic series selection.
     #[must_use]
-    pub fn fact_natural_key_values(&self) -> Option<&[(String, serde_json::Value)]> {
-        self.core.fact_natural_key_values.as_deref()
+    pub fn fact_natural_key_values(&self) -> Option<&crate::NaturalKeySnapshot> {
+        self.core.fact_natural_key_values.as_ref()
     }
 
     /// Whether a replay whose Fact no longer heads its natural-key series is
@@ -641,8 +641,8 @@ impl AuthorizedFactWithCitation {
     /// Exact natural-key values captured from the typed payload during authorization.
     /// Storage compares them before automatic series selection.
     #[must_use]
-    pub fn fact_natural_key_values(&self) -> Option<&[(String, serde_json::Value)]> {
-        self.core.fact_natural_key_values.as_deref()
+    pub fn fact_natural_key_values(&self) -> Option<&crate::NaturalKeySnapshot> {
+        self.core.fact_natural_key_values.as_ref()
     }
 
     /// Whether a replay whose Fact no longer heads its natural-key series is
@@ -733,8 +733,8 @@ impl AuthorizedFactWithCitationRef {
     /// Exact natural-key values captured from the typed payload during authorization.
     /// Storage compares them before automatic series selection.
     #[must_use]
-    pub fn fact_natural_key_values(&self) -> Option<&[(String, serde_json::Value)]> {
-        self.core.fact_natural_key_values.as_deref()
+    pub fn fact_natural_key_values(&self) -> Option<&crate::NaturalKeySnapshot> {
+        self.core.fact_natural_key_values.as_ref()
     }
 
     /// Whether a replay whose Fact no longer heads its natural-key series is

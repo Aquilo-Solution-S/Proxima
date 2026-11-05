@@ -32,13 +32,26 @@ Build the API reference locally with `cargo doc -p proxiima --no-deps --open`;
 Choose a spiice prefix and typed payload kind. Facts are observed admissions;
 Abstractions are declared derivations; Perspectives are interpretations;
 Goals are intent. Define validation, rendering, replay identity, and references
-on the corresponding payload trait. A Fact's receipt key uses schema-owned
+on the corresponding payload trait. Every payload trait has the
+`PayloadProjection` supertrait, so implement its typed `KEY_FIELDS`, `display`,
+and `durable` projection as well. A Fact's receipt key uses schema-owned
 semantic bytes, not arbitrary JSON serialization.
+
+Semantic projections follow the same rule. A payload with a stateful natural
+key implements `PayloadProjection` and declares typed `KeyField`s; the frozen
+contract derives its `NaturalKeyDeclaration` from that projection. Display and
+durable fields are explicit typed accessors. Protocol Serde names do not select
+database identity: wire naming and durable identity are separate contracts. A
+natural-key value is never recovered by serializing the payload to JSON and
+probing field names.
 
 For example, a new document observation's payload can be:
 
 ```rust
-use proxiima::spiice::{FactPayload, PayloadKeyBuilder};
+use proxiima::spiice::{
+    DurablePayloadBuilder, FactPayload, KeyField, PayloadDisplay, PayloadKeyBuilder,
+    PayloadProjection,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,7 +78,40 @@ impl FactPayload for DocumentFiledV1 {
         Some("my_spiice.document_filed_v1")
     }
 }
+
+impl PayloadProjection for DocumentFiledV1 {
+    const KEY_FIELDS: &'static [KeyField<Self>] = &[
+        KeyField::text("source_path", |value: &Self| &value.source_path),
+    ];
+
+    fn display(&self) -> PayloadDisplay {
+        PayloadDisplay {
+            title: Some(self.title.clone()),
+            body: Some(self.source_path.clone()),
+            ..PayloadDisplay::default()
+        }
+    }
+
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut fields = DurablePayloadBuilder::new();
+        fields
+            .field("source_path", &self.source_path)?
+            .field("title", &self.title)?;
+        Ok(fields.finish())
+    }
+}
 ```
+
+The contract names the same typed projection; stateless schemas use
+`NaturalKeyDeclaration::EMPTY`:
+
+```rust
+natural_key_columns: NaturalKeyDeclaration::of::<DocumentFiledV1>(),
+```
+
+Use `KeyField::padded_text` only when the migration column is PostgreSQL
+`CHAR(n)`. It trims database padding before comparison; `KeyField::text`
+remains an ordinary text column and does not apply that canonicalization.
 
 Implement `references()` when the payload carries node references. Ingest
 resolves the targets and derives pins atomically. A spiice defines neither an
@@ -120,6 +166,16 @@ sidecars; see [host integration](host-integration.md#boot-a-composed-host).
 Use `PgMemorySidecar` directly for computed or multi-row sidecars. Authorized
 helpers and private permits bind reads/writes to admitted rows; do not query
 `proxiima_core` from spiice SQL. A generic JSON column is not a typed sidecar.
+
+Installing the frozen sidecars is fallible and asynchronous because storage
+checks the registered natural-key declarations against the actual SQL schema:
+
+```rust
+let storage = storage.with_sidecars(sidecars).await?;
+```
+
+Await and propagate this `Result` during host boot; a sidecar registry is not
+installed until its key columns, SQL types, and nullability pass validation.
 
 ## 3. Declare and register the contract
 

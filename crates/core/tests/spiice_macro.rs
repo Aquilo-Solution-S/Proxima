@@ -36,7 +36,7 @@ const fn fixture_schema(
         transfer: TransferRule::StaysOnKey,
         provenance: Provenance::None,
         surfaces: &[],
-        natural_key_columns: &[],
+        natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
     }
 }
 
@@ -108,6 +108,21 @@ impl FactPayload for TestFactV1 {
     }
 }
 
+impl proxiima_core::PayloadProjection for TestFactV1 {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay {
+            body: Some(self.body.clone()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder.field("body", &self.body)?;
+        Ok(builder.finish())
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TestGoalV1 {
     text: String,
@@ -128,6 +143,18 @@ impl GoalPayload for TestGoalV1 {
     }
 }
 
+impl proxiima_core::PayloadProjection for TestGoalV1 {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay::default()
+    }
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder.field("text", &self.text)?;
+        Ok(builder.finish())
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TestCitedObjectV1 {
     body: Vec<u8>,
@@ -139,6 +166,18 @@ impl CitedObjectPayload for TestCitedObjectV1 {
 
     fn idempotency_key(&self) -> [u8; 32] {
         *blake3::hash(&self.body).as_bytes()
+    }
+}
+
+impl proxiima_core::PayloadProjection for TestCitedObjectV1 {
+    const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+    fn display(&self) -> proxiima_core::PayloadDisplay {
+        proxiima_core::PayloadDisplay::default()
+    }
+    fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+        let mut builder = proxiima_core::DurablePayloadBuilder::new();
+        builder.field("body", &self.body)?;
+        Ok(builder.finish())
     }
 }
 

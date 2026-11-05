@@ -1152,13 +1152,15 @@ impl PgStorage {
         drop(conn);
         validate_store_number(persisted, store_number)?;
 
+        let sidecars = core_pg_sidecars();
+        sidecars.validate_natural_keys(&pool).await?;
         Ok(Self {
             store_number,
             pool,
             #[cfg(feature = "test-fixtures")]
             test_admin_pool: None,
             platform_scope,
-            sidecars: core_pg_sidecars(),
+            sidecars,
             surfaces: spiice_0_surfaces(),
             scopes: crate::access::scope_surfaces::ScopeSurfaces::default(),
             search_projections: Vec::new(),
@@ -1321,10 +1323,17 @@ impl PgStorage {
     /// The caller must include the core sidecars. The boot/facade path
     /// enforces sidecar coverage with `freeze_against`; tests may pass
     /// deliberate partial registries.
-    #[must_use]
-    pub fn with_sidecars(mut self, sidecars: PgSidecarRegistryFrozen) -> Self {
+    ///
+    /// # Errors
+    /// Refuses key columns whose actual SQL type, nullability or equality
+    /// disagrees with their typed declaration.
+    pub async fn with_sidecars(
+        mut self,
+        sidecars: PgSidecarRegistryFrozen,
+    ) -> Result<Self, StorageError> {
+        sidecars.validate_natural_keys(&self.pool).await?;
         self.sidecars = sidecars;
-        self
+        Ok(self)
     }
 
     /// Install everything the frozen spiices tell storage about payload

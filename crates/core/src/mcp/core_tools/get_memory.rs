@@ -191,8 +191,10 @@ pub(super) fn project_memory_snapshot(
     let space = super::memory_spaces::space_key_for_owner(ctx, snapshot.owner);
     let handle = snapshot.memory_id.into_inner().to_string();
     let payload = snapshot_payload_value(snapshot.payload.as_ref())?;
-    let title =
-        payload_string(&payload, "title").or_else(|| payload_string(&payload, "conversation_id"));
+    let title = snapshot
+        .payload
+        .as_ref()
+        .and_then(|payload| payload.display().title);
     // Storage derived both through the schema's display rule, the one a
     // search hit reports through.
     let body = snapshot.text.clone();
@@ -237,13 +239,6 @@ pub(super) fn snapshot_payload_value(
 pub(super) fn memory_class(kind: crate::EntityKind) -> Result<MemoryHandleClass, McpToolError> {
     MemoryHandleClass::from_entity_kind(kind)
         .ok_or_else(|| McpToolError::Other(format!("unknown memory kind: {}", kind.as_str())))
-}
-
-pub(super) fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
-    payload
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .map(ToOwned::to_owned)
 }
 
 #[cfg(test)]

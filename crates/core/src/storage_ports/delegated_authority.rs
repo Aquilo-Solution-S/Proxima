@@ -898,6 +898,21 @@ mod tests {
         }
     }
 
+    impl crate::PayloadProjection for TestFact {
+        const KEY_FIELDS: &'static [crate::KeyField<Self>] = &[];
+        fn display(&self) -> crate::PayloadDisplay {
+            crate::PayloadDisplay {
+                body: Some(self.value.clone()),
+                ..Default::default()
+            }
+        }
+        fn durable(&self) -> Result<crate::DurablePayload, String> {
+            let mut builder = crate::DurablePayloadBuilder::new();
+            builder.field("value", &self.value)?;
+            Ok(builder.finish())
+        }
+    }
+
     #[derive(Debug, Default)]
     struct MemoryStore {
         grant: Mutex<Option<DelegationGrant>>,

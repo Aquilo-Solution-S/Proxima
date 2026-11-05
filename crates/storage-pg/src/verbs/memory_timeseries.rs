@@ -17,8 +17,10 @@
 use proxiima_core::edge::EdgeEndpoint;
 use proxiima_core::verbs::fact_ingest::{FactIngestOutcome, FactWriteCommand};
 use proxiima_core::verbs::query::SidecarAtom;
-use proxiima_core::{MemoryId, OwnerId, ReplayDrift, SidecarPayload, StorageError};
-use sqlx::{Column, Executor, Postgres, SqlSafeStr, Statement, Transaction, TypeInfo};
+use proxiima_core::{
+    MemoryId, NaturalKeySnapshot, OwnerId, ReplayDrift, SidecarPayload, StorageError,
+};
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::access::scope_surfaces::ScopeFenceTarget;
@@ -71,7 +73,7 @@ pub(crate) struct MemoryAdmissionDraft<'a> {
 pub(crate) struct MemoryNaturalKey {
     pub(crate) sidecar_table: String,
     pub(crate) memory_key_column: String,
-    pub(crate) columns: Vec<(String, serde_json::Value)>,
+    pub(crate) snapshot: NaturalKeySnapshot,
     /// The writer asked for a replay whose Fact is no longer its series head
     /// to be admitted again ([`latest_observation`]).
     pub(crate) reobserve_displaced: bool,
@@ -543,14 +545,14 @@ async fn resolve_natural_series_handle(
     schema_id: &proxiima_core::SchemaId,
     key: &MemoryNaturalKey,
 ) -> Result<Option<Uuid>, StorageError> {
-    let values = bind_natural_key_columns(tx, key).await?;
-    let lock = natural_key_lock(owner, schema_id, key, &values);
+    let columns = key.snapshot.columns();
+    let lock = natural_key_lock(owner, schema_id, key, columns);
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(lock)
         .execute(tx.as_mut())
         .await
         .map_err(map_err)?;
-    let columns = values
+    let columns = columns
         .iter()
         .map(|(name, value)| (name.as_str(), value.clone()))
         .collect::<Vec<_>>();
@@ -570,76 +572,6 @@ async fn resolve_natural_series_handle(
     )
     .await;
     lifecycle.finish(tx.as_mut(), handle).await
-}
-
-fn bind_natural_key_atom(
-    column: &str,
-    value: &serde_json::Value,
-    pg_type: &str,
-) -> Result<SidecarAtom, StorageError> {
-    let atom = match pg_type {
-        "UUID" => value
-            .as_str()
-            .and_then(|text| uuid::Uuid::parse_str(text).ok())
-            .map(SidecarAtom::Uuid),
-        "TEXT" | "VARCHAR" | "BPCHAR" => value
-            .as_str()
-            .map(|text| SidecarAtom::Text(text.to_owned())),
-        "INT2" => value
-            .as_i64()
-            .and_then(|n| i16::try_from(n).ok())
-            .map(|n| SidecarAtom::I32(i32::from(n))),
-        "INT4" => value
-            .as_i64()
-            .and_then(|n| i32::try_from(n).ok())
-            .map(SidecarAtom::I32),
-        "INT8" => value.as_i64().map(SidecarAtom::I64),
-        "BOOL" => value.as_bool().map(SidecarAtom::Bool),
-        other => {
-            return Err(StorageError::ConstraintViolation(format!(
-                "unsupported natural-key column {column} type {other}"
-            )));
-        }
-    };
-    atom.ok_or_else(|| {
-        StorageError::ConstraintViolation(format!(
-            "natural-key column {column} does not match declared type {pg_type}"
-        ))
-    })
-}
-
-async fn bind_natural_key_columns(
-    tx: &mut Transaction<'_, Postgres>,
-    key: &MemoryNaturalKey,
-) -> Result<Vec<(String, SidecarAtom)>, StorageError> {
-    // Ask the registered table itself: payload JSON cannot distinguish UUID
-    // strings from text, or small bigint values from integer columns.
-    let table_ident = crate::pg_ident::PgIdent::table(&key.sidecar_table)?;
-    let names = key
-        .columns
-        .iter()
-        .map(|column| {
-            crate::pg_ident::PgIdent::column(&column.0).map(crate::pg_ident::PgIdent::as_str)
-        })
-        .collect::<Result<Vec<_>, _>>()?
-        .join(", ");
-    // SQL-POLICY: PgIdent — table and columns are validated registered identifiers.
-    let sql = format!("SELECT {names} FROM {} LIMIT 0", table_ident.as_str());
-    let statement = tx
-        .as_mut()
-        .prepare(sqlx::AssertSqlSafe(sql).into_sql_str())
-        .await
-        .map_err(map_err)?;
-    let values = key
-        .columns
-        .iter()
-        .zip(statement.columns())
-        .map(|((name, value), column)| {
-            bind_natural_key_atom(name, value, column.type_info().name())
-                .map(|atom| (name.clone(), atom))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(values)
 }
 
 /// Stable, domain-separated lock key only; never a stored memory or series ID.
@@ -1290,58 +1222,3 @@ pub(crate) async fn read_memory_head(
 #[cfg(test)]
 #[path = "memory_timeseries_pg_tests.rs"]
 mod memory_timeseries_pg_tests;
-
-#[cfg(test)]
-mod natural_key_tests {
-    use super::{SidecarAtom, bind_natural_key_atom};
-    use serde_json::json;
-
-    #[test]
-    fn declared_types_preserve_text_uuid_and_integer_width() {
-        let id = uuid::Uuid::nil();
-        assert_eq!(
-            bind_natural_key_atom("key", &json!(id), "TEXT").unwrap(),
-            SidecarAtom::Text(id.to_string())
-        );
-        assert_eq!(
-            bind_natural_key_atom("key", &json!(id), "UUID").unwrap(),
-            SidecarAtom::Uuid(id)
-        );
-        assert_eq!(
-            bind_natural_key_atom("key", &json!(1), "INT8").unwrap(),
-            SidecarAtom::I64(1)
-        );
-        assert_eq!(
-            bind_natural_key_atom("key", &json!(1), "INT4").unwrap(),
-            SidecarAtom::I32(1)
-        );
-        assert_eq!(
-            bind_natural_key_atom("key", &json!(1), "INT2").unwrap(),
-            SidecarAtom::I32(1)
-        );
-        assert_eq!(
-            bind_natural_key_atom("key", &json!(true), "BOOL").unwrap(),
-            SidecarAtom::Bool(true)
-        );
-    }
-
-    #[test]
-    fn invalid_external_key_values_are_refused_at_binding() {
-        for (value, pg_type) in [
-            (json!("not-a-uuid"), "UUID"),
-            (json!(true), "TEXT"),
-            (json!(1.5), "INT4"),
-            (json!(32768), "INT2"),
-            (json!(2_147_483_648_i64), "INT4"),
-            (json!(u64::MAX), "INT8"),
-            (json!("true"), "BOOL"),
-            (json!([]), "TEXT"),
-            (json!({}), "TEXT"),
-            (json!(null), "UUID"),
-            (json!("x"), "JSONB"),
-        ] {
-            let error = bind_natural_key_atom("external_key", &value, pg_type).unwrap_err();
-            assert!(error.to_string().contains("external_key"), "{error}");
-        }
-    }
-}

@@ -50,3 +50,24 @@ async fn unsafe_format_result(pool: &sqlx::PgPool, table_suffix: &str) -> sqlx::
 fn safe_rust_path_reference() -> u32 {
     proxiima_core::schema::MEMORIES_TABLE_VERSION
 }
+
+// Regression: an old content-only exemption must not approve this spelling
+// for an arbitrary caller-provided table.
+async fn unsafe_retired_lookup(pool: &sqlx::PgPool, table: &str) -> sqlx::Result<()> {
+    let sql = format!("SELECT memory_id FROM {table} WHERE goal_id = $1 LIMIT 1");
+    sqlx::query(sql.as_str()).execute(pool).await?;
+    Ok(())
+}
+
+async fn unsafe_retired_count(pool: &sqlx::PgPool, table: &str) -> sqlx::Result<()> {
+    let sql = format!("SELECT count(*) FROM {table}");
+    sqlx::query(sql.as_str()).execute(pool).await?;
+    Ok(())
+}
+
+async fn unsafe_retired_version(pool: &sqlx::PgPool, version: &str) -> sqlx::Result<()> {
+    sqlx::query(
+        sqlx::AssertSqlSafe(format!("SELECT {version};")).into_sql_str(),
+    ).execute(pool).await?;
+    Ok(())
+}

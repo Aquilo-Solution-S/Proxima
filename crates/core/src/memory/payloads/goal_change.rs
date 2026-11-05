@@ -12,7 +12,10 @@
 //! version's `t` and the series handle are minted there.
 
 use crate::verbs::goal_write::GoalState;
-use crate::{FactPayload, GoalId, PayloadKeyBuilder};
+use crate::{
+    DurablePayloadBuilder, FactPayload, GoalId, KeyField, PayloadDisplay, PayloadKeyBuilder,
+    PayloadProjection,
+};
 use serde::{Deserialize, Serialize};
 
 /// What a pause does with the work a scheduler already queued for the goal.
@@ -308,6 +311,108 @@ impl FactPayload for GoalChangeV1 {
             },
             "additionalProperties": false
         }))
+    }
+}
+
+impl PayloadProjection for GoalChangeV1 {
+    const KEY_FIELDS: &'static [KeyField<Self>] = &[];
+    fn display(&self) -> PayloadDisplay {
+        PayloadDisplay {
+            body: Some(self.render()),
+            sketch: Some(self.render()),
+            ..PayloadDisplay::default()
+        }
+    }
+    fn durable(&self) -> Result<crate::DurablePayload, String> {
+        let mut fields = DurablePayloadBuilder::new();
+        let change = match self.change {
+            GoalChange::Set => DurableGoalChange::Set,
+            GoalChange::Modify => DurableGoalChange::Modify,
+            GoalChange::DecomposeChild { parent } => DurableGoalChange::DecomposeChild {
+                parent: parent.into_inner(),
+            },
+            GoalChange::Pause { pending } => DurableGoalChange::Pause {
+                pending: match pending {
+                    PendingWork::Keep => "keep",
+                    PendingWork::Discard => "discard",
+                },
+            },
+            GoalChange::Resume => DurableGoalChange::Resume,
+            GoalChange::Abandon => DurableGoalChange::Abandon,
+            GoalChange::Achieve => DurableGoalChange::Achieve,
+        };
+        let state = match self.state {
+            GoalState::Active => "Active",
+            GoalState::Paused => "Paused",
+            GoalState::Achieved => "Achieved",
+            GoalState::Abandoned => "Abandoned",
+        };
+        fields
+            .field("series", &self.series)?
+            .field("goal", &self.goal.into_inner())?
+            .field("prior", &self.prior.map(GoalId::into_inner))?
+            .field("revision", &self.revision)?
+            .field("state", &state)?
+            .field("change", &change)?;
+        Ok(fields.finish())
+    }
+}
+
+// Persisted v1 names are independent of the protocol enum's serde attributes.
+#[derive(Serialize)]
+#[serde(tag = "kind")]
+enum DurableGoalChange {
+    #[serde(rename = "set")]
+    Set,
+    #[serde(rename = "modify")]
+    Modify,
+    #[serde(rename = "decompose_child")]
+    DecomposeChild { parent: uuid::Uuid },
+    #[serde(rename = "pause")]
+    Pause { pending: &'static str },
+    #[serde(rename = "resume")]
+    Resume,
+    #[serde(rename = "abandon")]
+    Abandon,
+    #[serde(rename = "achieve")]
+    Achieve,
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    #[test]
+    fn durable_change_variants_match_the_v1_wire_shape() {
+        let goal = GoalId::new(uuid::Uuid::nil());
+        let parent = GoalId::new(uuid::Uuid::from_u128(1));
+        let changes = [
+            GoalChange::Set,
+            GoalChange::Modify,
+            GoalChange::DecomposeChild { parent },
+            GoalChange::Pause {
+                pending: PendingWork::Keep,
+            },
+            GoalChange::Pause {
+                pending: PendingWork::Discard,
+            },
+            GoalChange::Resume,
+            GoalChange::Abandon,
+            GoalChange::Achieve,
+        ];
+        for change in changes {
+            let payload = GoalChangeV1 {
+                series: uuid::Uuid::nil(),
+                goal,
+                prior: None,
+                revision: 1,
+                state: GoalState::Active,
+                change,
+            };
+            let durable = payload.durable().expect("durable").canonical_bytes();
+            let wire = serde_json::to_value(&payload).expect("wire");
+            assert_eq!(durable, crate::canonical_json_bytes(&wire));
+        }
     }
 }
 

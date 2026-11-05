@@ -36,17 +36,11 @@ pub fn sketch_line(
 }
 
 pub fn payload_sketch(payload: &SidecarPayload) -> Option<String> {
-    let value = payload.to_protocol_json().ok()?;
-    ["title", "claim", "body", "text"]
-        .iter()
-        .find_map(|key| {
-            value
-                .get(*key)
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-        })
-        .map(ToOwned::to_owned)
+    let display = payload.display();
+    [display.sketch, display.title, display.body]
+        .into_iter()
+        .flatten()
+        .find(|text| !text.trim().is_empty())
 }
 
 pub fn truncate_sketch(text: &str) -> String {
@@ -101,8 +95,8 @@ macro_rules! sketch_parent_readable {
 }
 
 /// The persisted sketch text of each memory in `ids` that has one: the
-/// memory's own text, the display body a read falls back to when the schema
-/// names no body field and the payload has no `body`/`text` key. Callers
+/// memory's own text, the display body a read falls back to when the typed
+/// payload offers no body. Callers
 /// pass ids that are already admitted; this lookup authorizes nothing.
 pub async fn load_sketch_texts_on_connection(
     connection: &mut PgConnection,

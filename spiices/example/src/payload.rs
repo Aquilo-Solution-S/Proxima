@@ -2,7 +2,10 @@
 //! Abstraction, a stamp Fact that follows its memory on transfer, and a
 //! sealed stamp Fact that never transfers.
 
-use proxiima::spiice::{AbstractionPayload, FactPayload, PayloadKeyBuilder, ScopeKind};
+use proxiima::spiice::{
+    AbstractionPayload, DurablePayloadBuilder, FactPayload, KeyField, PayloadDisplay,
+    PayloadKeyBuilder, PayloadProjection, ScopeKind,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -61,12 +64,37 @@ impl FactPayload for NoteV1 {
         Some("proxiima_example.note_v1")
     }
 
-    fn natural_key_columns() -> &'static [&'static str] {
-        &["notebook_id", "key"]
-    }
-
     fn json_schema() -> Option<serde_json::Value> {
         Some(serde_json::to_value(schemars::schema_for!(Self)).expect("NoteV1 schema serializes"))
+    }
+}
+
+impl PayloadProjection for NoteV1 {
+    const KEY_FIELDS: &'static [KeyField<Self>] = &[
+        KeyField::uuid("notebook_id", |value| value.notebook_id),
+        KeyField::text("key", |value| &value.key),
+    ];
+    fn display(&self) -> PayloadDisplay {
+        PayloadDisplay {
+            body: Some(self.body.clone()),
+            sketch: Some(self.body.clone()),
+            ..PayloadDisplay::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut fields = DurablePayloadBuilder::new();
+        fields
+            .field("notebook_id", &self.notebook_id)?
+            .field("key", &self.key)?
+            .field("body", &self.body)?
+            .field(
+                "written_at",
+                &self
+                    .written_at
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .map_err(|error| error.to_string())?,
+            )?;
+        Ok(fields.finish())
     }
 }
 
@@ -94,6 +122,24 @@ impl AbstractionPayload for DigestV1 {
 
     fn json_schema() -> Option<serde_json::Value> {
         Some(serde_json::to_value(schemars::schema_for!(Self)).expect("DigestV1 schema serializes"))
+    }
+}
+
+impl PayloadProjection for DigestV1 {
+    const KEY_FIELDS: &'static [KeyField<Self>] = &[];
+    fn display(&self) -> PayloadDisplay {
+        PayloadDisplay {
+            body: Some(self.summary.clone()),
+            sketch: Some(self.summary.clone()),
+            ..PayloadDisplay::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut fields = DurablePayloadBuilder::new();
+        fields
+            .field("notebook_id", &self.notebook_id)?
+            .field("summary", &self.summary)?;
+        Ok(fields.finish())
     }
 }
 
@@ -149,12 +195,24 @@ impl FactPayload for StampV1 {
         Some("proxiima_example.stamp_v1")
     }
 
-    fn natural_key_columns() -> &'static [&'static str] {
-        &[]
-    }
-
     fn json_schema() -> Option<serde_json::Value> {
         Some(serde_json::to_value(schemars::schema_for!(Self)).expect("StampV1 schema serializes"))
+    }
+}
+
+impl PayloadProjection for StampV1 {
+    const KEY_FIELDS: &'static [KeyField<Self>] = &[];
+    fn display(&self) -> PayloadDisplay {
+        PayloadDisplay {
+            body: Some(self.mark.clone()),
+            sketch: Some(self.mark.clone()),
+            ..PayloadDisplay::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut fields = DurablePayloadBuilder::new();
+        fields.field("mark", &self.mark)?;
+        Ok(fields.finish())
     }
 }
 
@@ -197,15 +255,72 @@ impl FactPayload for SealedStampV1 {
         Some("proxiima_example.stamp_v1")
     }
 
-    fn natural_key_columns() -> &'static [&'static str] {
-        &[]
-    }
-
     fn json_schema() -> Option<serde_json::Value> {
         Some(
             serde_json::to_value(schemars::schema_for!(Self))
                 .expect("SealedStampV1 schema serializes"),
         )
+    }
+}
+
+impl PayloadProjection for SealedStampV1 {
+    const KEY_FIELDS: &'static [KeyField<Self>] = &[];
+    fn display(&self) -> PayloadDisplay {
+        PayloadDisplay {
+            body: Some(self.mark.clone()),
+            sketch: Some(self.mark.clone()),
+            ..PayloadDisplay::default()
+        }
+    }
+    fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let mut fields = DurablePayloadBuilder::new();
+        fields.field("mark", &self.mark)?;
+        Ok(fields.finish())
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    #[test]
+    fn durable_examples_match_current_wire_encoding() {
+        let note = NoteV1 {
+            notebook_id: Uuid::nil(),
+            key: "key".into(),
+            body: "body".into(),
+            written_at: time::OffsetDateTime::UNIX_EPOCH,
+        };
+        let digest = DigestV1 {
+            notebook_id: Uuid::nil(),
+            summary: "summary".into(),
+        };
+        let stamp = StampV1 {
+            mark: "mark".into(),
+        };
+        let sealed = SealedStampV1 {
+            mark: "sealed".into(),
+        };
+        for (durable, wire) in [
+            (
+                note.durable().expect("note durable"),
+                serde_json::to_value(&note).expect("note wire"),
+            ),
+            (
+                digest.durable().expect("digest durable"),
+                serde_json::to_value(&digest).expect("digest wire"),
+            ),
+            (
+                stamp.durable().expect("stamp durable"),
+                serde_json::to_value(&stamp).expect("stamp wire"),
+            ),
+            (
+                sealed.durable().expect("sealed durable"),
+                serde_json::to_value(&sealed).expect("sealed wire"),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&durable).expect("durable json"), wire);
+        }
     }
 }
 

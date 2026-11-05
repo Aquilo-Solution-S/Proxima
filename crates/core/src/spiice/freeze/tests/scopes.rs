@@ -80,6 +80,21 @@ impl crate::FactPayload for ScopedFixtureFact {
     }
 }
 
+impl crate::PayloadProjection for ScopedFixtureFact {
+    const KEY_FIELDS: &'static [crate::KeyField<Self>] = &[];
+    fn display(&self) -> crate::PayloadDisplay {
+        crate::PayloadDisplay {
+            body: Some(self.thing_id.to_string()),
+            ..Default::default()
+        }
+    }
+    fn durable(&self) -> Result<crate::DurablePayload, String> {
+        let mut builder = crate::DurablePayloadBuilder::new();
+        builder.field("thing_id", &self.thing_id)?;
+        Ok(builder.finish())
+    }
+}
+
 /// The payload half: registering a scoped payload records the kind
 /// freeze will then demand a declaration for.
 ///

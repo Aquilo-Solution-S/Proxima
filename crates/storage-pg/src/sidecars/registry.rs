@@ -14,6 +14,32 @@ pub struct PgSidecarRegistry {
 }
 
 impl PgSidecarRegistry {
+    fn check_natural_key_declaration(
+        registry: &proxiima_core::SpiiceRegistryFrozen,
+        key: &PgSidecarKey,
+        entry: &PgSidecarEntry,
+    ) -> Result<(), StorageError> {
+        let Some(core_declaration) =
+            registry.natural_key_declaration(key.kind, &key.schema_id, key.schema_version)
+        else {
+            return Err(StorageError::ConstraintViolation(format!(
+                "schema {} v{} {:?} has no registered typed natural-key declaration",
+                key.schema_id.as_str(),
+                key.schema_version.into_inner(),
+                key.kind,
+            )));
+        };
+        if core_declaration != entry.natural_key_declaration {
+            return Err(StorageError::ConstraintViolation(format!(
+                "PG natural-key declaration for {} v{} {:?} disagrees with core registration",
+                key.schema_id.as_str(),
+                key.schema_version.into_inner(),
+                key.kind,
+            )));
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -39,6 +65,7 @@ impl PgSidecarRegistry {
                     owner: <P as PgMemoryPayload>::OWNER,
                     fork: <P as PgMemoryPayload>::FORK,
                     memory_key_column: Some(<P as PgMemoryPayload>::MEMORY_KEY_COLUMN),
+                    natural_key_declaration: proxiima_core::NaturalKeyDeclaration::of::<P>(),
                     memory_insert: Some(insert_memory_sidecar::<P>),
                     memory_load: Some(load_memory_payload::<P>),
                     memory_load_batch: Some(load_memory_payload_batch::<P>),
@@ -105,6 +132,7 @@ impl PgSidecarRegistry {
                     owner: crate::sidecars::SidecarOwnerMode::None,
                     fork: crate::sidecars::ForkPolicy::Refuse,
                     memory_key_column: None,
+                    natural_key_declaration: proxiima_core::NaturalKeyDeclaration::EMPTY,
                     memory_insert: None,
                     memory_load: None,
                     memory_load_batch: None,
@@ -130,7 +158,7 @@ impl PgSidecarRegistry {
         schema_version: SchemaVersion,
         sidecar_table: impl Into<String>,
     ) where
-        P: PgMemorySidecar + PgMemoryPayload,
+        P: proxiima_core::PayloadProjection + PgMemorySidecar + PgMemoryPayload,
     {
         let key = PgSidecarKey::new(kind, schema_id, schema_version);
         let prior = self.entries.insert(
@@ -141,6 +169,7 @@ impl PgSidecarRegistry {
                 owner: <P as PgMemoryPayload>::OWNER,
                 fork: <P as PgMemoryPayload>::FORK,
                 memory_key_column: Some(<P as PgMemoryPayload>::MEMORY_KEY_COLUMN),
+                natural_key_declaration: proxiima_core::NaturalKeyDeclaration::EMPTY,
                 memory_insert: Some(insert_memory_sidecar::<P>),
                 memory_load: Some(load_memory_payload::<P>),
                 memory_load_batch: Some(load_memory_payload_batch::<P>),
@@ -214,6 +243,7 @@ impl PgSidecarRegistry {
                     schema_table,
                 )));
             }
+            Self::check_natural_key_declaration(registry, key, entry)?;
             let has_inserter = match key.kind {
                 PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective => {
                     entry.memory_insert.is_some()
@@ -517,6 +547,66 @@ mod memory_key_agreement_tests {
 
     const AGENT_NOTE: &str = "proxiima_core.agent_note_v1";
 
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct OtherNote<const TEXT_KEY: bool> {
+        text: String,
+        id: uuid::Uuid,
+    }
+
+    impl<const TEXT_KEY: bool> FactPayload for OtherNote<TEXT_KEY> {
+        const SCHEMA_ID: &'static str = AgentNoteV1::SCHEMA_ID;
+        const SCHEMA_VERSION: u32 = 1;
+        fn receipt_key(&self) -> Vec<u8> {
+            self.id.as_bytes().to_vec()
+        }
+        fn render(&self) -> String {
+            self.text.clone()
+        }
+    }
+
+    impl<const TEXT_KEY: bool> proxiima_core::PayloadProjection for OtherNote<TEXT_KEY> {
+        const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = if TEXT_KEY {
+            &[proxiima_core::KeyField::text("note_id", |note| &note.text)]
+        } else {
+            &[proxiima_core::KeyField::uuid("note_id", |note| note.id)]
+        };
+
+        fn display(&self) -> proxiima_core::PayloadDisplay {
+            proxiima_core::PayloadDisplay::default()
+        }
+
+        fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+            let mut fields = proxiima_core::DurablePayloadBuilder::new();
+            fields.field("note_id", &self.id)?;
+            Ok(fields.finish())
+        }
+    }
+
+    #[test]
+    fn freeze_refuses_a_pg_payload_with_different_key_meaning_or_type() {
+        let core = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
+        for declaration in [
+            proxiima_core::NaturalKeyDeclaration::of::<OtherNote<true>>(),
+            proxiima_core::NaturalKeyDeclaration::of::<OtherNote<false>>(),
+        ] {
+            let mut pg = PgSidecarRegistry::new();
+            crate::register_core_pg_sidecars(&mut pg);
+            let key = PgSidecarKey::new(
+                PayloadKind::Fact,
+                AgentNoteV1::schema_id(),
+                SchemaVersion::new(1),
+            );
+            pg.entries.get_mut(&key).unwrap().natural_key_declaration = declaration;
+            let error = pg
+                .freeze_against(&core)
+                .expect_err("typed key disagreement");
+            assert!(
+                error.to_string().contains("natural-key declaration"),
+                "{error}"
+            );
+        }
+    }
+
     /// One registration of spiice #0's note sidecar, keyed on `key_column`.
     ///
     /// Everything else is what `add_fact` would build. The inserters are
@@ -533,6 +623,7 @@ mod memory_key_agreement_tests {
             owner: crate::sidecars::SidecarOwnerMode::None,
             fork: crate::sidecars::ForkPolicy::Refuse,
             memory_key_column: Some(key_column),
+            natural_key_declaration: proxiima_core::NaturalKeyDeclaration::EMPTY,
             memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
             memory_load: None,
             memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
@@ -618,6 +709,21 @@ mod owner_mode_agreement_tests {
         mark: String,
     }
 
+    impl proxiima_core::PayloadProjection for StampFixture {
+        const KEY_FIELDS: &'static [proxiima_core::KeyField<Self>] = &[];
+        fn display(&self) -> proxiima_core::PayloadDisplay {
+            proxiima_core::PayloadDisplay {
+                body: Some(self.mark.clone()),
+                ..Default::default()
+            }
+        }
+        fn durable(&self) -> Result<proxiima_core::DurablePayload, String> {
+            let mut fields = proxiima_core::DurablePayloadBuilder::new();
+            fields.field("mark", &self.mark)?;
+            Ok(fields.finish())
+        }
+    }
+
     impl FactPayload for StampFixture {
         const SCHEMA_ID: &'static str = SCHEMA_ID;
         const SCHEMA_VERSION: u32 = 1;
@@ -674,6 +780,7 @@ mod owner_mode_agreement_tests {
             owner,
             fork: crate::sidecars::ForkPolicy::Refuse,
             memory_key_column: Some("t"),
+            natural_key_declaration: proxiima_core::NaturalKeyDeclaration::EMPTY,
             memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
             memory_load: Some(|_, _| Box::pin(async { Ok(None) })),
             memory_load_batch: Some(|_, _, _| Box::pin(async { Ok(Vec::new()) })),
@@ -754,7 +861,7 @@ mod owner_mode_agreement_tests {
                     },
                     Some("owner_id"),
                 )],
-                natural_key_columns: &[],
+                natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
             }],
             state_surfaces: &[],
             scopes: &[],
@@ -817,7 +924,7 @@ mod owner_mode_agreement_tests {
                     },
                     Some("owner_id"),
                 )],
-                natural_key_columns: &[],
+                natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
             }],
             state_surfaces: &[],
             scopes: &[],
@@ -869,7 +976,7 @@ mod owner_mode_agreement_tests {
                     ForgetRule::DumpThenDelete,
                     Some("owner_id"),
                 )],
-                natural_key_columns: &[],
+                natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
             }],
             state_surfaces: &[Surface {
                 table: "test_owner_state.jobs",
@@ -943,7 +1050,7 @@ mod owner_mode_agreement_tests {
                     ForgetRule::DumpThenDelete,
                     None,
                 )],
-                natural_key_columns: &[],
+                natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
             }],
             state_surfaces: &[],
             scopes: &[],
@@ -1001,7 +1108,7 @@ mod owner_mode_agreement_tests {
                     ForgetRule::DumpThenDelete,
                     Some("owner_id"),
                 )],
-                natural_key_columns: &[],
+                natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
             }],
             state_surfaces: &[],
             scopes: &[],
