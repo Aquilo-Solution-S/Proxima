@@ -434,18 +434,23 @@ impl WriteSession for PgWriteSession {
         permit: &OwnerWritePermit,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
         let draft = verbs::derive_append::DerivedDraft::from_request(req, self.store_number);
+        verbs::derive_append::validate_retained_pins_in_tx(&mut self.tx, &draft, req.retained_pins)
+            .await?;
+        let new_origins = verbs::derive_append::new_origins(req.origins, req.retained_pins);
+        let new_references =
+            verbs::derive_append::new_references(req.references, req.retained_pins);
         verbs::derive_append::validate_derived_origins_in_tx(
             &mut self.tx,
             &draft,
-            req.origins,
-            req.references,
+            &new_origins,
+            &new_references,
         )
         .await?;
         verbs::derive_append::validate_derived_reference_kinds_in_tx(
             &mut self.tx,
             &draft,
-            req.origins,
-            req.references,
+            &new_origins,
+            &new_references,
         )
         .await?;
         let sidecars = self.sidecars.writing_derived(&draft);

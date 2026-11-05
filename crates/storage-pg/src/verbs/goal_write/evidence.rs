@@ -34,7 +34,10 @@ async fn evidence_target(
         origin.kind()
     } else {
         let stored: Option<PgMemoryKind> =
-            sqlx::query_scalar("SELECT kind FROM proxiima_core.memory WHERE t = $1")
+            sqlx::query_scalar(
+                "SELECT kind FROM proxiima_core.memory /* FORGET-POLICY: live-only (new and carried Goal evidence, including platform edits) */
+                 WHERE t = $1 AND forgotten_at IS NULL",
+            )
                 .bind(item.memory_id().into_inner())
                 .fetch_optional(&mut **tx)
                 .await

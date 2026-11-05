@@ -84,7 +84,7 @@ async fn resolve_visible_goal_refs(
     // carry no Goal reference issues no query at all.
     let mut candidates = Vec::new();
     for node in nodes.iter() {
-        for goal in &node.goal_refs {
+        for goal in node.goal_refs.iter().chain(&node.guided_by) {
             if !candidates.contains(goal) {
                 candidates.push(*goal);
             }
@@ -376,7 +376,7 @@ async fn load_incoming_sources(
                 InboundPinQuery {
                     targets: &targets,
                     // The inbound target carries its own kind, and a Goal is
-                    // only ever pinned from `goal_refs`. Naming the column
+                    // only ever pinned from `goal_refs` or `guided_by`. Naming the columns
                     // keeps the scan on one GIN index instead of a mixed array.
                     target_kind: if matches!(target_filter, EntityRef::Goal(_)) {
                         PinTargetKind::Goal
@@ -568,6 +568,7 @@ mod tests {
                         if query.target_kind == crate::PinTargetKind::Goal {
                             node.goal_refs
                                 .iter()
+                                .chain(node.guided_by.iter())
                                 .any(|goal| goal.into_inner() == t.into_inner())
                         } else {
                             node.refs.contains(t)
@@ -760,6 +761,7 @@ mod tests {
             origins: Vec::new(),
             refs: Vec::new(),
             goal_refs: Vec::new(),
+            guided_by: Vec::new(),
         }];
         for _ in 0..n {
             nodes.push(PinNode {
@@ -769,6 +771,7 @@ mod tests {
                 origins: vec![hub],
                 refs: Vec::new(),
                 goal_refs: Vec::new(),
+                guided_by: Vec::new(),
             });
         }
         (owner, hub, Arc::new(FakePins::new(nodes, Vec::new())))

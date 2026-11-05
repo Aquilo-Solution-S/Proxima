@@ -13,8 +13,7 @@ use crate::storage_ports::{
 };
 use crate::verbs::fact_ingest::{CitationSpec, FactIngestOutcome, FactWriteCommand};
 use crate::verbs::goal_write::{
-    CreateGoalAtomicRequest, GoalAssignmentTarget, GoalCreateRequest, GoalDraft, GoalReplayRequest,
-    GoalWriteOutcome,
+    CreateGoalAtomicRequest, GoalCreateRequest, GoalDraft, GoalReplayRequest, GoalWriteOutcome,
 };
 use crate::verbs::own_erase::{
     EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,
@@ -224,6 +223,8 @@ pub struct UnitOfWork<'a> {
     /// Session-visible `(t, kind)` pairs. A declaration must still agree
     /// with the kind of a row written earlier in this transaction.
     written_kinds: Vec<(MemoryId, EntityKind)>,
+    /// Session-visible exact Goal versions written in this unit and their owners.
+    written_goals: Vec<(crate::GoalId, OwnerId)>,
     /// `(t, kind)` of writes in this unit that replayed a forgotten memory
     /// (#488 review r3/r4). They are not session-visible: a later item may
     /// name such a slot only as part of its own replay. A derived item that
@@ -232,7 +233,7 @@ pub struct UnitOfWork<'a> {
     /// forgotten memory, and that refusal reads `entry not found`. Goal
     /// writes never see these slots.
     replayed_forgotten: Vec<(MemoryId, EntityKind)>,
-    /// Resolved destinations, for owner-constrained pending Goal assignments.
+    /// Resolved destinations, for owner-constrained pending Goal motivations.
     written_owners: Vec<(MemoryId, OwnerId)>,
     /// [`Self::erase_own_series`] ran. The unit then accepts only
     /// [`Self::commit`]: its session is the erase's, not a cognitive one.
@@ -406,6 +407,7 @@ impl Engine {
             poisoned: false,
             written: Vec::new(),
             written_kinds: Vec::new(),
+            written_goals: Vec::new(),
             replayed_forgotten: Vec::new(),
             written_owners: Vec::new(),
             erased: false,
@@ -440,6 +442,7 @@ impl Engine {
             poisoned: false,
             written: Vec::new(),
             written_kinds: Vec::new(),
+            written_goals: Vec::new(),
             replayed_forgotten: Vec::new(),
             written_owners: Vec::new(),
             erased: false,
@@ -512,6 +515,7 @@ impl Engine {
                 poisoned: false,
                 written: Vec::new(),
                 written_kinds: Vec::new(),
+                written_goals: Vec::new(),
                 replayed_forgotten: Vec::new(),
                 written_owners: Vec::new(),
                 erased: false,
@@ -681,7 +685,12 @@ impl<'a> UnitOfWork<'a> {
         if self.replayed_forgotten.is_empty() {
             let item = self
                 .engine
-                .prepare_derived_memory(self.authz()?, memory, &self.written_kinds)
+                .prepare_derived_memory(
+                    self.authz()?,
+                    memory,
+                    &self.written_kinds,
+                    &self.written_goals,
+                )
                 .await?;
             return Ok((item, false));
         }
@@ -693,7 +702,7 @@ impl<'a> UnitOfWork<'a> {
             .collect::<Vec<_>>();
         let item = self
             .engine
-            .prepare_derived_memory(self.authz()?, memory, &kinds)
+            .prepare_derived_memory(self.authz()?, memory, &kinds, &self.written_goals)
             .await?;
         let replay_only = item
             .origins
@@ -1065,7 +1074,7 @@ impl<'a> UnitOfWork<'a> {
     /// Authorize and persist one Goal create in this transaction.
     ///
     /// Uses the same typed request as [`Engine::create_goal`]. Earlier Memory
-    /// writes in this transaction can supply assignment and evidence targets.
+    /// writes in this transaction can supply motivation and evidence targets.
     ///
     /// # Errors
     ///
@@ -1160,6 +1169,9 @@ impl<'a> UnitOfWork<'a> {
             .create_goal(&atomic, permit.owner_write_permit())
             .await
             .map_err(super::goal_write::map_goal_storage_error)?;
+        if !outcome.idempotent_replay {
+            self.written_goals.push((outcome.goal_id, *permit.owner()));
+        }
         Ok(outcome)
     }
 
@@ -1168,24 +1180,24 @@ impl<'a> UnitOfWork<'a> {
         req: &super::GoalCreatePayloadWriteRequest,
         goal_owner: &OwnerId,
     ) -> Result<(), ProtocolError> {
-        if let Some(assignment) = req
-            .topology
-            .assignment()
-            .map(GoalAssignmentTarget::perspective_id)
-        {
-            if let Some((_, owner)) = self.written_owners.iter().find(|(id, _)| *id == assignment)
+        for motivation in req.topology.motivated_by() {
+            let perspective = motivation.perspective_id();
+            if let Some((_, owner)) = self
+                .written_owners
+                .iter()
+                .find(|(id, _)| *id == perspective)
                 && owner != goal_owner
             {
                 return Err(ProtocolError::forbidden(
                     super::pipeline::ENTRY_NOT_FOUND_MESSAGE,
                 ));
             }
-            if let Some((_, kind)) = self.written_kinds.iter().find(|(id, _)| *id == assignment)
+            if let Some((_, kind)) = self.written_kinds.iter().find(|(id, _)| *id == perspective)
                 && *kind != EntityKind::Perspective
             {
                 return Err(ProtocolError::invalid_argument(
-                    "assignment",
-                    "Goal assignment must reference a Perspective",
+                    "motivated_by",
+                    "Goal motivation must reference a Perspective",
                 ));
             }
         }

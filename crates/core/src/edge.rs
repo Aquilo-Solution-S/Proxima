@@ -206,7 +206,8 @@ pub struct PinNode {
     /// that crossed the authorization boundary.
     pub schema_id: SchemaId,
     pub origins: Vec<MemoryId>,
-    /// Memory reference ids, plus any Goal reference the reader may not see.
+    /// Memory reference ids and the exact fork source, plus any Goal reference
+    /// the reader may not see.
     /// An unreadable target stays here so edge projection can redact it
     /// without disclosing whether it was a Memory or Goal.
     pub refs: Vec<MemoryId>,
@@ -214,6 +215,9 @@ pub struct PinNode {
     /// they arrive already typed; [`Self::resolve_visible_goal_refs`] then
     /// keeps only the ones this reader may see.
     pub goal_refs: Vec<GoalId>,
+    /// Perspective guidance targets. These are projected as ordinary
+    /// reference edges, but remain separate from payload-declared Goal refs.
+    pub guided_by: Vec<GoalId>,
 }
 
 impl PinNode {
@@ -237,6 +241,12 @@ impl PinNode {
             .iter()
             .copied()
             .map(|id| (id, EdgeKind::Reference))
+            .chain(
+                self.guided_by
+                    .iter()
+                    .copied()
+                    .map(|id| (id, EdgeKind::Reference)),
+            )
     }
 
     /// Drop the Goal references this reader may not see into the raw
@@ -250,7 +260,7 @@ impl PinNode {
     /// stored column narrows which spine gets probed and nothing else — it
     /// is never an authorization or projection input.
     pub fn resolve_visible_goal_refs(&mut self, visible: &[GoalId]) {
-        if self.goal_refs.is_empty() {
+        if self.goal_refs.is_empty() && self.guided_by.is_empty() {
             return;
         }
         let visible: std::collections::HashSet<_> = visible.iter().copied().collect();
@@ -263,6 +273,15 @@ impl PinNode {
             }
         }
         self.goal_refs = readable;
+        let mut readable = Vec::with_capacity(self.guided_by.len());
+        for goal in self.guided_by.drain(..) {
+            if visible.contains(&goal) {
+                readable.push(goal);
+            } else {
+                self.refs.push(MemoryId::new(goal.into_inner()));
+            }
+        }
+        self.guided_by = readable;
     }
 }
 
@@ -457,6 +476,7 @@ mod tests {
                 origins: Vec::new(),
                 refs: Vec::new(),
                 goal_refs: Vec::new(),
+                guided_by: Vec::new(),
             },
             PinNode {
                 id: hub,
@@ -465,6 +485,7 @@ mod tests {
                 origins: vec![leaf],
                 refs: vec![outside],
                 goal_refs: Vec::new(),
+                guided_by: Vec::new(),
             },
         ];
         let edges = project_window_edges(&nodes, 50);
@@ -488,6 +509,7 @@ mod tests {
             origins: Vec::new(),
             refs: Vec::new(),
             goal_refs: vec![goal],
+            guided_by: Vec::new(),
         };
         // Storage typed it as a Goal, but this reader cannot see it, so it
         // falls back into the raw carrier and redacts exactly as an
@@ -503,6 +525,24 @@ mod tests {
             &std::collections::HashMap::new(),
         );
         assert!(matches!(edges.target, EdgeTargetProjection::Redacted));
+    }
+
+    #[test]
+    fn unresolved_guidance_stays_a_redactable_raw_id() {
+        let source = MemoryId::new(uuid::Uuid::now_v7());
+        let goal = GoalId::new(uuid::Uuid::now_v7());
+        let mut node = PinNode {
+            id: source,
+            kind: EntityKind::Perspective,
+            schema_id: crate::SchemaId::new("test/pin-v1".into()),
+            origins: Vec::new(),
+            refs: Vec::new(),
+            goal_refs: Vec::new(),
+            guided_by: vec![goal],
+        };
+        node.resolve_visible_goal_refs(&[]);
+        assert!(node.guided_by.is_empty());
+        assert_eq!(node.refs, vec![MemoryId::new(goal.into_inner())]);
     }
 
     #[test]

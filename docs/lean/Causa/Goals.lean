@@ -12,7 +12,9 @@ No `supersedes`. No authorship blob. Title stays. `text` is on the row: the
 version's prompt, `none` when unknown, never blank (`goal_text_nonblank_chk`,
 migration 0025); the rest of the body is the sidecar. A version that changes
 the state keeps its predecessor's text (the Goal write verbs carry it).
-`close_fact_t` pins an existing Fact `t`.
+`close_fact_t` pins an existing Fact `t`. `assignment_t` is the historical
+single intended Perspective target on old versions; the causal
+`motivated_by` list is distinct and does not reinterpret it.
 
 The goal tree (#514): an open goal (Active or Paused) never sits under a
 closed one (Achieved or Abandoned). Each write checks one level: decompose
@@ -81,6 +83,8 @@ structure Goal where
   assignment_t  : Option MemoryId
   dependency_t  : List GoalId
   evidence_t    : List MemoryId
+  /-- Exact Perspective versions that motivated this Goal version. -/
+  motivated_by  : List MemoryId
   write_act_t   : Option MemoryId
   /-- The parent's series (#514), set at decompose and fixed for the series. -/
   parent_handle : Option Handle
@@ -109,9 +113,74 @@ def goal_close_fact_t : Goal → Option MemoryId := Goal.close_fact_t
 def goal_assignment : Goal → Option MemoryId := Goal.assignment_t
 def goal_dependencies : Goal → List GoalId := Goal.dependency_t
 def goal_evidence : Goal → List MemoryId := Goal.evidence_t
+def goal_motivated_by : Goal → List MemoryId := Goal.motivated_by
 def goal_write_act_t : Goal → Option MemoryId := Goal.write_act_t
 def goal_tick : Goal → Instant := Goal.tick
 def goal_parent : Goal → Option Handle := Goal.parent_handle
+
+/- The new causal relations are source-owned, exact-version references. -/
+def goal_motivations_valid
+    (memories : Set Memory) (goal : Goal) : Prop :=
+  ∀ id : MemoryId, id ∈ goal_motivated_by goal →
+    ∃ p : Memory,
+      p ∈ memories ∧ memory_t p = id ∧
+      memory_kind p = .Perspective ∧
+      memory_owner p = goal_owner goal
+
+def perspective_guidance_valid
+    (_memories : Set Memory) (goals : Set Goal) (p : Memory) : Prop :=
+  memory_kind p = .Perspective →
+    ∀ id : GoalId, id ∈ memory_guided_by p →
+      ∃ g : Goal,
+        g ∈ goals ∧ goal_t g = id ∧
+        goal_owner g = memory_owner p
+
+def goal_motivations_retained_valid
+    (memories : Set Memory) (_goals : Set Goal)
+    (targets : Set ErasedPinTarget) (goal : Goal) : Prop :=
+  ∀ id : MemoryId, id ∈ goal_motivated_by goal →
+    (∃ p : Memory,
+      p ∈ memories ∧ memory_t p = id ∧
+      memory_kind p = .Perspective ∧
+      memory_owner p = goal_owner goal) ∨
+    (∃ e : ErasedPinTarget,
+      e ∈ targets ∧ erased_pin_target_t e = id ∧
+      erased_pin_target_kind e = .Perspective)
+
+def perspective_guidance_retained_valid
+    (_memories : Set Memory) (goals : Set Goal)
+    (targets : Set ErasedPinTarget) (p : Memory) : Prop :=
+  memory_kind p = .Perspective →
+    ∀ id : GoalId, id ∈ memory_guided_by p →
+      (∃ g : Goal,
+        g ∈ goals ∧ goal_t g = id ∧
+        goal_owner g = memory_owner p) ∨
+      (∃ e : ErasedPinTarget,
+        e ∈ targets ∧ erased_pin_target_t e = id ∧
+        erased_pin_target_kind e = .Goal)
+
+theorem motivated_by_targets_are_perspectives
+    (memories : Set Memory) (goal : Goal)
+    (h : goal_motivations_valid memories goal)
+    (id : MemoryId) (hid : id ∈ goal_motivated_by goal) :
+    ∃ p : Memory, p ∈ memories ∧ memory_t p = id ∧ memory_kind p = .Perspective := by
+  obtain ⟨p, hp, ht, hk, _⟩ := h id hid
+  exact ⟨p, hp, ht, hk⟩
+
+theorem guided_by_targets_are_goals
+    (memories : Set Memory) (goals : Set Goal) (p : Memory)
+    (h : perspective_guidance_valid memories goals p)
+    (hp : memory_kind p = .Perspective)
+    (id : GoalId) (hid : id ∈ memory_guided_by p) :
+    ∃ g : Goal, g ∈ goals ∧ goal_t g = id ∧ goal_owner g = memory_owner p := by
+  exact h hp id hid
+
+theorem motivated_by_target_kind_is_perspective
+    (memories : Set Memory) (goal : Goal)
+    (h : goal_motivations_valid memories goal)
+    (id : MemoryId) (hid : id ∈ goal_motivated_by goal) :
+    ∃ p : Memory, p ∈ memories ∧ memory_t p = id ∧ memory_kind p = .Perspective := by
+  exact motivated_by_targets_are_perspectives memories goal h id hid
 
 def ErasedTargetsDisjointGoals
     (targets : Set ErasedPinTarget) (goals : Set Goal) : Prop :=
@@ -129,6 +198,7 @@ theorem erased_target_not_goal
 /-- Declared pins to other nodes (ids only). No edge table. -/
 def goalDeclaredTargetIds (g : Goal) : List Id :=
   (goal_assignment g).toList ++ goal_dependencies g ++ goal_evidence g ++
+    goal_motivated_by g ++
     (goal_close_fact_t g).toList ++ (goal_write_act_t g).toList
 
 def GoalIdUnique (goals : Set Goal) : Prop :=

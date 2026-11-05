@@ -27,8 +27,8 @@ use crate::publication::{PublicationExtensions, PublicationExtensionsError};
 use crate::{GroupId, OwnerId, UserId};
 
 pub use hooks::{
-    AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, MembershipChange,
-    OwnerResolver,
+    AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto,
+    GoalCollaborationChange, MembershipChange, OwnerResolver,
 };
 pub use scope_key::{ActionName, ResourceKey, ScopeKey, ScopeKeyError, ScopeKeyPart, ToolName};
 
@@ -667,7 +667,15 @@ impl AuthzContext {
             .clone()
             .ok_or(AuthError::InvalidCredentials)?;
         let writer = self.writer().ok_or(AuthError::InvalidCredentials)?;
-        let scope = OwnerScope::from_verified_roles(roles, self.expires_at(), writer);
+        let mut scope = OwnerScope::from_verified_roles(roles, self.expires_at(), writer);
+        if self.auth_path == AuthPath::HostBearer
+            && self.forwarded_owner.is_none()
+            && self.owner_scope.confined_to().is_none()
+        {
+            let subject = scope.subject();
+            scope = scope
+                .with_goal_principal(crate::goal_collaboration::GoalPrincipalScope::new(subject));
+        }
         let scope = match self.owner_scope.confined_to() {
             Some(owner) => scope.narrow(owner).ok_or(AuthError::InvalidCredentials)?,
             None => scope,
@@ -3004,6 +3012,56 @@ mod tests {
             AuthzContext::denied_for_owner(&owner())
                 .publication_extensions()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn goal_principal_is_only_direct_unconfined_bearer() {
+        let subject = UserId::new(uuid::Uuid::now_v7());
+        let direct = authenticate(
+            &VerifiedAuthenticator {
+                context: AuthzContext::for_subject(subject, AuthPath::HostBearer),
+            },
+            &Credentials::Bearer("verified".into()),
+        )
+        .await
+        .expect("direct bearer");
+        assert!(
+            direct
+                .owner_scope()
+                .expect("sealed")
+                .goal_principal()
+                .is_some()
+        );
+        assert!(
+            direct
+                .clone()
+                .narrowed_to_owner(OwnerId::from(subject))
+                .expect("narrow")
+                .owner_scope()
+                .expect("sealed")
+                .goal_principal()
+                .is_none()
+        );
+        let authority = SystemAuthority::new(SystemAuthorityBinding::fresh());
+        let system = AuthzContext::for_system(
+            &authority,
+            OwnerRoles::for_subject(subject, []).expect("roles"),
+        );
+        assert!(
+            system
+                .owner_scope()
+                .expect("sealed")
+                .goal_principal()
+                .is_none()
+        );
+        let insecure = AuthzContext::for_insecure_single_owner(&authority, OwnerId::from(subject));
+        assert!(
+            insecure
+                .owner_scope()
+                .expect("sealed")
+                .goal_principal()
+                .is_none()
         );
     }
 }

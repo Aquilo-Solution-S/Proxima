@@ -31,6 +31,14 @@ pub struct VectorCandidate {
     pub similarity_score: f32,
 }
 
+/// The candidates an external index may rank before the store authorizes each
+/// result through its own row-level policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VectorCandidateFilter {
+    pub owners: Vec<OwnerId>,
+    pub memories: Vec<MemoryId>,
+}
+
 /// One entity's vectors in one space: what the index holds one version of.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VectorKey {
@@ -83,12 +91,13 @@ pub trait VectorIndex: Send + Sync {
     async fn set_owner(&self, keys: &[VectorKey], owner: OwnerId) -> Result<(), StorageError>;
 
     /// Up to `window` distinct memories in `query`'s space, narrowed to
-    /// `owners`. Rank by each memory's best chunk, descending by score,
-    /// then by memory id descending. A goal is never a candidate. Empty
-    /// owners or a zero window produce no candidates.
+    /// memories owned by `filter.owners` or named by `filter.memories`. Rank
+    /// by each memory's best chunk, descending by score, then by memory id
+    /// descending. A goal is never a candidate. An empty filter or a zero
+    /// window produce no candidates.
     async fn nearest(
         &self,
-        owners: &[OwnerId],
+        filter: &VectorCandidateFilter,
         query: &SpaceVector,
         window: u32,
     ) -> Result<Vec<VectorCandidate>, StorageError>;
@@ -206,15 +215,18 @@ impl VectorIndex for InMemoryVectorIndex {
 
     async fn nearest(
         &self,
-        owners: &[OwnerId],
+        filter: &VectorCandidateFilter,
         query: &SpaceVector,
         window: u32,
     ) -> Result<Vec<VectorCandidate>, StorageError> {
         let mut found: Vec<VectorCandidate> = self
             .stored()
             .iter()
-            .filter(|(_, stored)| {
-                stored.memory && &stored.space == query.space() && owners.contains(&stored.owner)
+            .filter(|((entity, _, _), stored)| {
+                stored.memory
+                    && &stored.space == query.space()
+                    && (filter.owners.contains(&stored.owner)
+                        || filter.memories.contains(&MemoryId::new(*entity)))
             })
             .map(|((entity, _, _), stored)| VectorCandidate {
                 memory_id: MemoryId::new(*entity),
@@ -297,6 +309,7 @@ mod tests {
         .await;
         put(memory(2), owner, vec![vector(&space, [1.0, 1.0])]).await;
         put(memory(3), stranger, vec![vector(&space, [1.0, 0.0])]).await;
+        put(memory(6), stranger, vec![vector(&space, [0.0, 1.0])]).await;
         put(memory(4), owner, vec![vector(&other_space, [1.0, 0.0])]).await;
         put(
             EmbeddableEntityRef::Goal(GoalId::new(Uuid::from_u128(5))),
@@ -305,18 +318,35 @@ mod tests {
         )
         .await;
 
-        let ranked = index.nearest(&[owner], &query, 10).await.unwrap();
+        let filter = VectorCandidateFilter {
+            owners: vec![owner],
+            memories: vec![],
+        };
+        let ranked = index.nearest(&filter, &query, 10).await.unwrap();
         let ids: Vec<u128> = ranked
             .iter()
             .map(|c| c.memory_id.into_inner().as_u128())
             .collect();
         assert_eq!(ids, [1, 2]);
         assert!((ranked[0].similarity_score - 1.0).abs() < 1e-6);
-        assert!(index.nearest(&[], &query, 10).await.unwrap().is_empty());
-        assert_eq!(index.nearest(&[owner], &query, 1).await.unwrap().len(), 1);
+        assert!(
+            index
+                .nearest(&VectorCandidateFilter::default(), &query, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(index.nearest(&filter, &query, 1).await.unwrap().len(), 1);
+        let exact = VectorCandidateFilter {
+            owners: vec![],
+            memories: vec![MemoryId::new(Uuid::from_u128(6))],
+        };
+        let exact_ranked = index.nearest(&exact, &query, 1).await.unwrap();
+        assert_eq!(exact_ranked.len(), 1);
+        assert_eq!(exact_ranked[0].memory_id, MemoryId::new(Uuid::from_u128(6)));
 
         put(memory(1), owner, vec![vector(&space, [0.0, 1.0])]).await;
-        let ranked = index.nearest(&[owner], &query, 10).await.unwrap();
+        let ranked = index.nearest(&filter, &query, 10).await.unwrap();
         assert_eq!(
             ranked[0].memory_id.into_inner().as_u128(),
             2,
@@ -338,17 +368,11 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(
-            index
-                .nearest(&[owner], &query, 10)
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        assert!(index.nearest(&filter, &query, 10).await.unwrap().is_empty());
         let page = index.entries(None, 2).await.unwrap();
         assert_eq!(page.len(), 2);
         let rest = index.entries(Some(&page[1].key), 10).await.unwrap();
-        assert_eq!(page.len() + rest.len(), 4);
+        assert_eq!(page.len() + rest.len(), 5);
         assert_eq!(page[0].key, key);
         assert_eq!(page[0].owner, stranger);
     }

@@ -92,11 +92,21 @@ async fn fetch_memory_page_on_connection(
     sidecars: &PgSidecarRegistryFrozen,
 ) -> Result<Vec<MemoryRowDb>, StorageError> {
     let filters = memory_filters(req, schemas, sidecars)?;
-    let sql = memory_page_sql(
-        matches!(req.supersession, SupersessionStatus::HeadsOnly),
-        &filters,
-        page_fetch_limit(req),
-    );
+    let heads_only = matches!(req.supersession, SupersessionStatus::HeadsOnly);
+    let owner_sql = memory_page_sql(heads_only, &filters, page_fetch_limit(req));
+    let goal_routes: bool = if heads_only {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM proxiima_core.goal_visible_memory_ids())")
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(map_err)?
+    } else {
+        false
+    };
+    let sql = if goal_routes {
+        merge_goal_heads_sql(&owner_sql, &filters, page_fetch_limit(req))
+    } else {
+        owner_sql
+    };
     // SQL-POLICY: fixed-fragment
     let mut q = sqlx::query_as::<_, MemoryRowDb>(sqlx::AssertSqlSafe(sql)).bind(owner_ids);
     for filter in filters {
@@ -168,7 +178,6 @@ impl MemoryFilter {
             Self::ReferencedGoalHandles(_) => format!(
                 " AND m.kind = 'fact' \
                  AND m.goal_refs && ARRAY(SELECT g.t FROM proxiima_core.goal g \
-                 JOIN proxiima_core.owners go ON go.owner_id = g.owner_id \
                  WHERE g.handle = ANY(${placeholder}::uuid[]) \
                    AND g.owner_id = ANY($1::uuid[]))"
             ),
@@ -370,6 +379,15 @@ fn demote_invisible_goal_refs(memories: &mut [MemoryRow], visible_goal_ids: &[Uu
             }
         }
         memory.goal_refs = visible;
+        let mut visible_guidance = Vec::with_capacity(memory.guided_by.len());
+        for goal in memory.guided_by.drain(..) {
+            if visible_goal_set.contains(&goal.into_inner()) {
+                visible_guidance.push(goal);
+            } else {
+                memory.refs.push(MemoryId::new(goal.into_inner()));
+            }
+        }
+        memory.guided_by = visible_guidance;
     }
 }
 
@@ -435,10 +453,9 @@ fn memory_page_sql(heads_only: bool, filters: &[MemoryFilter], fetch_limit: u64)
         "SELECT m.t AS memory_id, m.handle, \
                 proxiima_core.memory_created_at(m.t) AS created_at, \
                 m.owner_id, m.schema_id, m.sidecar_tables, \
-                m.kind AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at, m.\"by\", m.via \
+                m.kind AS kind, m.origins, m.refs, m.goal_refs, m.guided_by, m.occurred_at, m.\"by\", m.via \
          FROM proxiima_core.memory m \
          {head_join}\
-         JOIN proxiima_core.owners o ON o.owner_id = m.owner_id \
          WHERE m.owner_id = ANY($1::uuid[])",
     );
     append_memory_filters(&mut sql, filters, false);
@@ -457,7 +474,7 @@ fn head_page_sql(filters: &[MemoryFilter], fetch_limit: u64) -> String {
            SELECT m.t AS memory_id, m.handle, \
                   proxiima_core.memory_created_at(m.t) AS created_at, \
                   m.owner_id, m.schema_id, m.sidecar_tables, \
-                  m.kind AS kind, m.origins, m.refs, m.goal_refs, m.occurred_at, m.\"by\", m.via \
+                  m.kind AS kind, m.origins, m.refs, m.goal_refs, m.guided_by, m.occurred_at, m.\"by\", m.via \
            FROM (SELECT h.handle, h.t FROM proxiima_core.memory_head h \
                  WHERE h.owner_id = o.owner_id",
     );
@@ -479,6 +496,28 @@ fn head_page_sql(filters: &[MemoryFilter], fetch_limit: u64) -> String {
          ORDER BY page.memory_id DESC LIMIT {fetch_limit}"
     );
     sql
+}
+
+/// Merge two bounded sorted streams. Owner heads keep their existing cheap
+/// plan; the second stream contains only exact Goal-authorised admissions.
+fn merge_goal_heads_sql(owner_sql: &str, filters: &[MemoryFilter], fetch_limit: u64) -> String {
+    let mut goal_sql = String::from(
+        "WITH visible AS MATERIALIZED (SELECT * FROM proxiima_core.goal_visible_memory_ids()), \
+         latest AS (SELECT DISTINCT ON (memory_handle) memory_t, memory_handle, owner_id \
+                    FROM visible ORDER BY memory_handle, memory_t DESC) \
+         SELECT m.t AS memory_id, m.handle, proxiima_core.memory_created_at(m.t) AS created_at, \
+                m.owner_id, m.schema_id, m.sidecar_tables, m.kind AS kind, m.origins, m.refs, \
+                m.goal_refs, m.guided_by, m.occurred_at, m.\"by\", m.via \
+         FROM latest v JOIN proxiima_core.memory m ON m.t = v.memory_t \
+         WHERE m.owner_id = ANY($1::uuid[]) \
+           AND NOT EXISTS (SELECT 1 FROM proxiima_core.memory_head own_head \
+                           WHERE own_head.handle = m.handle AND own_head.t > m.t)",
+    );
+    append_memory_filters(&mut goal_sql, filters, false);
+    let _ = write!(goal_sql, " ORDER BY m.t DESC LIMIT {fetch_limit}");
+    format!(
+        "SELECT * FROM (({owner_sql}) UNION ({goal_sql})) admitted ORDER BY memory_id DESC LIMIT {fetch_limit}"
+    )
 }
 
 fn append_memory_filters(sql: &mut String, filters: &[MemoryFilter], heads_only: bool) {

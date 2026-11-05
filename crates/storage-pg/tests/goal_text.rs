@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxiima_core::MemoryKind;
 use proxiima_core::owner_inverse::{
     EraseAuthorization, ExportAuthorization, OwnerEraseOutcome, OwnerEraseTarget,
     OwnerExportTarget, OwnerSurfaces,
@@ -20,7 +19,7 @@ use proxiima_core::test_fixtures::owner_scope_for_tests;
 use proxiima_core::verbs::fact_ingest::FactWriteCommand;
 use proxiima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef,
+    GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef, GoalMotivationRef,
     GoalPayloadWrite, GoalReplayRequest, GoalState, GoalTopologyWrite, GoalTransitionKind,
     GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
@@ -29,6 +28,7 @@ use proxiima_core::{
     AccessKind, EdgeEndpoint, GoalId, GoalPayload, MemoryId, OwnerId, PendingWork, SchemaId,
     SchemaVersion, SimpleTextGoalV1, SpiiceRegistry, SpiiceRegistryFrozen, StorageError, UserId,
 };
+use proxiima_core::{GoalEditPermit, MemoryKind};
 use proxiima_pg_testkit::{db_url, drop_db};
 use proxiima_storage_pg::PgStorage;
 use proxiima_storage_pg::test_fixtures::create_core_db;
@@ -136,7 +136,7 @@ impl Harness {
 
     fn topology(&self) -> TestResult<GoalTopologyWrite> {
         Ok(GoalTopologyWrite::new(
-            Some(GoalAssignmentTarget::perspective(self.assignment)),
+            vec![GoalMotivationRef::perspective(self.assignment)],
             Vec::new(),
             Vec::new(),
         )?)
@@ -193,7 +193,7 @@ impl Harness {
                     request_id: IdempotencyKey::new(request_id)?,
                     context: self.context(),
                 },
-                &self.permit,
+                GoalEditPermit::Owner(&self.permit),
             )
             .await?)
     }
@@ -209,6 +209,7 @@ impl Harness {
             .pg
             .modify_goal_atomic(
                 &ModifyGoalAtomicRequest {
+                    motivated_by: None,
                     owner: self.owner,
                     prior_goal_id: prior,
                     replacement: Self::payload(title, text),
@@ -217,7 +218,7 @@ impl Harness {
                     context: self.context(),
                     evidence: None,
                 },
-                &self.permit,
+                GoalEditPermit::Owner(&self.permit),
             )
             .await?)
     }
@@ -243,7 +244,7 @@ impl Harness {
                     context: self.context(),
                     evidence: vec![GoalEvidenceRef::new(evidence)],
                 },
-                &self.permit,
+                GoalEditPermit::Owner(&self.permit),
             )
             .await?)
     }
@@ -419,6 +420,35 @@ macro_rules! goal_test {
         }
     };
 }
+
+goal_test!(
+    historical_assignment_stays_on_original_versions_only,
+    |h| async {
+        let original = h
+            .insert_future_goal("historical-assignment", GoalState::Active)
+            .await?;
+        let before = h.read(original).await?;
+        assert_eq!(before.historical_assignment, Some(h.assignment));
+        assert!(
+            before.motivated_by.is_empty(),
+            "assignment is not motivation"
+        );
+        let paused = h
+            .transition(original, GoalState::Paused, "historical-pause")
+            .await?;
+        let after = h.read(paused.goal_id).await?;
+        assert_eq!(after.historical_assignment, None);
+        assert!(
+            after.motivated_by.is_empty(),
+            "a successor does not reinterpret assignment"
+        );
+        assert_eq!(
+            h.read(original).await?.historical_assignment,
+            Some(h.assignment)
+        );
+        Ok(())
+    }
+);
 
 goal_test!(
     create_then_read_returns_text_by_listing_and_by_id,
@@ -857,9 +887,12 @@ goal_test!(
             context: h.context(),
         };
         assert!(
-            h.pg.resolve_goal_replay(GoalReplayRequest::Transition(&request), &h.permit)
-                .await?
-                .is_some()
+            h.pg.resolve_goal_replay(
+                GoalReplayRequest::Transition(&request),
+                GoalEditPermit::Owner(&h.permit)
+            )
+            .await?
+            .is_some()
         );
 
         // Identity still discriminates: another command under the same key is a

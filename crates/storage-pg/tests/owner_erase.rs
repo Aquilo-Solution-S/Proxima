@@ -2,7 +2,7 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use proxiima_core::owner_inverse::{
     EraseAuthorization, OwnerEraseOutcome, OwnerEraseRefusal, OwnerEraseTarget, OwnerSurfaces,
@@ -494,13 +494,256 @@ fn goal_draft(request_id: &str) -> GoalWriteCommand {
         state: GoalState::Active,
         request_id: request_id.into(),
         close_fact_t: None,
-        assignment_t: None,
+
+        motivated_by: Vec::new(),
         dependency_t: vec![],
         evidence_t: vec![],
         mint_write_act: true,
         write_act_t: None,
         parent_handle: None,
     }
+}
+
+#[tokio::test]
+async fn erasing_goal_controller_or_participant_revokes_their_grants() {
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = Arc::new(PgStorage::connect_for_tests(url.clone()).await?);
+        let controller_user = UserId::new(Uuid::now_v7());
+        let controller = OwnerId::from(controller_user);
+        let subject = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let colleague = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let company = GroupId::new(Uuid::now_v7());
+        let other = OwnerId::from(company);
+        register_group_for_tests(pg.pool_for_tests(), company).await?;
+        for owner in [controller, subject, colleague, other] {
+            let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+            pg.ingest_fact_atomic(&permit, &draft(Some(("seed", "grant"))), None)
+                .await?;
+        }
+        // The company has a remaining administrator. The erased person may
+        // have authorised its consent before leaving; the company owns it.
+        pg.bootstrap_group_admin(company, UserId::new(colleague.into_inner()), colleague.into_inner())
+            .await?;
+        let pool = pg.pool_for_tests();
+        let goal = Uuid::now_v7();
+        let other_goal = Uuid::now_v7();
+        for (goal, owner, request_id) in [(goal, controller, "erase-grant"), (other_goal, other, "keep-grant")] {
+            sqlx::query(
+                "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
+                 VALUES ($1, 'core/task-goal-v1', $2, $1)",
+            )
+            .bind(goal)
+            .bind(owner.into_inner())
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxiima_core.goal (handle, t, owner_id, title, state, request_id, \"by\", via)
+                 VALUES ($1, $1, $2, 'grant goal', 'Active', $3, $2, NULL)",
+            )
+            .bind(goal)
+            .bind(owner.into_inner())
+            .bind(request_id)
+            .execute(pool)
+            .await?;
+        }
+        for goal in [goal, other_goal] {
+            sqlx::query(
+                "INSERT INTO proxiima_core.goal_access_grant
+                    (goal_handle, subject_id, read_ceiling, write_ceiling, manage,
+                     controller_generation, granted_by)
+                 VALUES ($1, $2, 1, 0, false, 0, $2)",
+            )
+            .bind(goal)
+            .bind(subject.into_inner())
+            .execute(pool)
+            .await?;
+        }
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+            user_id: controller_user,
+            drop_event_id: "goal-grant-drop".into(),
+        });
+        pg.erase_personal_owner(&auth, controller_user, &contract_sidecar_tables())
+            .await?;
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxiima_core.goal_access_grant WHERE goal_handle = $1",
+        )
+        .bind(other_goal)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(remaining, 1, "a foreign Goal's grant remains");
+        let erased: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxiima_core.goal_access_grant WHERE goal_handle = $1",
+        )
+        .bind(goal)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(erased, 0, "Goal controller erase cascades its grants");
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal_access_grant
+                (goal_handle, subject_id, read_ceiling, write_ceiling, manage,
+                 controller_generation, granted_by)
+             VALUES ($1, $2, 1, 0, false, 0, $3)",
+        )
+        .bind(other_goal)
+        .bind(colleague.into_inner())
+        .bind(subject.into_inner())
+        .execute(pool)
+        .await?;
+        let fact: Uuid = sqlx::query_scalar(
+            "SELECT t FROM proxiima_core.memory WHERE owner_id = $1 AND kind = 'fact' LIMIT 1",
+        )
+        .bind(other.into_inner())
+        .fetch_one(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal_memory_publication
+                (goal_handle, memory_t, source_owner, source_generation,
+                 controller_generation, permitted_use, published_by)
+             VALUES ($1, $2, $3, 0, 0, 'read', $4)",
+        )
+        .bind(other_goal)
+        .bind(fact)
+        .bind(other.into_inner())
+        .bind(subject.into_inner())
+        .execute(pool)
+        .await?;
+        // A valid grounded Perspective header is enough to exercise the
+        // authority inverse; this fixture never serves its payload.
+        let perspective = Uuid::now_v7();
+        let content: Uuid = sqlx::query_scalar(
+            "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
+             VALUES ($1, 'core/test-perspective', decode(repeat('00', 32), 'hex'))
+             RETURNING content_id",
+        )
+        .bind(other.into_inner())
+        .fetch_one(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+             VALUES ($1, 'perspective', 'core/test-perspective', $2, $1)",
+        )
+        .bind(perspective)
+        .bind(other.into_inner())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.memory
+                (handle, t, owner_id, kind, schema_id, content_id, refs, \"by\", via)
+             VALUES ($1, $1, $2, 'perspective', 'core/test-perspective', $3, ARRAY[$4::uuid], $2, NULL)",
+        )
+        .bind(perspective)
+        .bind(other.into_inner())
+        .bind(content)
+        .bind(fact)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal_work_binding
+                (goal_handle, memory_handle, source_owner, source_generation,
+                 controller_generation, bound_by)
+             VALUES ($1, $2, $3, 0, 0, $4)",
+        )
+        .bind(other_goal)
+        .bind(perspective)
+        .bind(other.into_inner())
+        .bind(subject.into_inner())
+        .execute(pool)
+        .await?;
+        let auth = EraseAuthorization::new_for_tests(OwnerEraseTarget::PersonalOwner {
+            user_id: UserId::new(subject.into_inner()),
+            drop_event_id: "goal-participant-drop".into(),
+        });
+        let mut writer = pool.begin().await?;
+        sqlx::query("SELECT handle FROM proxiima_core.goal_head WHERE handle = $1 FOR UPDATE")
+            .bind(other_goal)
+            .fetch_one(&mut *writer)
+            .await?;
+        let erase_pg = Arc::clone(&pg);
+        let erase_task = tokio::spawn(async move {
+            erase_pg
+                .erase_personal_owner(
+                    &auth,
+                    UserId::new(subject.into_inner()),
+                    &contract_sidecar_tables(),
+                )
+                .await
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if erase_task.is_finished() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            erase_task.is_finished(),
+            "participant erase must not wait on a foreign Goal head"
+        );
+        sqlx::query(
+            "UPDATE proxiima_core.goal_access_grant
+                SET read_ceiling = 2
+              WHERE goal_handle = $1 AND subject_id = $2 AND granted_by = $3",
+        )
+        .bind(other_goal)
+        .bind(colleague.into_inner())
+        .bind(subject.into_inner())
+        .execute(&mut *writer)
+        .await?;
+        writer.commit().await?;
+        erase_task.await??;
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM proxiima_core.goal_access_grant
+             WHERE subject_id = $1",
+        )
+        .bind(subject.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(remaining, 0, "erasure revokes direct subject grants");
+        let retained_grant: i16 = sqlx::query_scalar(
+            "SELECT read_ceiling FROM proxiima_core.goal_access_grant
+              WHERE goal_handle = $1 AND subject_id = $2 AND granted_by = $3",
+        )
+        .bind(other_goal)
+        .bind(colleague.into_inner())
+        .bind(subject.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(retained_grant, 2, "foreign issuer grant remains writable");
+        let remaining_consents: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM proxiima_core.goal_memory_publication WHERE published_by = $1)
+                  + (SELECT count(*) FROM proxiima_core.goal_work_binding WHERE bound_by = $1)",
+        )
+        .bind(subject.into_inner())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            remaining_consents, 2,
+            "foreign publication and work provenance survive issuer erase"
+        );
+        let retained_memory: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM proxiima_core.memory WHERE t = $1)",
+        )
+        .bind(perspective)
+        .fetch_one(pool)
+        .await?;
+        assert!(retained_memory, "participant erasure preserves company-owned work");
+        let foreign_goal_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM proxiima_core.goal_head WHERE handle = $1)",
+        )
+        .bind(other_goal)
+        .fetch_one(pool)
+        .await?;
+        assert!(foreign_goal_exists, "participant erasure preserves foreign Goals");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("Goal grant erase cascade failed");
 }
 
 #[tokio::test]
@@ -1535,7 +1778,8 @@ async fn erase_group_owner_completes_when_abandoned() {
                 state: GoalState::Active,
                 request_id: "erase-g".into(),
                 close_fact_t: None,
-                assignment_t: None,
+
+                motivated_by: Vec::new(),
                 dependency_t: vec![],
                 evidence_t: vec![],
                 mint_write_act: false,

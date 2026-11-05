@@ -20,7 +20,7 @@ E1 existence   — origin and refs t are a stored Memory.t, live or forgotten;
   E3 layering    — OriginKindValid (UML CHECKs)
   E4 kind follows — origins vs refs; no verb writes a pin
   E5 / E6        — there is no pin row, so no pin id and no pin payload
-  E7 rebuild     — derivePins m = (m.origins, m.refs, m.goal_refs)
+  E7 rebuild     — derivePins m = (m.origins, m.refs, m.goal_refs, m.guided_by)
 -/
 
 import Causa.Prelude
@@ -37,10 +37,53 @@ inductive EdgeKind where
   deriving DecidableEq, Repr
 
 /-- Pins extracted from a node — THE derivation, and it is identity.
-    Three columns since the Goal-reference split: the Goal spine is its own list. -/
+    Four source-owned columns: the Goal spine has ordinary references and
+    explicit guidance references, kept separate from F/A/P origins. -/
 def derivePins (m : Memory) :
-    List MemoryId × List MemoryId × List GoalId :=
-  (memory_origins m, memory_refs m, memory_goal_refs m)
+    List MemoryId × List MemoryId × List GoalId × List GoalId :=
+  (memory_origins m, memory_refs m ++ (memory_forked_from m).toList,
+    memory_goal_refs m, memory_guided_by m)
+
+/- The new causal fields are still ordinary source-owned Reference pins, but
+   remain separate from payload references and F/A/P grounding. -/
+def deriveCausalReferences (memories : Set Memory) (goals : Set Goal) :
+    Set (Id × Id) :=
+  fun pair => (∃ m : Memory, m ∈ memories ∧
+      ∃ id : GoalId, id ∈ memory_guided_by m ∧
+        pair = (memory_t m, id)) ∨
+    (∃ g : Goal, g ∈ goals ∧
+      ∃ id : MemoryId, id ∈ goal_motivated_by g ∧
+        pair = (goal_t g, id))
+
+theorem causal_reference_targets_are_exact_versions
+    (memories : Set Memory) (goals : Set Goal)
+    (m : Memory) (g : Goal)
+    (hm : m ∈ memories) (_hg : g ∈ goals) :
+    goal_t g ∈ memory_guided_by m →
+      (memory_t m, goal_t g) ∈ deriveCausalReferences memories goals := by
+  intro h
+  change (∃ m' : Memory, m' ∈ memories ∧
+      ∃ id : GoalId, id ∈ memory_guided_by m' ∧
+        (memory_t m, goal_t g) = (memory_t m', id)) ∨
+    (∃ g' : Goal, g' ∈ goals ∧
+      ∃ id : MemoryId, id ∈ goal_motivated_by g' ∧
+        (memory_t m, goal_t g) = (goal_t g', id))
+  exact Or.inl ⟨m, hm, goal_t g, h, rfl⟩
+
+theorem causal_motivation_targets_are_exact_versions
+    (memories : Set Memory) (goals : Set Goal)
+    (m : Memory) (g : Goal)
+    (_hm : m ∈ memories) (hg : g ∈ goals)
+    (h : memory_t m ∈ goal_motivated_by g) :
+    (goal_t g, memory_t m) ∈ deriveCausalReferences memories goals := by
+  change (∃ m' : Memory, m' ∈ memories ∧
+      ∃ id : GoalId, id ∈ memory_guided_by m' ∧
+        (goal_t g, memory_t m) = (memory_t m', id)) ∨
+    (∃ g' : Goal, g' ∈ goals ∧
+      ∃ id : MemoryId, id ∈ goal_motivated_by g' ∧
+        (goal_t g, memory_t m) = (goal_t g', id))
+  exact Or.inr ⟨g, hg, memory_t m, h, rfl⟩
+
 
 /- A legacy/live reference carrier can still name either spine. The storage
    split is reflected by `goalReferenceTargetExists`; this union remains the
@@ -97,6 +140,15 @@ def resolveVisibleGoalRefs (readable : GoalId → Bool) (m : Memory) :
     List MemoryId × List GoalId :=
   (memory_refs m ++ (memory_goal_refs m).filter (fun g => !readable g),
    (memory_goal_refs m).filter readable)
+
+def resolveVisibleGuidance (readable : GoalId → Bool) (m : Memory) : List GoalId :=
+  (memory_guided_by m).filter readable
+
+theorem guidance_projection_hides_unreadable_targets
+    (readable : GoalId → Bool) (m : Memory) (g : GoalId)
+    (hg : readable g = false) (h : g ∈ memory_guided_by m) :
+    g ∉ resolveVisibleGuidance readable m := by
+  simp [resolveVisibleGuidance, hg, h]
 
 /-- The non-disclosure invariant. A row carrying an unreadable Goal
     reference resolves to exactly the carrier of a row that had that id in
@@ -180,10 +232,13 @@ theorem live_origin_target_is_retained
   Or.inl h
 
 theorem pins_are_node_content (m : Memory) :
-    derivePins m = (m.origins, m.refs, m.goal_refs) := rfl
+    derivePins m =
+      (m.origins, m.refs ++ m.forked_from.toList, m.goal_refs, m.guided_by) := rfl
 
 theorem derived_table_rebuildable (m : Memory) :
-    derivePins m = (memory_origins m, memory_refs m, memory_goal_refs m) :=
+    derivePins m =
+      (memory_origins m, memory_refs m ++ (memory_forked_from m).toList,
+        memory_goal_refs m, memory_guided_by m) :=
   pins_are_node_content m
 
 /-- E4z — a write with empty origins is legal (interpretation Perspective). -/
@@ -256,12 +311,14 @@ theorem interpretation_rows_are_references
 theorem goal_declared_rows_are_references (g : Goal) :
     goalDeclaredTargetIds g =
       (goal_assignment g).toList ++ goal_dependencies g ++ goal_evidence g ++
+        goal_motivated_by g ++
         (goal_close_fact_t g).toList ++ (goal_write_act_t g).toList :=
   rfl
 
 theorem goal_declared_row_count (g : Goal) :
     (goalDeclaredTargetIds g).length =
       ((goal_assignment g).toList ++ goal_dependencies g ++ goal_evidence g ++
+        goal_motivated_by g ++
         (goal_close_fact_t g).toList ++ (goal_write_act_t g).toList).length := rfl
 
 /-- Closed vocabulary: two kinds. -/

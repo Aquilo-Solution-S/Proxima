@@ -1,5 +1,6 @@
 use crate::OwnerId;
 use crate::OwnerScope;
+use crate::goal_collaboration::GoalEditPermit;
 use crate::read_models::ActiveGoalSummary;
 use crate::storage::StorageError;
 use crate::storage_ports::OwnerWritePermit;
@@ -20,7 +21,7 @@ pub trait GoalWritePort: Send + Sync {
     async fn resolve_goal_replay(
         &self,
         req: GoalReplayRequest<'_, '_>,
-        permit: &OwnerWritePermit,
+        permit: GoalEditPermit<'_>,
     ) -> Result<Option<GoalReplayOutcome>, StorageError>;
 
     async fn create_goal_atomic(
@@ -32,19 +33,19 @@ pub trait GoalWritePort: Send + Sync {
     async fn transition_goal_atomic(
         &self,
         req: &TransitionGoalAtomicRequest<'_>,
-        permit: &OwnerWritePermit,
+        permit: GoalEditPermit<'_>,
     ) -> Result<GoalWriteOutcome, StorageError>;
 
     async fn achieve_goal_atomic(
         &self,
         req: &AchieveGoalAtomicRequest<'_>,
-        permit: &OwnerWritePermit,
+        permit: GoalEditPermit<'_>,
     ) -> Result<GoalWriteOutcome, StorageError>;
 
     async fn modify_goal_atomic(
         &self,
         req: &ModifyGoalAtomicRequest<'_>,
-        permit: &OwnerWritePermit,
+        permit: GoalEditPermit<'_>,
     ) -> Result<GoalWriteOutcome, StorageError>;
 
     async fn decompose_goal_atomic(

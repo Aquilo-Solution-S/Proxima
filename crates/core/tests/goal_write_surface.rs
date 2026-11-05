@@ -1,6 +1,6 @@
 use proxiima_core::verbs::goal_write::{
-    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, GoalWriteBuildError,
-    IdempotencyKey,
+    GoalAuthorship, GoalCreateRequest, GoalMotivationRef, GoalPayloadWrite, GoalTopologyWrite,
+    GoalWriteBuildError, IdempotencyKey,
 };
 use proxiima_core::{
     GoalPayload, MemoryId, OwnerId, PayloadKeyBuilder, TrimmedLenViolation, UserId,
@@ -77,10 +77,10 @@ fn product_goal_create_request_defaults_to_user_authorship_and_explicit_self_tar
     let owner: OwnerId = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     let target_self = MemoryId::new(uuid::Uuid::now_v7());
     let request_id = IdempotencyKey::new("onboarding:initial-goal:1").expect("stable key");
-    let target = GoalAssignmentTarget::perspective(target_self);
+    let target = GoalMotivationRef::perspective(target_self);
     let request = GoalCreateRequest::product(
         owner,
-        Some(target),
+        vec![target],
         request_id,
         "Initial goal",
         "Practice every weekday",
@@ -89,9 +89,17 @@ fn product_goal_create_request_defaults_to_user_authorship_and_explicit_self_tar
         },
     );
     assert_eq!(request.owner, owner);
-    assert_eq!(request.topology.assignment(), Some(target));
+    assert_eq!(request.topology.motivated_by(), &[target]);
     assert_eq!(request.author_self_perspective_id, None);
     assert!(request.topology.evidence().is_empty());
     assert!(request.topology.dependencies().is_empty());
     assert_eq!(request.authorship, GoalAuthorship::User);
+}
+
+#[test]
+fn goal_topology_normalizes_duplicate_perspective_motivations() {
+    let perspective = GoalMotivationRef::perspective(MemoryId::new(uuid::Uuid::now_v7()));
+    let topology = GoalTopologyWrite::new(vec![perspective, perspective], Vec::new(), Vec::new())
+        .expect("duplicate motivations normalize");
+    assert_eq!(topology.motivated_by(), &[perspective]);
 }

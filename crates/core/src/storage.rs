@@ -42,8 +42,8 @@ pub enum StorageError {
     /// tree lock must be acquired before the snapshot that validates it.
     #[error("membership write requires READ COMMITTED isolation")]
     MembershipIsolation,
-    #[error("membership authorization refused: {0}")]
-    MembershipForbidden(String),
+    #[error("authorization refused: {0}")]
+    Forbidden(String),
     /// A same `(owner, request_id)` idempotency key already exists with a
     /// different body. Carries the offending request id so the engine can
     /// surface a typed `IdempotencyConflict` without message parsing, and
@@ -405,6 +405,10 @@ pub struct AuthorDerivedRequest<'a> {
     /// as the row, which is what makes them
     /// [`crate::EdgeKind::Reference`] pins.
     pub references: &'a [EdgeEndpoint],
+    /// Pins retained from the exact forked prior. These declarations are
+    /// trusted witnesses; all newly introduced pins remain normally read and
+    /// kind validated by storage.
+    pub retained_pins: Option<&'a crate::RetainedPins>,
     /// Memories of other stores this memory was also made from. Storage
     /// records them beside the row, in the same transaction, without any
     /// constraint on the remote side, as `origin` rows; a replay records
@@ -414,6 +418,8 @@ pub struct AuthorDerivedRequest<'a> {
     /// remote subjects), recorded like `external_origins` but as
     /// `reference` rows (#480). A memory id is never in both lists.
     pub external_references: &'a [uuid::Uuid],
+    /// Exact Goal versions that guided this Perspective version.
+    pub guided_by: &'a [crate::GoalId],
     /// Tool `idempotency_key` ledger entry when the caller supplied one.
     pub request: Option<crate::verbs::idempotency::RequestKey>,
 }

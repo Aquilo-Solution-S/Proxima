@@ -11,7 +11,8 @@ import Causa.Operators
 namespace Causa
 
 def pinFrom (m tgt : Memory) : Prop :=
-  memory_t tgt ∈ memory_origins m ∨ memory_t tgt ∈ memory_refs m
+  memory_t tgt ∈ memory_origins m ∨ memory_t tgt ∈ memory_refs m ∨
+    memory_forked_from m = some (memory_t tgt)
 
 def pinFromInTable (memories : Set Memory) (m tgt : Memory) : Prop :=
   m ∈ memories ∧ tgt ∈ memories ∧ pinFrom m tgt
@@ -23,6 +24,7 @@ structure MemoryGraphValid
   memoryIdUnique : MemoryIdUnique memories
   goalIdUnique : GoalIdUnique goals
   headAligned : MemoryHeadAligned memories heads
+  forkAnchorAligned : ForkAnchorAligned memories
   /-- Since the Goal-reference split each reference column resolves against exactly one
       spine: `refs` against Memory (live or forgotten) and `goal_refs` against
       Goal. Before the split `refs` had to admit either, which is what
@@ -31,8 +33,13 @@ structure MemoryGraphValid
     ∀ m : Memory, m ∈ memories →
       (∀ id : MemoryId, id ∈ memory_origins m → pinExists memories id) ∧
       (∀ id : MemoryId, id ∈ memory_refs m → pinExists memories id) ∧
+      (∀ id : MemoryId, memory_forked_from m = some id → pinExists memories id) ∧
       (∀ id : GoalId, id ∈ memory_goal_refs m →
         goalReferenceTargetExists goals id)
+  motivationsValid :
+    ∀ g : Goal, g ∈ goals → goal_motivations_valid memories g
+  guidanceValid :
+    ∀ m : Memory, m ∈ memories → perspective_guidance_valid memories goals m
   originKind : ∀ m : Memory, m ∈ memories → OriginKindValid memories m
   /-- Memory `t` and Goal `t` do not collide (both globally UNIQUE). -/
   memoryGoalIdsDisjoint :
@@ -50,7 +57,8 @@ structure MemoryGraphValid
   groundingSupport :
     ∀ m : Memory, m ∈ memories → memory_kind m ≠ .Fact →
       ∃ id : MemoryId,
-        (id ∈ memory_origins m ∨ id ∈ memory_refs m) ∧
+        (id ∈ memory_origins m ∨ id ∈ memory_refs m ∨
+          memory_forked_from m = some id) ∧
         (∃ tgt : Memory, tgt ∈ memories ∧ memory_t tgt = id)
   /-- Every stored pin target is strictly earlier. -/
   pinTimeStrict :
@@ -69,14 +77,21 @@ structure RetainedMemoryGraphValid
   goalIdUnique : GoalIdUnique goals
   erasedPinIdUnique : ErasedPinTargetIdUnique targets
   headAligned : MemoryHeadAligned memories heads
+  forkAnchorAligned : ForkAnchorAligned memories
   pinTargetsExist :
     ∀ m : Memory, m ∈ memories →
       (∀ id : MemoryId, id ∈ memory_origins m →
         retainedOriginTargetExists memories targets id) ∧
       (∀ id : MemoryId, id ∈ memory_refs m →
         retainedMemoryReferenceTargetExists memories targets id) ∧
+      (∀ id : MemoryId, memory_forked_from m = some id →
+        retainedMemoryReferenceTargetExists memories targets id) ∧
       (∀ id : GoalId, id ∈ memory_goal_refs m →
         retainedGoalReferenceTargetExists goals targets id)
+  motivationsValid :
+    ∀ g : Goal, g ∈ goals → goal_motivations_retained_valid memories goals targets g
+  guidanceValid :
+    ∀ m : Memory, m ∈ memories → perspective_guidance_retained_valid memories goals targets m
   originKind :
     ∀ m : Memory, m ∈ memories →
       RetainedOriginKindValid memories targets m
@@ -119,7 +134,14 @@ theorem memory_graph_valid_retained_empty
     goalIdUnique := hgraph.goalIdUnique
     erasedPinIdUnique := ?_
     headAligned := hgraph.headAligned
+    forkAnchorAligned := hgraph.forkAnchorAligned
     pinTargetsExist := ?_
+    motivationsValid := by
+      intro g hg id hid
+      exact Or.inl (hgraph.motivationsValid g hg id hid)
+    guidanceValid := by
+      intro m hm hp id hid
+      exact Or.inl (hgraph.guidanceValid m hm hp id hid)
     originKind := ?_
     memoryGoalIdsDisjoint := hgraph.memoryGoalIdsDisjoint
     erasedMemoryDisjoint := ?_
@@ -131,14 +153,15 @@ theorem memory_graph_valid_retained_empty
   · intro e1 e2 he1 _ _
     exact False.elim he1
   · intro m hm
-    constructor
+    refine ⟨?_, ?_, ?_, ?_⟩
     · intro id hid
       exact Or.inl ((hgraph.pinTargetsExist m hm).1 id hid)
-    constructor
     · intro id hid
       exact Or.inl ((hgraph.pinTargetsExist m hm).2.1 id hid)
     · intro id hid
-      exact Or.inl ((hgraph.pinTargetsExist m hm).2.2 id hid)
+      exact Or.inl ((hgraph.pinTargetsExist m hm).2.2.1 id hid)
+    · intro id hid
+      exact Or.inl ((hgraph.pinTargetsExist m hm).2.2.2 id hid)
   · intro m hm
     let h := hgraph.originKind m hm
     refine {
@@ -212,7 +235,10 @@ theorem memory_grounds_in_facts
     have hfrom : pinFrom m tgt := by
       cases hid with
       | inl ho => exact Or.inl (by rw [ht]; exact ho)
-      | inr hr => exact Or.inr (by rw [ht]; exact hr)
+      | inr hr =>
+          cases hr with
+          | inl hr => exact Or.inr (Or.inl (by rw [ht]; exact hr))
+          | inr hfork => exact Or.inr (Or.inr (by rw [ht]; exact hfork))
     have htable : pinFromInTable memories m tgt := ⟨hm, htgt, hfrom⟩
     exact GroundsInFact.step hfrom (ih tgt htable htgt)
 
@@ -232,6 +258,21 @@ theorem perspective_has_provenance :
   intro memories goals heads hgraph m hm hk
   have hne : memory_kind m ≠ .Fact := by rw [hk]; intro h; exact (nomatch h)
   exact hgraph.derivedProvenance m hm hne
+
+theorem guidance_does_not_ground
+    (memories : Set Memory) (goals : Set Goal)
+    (heads : Set MemoryHead)
+    (hgraph : MemoryGraphValid memories goals heads)
+    (p : Memory) (hp : p ∈ memories)
+    (hk : memory_kind p = .Perspective)
+    (goal_id : GoalId) (hguided : goal_id ∈ memory_guided_by p) :
+    goal_id ∉ memory_origins p := by
+  intro horigin
+  obtain ⟨g, hg, hgt, _⟩ :=
+    hgraph.guidanceValid p hp hk goal_id hguided
+  obtain ⟨source, hsource, hst⟩ :=
+    (hgraph.pinTargetsExist p hp).1 goal_id horigin
+  exact hgraph.memoryGoalIdsDisjoint source g hsource hg (hst.trans hgt.symm)
 
 /-- After the Goal-reference split `refs` is the Memory spine, so a Goal `t` is never in it. It
     is a theorem now rather than a case each reader had to rule out at read
@@ -256,7 +297,7 @@ theorem a_goal_reference_resolves_on_the_goal_spine
     (m : Memory) (hm : m ∈ memories) (id : GoalId)
     (hin : id ∈ memory_goal_refs m) :
     goalReferenceTargetExists goals id :=
-  (hgraph.pinTargetsExist m hm).2.2 id hin
+  (hgraph.pinTargetsExist m hm).2.2.2 id hin
 
 theorem abstraction_grounds_in_facts :
     ∀ memories goals heads,

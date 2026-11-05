@@ -559,11 +559,10 @@ fn substring_sql(
         .collect::<Result<Vec<_>, StorageError>>()?;
     // Every leg projects its memory id as `t` whatever its sidecar calls
     // the column, so the union's own ordering stays one spelling.
-    if let ([only], [leg]) = (legs.as_slice(), scanned.as_slice()) {
-        let key = projection_key_ident(leg.projection)?;
+    if let ([only], [_leg]) = (legs.as_slice(), scanned.as_slice()) {
         let order_by = match candidate_order(req) {
-            SearchOrder::Relevance => format!("lexical_score DESC, c.{} DESC", key.as_str()),
-            SearchOrder::Recency => format!("c.{} DESC", key.as_str()),
+            SearchOrder::Relevance => "lexical_score DESC, t DESC".to_owned(),
+            SearchOrder::Recency => "t DESC".to_owned(),
         };
         // SQL-POLICY: PgIdent
         return Ok(format!(
@@ -642,20 +641,29 @@ fn substring_leg_sql_parts(
     // so the row shape and the union's ordering are one spelling whatever
     // a spiice names its column.
     Ok(format!(
-        "SELECT c.{key} AS t,
+        "SELECT * FROM (
+         WITH eligible_memory AS MATERIALIZED (
+             SELECT source.t, source.handle, source.kind, source.owner_id, source.schema_id
+               FROM proxiima_core.memory source /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
+              WHERE source.owner_id = ANY($7::uuid[])
+                AND source.schema_id = ANY($8::text[])
+                AND source.schema_id = ANY(ARRAY[{own_schemas}]::text[])
+         )
+         SELECT m.t AS t,
                 {floor}::real AS lexical_score
-           FROM {table} c
-           JOIN proxiima_core.memory m ON m.t = c.{key} /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
-          WHERE m.owner_id = ANY($7::uuid[])
-            AND m.schema_id = ANY($8::text[])
-            AND m.schema_id = ANY(ARRAY[{own_schemas}]::text[])
+           FROM eligible_memory m
+           JOIN {table} c
+             ON c.{key} = m.t
             AND (lower({search_text}) LIKE $1 ESCAPE '\\')
-            {tag_pred}{admit_pred}
+            {tag_pred}
+          WHERE EXISTS (SELECT 1 FROM eligible_memory)
+            {admit_pred}
             AND ($4::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(c.{key}) >= $4)
+                 OR proxiima_core.memory_created_at(m.t) >= $4)
             AND ($5::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(c.{key}) <= $5)
-            AND ($6::uuid IS NULL OR c.{key} < $6)",
+                 OR proxiima_core.memory_created_at(m.t) <= $5)
+            AND ($6::uuid IS NULL OR m.t < $6)
+         ) leg",
         table = table.as_str(),
         key = key.as_str(),
     ))
@@ -819,7 +827,8 @@ pub(crate) fn projection_candidate_statements(
         &spiice,
         true,
         &format!(
-            " AND p.owner_id = ANY(proxiima_core.search_owner_ids()){}",
+            " AND (p.owner_id = ANY(proxiima_core.search_owner_ids())
+                   OR p.memory_id IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($7::uuid[]))){}",
             candidate_tags("p.tag")
         ),
         &admit,
@@ -965,10 +974,11 @@ fn candidate_authorization(memory_id: &str, head_filter: &str) -> String {
     format!(
         " AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ \
          WHERE authorized_memory.t = {memory_id} \
-         AND authorized_memory.owner_id = ANY($7::uuid[]) \
+         AND (authorized_memory.owner_id = ANY($7::uuid[]) \
+              OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($7::uuid[]))) \
          AND authorized_memory.forgotten_at IS NULL \
          AND ($11::text IS NULL OR authorized_memory.kind::text = $11) \
-         AND (NOT $10::boolean OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head \
+         AND (NOT $10::boolean OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads()) OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head \
          WHERE authorized_head.handle = authorized_memory.handle \
          AND authorized_head.t = authorized_memory.t{head_filter})))"
     )
@@ -1163,11 +1173,12 @@ fn rank_weight_array(projection: &MemorySearchProjection) -> String {
 }
 
 fn search_admit_sql(heads_only: bool) -> String {
-    let from = if heads_only {
-        "FROM proxiima_core.memory_head h \
-         JOIN proxiima_core.memory m ON m.handle = h.handle AND m.t = h.t"
+    let head_filter = if heads_only {
+        " AND (EXISTS (SELECT 1 FROM proxiima_core.memory_head h
+                        WHERE h.handle = m.handle AND h.t = m.t)
+                OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads()))"
     } else {
-        "FROM proxiima_core.memory m"
+        ""
     };
     format!(
         "SELECT m.t,
@@ -1175,15 +1186,17 @@ fn search_admit_sql(heads_only: bool) -> String {
                 m.schema_id,
                 proxiima_core.memory_created_at(m.t) AS created_at,
                 m.occurred_at, m.\"by\", m.via
-           {from}
+           FROM proxiima_core.memory m
           WHERE m.t = ANY($1::uuid[])
-            AND m.owner_id = ANY($2::uuid[])
+            AND (m.owner_id = ANY($2::uuid[])
+                 OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($2::uuid[])))
             AND ($3::text IS NULL OR m.kind::text = $3)
             AND ($4::text IS NULL OR m.schema_id = $4)
             AND ($5::timestamptz IS NULL
                  OR proxiima_core.memory_created_at(m.t) >= $5)
             AND ($6::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(m.t) <= $6)"
+                 OR proxiima_core.memory_created_at(m.t) <= $6)
+            {head_filter}"
     )
 }
 
@@ -1273,7 +1286,8 @@ fn semantic_candidate_admission_sql(
             Ok(format!(
                 "EXISTS (SELECT 1 FROM {table} p
                           WHERE p.memory_id = m.t
-                            AND p.owner_id = ANY($2::uuid[])
+                            AND (p.owner_id = ANY($2::uuid[])
+                                 OR p.memory_id IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($2::uuid[])))
                             AND p.schema_id = ANY(${schema_bind}::text[]){tag_pred})",
                 table = table.as_str(),
                 schema_bind = schema_bind_base + index,
@@ -1290,6 +1304,79 @@ fn semantic_candidate_admission_sql(
         "{} AND ({projection_pred})",
         search_admit_sql(matches!(req.supersession, SupersessionStatus::HeadsOnly))
     ))
+}
+
+enum SemanticCandidates<'a> {
+    Local,
+    Remote {
+        index: &'a dyn proxiima_core::storage_ports::VectorIndex,
+        filter: proxiima_core::storage_ports::VectorCandidateFilter,
+    },
+}
+
+async fn remote_candidate_filter(
+    connection: &mut Transaction<'static, Postgres>,
+    req: &MemorySearchRequest,
+) -> Result<proxiima_core::storage_ports::VectorCandidateFilter, StorageError> {
+    let selectors: Vec<_> = req.read_owners.iter().map(|id| id.into_inner()).collect();
+    let owners: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT owner_id FROM unnest(proxiima_core.search_owner_ids()) owner_id WHERE owner_id=ANY($1::uuid[])",
+    ).bind(&selectors).fetch_all(connection.as_mut()).await.map_err(map_err)?;
+    let sql = match req.supersession {
+        SupersessionStatus::HeadsOnly => {
+            "SELECT memory_t FROM proxiima_core.goal_visible_memory_heads() WHERE owner_id=ANY($1::uuid[])"
+        }
+        SupersessionStatus::IncludeSuperseded => {
+            "SELECT memory_t FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($1::uuid[])"
+        }
+    };
+    // SQL-POLICY: fixed-fragment — the closed supersession mode selects the candidate relation.
+    let memories: Vec<uuid::Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(&selectors)
+        .fetch_all(connection.as_mut())
+        .await
+        .map_err(map_err)?;
+    Ok(proxiima_core::storage_ports::VectorCandidateFilter {
+        owners: owners.into_iter().map(OwnerId::new).collect(),
+        memories: memories.into_iter().map(MemoryId::new).collect(),
+    })
+}
+
+// Owner roles can stop below Perspective. Their index stream may therefore
+// contain higher-kind rows that RLS will reject. Give exact Goal publications
+// their own candidate budget so those rows cannot consume that route's window.
+async fn remote_nearest(
+    index: &dyn proxiima_core::storage_ports::VectorIndex,
+    filter: &proxiima_core::storage_ports::VectorCandidateFilter,
+    query: &proxiima_core::SpaceVector,
+    window: u32,
+) -> Result<Vec<proxiima_core::storage_ports::VectorCandidate>, StorageError> {
+    use proxiima_core::storage_ports::{VectorCandidate, VectorCandidateFilter};
+
+    let mut candidates = BTreeMap::<uuid::Uuid, VectorCandidate>::new();
+    for route in [
+        VectorCandidateFilter {
+            owners: filter.owners.clone(),
+            memories: Vec::new(),
+        },
+        VectorCandidateFilter {
+            owners: Vec::new(),
+            memories: filter.memories.clone(),
+        },
+    ] {
+        if route.owners.is_empty() && route.memories.is_empty() {
+            continue;
+        }
+        for candidate in index.nearest(&route, query, window).await? {
+            candidates
+                .entry(candidate.memory_id.into_inner())
+                .and_modify(|prior| {
+                    prior.similarity_score = prior.similarity_score.max(candidate.similarity_score);
+                })
+                .or_insert(candidate);
+        }
+    }
+    Ok(candidates.into_values().collect())
 }
 
 async fn scan_embeddings_on_connection(
@@ -1323,16 +1410,29 @@ async fn scan_embeddings_on_connection(
         .execute(connection.as_mut())
         .await
         .map_err(map_err)?;
+    let candidates = match vectors {
+        crate::vector_index::StoreVectors::Local => SemanticCandidates::Local,
+        crate::vector_index::StoreVectors::Remote(index) => SemanticCandidates::Remote {
+            index: index.as_ref(),
+            filter: remote_candidate_filter(connection, req).await?,
+        },
+    };
     let mut window = overfetch;
     let mut admitted = BTreeMap::new();
     loop {
-        let candidates = match vectors {
-            crate::vector_index::StoreVectors::Local => {
-                crate::vector_index::local_nearest(connection, &req.read_owners, semantic, window)
-                    .await?
+        let candidates = match &candidates {
+            SemanticCandidates::Local => {
+                crate::vector_index::local_nearest(
+                    connection,
+                    &req.read_owners,
+                    semantic,
+                    window,
+                    req.supersession,
+                )
+                .await?
             }
-            crate::vector_index::StoreVectors::Remote(index) => {
-                index.nearest(&req.read_owners, semantic, window).await?
+            SemanticCandidates::Remote { index, filter } => {
+                remote_nearest(*index, filter, semantic, window).await?
             }
         };
         let fetched = candidates.len();
@@ -1741,27 +1841,28 @@ mod tests {
         assert!(substring.contains("LIMIT $2"), "$2 is the overfetch budget");
         assert!(substring.contains("c.tags && $3::text[]"), "$3 is the tags");
         assert!(
-            substring.contains("proxiima_core.memory_created_at(c.t) >= $4"),
+            substring.contains("proxiima_core.memory_created_at(m.t) >= $4"),
             "$4 is `since` — a LOWER bound"
         );
         assert!(
-            substring.contains("proxiima_core.memory_created_at(c.t) <= $5"),
+            substring.contains("proxiima_core.memory_created_at(m.t) <= $5"),
             "$5 is `until` — an UPPER bound"
         );
         assert!(
-            substring.contains("($6::uuid IS NULL OR c.t < $6)"),
+            substring.contains("($6::uuid IS NULL OR m.t < $6)"),
             "$6 is the recency cursor, and it pages DOWNWARD"
         );
         assert!(
-            substring.contains("JOIN proxiima_core.memory m ON m.t = c.t"),
+            substring.contains("FROM proxiima_core.memory source")
+                && substring.contains("ON c.t = m.t"),
             "a sidecar carries no owner; the leg must drive from memory"
         );
         assert!(
-            substring.contains("m.owner_id = ANY($7::uuid[])"),
+            substring.contains("source.owner_id = ANY($7::uuid[])"),
             "$7 is the owner set, at candidate time and not only at admit"
         );
         assert!(
-            substring.contains("m.schema_id = ANY($8::text[])"),
+            substring.contains("source.schema_id = ANY($8::text[])"),
             "$8 is the MISSING schema set"
         );
         assert!(
@@ -2018,7 +2119,8 @@ mod tests {
             "supersession is admit's seventh filter, spelled as a FROM clause"
         );
         assert!(
-            super::search_admit_sql(true).contains("proxiima_core.memory_head h"),
+            super::search_admit_sql(true)
+                .contains("EXISTS (SELECT 1 FROM proxiima_core.memory_head h"),
             "…and that is the shape `admit_side_restriction` mirrors"
         );
     }
@@ -2026,8 +2128,10 @@ mod tests {
     /// A request the builders can render every clause of.
     pub(super) fn request_with_tags() -> MemorySearchRequest {
         MemorySearchRequest {
-            owner: OwnerId::from(proxiima_core::UserId::new(uuid::Uuid::nil())),
             read_owners: vec![OwnerId::from(proxiima_core::UserId::new(uuid::Uuid::nil()))],
+            scope: proxiima_core::verbs::query::MemorySearchScope::Owner(OwnerId::from(
+                proxiima_core::UserId::new(uuid::Uuid::nil()),
+            )),
             query: "needle".into(),
             mode: SearchMode::Lexical,
             supersession: SupersessionStatus::HeadsOnly,

@@ -2,8 +2,48 @@ use crate::storage::StorageError;
 use crate::storage_ports::{MembershipWritePermit, OwnerWritePermit};
 use crate::{EntityId, GroupId, MembershipRow, OwnerId, Relation, UserId};
 
+/// The independently checked route through which storage exposed an entry.
+/// A Goal route is never an owner role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryReadRoute {
+    Owner,
+    Goal,
+}
+
+/// One exact entry visible in the authenticated transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleEntry {
+    pub owner: OwnerId,
+    pub kind: crate::AccessKind,
+    pub schema: Option<crate::SchemaId>,
+    pub route: EntryReadRoute,
+}
+
 #[async_trait::async_trait]
 pub trait OwnerAccessReadPort: Send + Sync {
+    /// Exact-entry visibility, including separately authorised Goal routes.
+    /// The default retains the owner-only contract for existing backends.
+    async fn visible_entries(
+        &self,
+        owner_scope: Option<&crate::OwnerScope>,
+        entities: &[EntityId],
+        owner_candidates: &[OwnerId],
+    ) -> Result<Vec<Option<VisibleEntry>>, StorageError> {
+        Ok(self
+            .visible_home_owners(owner_scope, entities, owner_candidates)
+            .await?
+            .into_iter()
+            .map(|entry| {
+                entry.map(|(owner, kind, schema)| VisibleEntry {
+                    owner,
+                    kind,
+                    schema,
+                    route: EntryReadRoute::Owner,
+                })
+            })
+            .collect())
+    }
+
     async fn resolve_membership(
         &self,
         _owner_scope: Option<&crate::OwnerScope>,

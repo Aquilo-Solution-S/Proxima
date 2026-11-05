@@ -13,7 +13,8 @@ CREATE POLICY proxiima_search_candidates ON proxiima_core.embeddings FOR SELECT 
 DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.embedding_heads;
 CREATE POLICY proxiima_search_candidates ON proxiima_core.embedding_heads FOR SELECT TO proxiima_search USING (true);
 SET LOCAL ROLE proxiima_search;
-EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d384(uuid[], text, public.vector, bigint)
+EXECUTE $generated_function$DROP FUNCTION IF EXISTS proxiima_core.vector_candidates_d384(uuid[], text, public.vector, bigint);
+                 CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d384(uuid[], text, public.vector, bigint, boolean)
                  RETURNS TABLE(memory_id uuid, similarity_score real)
                  LANGUAGE plpgsql STABLE SECURITY DEFINER
                  SET search_path = pg_catalog, pg_temp
@@ -52,6 +53,8 @@ BEGIN
                     WHERE m.t = emb.entity_id
                       AND m.owner_id = ANY($1)
                       AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
                )
              ORDER BY emb.vec::public.vector(384) OPERATOR(public.<=>) $3::public.vector(384)
              LIMIT chunk_window
@@ -85,6 +88,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
          ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
          LIMIT 1000
         )
@@ -116,6 +121,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
         )
         SELECT emb.entity_id,
                LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
@@ -125,7 +132,7 @@ BEGIN
          LIMIT target;
 END;
 $body$;$generated_function$;
-REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d384(uuid[], text, public.vector, bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d384(uuid[], text, public.vector, bigint, boolean) FROM PUBLIC;
 EXECUTE format('SET LOCAL ROLE %I', original_role);
 REVOKE CREATE ON SCHEMA proxiima_core FROM proxiima_search;
 END
@@ -141,7 +148,8 @@ CREATE POLICY proxiima_search_candidates ON proxiima_core.embeddings FOR SELECT 
 DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.embedding_heads;
 CREATE POLICY proxiima_search_candidates ON proxiima_core.embedding_heads FOR SELECT TO proxiima_search USING (true);
 SET LOCAL ROLE proxiima_search;
-EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d768(uuid[], text, public.vector, bigint)
+EXECUTE $generated_function$DROP FUNCTION IF EXISTS proxiima_core.vector_candidates_d768(uuid[], text, public.vector, bigint);
+                 CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d768(uuid[], text, public.vector, bigint, boolean)
                  RETURNS TABLE(memory_id uuid, similarity_score real)
                  LANGUAGE plpgsql STABLE SECURITY DEFINER
                  SET search_path = pg_catalog, pg_temp
@@ -180,6 +188,8 @@ BEGIN
                     WHERE m.t = emb.entity_id
                       AND m.owner_id = ANY($1)
                       AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
                )
              ORDER BY emb.vec::public.vector(768) OPERATOR(public.<=>) $3::public.vector(768)
              LIMIT chunk_window
@@ -213,6 +223,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
          ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
          LIMIT 1000
         )
@@ -244,6 +256,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
         )
         SELECT emb.entity_id,
                LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
@@ -253,7 +267,7 @@ BEGIN
          LIMIT target;
 END;
 $body$;$generated_function$;
-REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d768(uuid[], text, public.vector, bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d768(uuid[], text, public.vector, bigint, boolean) FROM PUBLIC;
 EXECUTE format('SET LOCAL ROLE %I', original_role);
 REVOKE CREATE ON SCHEMA proxiima_core FROM proxiima_search;
 END
@@ -269,7 +283,8 @@ CREATE POLICY proxiima_search_candidates ON proxiima_core.embeddings FOR SELECT 
 DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.embedding_heads;
 CREATE POLICY proxiima_search_candidates ON proxiima_core.embedding_heads FOR SELECT TO proxiima_search USING (true);
 SET LOCAL ROLE proxiima_search;
-EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d1024(uuid[], text, public.vector, bigint)
+EXECUTE $generated_function$DROP FUNCTION IF EXISTS proxiima_core.vector_candidates_d1024(uuid[], text, public.vector, bigint);
+                 CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d1024(uuid[], text, public.vector, bigint, boolean)
                  RETURNS TABLE(memory_id uuid, similarity_score real)
                  LANGUAGE plpgsql STABLE SECURITY DEFINER
                  SET search_path = pg_catalog, pg_temp
@@ -308,6 +323,8 @@ BEGIN
                     WHERE m.t = emb.entity_id
                       AND m.owner_id = ANY($1)
                       AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
                )
              ORDER BY emb.vec::public.vector(1024) OPERATOR(public.<=>) $3::public.vector(1024)
              LIMIT chunk_window
@@ -341,6 +358,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
          ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
          LIMIT 1000
         )
@@ -372,6 +391,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
         )
         SELECT emb.entity_id,
                LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
@@ -381,7 +402,7 @@ BEGIN
          LIMIT target;
 END;
 $body$;$generated_function$;
-REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d1024(uuid[], text, public.vector, bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d1024(uuid[], text, public.vector, bigint, boolean) FROM PUBLIC;
 EXECUTE format('SET LOCAL ROLE %I', original_role);
 REVOKE CREATE ON SCHEMA proxiima_core FROM proxiima_search;
 END
@@ -397,7 +418,8 @@ CREATE POLICY proxiima_search_candidates ON proxiima_core.embeddings FOR SELECT 
 DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.embedding_heads;
 CREATE POLICY proxiima_search_candidates ON proxiima_core.embedding_heads FOR SELECT TO proxiima_search USING (true);
 SET LOCAL ROLE proxiima_search;
-EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d1536(uuid[], text, public.vector, bigint)
+EXECUTE $generated_function$DROP FUNCTION IF EXISTS proxiima_core.vector_candidates_d1536(uuid[], text, public.vector, bigint);
+                 CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d1536(uuid[], text, public.vector, bigint, boolean)
                  RETURNS TABLE(memory_id uuid, similarity_score real)
                  LANGUAGE plpgsql STABLE SECURITY DEFINER
                  SET search_path = pg_catalog, pg_temp
@@ -436,6 +458,8 @@ BEGIN
                     WHERE m.t = emb.entity_id
                       AND m.owner_id = ANY($1)
                       AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
                )
              ORDER BY emb.vec::public.vector(1536) OPERATOR(public.<=>) $3::public.vector(1536)
              LIMIT chunk_window
@@ -469,6 +493,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
          ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
          LIMIT 1000
         )
@@ -500,6 +526,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
         )
         SELECT emb.entity_id,
                LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
@@ -509,7 +537,7 @@ BEGIN
          LIMIT target;
 END;
 $body$;$generated_function$;
-REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d1536(uuid[], text, public.vector, bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d1536(uuid[], text, public.vector, bigint, boolean) FROM PUBLIC;
 EXECUTE format('SET LOCAL ROLE %I', original_role);
 REVOKE CREATE ON SCHEMA proxiima_core FROM proxiima_search;
 END
@@ -525,7 +553,8 @@ CREATE POLICY proxiima_search_candidates ON proxiima_core.embeddings FOR SELECT 
 DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.embedding_heads;
 CREATE POLICY proxiima_search_candidates ON proxiima_core.embedding_heads FOR SELECT TO proxiima_search USING (true);
 SET LOCAL ROLE proxiima_search;
-EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d2048(uuid[], text, public.vector, bigint)
+EXECUTE $generated_function$DROP FUNCTION IF EXISTS proxiima_core.vector_candidates_d2048(uuid[], text, public.vector, bigint);
+                 CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d2048(uuid[], text, public.vector, bigint, boolean)
                  RETURNS TABLE(memory_id uuid, similarity_score real)
                  LANGUAGE plpgsql STABLE SECURITY DEFINER
                  SET search_path = pg_catalog, pg_temp
@@ -564,6 +593,8 @@ BEGIN
                     WHERE m.t = emb.entity_id
                       AND m.owner_id = ANY($1)
                       AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
                )
              ORDER BY emb.vec::public.halfvec(2048) OPERATOR(public.<=>) $3::public.halfvec(2048)
              LIMIT chunk_window
@@ -597,6 +628,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
          ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
          LIMIT 1000
         )
@@ -628,6 +661,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
         )
         SELECT emb.entity_id,
                LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
@@ -637,7 +672,7 @@ BEGIN
          LIMIT target;
 END;
 $body$;$generated_function$;
-REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d2048(uuid[], text, public.vector, bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d2048(uuid[], text, public.vector, bigint, boolean) FROM PUBLIC;
 EXECUTE format('SET LOCAL ROLE %I', original_role);
 REVOKE CREATE ON SCHEMA proxiima_core FROM proxiima_search;
 END
@@ -653,7 +688,8 @@ CREATE POLICY proxiima_search_candidates ON proxiima_core.embeddings FOR SELECT 
 DROP POLICY IF EXISTS proxiima_search_candidates ON proxiima_core.embedding_heads;
 CREATE POLICY proxiima_search_candidates ON proxiima_core.embedding_heads FOR SELECT TO proxiima_search USING (true);
 SET LOCAL ROLE proxiima_search;
-EXECUTE $generated_function$CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d3072(uuid[], text, public.vector, bigint)
+EXECUTE $generated_function$DROP FUNCTION IF EXISTS proxiima_core.vector_candidates_d3072(uuid[], text, public.vector, bigint);
+                 CREATE OR REPLACE FUNCTION proxiima_core.vector_candidates_d3072(uuid[], text, public.vector, bigint, boolean)
                  RETURNS TABLE(memory_id uuid, similarity_score real)
                  LANGUAGE plpgsql STABLE SECURITY DEFINER
                  SET search_path = pg_catalog, pg_temp
@@ -692,6 +728,8 @@ BEGIN
                     WHERE m.t = emb.entity_id
                       AND m.owner_id = ANY($1)
                       AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
                )
              ORDER BY emb.vec::public.halfvec(3072) OPERATOR(public.<=>) $3::public.halfvec(3072)
              LIMIT chunk_window
@@ -725,6 +763,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
          ORDER BY emb.chunk_score DESC NULLS LAST, emb.entity_id DESC
          LIMIT 1000
         )
@@ -756,6 +796,8 @@ BEGIN
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
            AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
         )
         SELECT emb.entity_id,
                LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
@@ -765,7 +807,7 @@ BEGIN
          LIMIT target;
 END;
 $body$;$generated_function$;
-REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d3072(uuid[], text, public.vector, bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.vector_candidates_d3072(uuid[], text, public.vector, bigint, boolean) FROM PUBLIC;
 EXECUTE format('SET LOCAL ROLE %I', original_role);
 REVOKE CREATE ON SCHEMA proxiima_core FROM proxiima_search;
 END

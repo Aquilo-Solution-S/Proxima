@@ -26,6 +26,20 @@ pub enum MembershipChange {
     Remove,
 }
 
+/// A mutation scoped to one Goal's audience or selected work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalCollaborationChange {
+    GrantAccess,
+    RevokeAccess,
+    Publish,
+    Unpublish,
+    BindWork,
+    UnbindWork,
+    AuthorWork,
+    Edit,
+    Fork,
+}
+
 /// What one gate checks on the resolved owner. Reads and writes follow one
 /// rule: a role may act on `kind` when its limit for that direction is at
 /// least `kind`.
@@ -56,6 +70,12 @@ pub enum AuthzOperation {
     /// There is no share: an owner transfer is the only cross-owner move,
     /// and the series leaves the source owner's view entirely.
     EntityTransfer { entity: EntityId, to_owner: OwnerId },
+    /// A separate Goal authority route. The resolved owner is the captured
+    /// Goal controller; storage rechecks both it and the operation's grant.
+    GoalCollaboration {
+        goal: crate::GoalHandle,
+        change: GoalCollaborationChange,
+    },
 }
 
 #[derive(Debug)]

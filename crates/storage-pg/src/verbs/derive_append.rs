@@ -15,7 +15,7 @@ use proxiima_core::{
     EdgeEndpoint, EdgeKind, EntityKind, MemoryId, MemoryOperatorKind, OwnerId, ReplayDrift,
     SchemaId, SchemaVersion, SidecarPayload, StorageError,
 };
-use sqlx::{Acquire, Postgres, Transaction};
+use sqlx::{Acquire, Postgres, Row, Transaction};
 
 use crate::error::map_err;
 use crate::pg_enums::PgMemoryKind;
@@ -46,6 +46,7 @@ pub(crate) struct DerivedDraft<'a> {
     /// Spaces selected by the schema and write route. Jobs are queued in
     /// this memory transaction; an empty slice requests no work.
     pub queued_spaces: &'a [proxiima_core::EmbeddingSpace],
+    pub guided_by: &'a [proxiima_core::GoalId],
     /// Tool `idempotency_key` ledger entry, when the caller supplied one.
     pub request: Option<proxiima_core::verbs::idempotency::RequestKey>,
 }
@@ -67,6 +68,7 @@ impl<'a> DerivedDraft<'a> {
             supersedes: req.supersedes,
             lexical_language: req.lexical_language,
             queued_spaces: req.queued_spaces,
+            guided_by: req.guided_by,
             request: req.request.clone(),
         }
     }
@@ -108,6 +110,110 @@ pub(crate) struct DerivedAdmissionInput<'a> {
     /// same fence in the same place.
     pub(crate) scopes: &'a [crate::access::scope_surfaces::ScopeFenceTarget],
     pub(crate) content: ContentResolution<'a>,
+}
+
+/// Retained pins are already witnessed by the exact forked prior. They are
+/// checked against that row in this transaction, then omitted from ordinary
+/// live-read validation; every other pin remains an ordinary source read.
+pub(crate) fn new_origins(
+    pins: &[EdgeEndpoint],
+    retained: Option<&proxiima_core::RetainedPins>,
+) -> Vec<EdgeEndpoint> {
+    pins.iter()
+        .copied()
+        .filter(|pin| retained.is_none_or(|kept| !kept.origins().contains(pin)))
+        .collect()
+}
+
+pub(crate) fn new_references(
+    pins: &[EdgeEndpoint],
+    retained: Option<&proxiima_core::RetainedPins>,
+) -> Vec<EdgeEndpoint> {
+    pins.iter()
+        .copied()
+        .filter(|pin| {
+            retained.is_none_or(|kept| {
+                if let proxiima_core::EntityRef::Goal(id) = pin.entity {
+                    !kept.goal_references().contains(&id)
+                } else {
+                    !kept.references().contains(pin)
+                }
+            })
+        })
+        .collect()
+}
+
+pub(crate) async fn validate_retained_pins_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    retained: Option<&proxiima_core::RetainedPins>,
+) -> Result<(), StorageError> {
+    let Some(retained) = retained else {
+        return Ok(());
+    };
+    let prior = draft.supersedes.ok_or_else(|| {
+        StorageError::ConstraintViolation("retained pins require a revision prior".into())
+    })?;
+    if retained.prior() != prior || retained.owner() != draft.owner || retained.kind() != draft.kind
+    {
+        return Err(StorageError::ConstraintViolation(
+            "retained pins do not match revision destination".into(),
+        ));
+    }
+    let row = sqlx::query(
+        "SELECT owner_id, forked_from, kind::text AS kind, origins, refs, goal_refs
+         FROM proxiima_core.memory /* FORGET-POLICY: live-only (retained prior must remain writable) */
+         WHERE t=$1 AND forgotten_at IS NULL
+         FOR SHARE",
+    )
+    .bind(prior.into_inner())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?
+    .ok_or_else(|| {
+        StorageError::ConstraintViolation("retained revision prior is unavailable".into())
+    })?;
+    let owner = OwnerId::new(row.get("owner_id"));
+    let stored_kind: String = row.get("kind");
+    let forked_from: Option<uuid::Uuid> = row.get("forked_from");
+    let origins: Vec<uuid::Uuid> = row.get("origins");
+    let references: Vec<uuid::Uuid> = row.get("refs");
+    let goal_references: Vec<uuid::Uuid> = row.get("goal_refs");
+    let kind_matches = matches!(
+        (stored_kind.as_str(), retained.kind()),
+        ("fact", proxiima_core::EntityKind::Fact)
+            | ("abstraction", proxiima_core::EntityKind::Abstraction)
+            | ("perspective", proxiima_core::EntityKind::Perspective)
+    );
+    if owner != retained.owner()
+        || !kind_matches
+        || forked_from != Some(retained.forked_from().into_inner())
+        || origins
+            != retained
+                .origins()
+                .iter()
+                .filter_map(|endpoint| endpoint.memory_id())
+                .map(MemoryId::into_inner)
+                .collect::<Vec<_>>()
+        || references
+            != retained
+                .references()
+                .iter()
+                .filter_map(|endpoint| endpoint.memory_id())
+                .map(MemoryId::into_inner)
+                .collect::<Vec<_>>()
+        || goal_references
+            != retained
+                .goal_references()
+                .iter()
+                .map(|id| id.into_inner())
+                .collect::<Vec<_>>()
+    {
+        return Err(StorageError::Retryable(
+            "retained revision pins changed".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn append_derived_timeseries(
@@ -215,6 +321,7 @@ async fn admit_derived(
             scopes: input.scopes,
         },
         &supersedes_targets,
+        draft.guided_by,
     )
     .await?;
     super::memory_timeseries::lock_prepared_memory_admission(tx, &prepared).await?;
@@ -283,8 +390,14 @@ async fn derived_replay_in_lifecycle(
                 let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
                 let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
                 let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(references);
+                let stored_guided_by = load_pin_ids(tx, t, PinColumn::GuidedBy).await?;
+                let guided_by: Vec<uuid::Uuid> =
+                    draft.guided_by.iter().map(|id| id.into_inner()).collect();
                 if stored_refs != refs || stored_goal_refs != goal_refs {
                     return Err(StorageError::ReplayChanged(ReplayDrift::DerivedRefs));
+                }
+                if stored_guided_by != guided_by {
+                    return Ok(None);
                 }
                 return Ok(Some(DerivedOutcome {
                     memory_id: MemoryId::new(t),
@@ -321,8 +434,13 @@ async fn derived_replay_in_lifecycle(
         let stored_refs = load_pin_ids(tx, t, PinColumn::Refs).await?;
         let stored_goal_refs = load_pin_ids(tx, t, PinColumn::GoalRefs).await?;
         let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(references);
+        let stored_guided_by = load_pin_ids(tx, t, PinColumn::GuidedBy).await?;
+        let guided_by: Vec<uuid::Uuid> = draft.guided_by.iter().map(|id| id.into_inner()).collect();
         if stored_refs != refs || stored_goal_refs != goal_refs {
             return Err(StorageError::ReplayChanged(ReplayDrift::DerivedRefs));
+        }
+        if stored_guided_by != guided_by {
+            return Ok(None);
         }
         return Ok(Some(DerivedOutcome {
             memory_id: MemoryId::new(t),
@@ -456,6 +574,28 @@ pub(crate) async fn append_derived_with_content_payloads_in_tx(
     append_derived_timeseries(tx, draft, writer, input, sidecar).await
 }
 
+/// Goal-work admission uses the same typed pipeline after the Goal permit has
+/// already been checked by the Engine and storage command port. It deliberately
+/// does not manufacture an `OwnerWritePermit`.
+pub(crate) async fn append_goal_work_with_content_payloads_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    permit: &proxiima_core::GoalWorkPermit,
+    draft: &DerivedDraft<'_>,
+    input: DerivedAdmissionInput<'_>,
+    sidecar: impl for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t DerivedOutcome,
+    ) -> PgSidecarFuture<'t>,
+) -> Result<DerivedOutcome, StorageError> {
+    if draft.owner != permit.owner() {
+        return Err(StorageError::ConstraintViolation(
+            "Goal work owner mismatch".into(),
+        ));
+    }
+    let writer = permit.command().scope().writer();
+    append_derived_timeseries(tx, draft, writer, input, sidecar).await
+}
+
 /// Count declared pins; on replay, re-read stored `origins`/`refs` and
 /// refuse a different set.
 ///
@@ -480,7 +620,8 @@ pub(crate) async fn assert_derived_index_rows(
         let t = outcome.memory_id.into_inner();
         // A forgotten memory's row is hidden from owner reads; its pins are
         // re-read in the lifecycle scope, as the replay probe read them.
-        let (stored_origins, stored_refs, stored_goal_refs) = if outcome.forgotten {
+        let (stored_origins, stored_refs, stored_goal_refs, stored_guided_by) = if outcome.forgotten
+        {
             let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
             let stored = load_stored_pins(tx, t).await;
             lifecycle.finish(tx.as_mut(), stored).await?
@@ -488,17 +629,27 @@ pub(crate) async fn assert_derived_index_rows(
             load_stored_pins(tx, t).await?
         };
         let (refs, goal_refs) = super::memory_timeseries::pin_reference_ids(references);
+        let guided_by: Vec<uuid::Uuid> = draft.guided_by.iter().map(|id| id.into_inner()).collect();
         if stored_origins != pin_memory_ids(origins)
             || stored_refs != refs
             || stored_goal_refs != goal_refs
+            || stored_guided_by != guided_by
         {
             return Err(StorageError::ReplayChanged(ReplayDrift::DerivedIndexRows));
         }
     }
-    Ok(origins.len().saturating_add(references.len()))
+    Ok(origins
+        .len()
+        .saturating_add(references.len())
+        .saturating_add(draft.guided_by.len()))
 }
 
-type StoredPins = (Vec<uuid::Uuid>, Vec<uuid::Uuid>, Vec<uuid::Uuid>);
+type StoredPins = (
+    Vec<uuid::Uuid>,
+    Vec<uuid::Uuid>,
+    Vec<uuid::Uuid>,
+    Vec<uuid::Uuid>,
+);
 
 async fn load_stored_pins(
     tx: &mut Transaction<'_, Postgres>,
@@ -508,6 +659,7 @@ async fn load_stored_pins(
         load_pin_ids(tx, t, PinColumn::Origins).await?,
         load_pin_ids(tx, t, PinColumn::Refs).await?,
         load_pin_ids(tx, t, PinColumn::GoalRefs).await?,
+        load_pin_ids(tx, t, PinColumn::GuidedBy).await?,
     ))
 }
 
@@ -586,6 +738,7 @@ enum PinColumn {
     Origins,
     Refs,
     GoalRefs,
+    GuidedBy,
 }
 
 /// Origins as the write path persists them: declaration order, duplicates
@@ -618,6 +771,9 @@ async fn load_pin_ids(
         }
         PinColumn::GoalRefs => {
             "SELECT unnest(goal_refs) FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (a replay compares a forgotten head's pins in the lifecycle scope) */ WHERE t = $1"
+        }
+        PinColumn::GuidedBy => {
+            "SELECT unnest(guided_by) FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (a replay compares a forgotten head's pins in the lifecycle scope) */ WHERE t = $1"
         }
     };
     // SQL-POLICY: fixed-fragment

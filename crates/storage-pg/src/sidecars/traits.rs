@@ -3,6 +3,16 @@ use super::{
     PgSidecarFuture, PgSidecarReadCtx, Postgres, SidecarInsertPermit, StorageError, Transaction,
 };
 
+/// Whether a schema's typed value may seed an independent A/P series.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ForkPolicy {
+    /// Copying identity, scope or audit fields has no declared meaning.
+    #[default]
+    Refuse,
+    /// The typed value can be loaded and inserted unchanged at a new admission.
+    Copy,
+}
+
 /// A spiice's typed memory-sidecar insert.
 ///
 /// Spiices IMPLEMENT this; only the frozen registry INVOKES it. The
@@ -27,6 +37,11 @@ pub trait PgMemorySidecar: Send + Sync + 'static {
 /// NEITHER is a programming error and yields a clear `Internal` error rather
 /// than recursing (the two defaults must not call each other).
 pub trait PgMemoryPayload: Send + Sync + 'static {
+    /// Explicit schema consent to typed copying. This does not grant a caller
+    /// source-use or destination-write authority. `pg_sidecar!(fork: copy)`
+    /// opts in; omitted declarations refuse independent copies.
+    const FORK: ForkPolicy = ForkPolicy::Refuse;
+
     /// How this sidecar relates to its memory's owner.
     ///
     /// See [`super::SidecarOwnerMode`]. `None` reaches the owner through the

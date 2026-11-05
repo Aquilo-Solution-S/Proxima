@@ -16,7 +16,8 @@ use proxiima_core::{
     SpiiceRegistryError, UserId,
 };
 use proxiima_pg_testkit::{
-    admin_url, create_db, db_url, drop_db, quoted_ident, split_role_urls, unique_db_name,
+    admin_url, create_db, db_url, drop_db, provision_goal_reader, quoted_ident, split_role_urls,
+    unique_db_name,
 };
 use proxiima_storage_pg::PgSidecarKey;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
@@ -658,6 +659,9 @@ async fn assert_role_ddl_contention_retries_to_green(
         )))
         .execute(&mut target_admin)
         .await?;
+        let target_pool = sqlx::PgPool::connect(&db_url(&db_name)).await?;
+        provision_goal_reader(&target_pool, &role_name, &role_name).await?;
+        target_pool.close().await;
         target_admin.close().await?;
         if role_settings_pre_seeded {
             // SQL-POLICY: fixed-fragment — same test-minted {role_name} as above.

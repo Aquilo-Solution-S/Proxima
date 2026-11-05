@@ -9,7 +9,7 @@ use proxiima::{
     AppInfo, AuthPath, AuthzContext, Proxiima, ServedSurface, SpiiceApp, company_owner,
 };
 use proxiima_core::verbs::goal_write::{
-    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalEvidenceRef, GoalTopologyWrite,
+    GoalAuthorship, GoalCreateRequest, GoalEvidenceRef, GoalMotivationRef, GoalTopologyWrite,
     IdempotencyKey,
 };
 use proxiima_core::{
@@ -64,7 +64,7 @@ fn typed_goal_request(
     GoalCreateRequest {
         owner,
         topology: GoalTopologyWrite::new(
-            Some(GoalAssignmentTarget::perspective(assignment)),
+            vec![GoalMotivationRef::perspective(assignment)],
             Vec::new(),
             evidence,
         )
@@ -195,12 +195,12 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
                 owner,
                 pending_fact.memory_id,
                 vec![GoalEvidenceRef::new(pending_fact.memory_id)],
-                "typed-goal-wrong-assignment",
+                "typed-goal-wrong-motivation",
                 None,
             ))
             .await
-            .expect_err("Fact assignment must be rejected");
-        assert!(error.message.contains("assignment"));
+            .expect_err("a Fact cannot be a motivating Perspective");
+        assert!(error.message.contains("Perspective"));
 
         let error = pending
             .create_goal(typed_goal_request(
@@ -278,14 +278,14 @@ async fn typed_goal_standalone_and_uow_validate_pending_kinds() {
             ))
             .await?;
         committed.commit().await?;
-        let topology: (Option<Uuid>, Vec<Uuid>) =
-            sqlx::query_as("SELECT assignment_t, evidence_t FROM proxiima_core.goal WHERE t = $1")
+        let topology: (Vec<Uuid>, Vec<Uuid>) =
+            sqlx::query_as("SELECT motivated_by, evidence_t FROM proxiima_core.goal WHERE t = $1")
                 .bind(committed_goal.goal_id.into_inner())
                 .fetch_one(&admin_pool)
                 .await?;
         assert_eq!(
             topology.0,
-            Some(committed_perspective.memory_id.into_inner())
+            vec![committed_perspective.memory_id.into_inner()]
         );
         assert_eq!(topology.1, vec![committed_fact.memory_id.into_inner()]);
 

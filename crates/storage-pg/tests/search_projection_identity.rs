@@ -443,7 +443,7 @@ async fn seed(
 
 fn request(read_owners: Vec<OwnerId>, query: &str, order: SearchOrder) -> MemorySearchRequest {
     MemorySearchRequest {
-        owner: read_owners[0],
+        scope: proxiima_core::verbs::query::MemorySearchScope::Owner(read_owners[0]),
         read_owners,
         query: query.into(),
         mode: SearchMode::Lexical,

@@ -64,6 +64,9 @@ pub struct MemorySnapshot {
     /// same value a search hit reports as `tags`.
     pub tags: Vec<String>,
     pub payload: Option<SidecarPayload>,
+    /// Exact Goal versions that guided this Perspective version. Hidden
+    /// targets are omitted by the owner-scoped read projection.
+    pub guided_by: Vec<crate::GoalId>,
 }
 
 #[derive(Debug, Clone)]

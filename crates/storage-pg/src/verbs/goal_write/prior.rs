@@ -9,7 +9,7 @@ type PriorRow = (
     String,
     Option<String>,
     GoalState,
-    Option<uuid::Uuid>,
+    Vec<uuid::Uuid>,
     Vec<uuid::Uuid>,
 );
 
@@ -20,7 +20,7 @@ pub(super) async fn load_prior_goal(
 ) -> Result<StoredGoal, StorageError> {
     let owner_id = owner.into_inner();
     let row: Option<PriorRow> = sqlx::query_as(
-        "SELECT h.schema_id, g.title, g.text, g.state, g.assignment_t, g.dependency_t
+        "SELECT h.schema_id, g.title, g.text, g.state, g.dependency_t, g.motivated_by
                FROM proxiima_core.goal g
                JOIN proxiima_core.goal_head h ON h.handle = g.handle
               WHERE g.t = $1 AND g.owner_id = $2",
@@ -30,7 +30,7 @@ pub(super) async fn load_prior_goal(
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
-    let Some((schema_id, title, text, state, assignment, dependency_t)) = row else {
+    let Some((schema_id, title, text, state, dependency_t, motivated_by)) = row else {
         return Err(StorageError::NotFound);
     };
     Ok(StoredGoal {
@@ -40,7 +40,7 @@ pub(super) async fn load_prior_goal(
         text,
         payload: Vec::new(),
         state,
-        assignment: assignment.map(MemoryId::new),
+        motivated_by: motivated_by.into_iter().map(MemoryId::new).collect(),
         dependencies: dependency_t.into_iter().map(GoalId::new).collect(),
     })
 }
@@ -142,8 +142,11 @@ pub(super) fn draft_from_stored(
         state,
         topology: proxiima_core::GoalTopologyWrite::new(
             stored
-                .assignment
-                .map(proxiima_core::GoalAssignmentTarget::perspective),
+                .motivated_by
+                .iter()
+                .copied()
+                .map(proxiima_core::GoalMotivationRef::perspective)
+                .collect(),
             stored
                 .dependencies
                 .iter()
@@ -163,7 +166,7 @@ pub(super) struct DraftFromPayload<'a> {
     pub(super) owner: &'a OwnerId,
     pub(super) payload: &'a GoalPayloadWrite,
     pub(super) state: GoalState,
-    pub(super) assignment: Option<MemoryId>,
+    pub(super) motivated_by: Vec<MemoryId>,
     pub(super) dependencies: Vec<GoalId>,
     pub(super) supersedes: Option<GoalId>,
     pub(super) authorship: GoalAuthorship,
@@ -183,8 +186,10 @@ pub(super) fn draft_from_payload(input: DraftFromPayload<'_>) -> GoalDraft {
         state: input.state,
         topology: proxiima_core::GoalTopologyWrite::new(
             input
-                .assignment
-                .map(proxiima_core::GoalAssignmentTarget::perspective),
+                .motivated_by
+                .into_iter()
+                .map(proxiima_core::GoalMotivationRef::perspective)
+                .collect(),
             input
                 .dependencies
                 .into_iter()
@@ -209,7 +214,7 @@ pub(super) fn child_draft(
     let mut dependencies = topology.dependencies().to_vec();
     dependencies.push(proxiima_core::GoalDependencyRef::new(parent_goal_id));
     let child_topology = proxiima_core::GoalTopologyWrite::new(
-        topology.assignment(),
+        topology.motivated_by().to_vec(),
         dependencies,
         child.evidence.clone(),
     )

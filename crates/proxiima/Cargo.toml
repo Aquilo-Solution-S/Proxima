@@ -170,6 +170,22 @@ name = "goal_targeting_pg"
 required-features = ["testkit"]
 
 [[test]]
+name = "goal_collaboration_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "goal_read_paths_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "goal_work_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "memory_fork_pg"
+required-features = ["testkit"]
+
+[[test]]
 name = "owner_rls_installer_pg"
 required-features = ["testkit"]
 

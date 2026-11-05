@@ -137,7 +137,7 @@ pub async fn load_sketches_on_connection(
         .map(OwnerId::into_inner)
         .collect();
     let rows: Vec<(Uuid, Uuid, PgSketchKind, String)> = sqlx::query_as(concat!(
-        "SELECT s.t, s.owner_id, s.kind, s.text FROM proxiima_core.sketch s JOIN proxiima_core.owners o ON o.owner_id = s.owner_id WHERE s.t = ANY($1::uuid[]) AND s.owner_id = ANY($2::uuid[]) AND ",
+        "SELECT s.t, s.owner_id, s.kind, s.text FROM proxiima_core.sketch s WHERE s.t = ANY($1::uuid[]) AND s.owner_id = ANY($2::uuid[]) AND ",
         sketch_parent_readable!(),
     )).bind(&ts).bind(&owners).fetch_all(&mut *connection).await.map_err(map_err)?;
     Ok(rows

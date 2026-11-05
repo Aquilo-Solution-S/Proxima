@@ -81,6 +81,8 @@ pub enum KeyScope {
     Utterance,
     Abstraction,
     Perspective,
+    GoalAbstraction(crate::GoalHandle, crate::UserId),
+    GoalPerspective(crate::GoalHandle, crate::UserId),
 }
 
 impl KeyScope {
@@ -92,13 +94,27 @@ impl KeyScope {
             Self::Utterance => "utterance",
             Self::Abstraction => "abstraction",
             Self::Perspective => "perspective",
+            Self::GoalAbstraction(..) => "goal/abstraction",
+            Self::GoalPerspective(..) => "goal/perspective",
         }
     }
 
     /// Full `ingest_keys.source_id` for this scope's request ledger.
     #[must_use]
     pub fn ledger_source(self) -> String {
-        format!("core/key/{}", self.as_str())
+        match self {
+            Self::GoalAbstraction(goal, subject) | Self::GoalPerspective(goal, subject) => {
+                format!(
+                    "core/key/{}/{}/{}",
+                    self.as_str(),
+                    goal.into_inner(),
+                    subject.into_inner()
+                )
+            }
+            Self::Note | Self::Utterance | Self::Abstraction | Self::Perspective => {
+                format!("core/key/{}", self.as_str())
+            }
+        }
     }
 }
 

@@ -83,6 +83,12 @@ pub use proxiima_core::engine::{
     GoalModifyRequest, GoalTransitionRequest,
 };
 pub use proxiima_core::error::{ErrorCode, ProtocolError};
+/// Typed derived-memory writes; handles identify series and outcomes identify rows.
+pub use proxiima_core::goal_collaboration::{
+    ForkMemoryOutcome, ForkMemoryRequest, GoalAudienceGrantInput, GoalCollaborationPort,
+    GoalCommandPermit, GoalEditPermit, GoalHandle, GoalPublicationInput, GoalWorkBindingInput,
+    MemoryDestination, PublicationUse,
+};
 /// Explicitly select the deployment's lexical configuration for a memory write.
 pub use proxiima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
 pub use proxiima_core::llm;
@@ -150,13 +156,16 @@ pub use proxiima_core::storage_ports::{
     HostStateRequest, HostStateWriteOrigin, HostStateWritePermit, MAX_RECONCILE_SAMPLE,
     StateSurfaceName, VerifiedCitedBlob,
 };
+pub use proxiima_core::storage_ports::{
+    VectorCandidate, VectorCandidateFilter, VectorEntry, VectorIndex, VectorKey,
+};
 pub use proxiima_core::verbs::fact_ingest::{
     CitationSpec, FactIngestOutcome, FactReceiptDraft, FactWriteCommand, IngestReceipt,
     OCCURRED_AT_FUTURE_BOUND,
 };
 pub use proxiima_core::verbs::goal_write::{
-    ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,
-    GoalDependencyRef, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
+    ChildGoalDraft, DecomposeGoalOutcome, GoalAuthorship, GoalCreateRequest, GoalDependencyRef,
+    GoalEvidenceRef, GoalMotivationRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
     GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey, MAX_GOAL_TEXT_CHARS,
     MAX_GOAL_TITLE_CHARS, OperatorKind, SystemOrigin,
 };
@@ -166,7 +175,6 @@ pub use proxiima_core::verbs::own_erase::{
     EraseMode, MAX_ERASE_SERIES_PER_CALL, MAX_ERASE_VERSIONS_PER_CALL, SeriesEraseError,
     SeriesEraseReceipt, SeriesEraseRefusal, SeriesEraseRefusalKind, SeriesSelection,
 };
-/// Typed derived-memory writes; handles identify series and outcomes identify rows.
 pub use proxiima_core::{
     DerivationIdentity, DerivedMemory, DerivedMemoryOutcome, MemoryTarget, SeriesHandle,
 };
@@ -271,10 +279,10 @@ pub use proxiima_core::text_bounds::TrimmedLenViolation;
 pub use proxiima_core::verbs::query::{
     DEFAULT_HYBRID_SEMANTIC_WEIGHT, EdgeExistsRequest, EdgeExistsResponse, EdgeFilter,
     EdgeReadCursor, EdgeReadRequest, EdgeReadResponse, EntityKind, FactCitationReadback,
-    GoalAssignmentFilter, MAX_SEARCH_PAGE_LIMIT, MemoryLineageDirection, MemoryLineageEdge,
+    GoalMotivationFilter, MAX_SEARCH_PAGE_LIMIT, MemoryLineageDirection, MemoryLineageEdge,
     MemoryLineageNode, MemoryLineageRequest, MemoryLineageResponse, MemoryRow, MemorySearchPage,
-    MemorySearchRequest, MemorySearchResult, QueryRequest, QueryResponse, SearchCursor, SearchMode,
-    SearchOrder, SidecarAtom, SupersessionStatus, TagMatch,
+    MemorySearchRequest, MemorySearchResult, MemorySearchScope, QueryRequest, QueryResponse,
+    SearchCursor, SearchMode, SearchOrder, SidecarAtom, SupersessionStatus, TagMatch,
 };
 pub use proxiima_core::verbs::schema::{PayloadKind, SchemaRequest, SchemaResponse};
 pub use proxiima_core::{

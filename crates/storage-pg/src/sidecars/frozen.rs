@@ -29,6 +29,17 @@ pub struct PgSidecarRegistryFrozen {
 }
 
 impl PgSidecarRegistryFrozen {
+    /// Resolve the one registered typed memory schema by kind and schema id.
+    pub(crate) fn memory_key_for(
+        &self,
+        kind: proxiima_core::verbs::schema::PayloadKind,
+        schema_id: &str,
+    ) -> Option<PgSidecarKey> {
+        self.entries.values().find_map(|entry| {
+            (entry.key.kind == kind && entry.key.schema_id.as_str() == schema_id)
+                .then(|| entry.key.clone())
+        })
+    }
     /// Inverse-only metadata; these declarations grant no active PG sidecar capability.
     #[must_use]
     pub fn retired_fact_sidecars(&self) -> &[super::PgRetiredFactSidecar] {
@@ -196,6 +207,7 @@ impl PgSidecarRegistryFrozen {
                 key,
                 sidecar_table: table.to_owned(),
                 owner: crate::sidecars::SidecarOwnerMode::None,
+                fork: crate::sidecars::ForkPolicy::Refuse,
                 memory_key_column: Some(memory_key_column),
                 memory_insert: Some(|_, _, _, _| Box::pin(async { Ok(()) })),
                 memory_load: None,
@@ -684,6 +696,40 @@ impl PgSidecarRegistryFrozen {
         Ok(rows.pop().map(|(_memory_id, payload)| payload))
     }
 
+    /// Load an authorised A/P value whose schema explicitly permits typed
+    /// copying. The caller still needs source-use and destination-write
+    /// authority, and must insert through the normal admission transaction.
+    ///
+    /// # Errors
+    /// Refuses Facts, Goals, missing schemas and schemas without a copy
+    /// contract. Returns `NotFound` for an absent or unreadable source.
+    pub async fn load_fork_payload(
+        &self,
+        ctx: PgSidecarReadCtx<'_>,
+        key: PgSidecarKey,
+        memory_id: MemoryId,
+    ) -> Result<SidecarPayload, StorageError> {
+        let entry = self
+            .entries
+            .get(&key)
+            .filter(|entry| {
+                matches!(
+                    key.kind,
+                    super::PayloadKind::Abstraction | super::PayloadKind::Perspective
+                ) && entry.fork == super::ForkPolicy::Copy
+                    && !entry.owner.is_pinned()
+            })
+            .ok_or_else(|| {
+                StorageError::ConstraintViolation(
+                    "schema does not permit independent A/P copies".into(),
+                )
+            })?;
+        let key = entry.key.clone();
+        self.load_memory_payload(ctx, key, memory_id)
+            .await?
+            .ok_or(StorageError::NotFound)
+    }
+
     /// Load typed sidecar payload projections for already-created Memory rows.
     ///
     /// # Errors
@@ -927,6 +973,7 @@ mod language_bind_tests {
             key: key(),
             sidecar_table: "proxiima_core.agent_note_v1".to_owned(),
             owner: crate::sidecars::SidecarOwnerMode::None,
+            fork: crate::sidecars::ForkPolicy::Refuse,
             memory_key_column: Some("t"),
             memory_insert: None,
             memory_load: None,

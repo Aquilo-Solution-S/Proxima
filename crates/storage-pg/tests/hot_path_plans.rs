@@ -45,7 +45,7 @@ fn note_projection() -> MemorySearchProjection {
 
 fn search_req(owner: OwnerId) -> MemorySearchRequest {
     MemorySearchRequest {
-        owner,
+        scope: proxiima_core::verbs::query::MemorySearchScope::Owner(owner),
         read_owners: vec![owner],
         query: "needle".into(),
         mode: SearchMode::Lexical,
@@ -589,6 +589,7 @@ async fn hot_path_plans_use_expected_indexes() {
                     .bind("test-embed")
                     .bind(pgvector::Vector::from(unit_values(dim)))
                     .bind(20_i64)
+                    .bind(true)
                     .fetch_one(&mut *tx)
                     .await?;
             assert_plan_names(&lane_plan, &format!("embeddings_hnsw_d{}", dim.width()));

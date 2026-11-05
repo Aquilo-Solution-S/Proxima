@@ -11,10 +11,63 @@ Read and write projector cursors through `Engine::load_source_cursor` and
 `Engine::store_source_cursor`, using the request's `AuthzContext`. Goal display
 fields are validated by `GoalPayloadWrite::from_payload`; its
 `GoalWriteBuildError` carries the typed refusal. `GoalTopologyWrite::new`
-takes an optional assignment: pass `Some(GoalAssignmentTarget::perspective(id))`
-for a supplied Perspective or `None` for an unassigned goal. Evidence may be
+takes a list of exact motivating Perspective versions, each declared with
+`GoalMotivationRef::perspective(id)`, plus dependency and evidence lists.
+An empty motivation list leaves the Goal independent of any Perspective. Evidence may be
 empty, including when marking a goal achieved. HTTP routes are listed in
 [protocol](protocol.md).
+
+A new Perspective records actual guidance through
+`DerivedMemory::guided_interpretation` or `DerivedMemory::guided_perspective`,
+passing exact `GoalId` versions. The corresponding MCP inputs are `guided_by`
+on `core_interpret` and on `core_derive` with `kind: Perspective`. Guidance is
+separate from the payload's ordinary Goal references and its grounding.
+`core_goal modify` preserves motivation when `motivated_by` is omitted;
+an empty list clears it and a supplied list replaces it. New targets must be
+readable and belong to the declaring version's owner.
+
+## Goal collaboration
+
+The [conceptual model](concepts.md#goal-collaboration) distinguishes context,
+exact publication, and series work. `Engine` exposes audience grants,
+publication, work bindings, and `fork_memory` through typed command ports.
+Collaboration commands require an ordinary verified caller; restricted owner
+forwarding and background delegation do not acquire unrelated Goal rights.
+
+An existing Goal's title and progress use the existing `modify_goal`,
+`transition_goal`, and `mark_goal_achieved` methods. A Goal guest needs
+Goal-level write. Goal creation, decomposition, and motivation replacement
+still require owner authority. Omitted `space` on those MCP edit actions uses
+the named Goal's owner; an explicit space remains a narrowing selector.
+
+A/P authoring chooses `MemoryDestination::Owner` or
+`MemoryDestination::WorkingGoal`. New work is bound in its transaction;
+revisions require a current binding. Working through several Goals edits the
+same series. `fork_memory` creates an independent series from an exact source
+version; a schema's PG registration must explicitly permit typed copies.
+Unsupported or owner-pinned payloads refuse generic copying.
+
+Pass the copied memory's version ID as `supersedes` to `core_derive` or
+`core_interpret` to revise that line. A revision may retain the fork's exact
+grounding without reading ancestor payloads; new source IDs still require the
+caller's read authority. This applies to owner and working-Goal destinations.
+
+`core_episode_commit` remains owner-authorized: its write-act Fact, optional
+Facts, A/P items, and new Goals share one owner transaction. Goal guests use
+`core_derive` or `core_interpret` for scoped A/P contributions.
+
+Storage implementations accept `GoalEditPermit` for existing Goal edits;
+creation and decomposition keep `OwnerWritePermit`. Goal permits never convert
+to owner permits. `StorageError::Forbidden` represents authorization refusal
+for both Goal and membership commands. Public owner-role collections and
+`authorized_read_owners` retain their owner-only meaning; internal candidate
+owner selectors still require exact-row RLS admission.
+
+For an explicitly published Fact citing an uploaded object,
+`CitedBlobReadService::collect_verified_for_goal` selects the upload captured
+at publication. It verifies the bytes and refuses an absent or revoked route;
+a later upload cannot replace its filename or object version. This read does
+not grant access to other uploads or uncited objects.
 
 ## Boot a composed host
 
@@ -247,8 +300,9 @@ owner set. A host requiring a tenant boundary must return a confined
 it from broader authority. Apply `narrowed_to_owner(tenant)` before
 `with_default_owner(tenant)` for a tenant-confined URL-only connector:
 narrowing clears any prior default. `with_default_owner` chooses a default
-without confining that authority. Hosts assigning a goal to their caller
-Perspective must pass `target_perspective` explicitly, including in episodes.
+without confining that authority. A caller's self-Perspective does not populate
+Goal motivations. Hosts supply exact `motivated_by` versions explicitly,
+including in episodes; `guided_by` records actual guidance on a Perspective.
 
 Tool admission combines two distinct policies. `ServedSurface` configures a
 deployment through `RuntimeBuilder::served_surface`; every declared read-only

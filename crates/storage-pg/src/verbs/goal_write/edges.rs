@@ -13,10 +13,10 @@ pub(super) async fn assert_goal_topology_references(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
     goal_id: GoalId,
-    assignment: Option<MemoryId>,
+    motivated_by: &[MemoryId],
     dependencies: &[GoalId],
     evidence: &[EvidenceTarget],
 ) -> Result<usize, StorageError> {
     let _ = (tx, owner, goal_id);
-    Ok(usize::from(assignment.is_some()) + dependencies.len() + evidence.len())
+    Ok(motivated_by.len() + dependencies.len() + evidence.len())
 }

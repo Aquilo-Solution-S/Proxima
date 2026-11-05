@@ -464,6 +464,23 @@ macro_rules! __sidecar_owner_mode {
 }
 
 #[macro_export]
+#[doc(hidden)]
+macro_rules! __sidecar_fork_policy {
+    () => {
+        $crate::sidecars::ForkPolicy::Refuse
+    };
+    (copy) => {
+        $crate::sidecars::ForkPolicy::Copy
+    };
+    (refuse) => {
+        $crate::sidecars::ForkPolicy::Refuse
+    };
+    ($unknown:ident) => {
+        ::std::compile_error!("pg_sidecar!: fork must be copy or refuse")
+    };
+}
+
+#[macro_export]
 macro_rules! pg_sidecar {
     (
         payload: $($payload_ty:ident)::+,
@@ -473,6 +490,7 @@ macro_rules! pg_sidecar {
         key: $key_column:ident,
         $(owner_pinned: $owner_pinned:literal,)?
         $(owner: $owner_mode:ident,)?
+        $(fork: $fork_policy:ident,)?
         fields: {
             $(
                 $field:ident => $column:ident : $column_kind:tt
@@ -563,6 +581,7 @@ macro_rules! pg_sidecar {
         }
 
         impl $crate::sidecars::PgMemoryPayload for $($payload_ty)::+ {
+            const FORK: $crate::sidecars::ForkPolicy = $crate::__sidecar_fork_policy!($($fork_policy)?);
             const OWNER: $crate::sidecars::SidecarOwnerMode = $crate::__sidecar_owner_mode!(
                 $(owner_pinned: $owner_pinned,)?
                 $(owner: $owner_mode,)?

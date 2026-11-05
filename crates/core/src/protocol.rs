@@ -12,6 +12,7 @@ pub mod tool {
     pub const CORE_DERIVE: &str = "core_derive";
     pub const CORE_INTERPRET: &str = "core_interpret";
     pub const CORE_GOAL: &str = "core_goal";
+    pub const CORE_FORK: &str = "core_fork";
     pub const CORE_FACT: &str = "core_fact";
     pub const CORE_MEMBERSHIP: &str = "core_membership";
     pub const CORE_TRANSFER: &str = "core_transfer";
@@ -31,6 +32,12 @@ pub mod action {
     pub const CORE_GOAL_MODIFY: &str = "core_goal:modify";
     pub const CORE_GOAL_MARK_ACHIEVED: &str = "core_goal:mark_achieved";
     pub const CORE_GOAL_DECOMPOSE: &str = "core_goal:decompose";
+    pub const CORE_GOAL_GRANT_ACCESS: &str = "core_goal:grant_access";
+    pub const CORE_GOAL_REVOKE_ACCESS: &str = "core_goal:revoke_access";
+    pub const CORE_GOAL_PUBLISH: &str = "core_goal:publish";
+    pub const CORE_GOAL_UNPUBLISH: &str = "core_goal:unpublish";
+    pub const CORE_GOAL_BIND_WORK: &str = "core_goal:bind_work";
+    pub const CORE_GOAL_UNBIND_WORK: &str = "core_goal:unbind_work";
 
     pub const CORE_MEMBERSHIP_ADD_MEMBER: &str = "core_membership:add_member";
     pub const CORE_MEMBERSHIP_REMOVE_MEMBER: &str = "core_membership:remove_member";
@@ -42,6 +49,7 @@ pub mod action {
     pub const CORE_UPLOAD_COMPLETE: &str = "core_upload:complete";
     pub const CORE_UPLOAD_ABORT: &str = "core_upload:abort";
     pub const CORE_UPLOAD_READ_URL: &str = "core_upload:read_url";
+    pub const CORE_FORK: &str = "core_fork";
 }
 
 pub mod resource {

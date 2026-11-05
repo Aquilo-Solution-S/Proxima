@@ -1,15 +1,16 @@
 use proxiima_core::storage_ports::{
-    MembershipEndpointAuthority, MembershipMemberAuthority, MembershipWritePermit,
+    EntryReadRoute, MembershipEndpointAuthority, MembershipMemberAuthority, MembershipWritePermit,
     OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort, OwnerWritePermit,
-    RetentionPort, SourceCursorPort,
+    RetentionPort, SourceCursorPort, VisibleEntry,
 };
 
 use proxiima_core::{
-    Cursor, EntityId, GroupId, KeepDays, MembershipRow, OwnerId, Relation, Retention, SchemaId,
-    StorageError, UserId,
+    Cursor, EntityId, GroupId, KeepDays, MembershipRow, OwnerId, Relation, Retention, StorageError,
+    UserId,
 };
 
 use super::validate_permit_owner;
+use proxiima_core::SchemaId;
 
 fn validate_membership_permit(
     permit: &MembershipWritePermit<'_>,
@@ -24,7 +25,7 @@ fn validate_membership_permit(
             if permit.member_authority() != MembershipMemberAuthority::CallerManagesMember
                 || permit.owner().owner() != &member
             {
-                return Err(StorageError::MembershipForbidden(
+                return Err(StorageError::Forbidden(
                     "membership permit does not authorize the attached owner".into(),
                 ));
             }
@@ -59,6 +60,40 @@ use crate::{PgStorage, access, verbs};
 
 #[async_trait::async_trait]
 impl OwnerAccessReadPort for PgStorage {
+    async fn visible_entries(
+        &self,
+        owner_scope: Option<&proxiima_core::OwnerScope>,
+        entities: &[EntityId],
+        read_owners: &[OwnerId],
+    ) -> Result<Vec<Option<VisibleEntry>>, StorageError> {
+        let scope = crate::owner_scope::require_owner_scope(owner_scope)?;
+        let mut tx = crate::owner_scope::begin_owner_transaction(&self.pool, scope).await?;
+        let result = async {
+            let lifecycle = crate::lifecycle_scope::PgLifecycleScope::enter(tx.as_mut()).await?;
+            let rows =
+                access::owner_columns::visible_home_owners(tx.as_mut(), entities, read_owners)
+                    .await;
+            let visible = lifecycle.finish(tx.as_mut(), rows).await?;
+            Ok(visible
+                .into_iter()
+                .map(|row| {
+                    row.map(|(owner, kind, schema)| VisibleEntry {
+                        owner,
+                        kind,
+                        schema,
+                        route: if scope.may_read(&owner, kind) || scope.goal_principal().is_none() {
+                            EntryReadRoute::Owner
+                        } else {
+                            EntryReadRoute::Goal
+                        },
+                    })
+                })
+                .collect())
+        }
+        .await;
+        crate::owner_scope::finish_transaction(tx, result).await
+    }
+
     async fn resolve_membership(
         &self,
         owner_scope: Option<&proxiima_core::OwnerScope>,

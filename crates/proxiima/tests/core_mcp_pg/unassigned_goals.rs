@@ -42,7 +42,7 @@ async fn a_goal_with_only_words_survives_every_write_and_recall() {
         args["action"] = json!("set");
         let initial = env.call("core_goal", args).await?;
         let goal = handle_of(&initial)?;
-        assert_eq!(initial["edge_count"], 0, "no assignment or evidence was invented");
+        assert_eq!(initial["edge_count"], 0, "no motivation or evidence was invented");
         assert_eq!(recalled(&env).await?.as_slice(), std::slice::from_ref(&goal));
 
         let paused = transition(&env, &goal, "pause").await?;
@@ -74,10 +74,10 @@ async fn a_goal_with_only_words_survives_every_write_and_recall() {
 
         let admin = env.admin().await?;
         let invalid: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxiima_core.goal WHERE assignment_t IS NOT NULL OR cardinality(evidence_t) <> 0"
+            "SELECT count(*) FROM proxiima_core.goal WHERE assignment_t IS NOT NULL OR cardinality(motivated_by) <> 0 OR cardinality(evidence_t) <> 0"
         ).fetch_one(&admin).await?;
         admin.close().await;
-        assert_eq!(invalid, 0, "every successor preserves absent assignment and evidence");
+        assert_eq!(invalid, 0, "every successor preserves absent motivation and evidence");
         Ok(())
     }.await;
     env.shutdown().await;
@@ -147,7 +147,7 @@ async fn caller_self_does_not_assign_goals_without_an_explicit_target() {
         let episode_goal = episode["goals"][0].as_str().ok_or("episode goal")?;
         let mut args = words("An explicitly assigned goal");
         args["action"] = json!("set");
-        args["target_perspective"] = json!(perspective);
+        args["motivated_by"] = json!([perspective]);
         let assigned = handle_of(&env.call_with_self("core_goal", args, self_id).await?)?;
 
         let admin = env.admin().await?;
@@ -156,19 +156,19 @@ async fn caller_self_does_not_assign_goals_without_an_explicit_target() {
             .map(uuid::Uuid::parse_str)
             .collect::<Result<_, _>>()?;
         let assignments: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxiima_core.goal WHERE t = ANY($1) AND assignment_t IS NOT NULL",
+            "SELECT count(*) FROM proxiima_core.goal WHERE t = ANY($1) AND (assignment_t IS NOT NULL OR cardinality(motivated_by) > 0)",
         )
         .bind(&unassigned)
         .fetch_one(&admin)
         .await?;
         assert_eq!(assignments, 0, "caller context never supplies an assignment");
-        let explicit: Option<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT assignment_t FROM proxiima_core.goal WHERE t = $1",
+        let explicit: (Option<uuid::Uuid>, Vec<uuid::Uuid>) = sqlx::query_as(
+            "SELECT assignment_t, motivated_by FROM proxiima_core.goal WHERE t = $1",
         )
         .bind(uuid::Uuid::parse_str(&assigned)?)
         .fetch_one(&admin)
         .await?;
-        assert_eq!(explicit, Some(self_id.into_inner()));
+        assert_eq!(explicit, (None, vec![self_id.into_inner()]));
         admin.close().await;
         Ok(())
     }

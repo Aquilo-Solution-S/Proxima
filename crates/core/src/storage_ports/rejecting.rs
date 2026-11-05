@@ -15,6 +15,10 @@ use super::retention::RetentionPort;
 use super::write_session::{WriteSession, WriteSessionFactory};
 
 use crate::access::AccessError;
+use crate::goal_collaboration::{
+    GoalAudienceGrantInput, GoalCollaborationPort, GoalCommandPermit, GoalEditPermit, GoalHandle,
+    GoalPublicationInput, GoalWorkBindingInput,
+};
 use crate::owner_inverse::OwnerEraseTarget;
 use crate::read_models::{ActiveGoalSummary, MemorySchemaSpec, MemorySnapshot};
 use crate::storage::{AuthorDerivedOutcome, AuthorDerivedRequest, EmbeddingJobClaim, StorageError};
@@ -32,6 +36,75 @@ use crate::{EntityId, EntityKind, GroupId, MembershipRow, OwnerId, Relation, Sou
 
 #[derive(Debug)]
 pub(super) struct RejectingStorage;
+
+#[async_trait::async_trait]
+impl GoalCollaborationPort for RejectingStorage {
+    async fn controller_owner(
+        &self,
+        _: &crate::OwnerScope,
+        _: GoalHandle,
+    ) -> Result<Option<crate::OwnerId>, StorageError> {
+        Ok(None)
+    }
+    async fn grant_access(
+        &self,
+        _: &GoalAudienceGrantInput,
+        _: &GoalCommandPermit,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects Goal collaboration".into(),
+        ))
+    }
+    async fn revoke_access(
+        &self,
+        _: GoalHandle,
+        _: crate::UserId,
+        _: &GoalCommandPermit,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects Goal collaboration".into(),
+        ))
+    }
+    async fn publish(
+        &self,
+        _: &GoalPublicationInput,
+        _: &GoalCommandPermit,
+        _: &crate::storage_ports::OwnerWritePermit,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects Goal collaboration".into(),
+        ))
+    }
+    async fn unpublish(
+        &self,
+        _: GoalHandle,
+        _: crate::MemoryId,
+        _: &GoalCommandPermit,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects Goal collaboration".into(),
+        ))
+    }
+    async fn bind_work(
+        &self,
+        _: &GoalWorkBindingInput,
+        _: &GoalCommandPermit,
+        _: &crate::storage_ports::OwnerWritePermit,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects Goal collaboration".into(),
+        ))
+    }
+    async fn unbind_work(
+        &self,
+        _: &GoalWorkBindingInput,
+        _: &GoalCommandPermit,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "RejectingStorage rejects Goal collaboration".into(),
+        ))
+    }
+}
 
 #[async_trait::async_trait]
 impl FactIngestPort for RejectingStorage {
@@ -535,7 +608,7 @@ impl GoalWritePort for RejectingStorage {
     async fn resolve_goal_replay(
         &self,
         _req: GoalReplayRequest<'_, '_>,
-        _permit: &OwnerWritePermit,
+        _permit: GoalEditPermit<'_>,
     ) -> Result<Option<GoalReplayOutcome>, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -555,7 +628,7 @@ impl GoalWritePort for RejectingStorage {
     async fn transition_goal_atomic(
         &self,
         _req: &TransitionGoalAtomicRequest<'_>,
-        _permit: &OwnerWritePermit,
+        _permit: GoalEditPermit<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -565,7 +638,7 @@ impl GoalWritePort for RejectingStorage {
     async fn achieve_goal_atomic(
         &self,
         _req: &AchieveGoalAtomicRequest<'_>,
-        _permit: &OwnerWritePermit,
+        _permit: GoalEditPermit<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),
@@ -575,7 +648,7 @@ impl GoalWritePort for RejectingStorage {
     async fn modify_goal_atomic(
         &self,
         _req: &ModifyGoalAtomicRequest<'_>,
-        _permit: &OwnerWritePermit,
+        _permit: GoalEditPermit<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal(
             "RejectingStorage rejects writes".into(),

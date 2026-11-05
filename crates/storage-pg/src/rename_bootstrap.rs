@@ -318,6 +318,7 @@ pub async fn run_core_phase(
         MigrationPhase::Finalize => {
             if historical_definitions_present(connection).await? {
                 execute_replay_sql(connection, catalog_finalization_sql()).await?;
+                crate::definitions::invalidate_replayed_definitions(connection, policy).await?;
             }
             execute_replay_sql(connection, owner_follows_finalization_sql()).await?;
             Ok(())

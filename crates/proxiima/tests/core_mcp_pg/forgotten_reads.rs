@@ -741,7 +741,7 @@ async fn goal_evidence_naming_a_forgotten_memory_is_refused_as_absent() {
                 serde_json::json!({
                     "action": "set", "schema_id": "core/simple-text-v1",
                     "title": "goal", "text": "goal", "body": {},
-                    "evidence": [evidence], "target_perspective": target,
+                    "evidence": [evidence], "motivated_by": [target],
                     "idempotency_key": key,
                 }),
             )
@@ -848,7 +848,7 @@ async fn goal_evidence_naming_a_forgotten_fact_is_refused_as_absent() {
                 serde_json::json!({
                     "action": "set", "schema_id": "core/simple-text-v1",
                     "title": key, "text": key, "body": {},
-                    "evidence": [evidence], "target_perspective": target.clone(),
+                    "evidence": [evidence], "motivated_by": [target.clone()],
                     "idempotency_key": key,
                 }),
             )
@@ -870,7 +870,7 @@ async fn goal_evidence_naming_a_forgotten_fact_is_refused_as_absent() {
                     "action": "decompose", "parent_goal": parent,
                     "children": [{"schema_id": "core/simple-text-v1", "title": key,
                         "text": key, "body": {}, "evidence": [evidence]}],
-                    "target_perspective": target.clone(), "idempotency_key": key,
+                    "motivated_by": [target.clone()], "idempotency_key": key,
                 }),
             )
         };
@@ -1509,7 +1509,7 @@ async fn a_new_goal_on_a_forgotten_replay_slot_says_entry_not_found() {
             let mut episode = base(tag);
             episode["goal"] = serde_json::json!([{
                 "schema_id": "core/simple-text-v1", "title": "goal", "text": "goal", "body": {},
-                "evidence": ["derive"], "target_perspective": "stance:0",
+                "evidence": ["derive"], "motivated_by": ["stance:0"],
                 "idempotency_key": format!("{tag}-g"),
             }]);
             episode

@@ -58,6 +58,10 @@ no members inside the transaction. Personal-owner operations require the host's
 keep those preconditions and narrow the selection to attributable rows. Rows
 without source attribution are outside a source selection.
 
+Personal-owner erase removes the person's Goal audience grants as well as
+their Group memberships. It preserves another owner's sharing consent and
+issuer provenance, just as it preserves that owner's memory authorship.
+
 Register host-state lifecycle participants at boot when host tables must follow
 these operations. The registered participant/table descriptor bounds callbacks;
 a callback cannot expand the core selection. See

@@ -27,8 +27,8 @@ the runtime role for serving grants. Development provisioning is executable in
 [`scripts/pg-init.sql`](https://github.com/Aquilo-Solution-S/proxiima/blob/main/scripts/pg-init.sql).
 Stop older hosts before changing their role/schema contract.
 
-Before migrating, an administrator provisions the fixed candidate-function
-owner and grants the platform role permission to switch to it. Replace
+Before migrating, an administrator provisions the fixed read-only function
+owners and grants the platform role permission to switch to them. Replace
 `platform_role` below with the deployment's migration role:
 
 ```sql
@@ -36,17 +36,22 @@ CREATE ROLE proxiima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
     NOCREATEDB NOCREATEROLE NOINHERIT;
 GRANT proxiima_search TO platform_role WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
 GRANT USAGE ON SCHEMA public TO proxiima_search;
+CREATE ROLE proxiima_goal_reader NOLOGIN NOSUPERUSER NOBYPASSRLS
+    NOCREATEDB NOCREATEROLE NOINHERIT;
+GRANT proxiima_goal_reader TO platform_role WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+GRANT USAGE ON SCHEMA public TO proxiima_goal_reader;
 ```
 
-Keep the runtime role outside this membership. Migrations temporarily give
-`proxiima_search` schema creation rights while replacing its candidate
-functions, then revoke those rights. Preserve this function ownership when
+Keep the runtime role outside both memberships. Migrations temporarily give
+these roles schema creation rights while replacing their functions, then revoke those rights. Preserve this function ownership when
 reassigning restored objects. Candidate functions have no public execution
 grant; the runtime grant phase grants execution on their catalog signatures
 after migrations. Deployments that manage grants themselves must grant
 `EXECUTE` on the `proxiima_search`-owned candidate functions in each composed
-schema to their runtime role. These functions find candidates through the
-indexes; ordinary memory RLS still gates every returned id and score.
+schema and `proxiima_goal_reader`-owned visibility functions in the core schema
+to their runtime role. Candidate functions use indexes; ordinary memory RLS gates every returned id
+and score. Goal visibility functions resolve exact publications and bound
+series without widening the principal's owner roles.
 
 Released migrations are immutable. The core migrations restart at
 `0057_baseline.sql` in v0.0.48; the pgvector column and indexes are

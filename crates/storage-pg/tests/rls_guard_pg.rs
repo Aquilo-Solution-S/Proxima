@@ -2,10 +2,12 @@ use async_trait::async_trait;
 use proxiima_core::{
     AuthPath, Authenticator, AuthzContext, Credentials, GroupId, OwnerId, OwnerRoles, Role, UserId,
 };
-use proxiima_pg_testkit::{create_db, db_url, drop_db, quoted_ident, unique_db_name};
+use proxiima_pg_testkit::{
+    create_db, db_url, drop_db, provision_goal_reader, quoted_ident, unique_db_name,
+};
 use proxiima_storage_pg::{
-    PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgTuning, assert_runtime_rls,
-    begin_owner_transaction,
+    MigrationPhase, PgMigrationStorage, PgPlatformScope, PgPoolConfig, PgTuning,
+    assert_runtime_rls, begin_owner_transaction, migrations_for_phase,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -355,11 +357,16 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         )
         .await;
     }
+    {
+        provision_goal_reader(&admin, &platform, &runtime)
+            .await
+            .expect("goal reader fixture role");
+    }
     execute(
         &admin,
         // SQL-POLICY: fixed-fragment — fixture role identifier is quoted.
         &format!(
-            "GRANT proxiima_search TO {} WITH INHERIT FALSE, SET TRUE",
+            "GRANT proxiima_search, proxiima_goal_reader TO {} WITH INHERIT FALSE, SET TRUE",
             quoted_ident(&platform)
         ),
     )
@@ -420,7 +427,7 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
     )
     .await
     .unwrap();
-    spiice_migrations
+    migrations_for_phase(&spiice_migrations, MigrationPhase::Historical)
         .run_direct(None, transaction.as_mut(), false)
         .await
         .unwrap();
@@ -440,6 +447,14 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
     )
     .await
     .unwrap();
+    migrations_for_phase(&spiice_migrations, MigrationPhase::Current)
+        .run_direct(None, transaction.as_mut(), false)
+        .await
+        .unwrap();
+    migrations_for_phase(&spiice_migrations, MigrationPhase::Finalize)
+        .run_direct(None, transaction.as_mut(), false)
+        .await
+        .unwrap();
     transaction.commit().await.unwrap();
     drop(connection);
     platform_pool.close().await;
@@ -472,6 +487,15 @@ async fn setup_full_schema() -> (String, PgPool, PgPool, PgPool, String, String,
         "owner RLS must apply without a parameter grant"
     );
     let platform_connection = runtime_pool(&database, &platform, &password).await;
+    execute(
+        &admin,
+        // SQL-POLICY: fixed-fragment — fixture role identifier is quoted.
+        &format!(
+            "GRANT EXECUTE ON FUNCTION proxiima_core.goal_memory_read_routes(), proxiima_core.goal_visible_memory_ids(), proxiima_core.goal_visible_memory_heads(), proxiima_core.goal_memory_read_admitted(uuid), proxiima_core.goal_read_admitted(uuid) TO {}",
+            quoted_ident(&runtime)
+        ),
+    )
+    .await;
     let runtime_connection = runtime_pool(&database, &runtime, &password).await;
     (
         database,
@@ -721,6 +745,37 @@ async fn platform_scope_rejects_missing_force_and_policy() {
     cleanup(&database, admin, &owner, &runtime_role).await;
 }
 
+async fn assert_goal_reader_policy_shape(admin: &PgPool, runtime: &PgPool, schemas: &[&str]) {
+    execute(
+        admin,
+        "ALTER POLICY proxiima_goal_reader ON proxiima_core.goal_access_grant USING (false)",
+    )
+    .await;
+    assert!(
+        assert_runtime_rls(runtime, schemas).await.is_err(),
+        "the guard must reject an invalid GoalReader policy"
+    );
+    let census_error = sqlx::query(
+        "SELECT proxiima_core.owner_rls_census_table('proxiima_core', 'goal_access_grant')",
+    )
+    .execute(admin)
+    .await
+    .expect_err("SQL census rejects the same invalid policy");
+    assert!(
+        census_error
+            .to_string()
+            .contains("invalid Goal reader policy")
+    );
+    execute(
+        admin,
+        "ALTER POLICY proxiima_goal_reader ON proxiima_core.goal_access_grant USING (true)",
+    )
+    .await;
+    assert_runtime_rls(runtime, schemas)
+        .await
+        .expect("restored GoalReader policy must be admitted");
+}
+
 #[tokio::test]
 async fn information_schema_census_matches_catalog_guard_contract() {
     let (database, admin, runtime, platform, owner, runtime_role, _password) =
@@ -745,6 +800,7 @@ async fn information_schema_census_matches_catalog_guard_contract() {
             .iter()
             .any(|(s, t)| s == "proxiima_example" && t == "note_v1")
     );
+    assert_goal_reader_policy_shape(&admin, &runtime, &schemas).await;
     for (schema, table) in &tables {
         sqlx::query("SELECT proxiima_core.owner_rls_census_table($1, $2)")
             .bind(schema)
@@ -764,6 +820,8 @@ async fn information_schema_census_matches_catalog_guard_contract() {
                  3 + (proxiima_core.is_search_candidate_relation(c.oid) AND EXISTS (
                      SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
                        AND p.polname = 'proxiima_search_candidates'))::integer
+                 + (EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
+                       AND p.polname = 'proxiima_goal_reader'))::integer
               OR NOT EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
                  AND p.polname = 'proxiima_owner_read' AND p.polcmd = 'r')
               OR NOT EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
@@ -791,7 +849,7 @@ async fn information_schema_census_matches_catalog_guard_contract() {
                    WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
                  ) OR (p.prorettype <> 'pg_catalog.trigger'::regtype
                      AND has_function_privilege($2, p.oid, 'EXECUTE')
-                     AND p.proowner IS DISTINCT FROM to_regrole('proxiima_search')::oid))",
+                     AND p.proowner NOT IN (to_regrole('proxiima_search')::oid, to_regrole('proxiima_goal_reader')::oid)))",
     )
     .bind(&schemas[..])
     .bind(&runtime_role)

@@ -1,19 +1,21 @@
+use super::authority::{begin_goal_edit, revalidate_goal_edit};
 use super::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, DraftFromPayload, GoalAuthorship, GoalChange,
-    GoalId, GoalState, GoalWriteOutcome, LifecycleWrite, ModifyGoalAtomicRequest, OwnerWritePermit,
-    PgPool, PgSidecarRegistryFrozen, PostLockGuard, PreparedGoalInsert, RowColumns, StorageError,
-    SystemOrigin, TransitionGoalAtomicRequest, achieve_replay_declaration, carried_evidence,
-    child_draft, create_replay_declaration, decompose_replay_declarations, draft_from_payload,
-    draft_from_stored, insert_or_replay_goal, internal, lifecycle_outcome, load_prior_goal,
-    lock_prepared_goal_writes, modify_replay_declaration, persist_prepared_goal_insert,
-    prepare_goal_insert, record_goal_replay_declaration, require_goal_replay,
-    resolve_decompose_replay_set, resolve_goal_replay, transition_replay_declaration,
-    validate_active_head, validate_evidence_in_owner, validate_goal_achievement,
-    validate_goal_transition,
+    GoalId, GoalState, GoalWriteOutcome, LifecycleWrite, MemoryId, ModifyGoalAtomicRequest,
+    OwnerWritePermit, PgPool, PgSidecarRegistryFrozen, PostLockGuard, PreparedGoalInsert,
+    RowColumns, StorageError, SystemOrigin, TransitionGoalAtomicRequest,
+    achieve_replay_declaration, carried_evidence, child_draft, create_replay_declaration,
+    decompose_replay_declarations, draft_from_payload, draft_from_stored, insert_or_replay_goal,
+    internal, lifecycle_outcome, load_prior_goal, lock_prepared_goal_writes,
+    modify_replay_declaration, persist_prepared_goal_insert, prepare_goal_insert,
+    record_goal_replay_declaration, require_goal_replay, resolve_decompose_replay_set,
+    resolve_goal_replay, transition_replay_declaration, validate_active_head,
+    validate_evidence_in_owner, validate_goal_achievement, validate_goal_transition,
 };
+use crate::PgStorage;
 use crate::error::with_bounded_retry;
-use proxiima_core::GoalAssignmentTarget;
+use proxiima_core::goal_collaboration::GoalEditPermit;
 
 // The goal `*_atomic` verbs are pool-scoped write transactions. Each wraps
 // its `_in_pool` body in `with_bounded_retry` so a transient deadlock /
@@ -34,40 +36,37 @@ pub(crate) async fn create_goal_atomic(
 }
 
 pub(crate) async fn transition_goal_atomic(
-    pool: &PgPool,
-    sidecars: &PgSidecarRegistryFrozen,
+    storage: &PgStorage,
     req: &TransitionGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    permit: &GoalEditPermit<'_>,
     store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     with_bounded_retry(move || async move {
-        transition_goal_atomic_in_pool(pool, sidecars, req, permit, store_number).await
+        transition_goal_atomic_in_pool(storage, req, permit, store_number).await
     })
     .await
 }
 
 pub(crate) async fn achieve_goal_atomic(
-    pool: &PgPool,
-    sidecars: &PgSidecarRegistryFrozen,
+    storage: &PgStorage,
     req: &AchieveGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    permit: &GoalEditPermit<'_>,
     store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     with_bounded_retry(move || async move {
-        achieve_goal_atomic_in_pool(pool, sidecars, req, permit, store_number).await
+        achieve_goal_atomic_in_pool(storage, req, permit, store_number).await
     })
     .await
 }
 
 pub(crate) async fn modify_goal_atomic(
-    pool: &PgPool,
-    sidecars: &PgSidecarRegistryFrozen,
+    storage: &PgStorage,
     req: &ModifyGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    permit: &GoalEditPermit<'_>,
     store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     with_bounded_retry(move || async move {
-        modify_goal_atomic_in_pool(pool, sidecars, req, permit, store_number).await
+        modify_goal_atomic_in_pool(storage, req, permit, store_number).await
     })
     .await
 }
@@ -138,16 +137,13 @@ pub(crate) async fn create_goal_in_tx(
         return require_goal_replay(tx.as_mut(), &owner, &req.draft.request_id, &declaration).await;
     }
     let dependencies = draft_dependency_ids(&req.draft);
+    let motivated_by = draft_motivation_ids(&req.draft);
     let outcome = lifecycle_outcome(
         tx,
         LifecycleWrite {
             owner: &owner,
             inserted,
-            assignment: req
-                .draft
-                .topology
-                .assignment()
-                .map(GoalAssignmentTarget::perspective_id),
+            motivated_by: &motivated_by,
             dependencies: &dependencies,
             evidence: &evidence,
         },
@@ -158,10 +154,9 @@ pub(crate) async fn create_goal_in_tx(
 }
 
 pub(crate) async fn transition_goal_atomic_in_pool(
-    pool: &PgPool,
-    sidecars: &PgSidecarRegistryFrozen,
+    storage: &PgStorage,
     req: &TransitionGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    permit: &GoalEditPermit<'_>,
     store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
     // Constant-time command validation stays ahead of the replay probe: this
@@ -177,9 +172,17 @@ pub(crate) async fn transition_goal_atomic_in_pool(
             "operator-authored Goal transition is not supported".into(),
         ));
     }
-    let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
+    let scope = crate::owner_scope::require_owner_scope(permit.scope())?;
     let writer = scope.writer();
-    let mut tx = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
+    let sidecars = &storage.sidecars;
+    let (mut tx, fence) = begin_goal_edit(
+        storage,
+        *permit,
+        req.prior_goal_id,
+        &[],
+        req.context.author_self_perspective_id,
+    )
+    .await?;
     let declaration = transition_replay_declaration(req);
     if let Some(replay) = resolve_goal_replay(
         tx.as_mut(),
@@ -189,6 +192,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
     )
     .await?
     {
+        revalidate_goal_edit(storage, &mut tx, fence.as_ref()).await?;
         crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
@@ -240,6 +244,7 @@ pub(crate) async fn transition_goal_atomic_in_pool(
             &declaration,
         )
         .await?;
+        revalidate_goal_edit(storage, &mut tx, fence.as_ref()).await?;
         crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
@@ -248,27 +253,35 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         LifecycleWrite {
             owner: &req.owner,
             inserted,
-            assignment: prior.assignment,
+            motivated_by: &prior.motivated_by,
             dependencies: &prior.dependencies,
             evidence: &[],
         },
     )
     .await?;
     record_goal_replay_declaration(tx.as_mut(), &declaration, &outcome).await?;
+    revalidate_goal_edit(storage, &mut tx, fence.as_ref()).await?;
     crate::write_wake::commit(tx).await?;
     Ok(outcome)
 }
 
 pub(crate) async fn achieve_goal_atomic_in_pool(
-    pool: &PgPool,
-    sidecars: &PgSidecarRegistryFrozen,
+    storage: &PgStorage,
     req: &AchieveGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    permit: &GoalEditPermit<'_>,
     store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
+    let scope = crate::owner_scope::require_owner_scope(permit.scope())?;
     let writer = scope.writer();
-    let mut tx = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
+    let sidecars = &storage.sidecars;
+    let (mut tx, fence) = begin_goal_edit(
+        storage,
+        *permit,
+        req.prior_goal_id,
+        &req.evidence,
+        req.context.author_self_perspective_id,
+    )
+    .await?;
     let declaration = achieve_replay_declaration(req);
     if let Some(replay) = resolve_goal_replay(
         tx.as_mut(),
@@ -278,6 +291,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
     )
     .await?
     {
+        revalidate_goal_edit(storage, &mut tx, fence.as_ref()).await?;
         crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
@@ -319,6 +333,7 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
             &declaration,
         )
         .await?;
+        revalidate_goal_edit(storage, &mut tx, fence.as_ref()).await?;
         crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
@@ -327,13 +342,14 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
         LifecycleWrite {
             owner: &req.owner,
             inserted,
-            assignment: prior.assignment,
+            motivated_by: &prior.motivated_by,
             dependencies: &prior.dependencies,
             evidence: &evidence,
         },
     )
     .await?;
     record_goal_replay_declaration(tx.as_mut(), &declaration, &outcome).await?;
+    revalidate_goal_edit(storage, &mut tx, fence.as_ref()).await?;
     crate::write_wake::commit(tx).await?;
     Ok(outcome)
 }
@@ -348,16 +364,80 @@ fn draft_dependency_ids(draft: &proxiima_core::verbs::goal_write::GoalDraft) -> 
         .collect()
 }
 
-pub(crate) async fn modify_goal_atomic_in_pool(
-    pool: &PgPool,
-    sidecars: &PgSidecarRegistryFrozen,
+fn draft_motivation_ids(draft: &proxiima_core::verbs::goal_write::GoalDraft) -> Vec<MemoryId> {
+    draft
+        .topology
+        .motivated_by()
+        .iter()
+        .map(|motivation| motivation.perspective_id())
+        .collect()
+}
+
+async fn prepare_modified_goal(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     req: &ModifyGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    store_number: u16,
+) -> Result<
+    (
+        proxiima_core::verbs::goal_write::GoalDraft,
+        Vec<super::EvidenceTarget>,
+    ),
+    StorageError,
+> {
+    let evidence = match &req.evidence {
+        Some(evidence) => validate_evidence_in_owner(tx, &req.owner, evidence).await?,
+        None => carried_evidence(tx, &req.owner, req.prior_goal_id, store_number).await?,
+    };
+    let prior = load_prior_goal(tx, &req.owner, req.prior_goal_id).await?;
+    if prior.state != GoalState::Active {
+        return Err(StorageError::ConstraintViolation(
+            "goal_modify requires an Active prior head".into(),
+        ));
+    }
+    let motivated_by = req.motivated_by.as_ref().map_or_else(
+        || prior.motivated_by.clone(),
+        |refs| {
+            refs.iter()
+                .map(|reference| reference.perspective_id())
+                .collect()
+        },
+    );
+    let draft = draft_from_payload(DraftFromPayload {
+        owner: &req.owner,
+        payload: &req.replacement,
+        state: GoalState::Active,
+        motivated_by,
+        dependencies: prior.dependencies,
+        supersedes: Some(req.prior_goal_id),
+        authorship: req.authorship.clone(),
+        request_id: req.request_id.as_str(),
+        evidence: &evidence,
+    });
+    Ok((draft, evidence))
+}
+
+pub(crate) async fn modify_goal_atomic_in_pool(
+    storage: &PgStorage,
+    req: &ModifyGoalAtomicRequest<'_>,
+    permit: &GoalEditPermit<'_>,
     store_number: u16,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    let scope = crate::owner_scope::require_owner_scope(permit.owner_scope())?;
+    if matches!(permit, GoalEditPermit::Goal(_)) && req.motivated_by.is_some() {
+        return Err(StorageError::ConstraintViolation(
+            "changing Goal motivations requires owner authority".into(),
+        ));
+    }
+    let scope = crate::owner_scope::require_owner_scope(permit.scope())?;
     let writer = scope.writer();
-    let mut tx = crate::owner_scope::begin_owner_transaction(pool, scope).await?;
+    let sidecars = &storage.sidecars;
+    let (mut tx, fence) = begin_goal_edit(
+        storage,
+        *permit,
+        req.prior_goal_id,
+        req.evidence.as_deref().unwrap_or_default(),
+        req.context.author_self_perspective_id,
+    )
+    .await?;
     let declaration = modify_replay_declaration(req)?;
     if let Some(replay) = resolve_goal_replay(
         tx.as_mut(),
@@ -367,30 +447,11 @@ pub(crate) async fn modify_goal_atomic_in_pool(
     )
     .await?
     {
+        revalidate_goal_edit(storage, &mut tx, fence.as_ref()).await?;
         crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
-    let evidence = match &req.evidence {
-        Some(evidence) => validate_evidence_in_owner(&mut tx, &req.owner, evidence).await?,
-        None => carried_evidence(&mut tx, &req.owner, req.prior_goal_id, store_number).await?,
-    };
-    let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
-    if prior.state != GoalState::Active {
-        return Err(StorageError::ConstraintViolation(
-            "goal_modify requires an Active prior head".into(),
-        ));
-    }
-    let draft = draft_from_payload(DraftFromPayload {
-        owner: &req.owner,
-        payload: &req.replacement,
-        state: GoalState::Active,
-        assignment: prior.assignment,
-        dependencies: prior.dependencies,
-        supersedes: Some(req.prior_goal_id),
-        authorship: req.authorship.clone(),
-        request_id: req.request_id.as_str(),
-        evidence: &evidence,
-    });
+    let (draft, evidence) = prepare_modified_goal(&mut tx, req, store_number).await?;
     let inserted = insert_or_replay_goal(
         &mut tx,
         sidecars,
@@ -415,22 +476,25 @@ pub(crate) async fn modify_goal_atomic_in_pool(
             &declaration,
         )
         .await?;
+        revalidate_goal_edit(storage, &mut tx, fence.as_ref()).await?;
         crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
     let dependencies = draft_dependency_ids(&draft);
+    let motivated_by = draft_motivation_ids(&draft);
     let outcome = lifecycle_outcome(
         &mut tx,
         LifecycleWrite {
             owner: &req.owner,
             inserted,
-            assignment: prior.assignment,
+            motivated_by: &motivated_by,
             dependencies: &dependencies,
             evidence: &evidence,
         },
     )
     .await?;
     record_goal_replay_declaration(tx.as_mut(), &declaration, &outcome).await?;
+    revalidate_goal_edit(storage, &mut tx, fence.as_ref()).await?;
     crate::write_wake::commit(tx).await?;
     Ok(outcome)
 }
@@ -518,15 +582,13 @@ pub(crate) async fn decompose_goal_atomic_in_pool(
         // holds the single guard for the state that cannot happen here.
         let inserted = persist_prepared_goal_insert(&mut tx, sidecars, &prepared).await?;
         let dependencies = draft_dependency_ids(&prepared.draft);
+        let motivated_by = draft_motivation_ids(&prepared.draft);
         let outcome = lifecycle_outcome(
             &mut tx,
             LifecycleWrite {
                 owner: &req.owner,
                 inserted,
-                assignment: req
-                    .topology
-                    .assignment()
-                    .map(GoalAssignmentTarget::perspective_id),
+                motivated_by: &motivated_by,
                 dependencies: &dependencies,
                 evidence: &evidence,
             },
@@ -560,8 +622,7 @@ mod lifecycle_lock_tests {
     use proxiima_core::storage_ports::OwnerWritePermit;
     use proxiima_core::verbs::fact_ingest::FactWriteCommand;
     use proxiima_core::verbs::goal_write::{
-        GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalState,
-        GoalTopologyWrite,
+        GoalAtomicContext, GoalAuthorship, GoalDraft, GoalState, GoalTopologyWrite,
     };
     use proxiima_core::{
         AccessKind, EdgeEndpoint, EntityKind, OwnerId, SchemaId, SchemaVersion, SimpleTextGoalV1,
@@ -608,6 +669,93 @@ mod lifecycle_lock_tests {
             abstraction.memory_id,
         )];
         pg.ingest_fact_atomic(permit, &perspective, None).await
+    }
+
+    #[tokio::test]
+    async fn goal_motivations_require_same_owner_perspectives() {
+        let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
+        if let Err(e) = create_core_db(&db_name).await {
+            panic!("PG required for tests but admin connect failed: {e}");
+        }
+        let url = db_url(&db_name);
+        let result: Result<(), Box<dyn std::error::Error>> = async {
+            let pg = PgStorage::connect_for_tests(url.clone()).await?;
+            let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+            let other = OwnerId::from(UserId::new(Uuid::now_v7()));
+            let owner_permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+            let other_permit = OwnerWritePermit::new_for_tests(other, AccessKind::Fact);
+            let fact_target = pg.ingest_fact_atomic(&owner_permit, &fact(), None).await?;
+            let own_perspective = grounded_perspective(&pg, &owner_permit).await?;
+            let other_perspective = grounded_perspective(&pg, &other_permit).await?;
+            let pool = pg.pool_for_tests();
+            let command = |request_id: &str, target: Uuid| GoalWriteCommand {
+                handle: None,
+                schema_id: "core/task-v1".into(),
+                title: request_id.into(),
+                text: None,
+                state: GoalState::Active,
+                request_id: request_id.into(),
+                close_fact_t: None,
+
+                motivated_by: vec![target],
+                dependency_t: vec![],
+                evidence_t: vec![],
+                mint_write_act: false,
+                write_act_t: None,
+                parent_handle: None,
+            };
+            let mut tx = pool.begin().await?;
+            let inserted = write_goal(
+                &mut tx,
+                &owner,
+                crate::test_fixtures::writer(),
+                &command(
+                    "same-owner-motivation",
+                    own_perspective.memory_id.into_inner(),
+                ),
+                1,
+            )
+            .await?;
+            tx.commit().await?;
+            let stored: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT unnest(motivated_by) FROM proxiima_core.goal WHERE t = $1",
+            )
+            .bind(inserted.t)
+            .fetch_all(pool)
+            .await?;
+            assert_eq!(stored, vec![own_perspective.memory_id.into_inner()]);
+
+            let mut tx = pool.begin().await?;
+            let refused = write_goal(
+                &mut tx,
+                &owner,
+                crate::test_fixtures::writer(),
+                &command("wrong-kind-motivation", fact_target.memory_id.into_inner()),
+                1,
+            )
+            .await;
+            assert!(matches!(refused, Err(StorageError::ConstraintViolation(_))));
+            tx.rollback().await?;
+
+            let mut tx = pool.begin().await?;
+            let refused = write_goal(
+                &mut tx,
+                &owner,
+                crate::test_fixtures::writer(),
+                &command(
+                    "cross-owner-motivation",
+                    other_perspective.memory_id.into_inner(),
+                ),
+                1,
+            )
+            .await;
+            assert!(matches!(refused, Err(StorageError::ConstraintViolation(_))));
+            tx.rollback().await?;
+            Ok(())
+        }
+        .await;
+        let _ = drop_db(&db_name).await;
+        result.expect("motivation owner validation failed");
     }
 
     async fn lock_target(
@@ -678,7 +826,8 @@ mod lifecycle_lock_tests {
             state: GoalState::Active,
             request_id: request_id.into(),
             close_fact_t: None,
-            assignment_t: None,
+
+            motivated_by: vec![],
             dependency_t: vec![],
             evidence_t: vec![],
             mint_write_act: true,
@@ -768,7 +917,8 @@ mod lifecycle_lock_tests {
                 state: GoalState::Active,
                 request_id: request_id.into(),
                 close_fact_t: None,
-                assignment_t: None,
+
+                motivated_by: vec![],
                 dependency_t: vec![],
                 evidence_t: vec![evidence_t],
                 mint_write_act: false,
@@ -875,7 +1025,8 @@ mod lifecycle_lock_tests {
                     state: GoalState::Active,
                     request_id: "successor-prior".into(),
                     close_fact_t: None,
-                    assignment_t: None,
+
+                    motivated_by: vec![],
                     dependency_t: vec![],
                     evidence_t: vec![],
                     mint_write_act: false,
@@ -943,7 +1094,8 @@ mod lifecycle_lock_tests {
                     state: GoalState::Active,
                     request_id: "reserved-write-act".into(),
                     close_fact_t: None,
-                    assignment_t: None,
+
+                    motivated_by: vec![],
                     dependency_t: vec![],
                     evidence_t: vec![target.memory_id.into_inner()],
                     mint_write_act: true,
@@ -1010,8 +1162,7 @@ mod lifecycle_lock_tests {
         let result: Result<(), Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect_for_tests(url.clone()).await?;
             let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-            let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
-            let assignment = grounded_perspective(&pg, &permit).await?;
+            let _permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Goal);
             let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
             let draft = GoalDraft {
                 owner,
@@ -1022,11 +1173,7 @@ mod lifecycle_lock_tests {
                 payload: Vec::new(),
                 sidecar_payload: None,
                 state: GoalState::Abandoned,
-                topology: GoalTopologyWrite::new(
-                    Some(GoalAssignmentTarget::perspective(assignment.memory_id)),
-                    Vec::new(),
-                    Vec::new(),
-                )?,
+                topology: GoalTopologyWrite::new(Vec::new(), Vec::new(), Vec::new())?,
                 supersedes_goal_id: None,
                 authorship: GoalAuthorship::User,
                 request_id: "reserved-close".into(),
@@ -1068,7 +1215,7 @@ mod lifecycle_lock_tests {
                 "terminal close reservation has no Memory row before the union lock is attempted"
             );
             let mut blocker = pool.begin().await?;
-            lock_target(&mut blocker, assignment.memory_id.into_inner()).await?;
+            lock_target(&mut blocker, close_fact_t).await?;
             let mut lock = Box::pin(lock_prepared_goal_write(&mut tx, prepared_write));
             assert!(
                 tokio::time::timeout(std::time::Duration::from_millis(50), &mut lock)

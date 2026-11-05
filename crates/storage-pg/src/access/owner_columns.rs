@@ -974,7 +974,7 @@ async fn add_group_member_on_connection_authorized(
             member_authority,
             MembershipMemberAuthority::CallerManagesMember
         ) {
-            return Err(StorageError::MembershipForbidden(
+            return Err(StorageError::Forbidden(
                 "attaching a group requires manage authority on the attached group".into(),
             ));
         }
@@ -1055,7 +1055,7 @@ async fn recheck_caller_manages(
     .await
     .map_err(map_err)?;
     if !manages {
-        return Err(StorageError::MembershipForbidden(
+        return Err(StorageError::Forbidden(
             "the caller no longer manages this group".into(),
         ));
     }
@@ -1197,12 +1197,12 @@ async fn remove_group_member_on_connection_authorized(
             MembershipMemberAuthority::CallerManagesMember
         )
     {
-        return Err(StorageError::MembershipForbidden(
+        return Err(StorageError::Forbidden(
             "detaching a group requires manage authority on the attached group".into(),
         ));
     }
     if !member_is_group && matches!(endpoint_authority, MembershipEndpointAuthority::Member) {
-        return Err(StorageError::MembershipForbidden(
+        return Err(StorageError::Forbidden(
             "detaching a person requires parent authority".into(),
         ));
     }
@@ -1304,12 +1304,12 @@ async fn remove_group_member_relation_on_connection_authorized(
             MembershipMemberAuthority::CallerManagesMember
         )
     {
-        return Err(StorageError::MembershipForbidden(
+        return Err(StorageError::Forbidden(
             "detaching a group requires manage authority on the attached group".into(),
         ));
     }
     if !member_is_group && matches!(endpoint_authority, MembershipEndpointAuthority::Member) {
-        return Err(StorageError::MembershipForbidden(
+        return Err(StorageError::Forbidden(
             "detaching a person requires parent authority".into(),
         ));
     }
@@ -2103,6 +2103,33 @@ async fn transfer_memory_handle(
     let ts = lock_series_membership(tx, handle, from_id).await?;
     if ts.is_empty() {
         return Ok(false);
+    }
+    // Causal Goal/Perspective links are same-owner references. A Perspective
+    // series cannot move while any version points at a Goal, and a Goal cannot
+    // retain a motivation pointing at a Perspective series that would move
+    // away from it. Check all versions, including forgotten and superseded
+    // rows, while the series handle and version locks are held.
+    let has_guidance: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+               FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (owner transfer moves forgotten rows too) */
+               JOIN proxiima_core.goal g ON g.t = ANY(m.guided_by)
+              WHERE m.t = ANY($1::uuid[])
+         ) OR EXISTS (
+             SELECT 1
+               FROM proxiima_core.goal g
+               JOIN proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (owner transfer moves forgotten rows too) */ ON m.t = ANY(g.motivated_by)
+              WHERE m.t = ANY($1::uuid[])
+         )",
+    )
+    .bind(&ts)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if has_guidance {
+        return Err(StorageError::ConstraintViolation(
+            "a memory series with Goal/Perspective causal relations cannot transfer owners".into(),
+        ));
     }
     if !ts.contains(&requested_t) {
         // The probe that resolved the handle may have preceded a complete

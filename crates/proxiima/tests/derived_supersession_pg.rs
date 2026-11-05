@@ -7,9 +7,10 @@
 mod example_engine;
 
 use example_engine::ExampleEngine;
+use proxiima_core::memory::payloads::AgentDerivationV1;
 use proxiima_core::{
-    AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, FactWrite, InputContractId,
-    MemoryId, MemoryTarget, OperatorId, OwnerId, SeriesHandle, UserId,
+    AuthPath, AuthzContext, DerivationIdentity, DerivedMemory, ErrorCode, FactWrite,
+    InputContractId, MemoryId, MemoryTarget, OperatorId, OwnerId, SeriesHandle, UserId,
 };
 use proxiima_example::{DigestV1, NoteV1};
 use uuid::Uuid;
@@ -188,5 +189,93 @@ async fn digest_can_use_core_superseding_derived_authoring() {
             "the revision references {referenced}: {refs:?}"
         );
     }
+    h.pool.close().await;
+}
+
+#[tokio::test]
+async fn revision_validation_preserves_caller_error_classes() {
+    let h = ExampleEngine::new("proxiima_derived_revision_errors", |_| {}).await;
+    let user = UserId::new(Uuid::now_v7());
+    let owner = OwnerId::from(user);
+    let foreign_user = UserId::new(Uuid::now_v7());
+    let foreign_owner = OwnerId::from(foreign_user);
+    let authz = proxiima_core::test_fixtures::authenticated_context(AuthzContext::for_subject(
+        user,
+        AuthPath::HostBearer,
+    ));
+    let foreign_authz = proxiima_core::test_fixtures::authenticated_context(
+        AuthzContext::for_subject(foreign_user, AuthPath::HostBearer),
+    );
+    let notebook = h.notebook(&owner).await;
+    let source = note(&h, &authz, owner, notebook, "revision source").await;
+    let abstraction = AgentDerivationV1 {
+        title: "source".into(),
+        body: "source".into(),
+        tags: Vec::new(),
+        idempotency_key: None,
+        source_memory_ids: vec![source.into_inner()],
+        model_id: "fixture".into(),
+        client_name: "fixture".into(),
+        client_version: "1".into(),
+    };
+    let prior = h
+        .engine
+        .derive_memory(
+            &authz,
+            DerivedMemory::abstraction(
+                MemoryTarget::Series(SeriesHandle::new(Uuid::now_v7())),
+                owner,
+                "source",
+                abstraction.clone(),
+                [source],
+                identity(),
+            )
+            .expect("typed source request"),
+        )
+        .await
+        .expect("source authored")
+        .memory_id;
+
+    let wrong_owner = h
+        .engine
+        .derive_memory(
+            &foreign_authz,
+            DerivedMemory::abstraction(
+                MemoryTarget::Revision(prior),
+                foreign_owner,
+                "inaccessible owner",
+                abstraction.clone(),
+                [source],
+                identity(),
+            )
+            .expect("typed wrong-owner revision request"),
+        )
+        .await
+        .expect_err("a revision cannot cross owners");
+    assert_eq!(wrong_owner.code, ErrorCode::Forbidden);
+    assert!(wrong_owner.message.contains("entry not found"));
+
+    let incompatible = h
+        .engine
+        .derive_memory(
+            &authz,
+            DerivedMemory::perspective(
+                MemoryTarget::Revision(prior),
+                owner,
+                "wrong kind",
+                abstraction,
+                [source],
+                identity(),
+            )
+            .expect("typed incompatible revision request"),
+        )
+        .await
+        .expect_err("a revision must retain its prior kind and schema");
+    assert_eq!(incompatible.code, ErrorCode::InvalidArgument);
+    assert!(
+        incompatible
+            .message
+            .contains("retain the prior memory kind")
+    );
     h.pool.close().await;
 }

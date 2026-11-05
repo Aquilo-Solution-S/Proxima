@@ -101,7 +101,8 @@ async fn seed(pg: &PgStorage, owner: OwnerId, extra_facts: u64) -> TestResult<Se
         state,
         request_id: request_id.into(),
         close_fact_t: matches!(state, GoalState::Achieved).then(|| series.memory_id.into_inner()),
-        assignment_t: None,
+
+        motivated_by: Vec::new(),
         dependency_t: Vec::new(),
         evidence_t: Vec::new(),
         mint_write_act: false,

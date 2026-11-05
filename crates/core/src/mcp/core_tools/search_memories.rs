@@ -917,7 +917,7 @@ async fn search_one_space(
     let space = &lane.space;
     let mode = lane.arm.mode();
     let req = MemorySearchRequest {
-        owner: space.owner,
+        scope: crate::verbs::query::MemorySearchScope::Owner(space.owner),
         read_owners: Vec::new(),
         query: prepared.query.clone(),
         mode,

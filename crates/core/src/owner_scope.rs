@@ -21,6 +21,7 @@ pub struct OwnerScope {
     writer: WriterAttribution,
     expires_at: Option<SystemTime>,
     selected: Option<OwnerId>,
+    goal_principal: Option<crate::goal_collaboration::GoalPrincipalScope>,
 }
 
 impl OwnerScope {
@@ -34,6 +35,7 @@ impl OwnerScope {
             writer,
             expires_at,
             selected: None,
+            goal_principal: None,
         }
     }
 
@@ -48,6 +50,7 @@ impl OwnerScope {
             writer: self.writer,
             expires_at: self.expires_at,
             selected: None,
+            goal_principal: self.goal_principal,
         })
     }
 
@@ -59,7 +62,29 @@ impl OwnerScope {
             writer: self.writer,
             expires_at: self.expires_at,
             selected: Some(owner),
+            goal_principal: None,
         })
+    }
+
+    /// Add a verified Goal principal. Only the authentication engine may mint
+    /// this lane; it is never derived from owner roles or a forwarded scope.
+    pub(crate) fn with_goal_principal(
+        mut self,
+        principal: crate::goal_collaboration::GoalPrincipalScope,
+    ) -> Self {
+        if self.selected.is_none() {
+            self.goal_principal = Some(principal);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn goal_principal(&self) -> Option<&crate::goal_collaboration::GoalPrincipalScope> {
+        if self.is_expired() {
+            None
+        } else {
+            self.goal_principal.as_ref()
+        }
     }
 
     pub(crate) const fn confined_to(&self) -> Option<OwnerId> {

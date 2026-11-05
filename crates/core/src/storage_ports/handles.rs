@@ -11,6 +11,7 @@ use super::memory::{CitationPort, MemoryAuthoringPort, MemoryInspectPort, Memory
 use super::owner_inverse::{OwnerDropProofPort, OwnerEraseAuthorityPort, OwnerInversePort};
 use super::retention::RetentionPort;
 use super::write_session::WriteSessionFactory;
+use crate::goal_collaboration::GoalCollaborationPort;
 
 pub type FactIngestHandle = Arc<dyn FactIngestPort>;
 pub type MemoryAuthoringHandle = Arc<dyn MemoryAuthoringPort>;
@@ -22,6 +23,7 @@ pub type EmbeddingJobHandle = Arc<dyn EmbeddingJobPort>;
 pub type EmbeddingMaintenanceHandle = Arc<dyn EmbeddingMaintenancePort>;
 pub type GoalWriteHandle = Arc<dyn GoalWritePort>;
 pub type GoalReadHandle = Arc<dyn GoalReadPort>;
+pub type GoalCollaborationHandle = Arc<dyn GoalCollaborationPort>;
 pub type CitationHandle = Arc<dyn CitationPort>;
 pub type OwnerAccessReadHandle = Arc<dyn OwnerAccessReadPort>;
 pub type OwnerMembershipAdminHandle = Arc<dyn OwnerMembershipAdminPort>;

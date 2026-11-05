@@ -42,13 +42,15 @@ when their target is redacted.
 to hide or restore it in that space; omit the key to use the session's selected
 owner. The key grants no write authority.
 
-Every `core_goal` action accepts the same optional `space` selector; omission
-uses the session default. A later action must select the goal's owner.
+Goal creation and decomposition use the optional `space` selector, defaulting
+to the session owner. Existing Goal edits resolve the named Goal's owner when
+`space` is omitted; an explicit space narrows that selection.
 Evidence and the caller's self-Perspective may belong to other spaces the
 writer can read; reading the goal grants no access to those memories.
-Assignment is explicit: omit `target_perspective` to leave a goal unassigned,
-including goals created by `core_episode_commit`. A supplied target must be a
-Perspective in the goal's own space.
+Motivation is explicit: `motivated_by` names exact Perspective versions;
+omission leaves a new Goal unmotivated, including in `core_episode_commit`.
+`guided_by` records exact Goals that guided a Perspective version. Episodes
+remain owner-authorized; Goal guests contribute through derive/interpret.
 
 Session retention is scoped to the authenticated principal, independently of
 the selected owner. Opening more sessions can evict only that principal's own
@@ -73,16 +75,18 @@ nested groups, and use cases, and the
 
 ## Reads and consistency
 
-Reads return committed owner-visible rows. A `t` identifies one version;
+Reads return committed rows admitted by owner or Goal authority. A `t` identifies one version;
 `handle` identifies its series. Head queries and exact-version reads are
 different operations. A Goal handle read returns its current head; explicit
 version selectors can retrieve historical rows.
 
 Single and batch memory reads report the stored `owner` UUID independently of
-the writer and of `space`. Local `space` remains a server-issued selector,
-including `current`; a remote read reports the owner's UUID there. Neither a
-store number nor a selector proves ownership. Remote reads retain the stored
-payload and a Fact's occurrence time, just as local reads do.
+the writer. Local `space` labels that home owner: `current` for the session's
+owner, otherwise its UUID. A Goal-authorized read can report an owner outside
+`core_memory_spaces`; the label grants no owner role or write authority. Goal
+collaborators select authorized work with `working_goal`. A remote read reports
+the owner's UUID as `space` and retains the stored payload and a Fact's
+occurrence time, just as local reads do.
 
 Pagination uses an opaque cursor bound to the read's filters. Memory recency
 uses `(created_at, t)`; Goal pages use `(handle, t)`, so changing an Active Goal
@@ -135,6 +139,12 @@ An episode or explicit `UnitOfWork` commits its declared operations atomically.
 Authoring derived content carries declared-input provenance. An interpretation
 Perspective declares references without claiming a derivation. No operation
 writes an independent edge.
+
+Goal resources expose `motivated_by`; Perspective reads expose `guided_by`.
+Both name exact versions, with unreadable targets omitted from these role
+fields. Generic memory-source edge traversal includes Perspective guidance;
+Goal-owned motivation is read through the Goal resource. Owner export keeps
+the stored declarations, including historical assignments.
 
 Goal transitions append a later version. `transition` `abandon` takes an
 Active or Paused goal in one write, so a paused goal never becomes Active on

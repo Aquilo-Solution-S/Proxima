@@ -707,6 +707,178 @@ async fn export_carries_the_owners_content_rows() {
     result.expect("content export failed");
 }
 
+#[tokio::test]
+async fn export_carries_goal_controller_grants_only() {
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let controller_user = UserId::new(Uuid::now_v7());
+        let controller = OwnerId::from(controller_user);
+        let subject = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let other = OwnerId::from(UserId::new(Uuid::now_v7()));
+        for owner in [controller, subject, other] {
+            let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Fact);
+            pg.ingest_fact_atomic(&permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
+                .await?;
+        }
+        let pool = pg.pool_for_tests();
+        let goal = Uuid::now_v7();
+        let other_goal = Uuid::now_v7();
+        for (goal, owner, request_id) in [(goal, controller, "grant-owner"), (other_goal, other, "grant-other")] {
+            sqlx::query(
+                "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
+                 VALUES ($1, 'core/task-goal-v1', $2, $1)",
+            )
+            .bind(goal)
+            .bind(owner.into_inner())
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO proxiima_core.goal (handle, t, owner_id, title, state, request_id, \"by\", via)
+                 VALUES ($1, $1, $2, 'grant goal', 'Active', $3, $4, NULL)",
+            )
+            .bind(goal)
+            .bind(owner.into_inner())
+            .bind(request_id)
+            .bind(owner.into_inner())
+            .execute(pool)
+            .await?;
+        }
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal_access_grant
+                (goal_handle, subject_id, read_ceiling, write_ceiling, manage,
+                 controller_generation, granted_by)
+             VALUES ($1, $2, 2, 1, false, 0, $2)",
+        )
+        .bind(goal)
+        .bind(subject.into_inner())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal_access_grant
+                (goal_handle, subject_id, read_ceiling, write_ceiling, manage,
+                 controller_generation, granted_by)
+             VALUES ($1, $2, 1, 0, false, 0, $2)",
+        )
+        .bind(other_goal)
+        .bind(subject.into_inner())
+        .execute(pool)
+        .await?;
+
+        let auth = ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner {
+            user_id: controller_user,
+        });
+        let bundle = pg
+            .export_owner_bundle(&auth, &contract_sidecar_tables())
+            .await?;
+        let rows = bundle.table("proxiima_core.goal_access_grant");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["goal_handle"], goal.to_string());
+        assert_eq!(rows[0]["subject_id"], subject.into_inner().to_string());
+        assert!(rows[0].get("manage").is_some());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("Goal controller grant export failed");
+}
+
+#[tokio::test]
+async fn export_carries_source_owned_goal_publication_fields() {
+    let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
+    if let Err(e) = create_core_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
+    }
+    let url = db_url(&db_name);
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect_for_tests(url.clone()).await?;
+        let source_user = UserId::new(Uuid::now_v7());
+        let source = OwnerId::from(source_user);
+        let controller = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let source_permit = OwnerWritePermit::new_for_tests(source, AccessKind::Fact);
+        let memory = pg
+            .ingest_fact_atomic(&source_permit, &draft(MemoryKind::Fact, vec![], vec![]), None)
+            .await?
+            .memory_id
+            .into_inner();
+        let controller_permit = OwnerWritePermit::new_for_tests(controller, AccessKind::Fact);
+        pg.ingest_fact_atomic(
+            &controller_permit,
+            &draft(MemoryKind::Fact, vec![], vec![]),
+            None,
+        )
+        .await?;
+        let pool = pg.pool_for_tests();
+        let goal = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
+             VALUES ($1, 'core/task-goal-v1', $2, $1)",
+        )
+        .bind(goal)
+        .bind(controller.into_inner())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal (handle, t, owner_id, title, state, request_id, \"by\", via)
+             VALUES ($1, $1, $2, 'publication goal', 'Active', 'publication-goal', $2, NULL)",
+        )
+        .bind(goal)
+        .bind(controller.into_inner())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal_memory_publication
+                (goal_handle, memory_t, source_owner, source_generation,
+                 controller_generation, permitted_use, published_by)
+             VALUES ($1, $2, $3, 0, 0, 'read', $3)",
+        )
+        .bind(goal)
+        .bind(memory)
+        .bind(source.into_inner())
+        .execute(pool)
+        .await?;
+
+        let auth = ExportAuthorization::new_for_tests(OwnerExportTarget::PersonalOwner {
+            user_id: source_user,
+        });
+        let bundle = pg
+            .export_owner_bundle(&auth, &contract_sidecar_tables())
+            .await?;
+        let rows = bundle.table("proxiima_core.goal_memory_publication");
+        assert_eq!(rows.len(), 1);
+        let mut fields: Vec<&str> = rows[0]
+            .as_object()
+            .expect("publication row is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            [
+                "cited_upload_id",
+                "controller_generation",
+                "goal_handle",
+                "memory_t",
+                "permitted_use",
+                "published_by",
+                "source_generation",
+                "source_owner",
+            ]
+        );
+        assert_eq!(rows[0]["memory_t"], memory.to_string());
+        assert_eq!(rows[0]["goal_handle"], goal.to_string());
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("source-owned Goal publication export failed");
+}
+
 /// A forgotten memory's pins stay in the graph: edges come from forgotten
 /// rows as well as live ones (#478; since #488 both are `memory` rows).
 #[tokio::test]

@@ -207,7 +207,7 @@ async fn set_goal(
             "text": "kindrule goal",
             "body": {},
             "evidence": [seeded.abstraction["handle"]],
-            "target_perspective": seeded.perspective["handle"],
+            "motivated_by": [seeded.perspective["handle"]],
         }),
     )
     .await
@@ -270,7 +270,7 @@ async fn seed(tools: &CoreMcpTools, group: OwnerId) -> TestResult<Seeded> {
             "text": "kindrule task",
             "body": {"due_at": null, "priority": "High"},
             "evidence": [seeded.abstraction["handle"]],
-            "target_perspective": seeded.perspective["handle"],
+            "motivated_by": [seeded.perspective["handle"]],
         }),
     )
     .await?;
@@ -994,6 +994,9 @@ enum Rows {
     Kind,
     /// Every row belongs to a Goal.
     Goal,
+    /// Goal collaboration rows are readable in the Goal floor but writes go
+    /// through the platform command gateway (or the projection trigger).
+    GoalPlatformOnly,
     /// The memory at this column.
     Memory(&'static str),
     /// A Fact schema's sidecar: the memory at `t`, only ever a Fact.
@@ -1024,7 +1027,11 @@ const TABLES: &[(&str, Rows)] = &[
     ("goal", Rows::Goal),
     ("goal_change_v1", Rows::FactSidecar),
     ("goal_head", Rows::Goal),
+    ("goal_access_grant", Rows::GoalPlatformOnly),
+    ("goal_memory_publication", Rows::GoalPlatformOnly),
+    ("goal_motivation_index", Rows::GoalPlatformOnly),
     ("goal_replay_declaration", Rows::Goal),
+    ("goal_work_binding", Rows::GoalPlatformOnly),
     ("group_edges", Rows::NoKind),
     ("group_lock_request", Rows::NoKind),
     ("group_memberships", Rows::NoKind),
@@ -1067,7 +1074,7 @@ fn above_fact(table: &str, rows: Rows) -> Option<String> {
     };
     let predicate = match rows {
         Rows::Kind => "x.kind::text <> 'fact'".to_owned(),
-        Rows::Goal => "true".to_owned(),
+        Rows::Goal | Rows::GoalPlatformOnly => "true".to_owned(),
         Rows::Memory(column) => memory_kind(&format!("m.t = x.{column}")),
         Rows::Content => memory_kind("m.content_id = x.content_id"),
         Rows::ClosedHandle => "EXISTS (SELECT 1 FROM proxiima_core.memory_head AS h
@@ -1110,6 +1117,51 @@ async fn assert_fact_scope_sql(
     group: OwnerId,
     seeded: &Seeded,
 ) -> TestResult {
+    let goal_handle: Uuid = sqlx::query_scalar(
+        "SELECT handle FROM proxiima_core.goal_head WHERE owner_id = $1 LIMIT 1",
+    )
+    .bind(group.into_inner())
+    .fetch_one(admin)
+    .await?;
+    let fact_t = handle_id(&seeded.fact)?;
+    let perspective_t = handle_id(&seeded.perspective)?;
+    let perspective_handle: Uuid =
+        sqlx::query_scalar("SELECT handle FROM proxiima_core.memory_head WHERE t = $1")
+            .bind(perspective_t)
+            .fetch_one(admin)
+            .await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal_access_grant
+            (goal_handle, subject_id, read_ceiling, write_ceiling, manage,
+             controller_generation, granted_by)
+         VALUES ($1, $2, 1, 0, false, 0, $2)",
+    )
+    .bind(goal_handle)
+    .bind(group.into_inner())
+    .execute(admin)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal_memory_publication
+            (goal_handle, memory_t, source_owner, source_generation,
+             controller_generation, permitted_use, published_by)
+         VALUES ($1, $2, $3, 0, 0, 'read', $3)",
+    )
+    .bind(goal_handle)
+    .bind(fact_t)
+    .bind(group.into_inner())
+    .execute(admin)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal_work_binding
+            (goal_handle, memory_handle, source_owner, source_generation,
+             controller_generation, bound_by)
+         VALUES ($1, $2, $3, 0, 0, $3)",
+    )
+    .bind(goal_handle)
+    .bind(perspective_handle)
+    .bind(group.into_inner())
+    .execute(admin)
+    .await?;
     let census: Vec<String> = sqlx::query_scalar(
         "SELECT c.relname::text FROM pg_class AS c
            JOIN pg_namespace AS n ON n.oid = c.relnamespace
@@ -1276,7 +1328,9 @@ async fn assert_fact_scope_sql(
         .into_iter()
         .collect();
         for row in &above {
-            assert!(!visible.contains(row), "{table} shows a Fact scope {row}");
+            if !matches!(rows, Rows::GoalPlatformOnly) {
+                assert!(!visible.contains(row), "{table} shows a Fact scope {row}");
+            }
         }
         for row in &above {
             let mut probe = tx.begin().await?;
@@ -1340,6 +1394,25 @@ async fn assert_fact_scope_sql(
                 proxiima_storage_pg::begin_owner_transaction(&runtime, full_scope).await?;
             let written = run_on_row(&mut full, insert.clone(), row).await;
             full.rollback().await?;
+            if matches!(rows, Rows::GoalPlatformOnly) {
+                assert!(
+                    written.is_err(),
+                    "{table}: owner DML bypassed the command gateway"
+                );
+                let mut probe = tx.begin().await?;
+                let refused = run_on_row(&mut probe, insert, row)
+                    .await
+                    .expect_err("a Fact scope writes no platform-only Goal row");
+                probe.rollback().await?;
+                assert_ne!(
+                    sqlstate(&refused).as_deref(),
+                    Some("23505"),
+                    "{table}: {refused}"
+                );
+                assert!(sqlstate(&refused).is_some(), "{table}: {refused}");
+                probed += 1;
+                continue;
+            }
             match written {
                 Ok(_) => {}
                 Err(error) if sqlstate(&error).as_deref() == Some("23505") => {}

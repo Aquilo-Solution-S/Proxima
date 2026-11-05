@@ -137,7 +137,7 @@ impl DynamicHandler {
                     .call_resolved(target, args, author, auth, request_services, judged)
                     .await
             };
-            let reply = with_progress_heartbeat(call, heartbeat).await;
+            let reply = with_progress_heartbeat(Box::pin(call), heartbeat).await;
             let outcome = reply
                 .map_err(|err| {
                     tool_invocation_error_to_error_data(server.registry(), err, error_auth.as_ref())
@@ -2550,7 +2550,7 @@ mod tests {
         // idempotence: one non-idempotent action makes the tool one.
         let goal = hints(protocol_tool::CORE_GOAL);
         assert_eq!(goal.read_only, Some(false));
-        assert_eq!(goal.destructive, Some(false));
+        assert_eq!(goal.destructive, Some(true));
         assert_eq!(goal.idempotent, Some(false));
 
         // One destructive action (`remove_member`) makes the dispatcher

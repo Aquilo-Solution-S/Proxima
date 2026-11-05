@@ -64,6 +64,7 @@ crate::pg_sidecar! {
     kinds: [Abstraction, Perspective],
     table: "proxiima_core.agent_derivation_v1",
     key: t,
+    fork: copy,
     fields: {
         title => title: (text),
         body => body: (text),
@@ -175,6 +176,7 @@ impl PgMemorySidecar for proxiima_core::InterpretationV1 {
 }
 
 impl PgMemoryPayload for proxiima_core::InterpretationV1 {
+    const FORK: super::ForkPolicy = super::ForkPolicy::Copy;
     // The column this table stores its memory `t` under, spelled by
     // every statement below. Freeze holds it equal to the contract
     // `Surface`'s `KeyShape::MemoryT { column }` for proxiima_core.interpretation_v1.

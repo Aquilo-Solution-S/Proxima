@@ -16,6 +16,22 @@ pub enum AccessKind {
     Goal,
 }
 
+impl<'de> serde::Deserialize<'de> for Role {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            read: AccessCeiling,
+            write: AccessCeiling,
+            manage: bool,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Self::new(raw.read, raw.write, raw.manage).map_err(serde::de::Error::custom)
+    }
+}
+
 impl AccessKind {
     pub const ALL: [Self; 4] = [Self::Fact, Self::Abstraction, Self::Perspective, Self::Goal];
 
@@ -42,7 +58,17 @@ impl From<crate::EntityKind> for AccessKind {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
 )]
 pub enum AccessCeiling {
     None,
@@ -94,7 +120,7 @@ pub enum AccessError {
     SubjectIsGroup(UserId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
 pub struct Role {
     read: AccessCeiling,
     write: AccessCeiling,
@@ -767,6 +793,15 @@ mod tests {
             assert!(!forwarding.role().manages());
             assert!(!forwarding.role().may_write(AccessKind::Goal));
         }
+    }
+
+    #[test]
+    fn role_deserialization_rechecks_write_ceiling() {
+        let valid = serde_json::json!({"read":"Perspective","write":"Abstraction","manage":false});
+        let role: Role = serde_json::from_value(valid).expect("valid role");
+        assert_eq!(role.read_ceiling(), AccessCeiling::Perspective);
+        let invalid = serde_json::json!({"read":"Fact","write":"Goal","manage":false});
+        assert!(serde_json::from_value::<Role>(invalid).is_err());
     }
 
     /// Implements the eager method only: the per-group method it inherits is

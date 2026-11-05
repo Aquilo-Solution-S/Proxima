@@ -1,12 +1,10 @@
+use proxiima_core::mcp::core_tools::goal::CORE_GOAL_ACTIONS;
 use proxiima_core::spiice::SpiiceRegistry;
 
-const CORE_GOAL_ACTION_NAMES: &[&str] =
-    &["set", "transition", "modify", "mark_achieved", "decompose"];
 const CORE_FACT_ACTION_NAMES: &[&str] = &["citation_of_fact", "facts_citing_object"];
 const CORE_MEMBERSHIP_ACTION_NAMES: &[&str] = &["add_member", "remove_member", "list_members"];
 const CORE_TRANSFER_ACTION_NAMES: &[&str] = &["transfer_to_owner"];
 const DISPATCHER_TOOL_ACTIONS: &[(&str, &[&str])] = &[
-    ("core_goal", CORE_GOAL_ACTION_NAMES),
     ("core_fact", CORE_FACT_ACTION_NAMES),
     ("core_membership", CORE_MEMBERSHIP_ACTION_NAMES),
     ("core_transfer", CORE_TRANSFER_ACTION_NAMES),
@@ -33,7 +31,15 @@ fn served_catalog_includes_forget_and_drops_open_batch() {
 #[test]
 fn dispatcher_tool_arg_schemas_expose_action_enum() {
     let frozen = SpiiceRegistry::default().freeze_or_panic_for_tests();
-    for &(tool_name, expected_actions) in DISPATCHER_TOOL_ACTIONS {
+    let mut expected_tools = DISPATCHER_TOOL_ACTIONS
+        .iter()
+        .map(|&(tool_name, expected_actions)| (tool_name, expected_actions.to_vec()))
+        .collect::<Vec<_>>();
+    expected_tools.push((
+        "core_goal",
+        CORE_GOAL_ACTIONS.iter().map(|meta| meta.action).collect(),
+    ));
+    for (tool_name, expected_actions) in expected_tools {
         let tool = frozen
             .list_mcp_tools()
             .iter()
@@ -77,13 +83,13 @@ fn dispatcher_tool_arg_schemas_expose_action_enum() {
             })
             .collect::<Vec<_>>();
         actions.sort_unstable();
-        let mut expected = expected_actions.to_vec();
+        let mut expected = expected_actions.clone();
         expected.sort_unstable();
         assert_eq!(
             actions, expected,
             "dispatcher tool {tool_name} must preserve expected action variants",
         );
-        for action in expected_actions {
+        for action in &expected_actions {
             assert!(
                 dispatcher.action(action).is_some(),
                 "dispatcher tool {tool_name} must derive action {action}",

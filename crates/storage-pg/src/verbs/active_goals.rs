@@ -19,7 +19,7 @@ pub(crate) async fn list_active_goals_on_connection(
         .copied()
         .map(OwnerId::into_inner)
         .collect();
-    let rows: Vec<ActiveGoalRow> = sqlx::query_as("SELECT g.handle AS goal_id, g.\"by\", g.via, g.title, NULL::uuid AS goal_activated_memory_id FROM proxiima_core.goal_head h JOIN proxiima_core.goal g ON g.handle = h.handle AND g.t = h.t WHERE g.owner_id = ANY($1::uuid[]) AND g.state = $2 AND g.assignment_t = $3 ORDER BY g.t DESC, g.handle DESC LIMIT $4")
+    let rows: Vec<ActiveGoalRow> = sqlx::query_as("SELECT g.handle AS goal_id, g.\"by\", g.via, g.title, NULL::uuid AS goal_activated_memory_id FROM proxiima_core.goal_head h JOIN proxiima_core.goal g ON g.handle = h.handle AND g.t = h.t WHERE g.owner_id = ANY($1::uuid[]) AND g.state = $2 AND EXISTS (SELECT 1 FROM proxiima_core.goal_motivation_index mi WHERE mi.goal_t = g.t AND mi.owner_id = g.owner_id AND mi.perspective_t = $3) ORDER BY g.t DESC, g.handle DESC LIMIT $4")
         .bind(&ids).bind(GoalState::Active).bind(self_perspective_memory_id.into_inner()).bind(i64::try_from(limit).unwrap_or(i64::MAX)).fetch_all(&mut *connection).await.map_err(map_err)?;
     Ok(rows
         .into_iter()

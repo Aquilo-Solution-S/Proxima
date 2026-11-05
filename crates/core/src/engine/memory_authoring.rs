@@ -11,8 +11,8 @@ use crate::{
 };
 use crate::{MemoryOutputInvocation, OperatorInvocationManifest, OutputEdgeManifest};
 
-pub(super) struct PreparedDerived {
-    pub(super) write_permit: super::pipeline::WritePermit,
+pub(super) struct PreparedDerived<P = super::pipeline::WritePermit> {
+    pub(super) write_permit: P,
     pub(super) owner: OwnerId,
     pub(super) memory_id: MemoryId,
     pub(super) kind: EntityKind,
@@ -26,6 +26,8 @@ pub(super) struct PreparedDerived {
     pub(super) queued_spaces: Vec<crate::EmbeddingSpace>,
     pub(super) origins: Vec<EdgeEndpoint>,
     pub(super) references: Vec<EdgeEndpoint>,
+    pub(super) retained_pins: Option<crate::RetainedPins>,
+    pub(super) guided_by: Vec<crate::GoalId>,
     pub(super) external_origins: Vec<uuid::Uuid>,
     pub(super) external_references: Vec<uuid::Uuid>,
     pub(super) request: Option<crate::verbs::idempotency::RequestKey>,
@@ -86,7 +88,7 @@ impl RawDerivedTestRequest<'_> {
                 MemoryTarget::Series(SeriesHandle::new(self.memory_id.into_inner())),
                 MemoryTarget::Revision,
             ),
-            owner: self.owner,
+            destination: self.owner.into(),
             text: self.text,
             sidecar_payload: self.sidecar_payload,
             identity: (!origins.is_empty()).then_some(DerivationIdentity::new(
@@ -95,6 +97,7 @@ impl RawDerivedTestRequest<'_> {
             )),
             origins,
             extra_refs: self.extra_refs.to_vec(),
+            guided_by: Vec::new(),
             lexical_language: self.lexical_language.map(str::to_owned),
             external_origins: Vec::new(),
             external_references: Vec::new(),
@@ -103,7 +106,7 @@ impl RawDerivedTestRequest<'_> {
     }
 }
 
-impl PreparedDerived {
+impl<P> PreparedDerived<P> {
     pub(super) fn storage_request(&self) -> AuthorDerivedRequest<'_> {
         AuthorDerivedRequest {
             memory_id: self.memory_id,
@@ -119,6 +122,8 @@ impl PreparedDerived {
             queued_spaces: &self.queued_spaces,
             origins: &self.origins,
             references: &self.references,
+            retained_pins: self.retained_pins.as_ref(),
+            guided_by: &self.guided_by,
             external_origins: &self.external_origins,
             external_references: &self.external_references,
             request: self.request.clone(),
@@ -317,14 +322,24 @@ impl DerivationIdentity {
 ///     let _ = &mut request.sidecar_payload;
 /// }
 /// ```
+///
+/// Guidance enters through the Perspective constructors. A caller cannot
+/// attach it to an already-built Abstraction:
+///
+/// ```compile_fail
+/// fn guide(request: &mut proxiima_core::DerivedMemory, goal: proxiima_core::GoalId) {
+///     request.guided_by = vec![goal];
+/// }
+/// ```
 pub struct DerivedMemory {
     pub(crate) target: MemoryTarget,
-    pub(crate) owner: OwnerId,
+    pub(crate) destination: crate::MemoryDestination,
     pub(crate) text: String,
     pub(crate) sidecar_payload: SidecarPayload,
     pub(crate) origins: Vec<MemoryId>,
     pub(crate) identity: Option<DerivationIdentity>,
     pub(crate) extra_refs: Vec<MemoryId>,
+    pub(crate) guided_by: Vec<crate::GoalId>,
     pub(crate) lexical_language: Option<String>,
     pub(crate) external_origins: Vec<crate::storage_ports::other_stores::ReadOrigin>,
     pub(crate) external_references: Vec<crate::storage_ports::other_stores::ReadOrigin>,
@@ -332,6 +347,15 @@ pub struct DerivedMemory {
 }
 
 impl DerivedMemory {
+    fn guided_by(goals: impl IntoIterator<Item = crate::GoalId>) -> Vec<crate::GoalId> {
+        let mut out = Vec::new();
+        for goal in goals {
+            if !out.contains(&goal) {
+                out.push(goal);
+            }
+        }
+        out
+    }
     fn output_kind(&self) -> Result<EntityKind, ProtocolError> {
         match self.sidecar_payload.kind {
             crate::verbs::schema::PayloadKind::Abstraction => Ok(EntityKind::Abstraction),
@@ -365,7 +389,7 @@ impl DerivedMemory {
     /// Rejects empty origins; revisions also require provenance.
     pub fn abstraction<P: AbstractionPayload>(
         target: MemoryTarget,
-        owner: OwnerId,
+        destination: impl Into<crate::MemoryDestination>,
         text: impl Into<String>,
         payload: P,
         origins: impl IntoIterator<Item = MemoryId>,
@@ -373,12 +397,13 @@ impl DerivedMemory {
     ) -> Result<Self, ProtocolError> {
         Ok(Self {
             target,
-            owner,
+            destination: destination.into(),
             text: text.into(),
             sidecar_payload: SidecarPayload::abstraction(payload),
             origins: Self::origins(origins)?,
             identity: Some(identity),
             extra_refs: Vec::new(),
+            guided_by: Vec::new(),
             lexical_language: Some(
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
@@ -393,20 +418,48 @@ impl DerivedMemory {
     /// Rejects empty origins. Use `interpretation` for a judgment grounded only through references.
     pub fn perspective<P: PerspectivePayload>(
         target: MemoryTarget,
-        owner: OwnerId,
+        destination: impl Into<crate::MemoryDestination>,
         text: impl Into<String>,
         payload: P,
         origins: impl IntoIterator<Item = MemoryId>,
         identity: DerivationIdentity,
     ) -> Result<Self, ProtocolError> {
+        Self::guided_perspective(
+            target,
+            destination,
+            text,
+            payload,
+            origins,
+            identity,
+            Vec::new(),
+        )
+    }
+
+    /// Create a derived Perspective and record the exact Goal versions that
+    /// guided this version.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidArgument` when the payload or origins do not satisfy
+    /// the Perspective constructor's grounding requirements.
+    pub fn guided_perspective<P: PerspectivePayload>(
+        target: MemoryTarget,
+        destination: impl Into<crate::MemoryDestination>,
+        text: impl Into<String>,
+        payload: P,
+        origins: impl IntoIterator<Item = MemoryId>,
+        identity: DerivationIdentity,
+        guided_by: impl IntoIterator<Item = crate::GoalId>,
+    ) -> Result<Self, ProtocolError> {
         Ok(Self {
             target,
-            owner,
+            destination: destination.into(),
             text: text.into(),
             sidecar_payload: SidecarPayload::perspective(payload),
             origins: Self::origins(origins)?,
             identity: Some(identity),
             extra_refs: Vec::new(),
+            guided_by: Self::guided_by(guided_by),
             lexical_language: Some(
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
@@ -419,18 +472,32 @@ impl DerivedMemory {
     #[must_use]
     pub fn interpretation<P: PerspectivePayload>(
         target: MemoryTarget,
-        owner: OwnerId,
+        destination: impl Into<crate::MemoryDestination>,
         text: impl Into<String>,
         payload: P,
     ) -> Self {
+        Self::guided_interpretation(target, destination, text, payload, Vec::new())
+    }
+
+    /// Create an origin-free Perspective and record the exact Goal versions
+    /// that guided this version.
+    #[must_use]
+    pub fn guided_interpretation<P: PerspectivePayload>(
+        target: MemoryTarget,
+        destination: impl Into<crate::MemoryDestination>,
+        text: impl Into<String>,
+        payload: P,
+        guided_by: impl IntoIterator<Item = crate::GoalId>,
+    ) -> Self {
         Self {
             target,
-            owner,
+            destination: destination.into(),
             text: text.into(),
             sidecar_payload: SidecarPayload::perspective(payload),
             origins: Vec::new(),
             identity: None,
             extra_refs: Vec::new(),
+            guided_by: Self::guided_by(guided_by),
             lexical_language: Some(
                 crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT.to_owned(),
             ),
@@ -673,7 +740,13 @@ impl Engine {
     where
         A: EngineAuthority + ?Sized,
     {
-        let item = self.prepare_derived_memory(authority, memory, &[]).await?;
+        if let crate::MemoryDestination::WorkingGoal(goal) = memory.destination {
+            let operation = self.operation_authority(authority)?;
+            return self.derive_goal_work(operation.authz(), goal, memory).await;
+        }
+        let item = self
+            .prepare_derived_memory(authority, memory, &[], &[])
+            .await?;
         let req = item.storage_request();
         let outcome = self
             .storage()
@@ -689,20 +762,179 @@ impl Engine {
         Ok(outcome.into())
     }
 
+    /// Author or revise A/P work through one explicitly delegated Goal.
+    /// The destination retains its durable owner and the work stays bound to
+    /// this Goal; this permit cannot erase or transfer the series.
+    ///
+    /// # Errors
+    /// Refuses destination mismatches, unreadable provenance, unbound revisions,
+    /// inactive Goals, missing kind authority and stale grants at commit.
+    async fn derive_goal_work(
+        &self,
+        authz: &crate::AuthzContext,
+        goal: crate::GoalHandle,
+        memory: DerivedMemory,
+    ) -> Result<DerivedMemoryOutcome, ProtocolError> {
+        let kind = memory.output_kind()?;
+        let command = self
+            .goal_command_permit(
+                authz,
+                goal,
+                crate::authz::hooks::GoalCollaborationChange::AuthorWork,
+            )
+            .await?;
+        let owner = command.controller();
+        let permit = crate::GoalWorkPermit::new(command, kind.into(), memory.target);
+        let item = self
+            .prepare_derived_with_permit(authz, memory, &[], &[], owner, permit)
+            .await?;
+        let request = item.storage_request();
+        self.storage()
+            .goal_command
+            .goal_collaboration
+            .author_work_memory(
+                &request,
+                &item.write_permit,
+                crate::storage_ports::OperatorWriteProof::new(),
+            )
+            .await
+            .map(Into::into)
+            .map_err(map_derived_storage_error)
+    }
+
+    /// Return only the exact memory pins sealed from a readable forked prior.
+    /// The caller may use these identifiers to defer ordinary source reads;
+    /// storage still rechecks the prior, owner, kind, and Goal fences when the
+    /// revision is admitted.
+    pub(crate) async fn retained_revision_sources(
+        &self,
+        authz: &crate::AuthzContext,
+        destination: crate::MemoryDestination,
+        prior: MemoryId,
+        kind: EntityKind,
+    ) -> Result<Vec<(MemoryId, EntityKind)>, ProtocolError> {
+        let (scope, destination_owner) = match destination {
+            crate::MemoryDestination::WorkingGoal(goal) => {
+                let command = self
+                    .goal_command_permit(
+                        authz,
+                        goal,
+                        crate::authz::hooks::GoalCollaborationChange::AuthorWork,
+                    )
+                    .await?;
+                let scope = command.scope().clone();
+                (scope, command.controller())
+            }
+            crate::MemoryDestination::Owner(owner) => {
+                let permit = self.authorize_write(authz, &owner, kind.into()).await?;
+                let scope = permit
+                    .owner_scope()
+                    .ok_or_else(|| ProtocolError::forbidden("owner scope required"))?
+                    .clone();
+                (scope, owner)
+            }
+        };
+        let permit = crate::RevisionCopyPermit::new(scope, prior, destination_owner, kind);
+        let Some(snapshot) = self
+            .storage()
+            .goal_command
+            .goal_collaboration
+            .revision_pins(&permit)
+            .await
+            .map_err(map_derived_storage_error)?
+        else {
+            return Ok(Vec::new());
+        };
+        if snapshot.owner != destination_owner || snapshot.kind != kind {
+            return Err(ProtocolError::forbidden("entry not found"));
+        }
+        let mut retained = Vec::new();
+        for endpoint in snapshot.origins.iter().chain(snapshot.references.iter()) {
+            let Some(id) = endpoint.memory_id() else {
+                continue;
+            };
+            if !retained.iter().any(|(seen, _)| *seen == id) {
+                retained.push((id, endpoint.kind));
+            }
+        }
+        Ok(retained)
+    }
+
+    async fn authorize_guidance<A>(
+        &self,
+        authority: &A,
+        owner: &OwnerId,
+        guided_by: &[crate::GoalId],
+        session_goals: &[(crate::GoalId, OwnerId)],
+    ) -> Result<Vec<crate::GoalId>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        for goal in guided_by {
+            if let Some((_, target_owner)) = session_goals.iter().find(|(id, _)| id == goal) {
+                if target_owner != owner {
+                    return Err(ProtocolError::forbidden("entry not found"));
+                }
+            } else {
+                let permit = self
+                    .authorize_entry_read(authority, EntityId::Goal(*goal))
+                    .await?;
+                if permit.owner() != owner {
+                    return Err(ProtocolError::forbidden("entry not found"));
+                }
+            }
+        }
+        Ok(guided_by.to_vec())
+    }
+
     /// Shared authorization, provenance, references, and embedding preparation.
     pub(super) async fn prepare_derived_memory<A>(
         &self,
         authority: &A,
         memory: DerivedMemory,
         session_kinds: &[(MemoryId, EntityKind)],
+        session_goals: &[(crate::GoalId, OwnerId)],
     ) -> Result<PreparedDerived, ProtocolError>
     where
         A: EngineAuthority + ?Sized,
     {
         let kind = memory.output_kind()?;
-        let write_permit = self
-            .authorize_write(authority, &memory.owner, kind.into())
-            .await?;
+        let crate::MemoryDestination::Owner(owner) = memory.destination else {
+            return Err(ProtocolError::invalid_argument(
+                "destination",
+                "Goal work requires a standalone authoring transaction",
+            ));
+        };
+        let write_permit = self.authorize_write(authority, &owner, kind.into()).await?;
+        let owner = *write_permit.owner();
+        self.prepare_derived_with_permit(
+            authority,
+            memory,
+            session_kinds,
+            session_goals,
+            owner,
+            write_permit,
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "revision preparation keeps retained-pin and ordinary source validation together"
+    )]
+    async fn prepare_derived_with_permit<A, P>(
+        &self,
+        authority: &A,
+        memory: DerivedMemory,
+        session_kinds: &[(MemoryId, EntityKind)],
+        session_goals: &[(crate::GoalId, OwnerId)],
+        owner: OwnerId,
+        write_permit: P,
+    ) -> Result<PreparedDerived<P>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let kind = memory.output_kind()?;
         let (memory_id, supersedes) = match memory.target {
             MemoryTarget::Series(handle) => (MemoryId::new(handle.into_inner()), None),
             // Storage resolves the prior row's handle. This private draft key is
@@ -712,18 +944,46 @@ impl Engine {
                 Some(prior),
             ),
         };
+        let retained_pins = if let Some(prior) = supersedes {
+            let scope = self
+                .operation_authority(authority)?
+                .authz()
+                .owner_scope()
+                .ok_or_else(|| ProtocolError::forbidden("owner scope required"))?;
+            let permit = crate::RevisionCopyPermit::new(scope.clone(), prior, owner, kind);
+            self.storage()
+                .goal_command
+                .goal_collaboration
+                .revision_pins(&permit)
+                .await
+                .map_err(map_derived_storage_error)?
+                .map(crate::RetainedPins::seal)
+        } else {
+            None
+        };
         if let Some(prior) = supersedes {
             self.validate_derived_revision(
                 authority,
-                *write_permit.owner(),
+                owner,
                 kind,
                 prior,
                 session_kinds,
+                retained_pins.as_ref(),
             )
             .await?;
         }
+        let retained_kinds = retained_pins
+            .as_ref()
+            .into_iter()
+            .flat_map(|pins| pins.origins().iter())
+            .filter_map(|endpoint| endpoint.memory_id().map(|id| (id, endpoint.kind)));
+        let resolution_kinds = session_kinds
+            .iter()
+            .copied()
+            .chain(retained_kinds)
+            .collect::<Vec<_>>();
         let origins = self
-            .resolve_memory_targets(authority, &memory.origins, session_kinds)
+            .resolve_memory_targets(authority, &memory.origins, &resolution_kinds)
             .await?;
         let operator_kind = infer_derivation_phase(kind, &origins)?;
         let external_origins = external_on_layer(&origins, &memory.external_origins)?;
@@ -737,18 +997,32 @@ impl Engine {
                 .map_err(|err| ProtocolError::invalid_argument("origins", err))?;
         }
         let references = self
-            .prepare_derived_references(authority, source, &memory, session_kinds)
+            .prepare_derived_references(
+                authority,
+                source,
+                &memory,
+                session_kinds,
+                retained_pins.as_ref(),
+            )
             .await?;
+        let guided_by = if kind == EntityKind::Perspective {
+            self.authorize_guidance(authority, &owner, &memory.guided_by, session_goals)
+                .await?
+        } else if memory.guided_by.is_empty() {
+            Vec::new()
+        } else {
+            return Err(ProtocolError::invalid_argument(
+                "guided_by",
+                "only a Perspective can record Goal guidance",
+            ));
+        };
         validate_typed_invocation(&memory, memory_id, kind, operator_kind, &origins)
             .map_err(map_derived_storage_error)?;
         let queued_spaces = self
-            .embedding_spaces_for_write(
-                write_permit.owner(),
-                memory.sidecar_payload.schema_id.as_str(),
-            )
+            .embedding_spaces_for_write(&owner, memory.sidecar_payload.schema_id.as_str())
             .await?;
         Ok(PreparedDerived {
-            owner: *write_permit.owner(),
+            owner,
             write_permit,
             memory_id,
             kind,
@@ -762,8 +1036,10 @@ impl Engine {
             queued_spaces,
             origins,
             references,
+            retained_pins,
             external_origins,
             external_references,
+            guided_by,
             request: memory.request,
         })
     }
@@ -774,6 +1050,7 @@ impl Engine {
         source: EdgeEndpoint,
         memory: &DerivedMemory,
         session_kinds: &[(MemoryId, EntityKind)],
+        retained: Option<&crate::RetainedPins>,
     ) -> Result<Vec<EdgeEndpoint>, ProtocolError> {
         let declared = memory.sidecar_payload.references();
         let ids = declared
@@ -781,9 +1058,24 @@ impl Engine {
             .filter_map(|reference| reference.target.memory_id())
             .chain(memory.extra_refs.iter().copied())
             .collect::<Vec<_>>();
-        let resolved = self
+        let retained_ids = retained
+            .into_iter()
+            .flat_map(|pins| pins.references().iter())
+            .filter_map(|endpoint| endpoint.memory_id())
+            .collect::<std::collections::HashSet<_>>();
+        let retained_declared = retained
+            .into_iter()
+            .flat_map(|pins| pins.references().iter().copied())
+            .filter(|endpoint| endpoint.memory_id().is_some_and(|id| ids.contains(&id)))
+            .collect::<Vec<_>>();
+        let ids = ids
+            .into_iter()
+            .filter(|id| !retained_ids.contains(id))
+            .collect::<Vec<_>>();
+        let mut resolved = self
             .resolve_memory_targets(authority, &ids, session_kinds)
             .await?;
+        resolved.extend(retained_declared);
         let mut references = Vec::new();
         for reference in declared {
             let target = match reference.target.entity {
@@ -836,11 +1128,16 @@ impl Engine {
         kind: EntityKind,
         prior: MemoryId,
         session_kinds: &[(MemoryId, EntityKind)],
+        retained: Option<&crate::RetainedPins>,
     ) -> Result<(), ProtocolError> {
         let prior_kind = if let Some((_, kind)) = session_kinds.iter().find(|(id, _)| *id == prior)
         {
             // The transaction's head check enforces same owner/schema as well.
             *kind
+        } else if retained.is_some_and(|pins| {
+            pins.prior() == prior && pins.owner() == owner && pins.kind() == kind
+        }) {
+            kind
         } else {
             let permit = self
                 .authorize_entry_read(authority, EntityId::Memory(prior))
@@ -901,8 +1198,10 @@ impl Engine {
             queued_spaces: &queued_spaces,
             origins: req.derived_from,
             references,
+            retained_pins: None,
             external_origins: &[],
             external_references: &[],
+            guided_by: &[],
             request: None,
         };
         self.storage()
@@ -1056,7 +1355,8 @@ mod tests {
     use crate::authz::AuthzContext;
     use crate::error::ErrorCode;
     use crate::{
-        AbstractionPayload, AgentDerivationV1, EntityKind, OwnerId, SpiiceRegistry, UserId,
+        AbstractionPayload, AgentDerivationV1, EntityKind, InterpretationSubjectKind,
+        InterpretationV1, OwnerId, SpiiceRegistry, UserId,
     };
 
     use super::*;
@@ -1297,6 +1597,28 @@ mod tests {
             "duplicate origins do not duplicate invocation inputs"
         );
         assert_eq!(req.origins.len(), 1);
+    }
+
+    #[test]
+    fn guided_interpretation_keeps_exact_goal_versions_and_deduplicates() {
+        let first = crate::GoalId::new(uuid::Uuid::now_v7());
+        let second = crate::GoalId::new(uuid::Uuid::now_v7());
+        let memory = DerivedMemory::guided_interpretation(
+            MemoryTarget::Series(SeriesHandle::new(uuid::Uuid::now_v7())),
+            owner(),
+            "claim",
+            InterpretationV1 {
+                claim: "claim".into(),
+                confidence: 80,
+                subject_memory_ids: vec![uuid::Uuid::now_v7()],
+                subject_kinds: vec![InterpretationSubjectKind::Fact],
+                model_id: "fixture".into(),
+                client_name: "fixture".into(),
+                client_version: "1".into(),
+            },
+            [first, first, second],
+        );
+        assert_eq!(memory.guided_by, vec![first, second]);
     }
 
     /// What storage is handed, verbatim: the `derived_from` declaration

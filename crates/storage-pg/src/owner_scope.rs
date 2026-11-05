@@ -75,7 +75,8 @@ pub(crate) async fn bind_owner_scope(
                 set_config('app.write_perspective', $7::uuid[]::text, true),
                 set_config('app.write_goal', $8::uuid[]::text, true),
                 set_config('app.manage_owner', $9::uuid[]::text, true),
-                set_config('app.subject', $10::uuid::text, true)",
+                set_config('app.subject', $10::uuid::text, true),
+                set_config('app.goal_subject', COALESCE($11::uuid::text, ''), true)",
     )
     .bind(owner_ids(scope.readable_owners(AccessKind::Fact)))
     .bind(owner_ids(scope.readable_owners(AccessKind::Abstraction)))
@@ -87,6 +88,11 @@ pub(crate) async fn bind_owner_scope(
     .bind(owner_ids(scope.writable_owners(AccessKind::Goal)))
     .bind(owner_ids(scope.managed_owners()))
     .bind(scope.subject().into_inner())
+    .bind(
+        scope
+            .goal_principal()
+            .map(|principal| principal.subject().into_inner()),
+    )
     .execute(connection)
     .await
     .map_err(map_err)?;

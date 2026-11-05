@@ -30,7 +30,7 @@ pub struct GoalWriteCommand {
     pub state: GoalState,
     pub request_id: String,
     pub close_fact_t: Option<Uuid>,
-    pub assignment_t: Option<Uuid>,
+    pub motivated_by: Vec<Uuid>,
     pub dependency_t: Vec<Uuid>,
     pub evidence_t: Vec<Uuid>,
     pub mint_write_act: bool,
@@ -287,7 +287,7 @@ pub(crate) async fn prepare_goal_write(
         None => proxiima_core::new_memory_uuid(store_number),
     };
     let mut targets = Vec::with_capacity(
-        1 + usize::from(command.assignment_t.is_some())
+        1 + command.motivated_by.len()
             + command.dependency_t.len()
             + command.evidence_t.len()
             + usize::from(command.close_fact_t.is_some())
@@ -298,7 +298,7 @@ pub(crate) async fn prepare_goal_write(
     targets.push(t);
     targets.extend(expected_prior_t);
     targets.extend(expected_head_t);
-    targets.extend(command.assignment_t);
+    targets.extend(command.motivated_by.iter().copied());
     targets.extend(command.dependency_t.iter().copied());
     targets.extend(command.evidence_t.iter().copied());
     targets.extend(command.close_fact_t);
@@ -685,8 +685,8 @@ async fn insert_goal_revision(
     sqlx::query(
         "INSERT INTO proxiima_core.goal
             (handle, t, owner_id, title, text, state, request_id, close_fact_t,
-            assignment_t, dependency_t, evidence_t, write_act_t, \"by\", via, parent_handle)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+            assignment_t, motivated_by, dependency_t, evidence_t, write_act_t, \"by\", via, parent_handle)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(prepared.handle)
     .bind(prepared.t)
@@ -696,7 +696,7 @@ async fn insert_goal_revision(
     .bind(prepared.command.state)
     .bind(&prepared.command.request_id)
     .bind(prepared.command.close_fact_t)
-    .bind(prepared.command.assignment_t)
+    .bind(&prepared.command.motivated_by)
     .bind(&prepared.command.dependency_t)
     .bind(&prepared.command.evidence_t)
     .bind(prepared.command.write_act_t)
@@ -734,11 +734,11 @@ async fn validate_goal_targets_live(
     // Retained Goal rows may keep forgotten or witnessed pins for historical
     // validity; a new successor is fresh admission and must reauthorize hot,
     // readable assignment, evidence, and lifecycle targets. Hydrate first.
-    if let Some(assignment) = draft.assignment_t {
+    for motivation in &draft.motivated_by {
         ensure_live_memory_kind(
             tx,
-            assignment,
-            "goal assignment perspective",
+            *motivation,
+            "goal motivation perspective",
             &[PgMemoryKind::Perspective],
         )
         .await?;
@@ -788,7 +788,10 @@ async fn ensure_live_memory_kind(
     allowed: &[PgMemoryKind],
 ) -> Result<(), StorageError> {
     let kind: Option<PgMemoryKind> =
-        sqlx::query_scalar("SELECT kind FROM proxiima_core.memory WHERE t = $1")
+        sqlx::query_scalar(
+            "SELECT kind FROM proxiima_core.memory /* FORGET-POLICY: live-only (Goal target admission under lifecycle locks, including platform edits) */
+             WHERE t = $1 AND forgotten_at IS NULL",
+        )
             .bind(t)
             .fetch_optional(tx.as_mut())
             .await

@@ -18,7 +18,7 @@ use proxiima_core::verbs::fact_ingest::{
     AuthorizedFactWrite, AuthorizedNodeLinks, FactWriteCommand, InlineCitedObjectDraft,
 };
 use proxiima_core::verbs::goal_write::{
-    CreateGoalAtomicRequest, GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft,
+    CreateGoalAtomicRequest, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalMotivationRef,
     GoalState, GoalTopologyWrite, IdempotencyKey,
 };
 use proxiima_core::verbs::query::{EdgeFilter, EdgeReadRequest, QueryRequest};
@@ -380,7 +380,7 @@ async fn create_goal(
     perspective: MemoryId,
 ) -> Result<GoalId, Box<dyn std::error::Error>> {
     let topology = GoalTopologyWrite::new(
-        Some(GoalAssignmentTarget::perspective(perspective)),
+        vec![GoalMotivationRef::perspective(perspective)],
         Vec::new(),
         Vec::new(),
     )?;

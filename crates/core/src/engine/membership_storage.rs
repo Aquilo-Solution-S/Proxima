@@ -9,7 +9,8 @@ use std::sync::{
 use crate::goal_write::{
     AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
     DecomposeGoalOutcome, DecomposedGoalOutcome, GoalAuthorship, GoalReplayOutcome,
-    GoalReplayRequest, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    GoalReplayRequest, GoalState, GoalWriteOutcome, ModifyGoalAtomicRequest,
+    TransitionGoalAtomicRequest,
 };
 use crate::storage_ports::{StoragePorts, WriteSession, WriteSessionFactory};
 use crate::*;
@@ -35,6 +36,8 @@ pub(crate) struct MembershipStorage {
     /// owner must produce exactly one entry.
     pub(crate) observed_kind_loads: Arc<Mutex<Vec<Vec<MemoryId>>>>,
 }
+
+impl crate::GoalCollaborationPort for MembershipStorage {}
 
 #[async_trait::async_trait]
 impl FactIngestPort for MembershipStorage {
@@ -161,12 +164,38 @@ impl MemoryReadPort for MembershipStorage {
         &self,
         _scope: Option<&crate::OwnerScope>,
         _read_owners: &[OwnerId],
-        _req: &verbs::query::QueryRequest,
+        req: &verbs::query::QueryRequest,
         _schemas: &[crate::read_models::MemorySchemaSpec],
     ) -> Result<verbs::query::QueryResponse, StorageError> {
+        let goals = if req.entity_kind == Some(EntityKind::Goal) {
+            req.goal_ids
+                .iter()
+                .map(|id| verbs::query::GoalRow {
+                    handle: id.into_inner(),
+                    id: *id,
+                    schema_id: SchemaId::new("core/simple-text-v1".into()),
+                    owner: self.member,
+                    writer: WriterAttribution {
+                        by: self.member.into_inner(),
+                        via: None,
+                    },
+                    title: "fixture goal".into(),
+                    text: Some("fixture goal".into()),
+                    state: GoalState::Active,
+                    dependency_goal_ids: Vec::new(),
+                    historical_assignment: None,
+                    motivated_by: Vec::new(),
+                    evidence: self.goal_evidence.clone().unwrap_or_default(),
+                    set_at: time::OffsetDateTime::UNIX_EPOCH,
+                    changed_at: time::OffsetDateTime::UNIX_EPOCH,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(verbs::query::QueryResponse {
             memories: Vec::new(),
-            goals: Vec::new(),
+            goals,
             edges: Vec::new(),
             next_cursor: None,
         })
@@ -549,10 +578,11 @@ impl GoalWritePort for MembershipStorage {
     async fn resolve_goal_replay(
         &self,
         req: GoalReplayRequest<'_, '_>,
-        _permit: &crate::storage_ports::OwnerWritePermit,
+        _permit: crate::goal_collaboration::GoalEditPermit<'_>,
     ) -> Result<Option<GoalReplayOutcome>, StorageError> {
         let replay = |ordinal: u128| GoalWriteOutcome {
             goal_id: GoalId::new(uuid::Uuid::from_u128(ordinal)),
+            goal_handle: crate::goal_collaboration::GoalHandle::new(uuid::Uuid::from_u128(ordinal)),
             edge_count: 3,
             idempotent_replay: true,
         };
@@ -607,7 +637,7 @@ impl GoalWritePort for MembershipStorage {
     async fn transition_goal_atomic(
         &self,
         _req: &TransitionGoalAtomicRequest<'_>,
-        _permit: &crate::storage_ports::OwnerWritePermit,
+        _permit: crate::goal_collaboration::GoalEditPermit<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal(
             "MembershipStorage rejects writes".into(),
@@ -617,7 +647,7 @@ impl GoalWritePort for MembershipStorage {
     async fn achieve_goal_atomic(
         &self,
         _req: &AchieveGoalAtomicRequest<'_>,
-        _permit: &crate::storage_ports::OwnerWritePermit,
+        _permit: crate::goal_collaboration::GoalEditPermit<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal(
             "MembershipStorage rejects writes".into(),
@@ -627,7 +657,7 @@ impl GoalWritePort for MembershipStorage {
     async fn modify_goal_atomic(
         &self,
         req: &ModifyGoalAtomicRequest<'_>,
-        _permit: &crate::storage_ports::OwnerWritePermit,
+        _permit: crate::goal_collaboration::GoalEditPermit<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
         self.observed_goal_authorship
             .lock()
@@ -989,6 +1019,7 @@ impl MembershipStorage {
             .embedding_maintenance(storage.clone())
             .goal_write(storage.clone())
             .goal_read(storage.clone())
+            .goal_collaboration(storage.clone())
             .citation(storage.clone())
             .owner_access_read(storage.clone())
             .owner_membership_admin(storage.clone())

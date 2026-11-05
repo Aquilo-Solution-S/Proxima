@@ -685,6 +685,13 @@ pub const DROPPED_TABLES: &[&str] = &[
     // Added after the baseline by 0062: an owner's retention per schema.
     // `tests/retention.rs` pins its export and erase.
     "retention",
+    // Added by 0063/0064: Goal collaboration projections and authority
+    // relations have no counterpart in the pinned baseline. Their lifecycle
+    // and export contracts are covered by focused Goal collaboration tests.
+    "goal_access_grant",
+    "goal_memory_publication",
+    "goal_motivation_index",
+    "goal_work_binding",
 ];
 pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0007 added staged BLAKE3 identity after this frozen baseline;
@@ -697,6 +704,16 @@ pub const UNPAIRED_COLUMNS: &[(&str, &str)] = &[
     // 0026 added each series' publication position after this frozen
     // baseline; `publication_outbox_pg_tests` asserts it directly.
     ("memory_head", "publication_sequence"),
+    // 0063 added causal declarations after this frozen baseline. The
+    // feedback, replay and export tests exercise their exact values.
+    ("goal", "motivated_by"),
+    ("memory", "guided_by"),
+    // 0064 added authority generations to the two stable-series heads and
+    // exact fork provenance to memory; the focused collaboration/fork tests
+    // pin these fields directly.
+    ("goal_head", "authority_generation"),
+    ("memory_head", "authority_generation"),
+    ("memory", "forked_from"),
 ];
 
 fn names_relation(table: &str, relation: &str) -> bool {

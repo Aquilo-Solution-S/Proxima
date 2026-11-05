@@ -79,6 +79,7 @@ pub struct GetMemoryOutput {
     pub title: Option<String>,
     pub body: Option<String>,
     pub tags: Vec<String>,
+    pub guided_by: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub neighbor_edges: Option<Vec<NeighborEdge>>,
 }
@@ -169,6 +170,7 @@ pub(super) fn project_remote_memory(
         title: memory.title,
         body: Some(memory.body),
         tags: memory.tags,
+        guided_by: Vec::new(),
         neighbor_edges: None,
     }
 }
@@ -186,7 +188,7 @@ pub(super) fn project_memory_snapshot(
     snapshot: crate::read_models::MemorySnapshot,
     neighbor_edges: Option<Vec<NeighborEdge>>,
 ) -> Result<GetMemoryOutput, McpToolError> {
-    let space = super::memory_spaces::space_key_for_owner(ctx, snapshot.owner)?;
+    let space = super::memory_spaces::space_key_for_owner(ctx, snapshot.owner);
     let handle = snapshot.memory_id.into_inner().to_string();
     let payload = snapshot_payload_value(snapshot.payload.as_ref())?;
     let title =
@@ -212,6 +214,11 @@ pub(super) fn project_memory_snapshot(
         title,
         body,
         tags,
+        guided_by: snapshot
+            .guided_by
+            .into_iter()
+            .map(|id| id.into_inner().to_string())
+            .collect(),
         neighbor_edges,
     })
 }
@@ -270,6 +277,7 @@ mod tests {
                     text: Some("stored note".into()),
                     tags: Vec::new(),
                     payload: None,
+                    guided_by: Vec::new(),
                 },
                 None,
             )

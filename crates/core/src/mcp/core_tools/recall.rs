@@ -14,7 +14,7 @@ use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::protocol::tool as protocol_tool;
 use crate::verbs::goal_write::GoalState;
 use crate::verbs::query::{
-    EntityKind, GoalAssignmentFilter, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder,
+    EntityKind, GoalMotivationFilter, MemorySearchRequest, QueryRequest, SearchMode, SearchOrder,
     SupersessionStatus, TagMatch,
 };
 use uuid::Uuid;
@@ -293,8 +293,9 @@ async fn collect_question(
             &ctx.authz,
             &SearchReadRequest {
                 search: MemorySearchRequest {
-                    owner,
-                    read_owners: Vec::new(),
+                    // Keep question matches in the selected memory space.
+                    scope: crate::verbs::query::MemorySearchScope::Owner(owner),
+                    read_owners: vec![owner],
                     query: query.to_string(),
                     mode,
                     supersession: SupersessionStatus::HeadsOnly,
@@ -326,7 +327,7 @@ async fn collect_question(
             &sketch.text,
             RecallReason::Question,
         );
-        packet.set_meta(sketch.id, Some(owner), true);
+        packet.set_meta(sketch.id, Some(sketch.owner), true);
     }
     Ok(degraded)
 }
@@ -371,7 +372,7 @@ async fn collect_assigned_goals(
     let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_states.insert(GoalState::Active);
-    req.assignment = GoalAssignmentFilter::AssignedTo(perspectives);
+    req.motivated_by = GoalMotivationFilter::MotivatedBy(perspectives);
     req.include_payloads = false;
     req.limit = limit;
     let page = engine.query(&ctx.authz, &req).await?;
@@ -407,7 +408,7 @@ async fn collect_unassigned_goals(
     let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_states.insert(GoalState::Active);
-    req.assignment = GoalAssignmentFilter::Unassigned;
+    req.motivated_by = GoalMotivationFilter::Unmotivated;
     req.include_payloads = false;
     req.limit = limit;
     let mut collected = 0;

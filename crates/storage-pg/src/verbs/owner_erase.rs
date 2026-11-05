@@ -295,6 +295,7 @@ async fn group_member_count(tx: &mut Tx<'_>, group_id: GroupId) -> Result<i64, S
 enum KeyedSet {
     Memories,
     Goals,
+    GoalHandles,
     Blobs,
 }
 
@@ -303,6 +304,7 @@ impl KeyedSet {
         match self {
             Self::Memories => "selected_memories",
             Self::Goals => "selected_goals",
+            Self::GoalHandles => "selected_goal_handles",
             Self::Blobs => "selected_blobs",
         }
     }
@@ -311,6 +313,7 @@ impl KeyedSet {
         match self {
             Self::Memories => "memory_id",
             Self::Goals => "goal_id",
+            Self::GoalHandles => "handle",
             Self::Blobs => "blob_id",
         }
     }
@@ -327,6 +330,7 @@ const fn keyed_set(key: KeyShape) -> Option<(KeyedSet, &'static str)> {
     match key {
         KeyShape::MemoryT { column } => Some((KeyedSet::Memories, column)),
         KeyShape::GoalT { column } => Some((KeyedSet::Goals, column)),
+        KeyShape::GoalHandle { column, .. } => Some((KeyedSet::GoalHandles, column)),
         KeyShape::BlobId { column } => Some((KeyedSet::Blobs, column)),
         // An entity `t` has two home tables and therefore two selection
         // sets; the erase fills one per home and can join neither
@@ -514,6 +518,8 @@ async fn erase_selected(
     let delegated_authority_grants = delete_delegated_authority_grants(tx, owner, scope).await?;
     record_count(tx, "delegated_authority_grants", delegated_authority_grants).await?;
 
+    delete_goal_access_for_subject(tx, owner, scope).await?;
+
     let source_cursors = delete_source_cursors(tx, owner, scope).await?;
     record_count(tx, "source_cursors", source_cursors).await?;
 
@@ -524,6 +530,7 @@ async fn erase_selected(
     // set is the wrong set for them in both directions.
     delete_keyed_surfaces(tx, surfaces, KeyedSet::Memories).await?;
     delete_keyed_surfaces(tx, surfaces, KeyedSet::Goals).await?;
+    delete_keyed_surfaces(tx, surfaces, KeyedSet::GoalHandles).await?;
 
     let sketches = delete_selected_sketches(tx).await?;
     record_count(tx, "sketches", sketches).await?;
@@ -1529,6 +1536,26 @@ async fn delete_delegated_authority_grants(
     Ok(result.rows_affected())
 }
 
+/// Remove the erased person's access under the membership pseudoroot held by
+/// erase and Goal authority commands. Issuer attribution belongs to the Goal
+/// or source owner, like memory authorship: personal erasure cannot revoke
+/// another owner's sharing decisions or delete their provenance.
+async fn delete_goal_access_for_subject(
+    tx: &mut Tx<'_>,
+    owner: OwnerId,
+    scope: SelectionScope<'_>,
+) -> Result<(), StorageError> {
+    if matches!(scope, SelectionScope::Source(_)) {
+        return Ok(());
+    }
+    sqlx::query("DELETE FROM proxiima_core.goal_access_grant WHERE subject_id = $1")
+        .bind(owner.into_inner())
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
 /// Rows destroyed by [`delete_blobs`], reported separately because the three
 /// tables hold different owner data: content hashes, S3 upload metadata, and
 /// whatever a spiice's citation payload carries.
@@ -1879,7 +1906,7 @@ mod tests {
         assert_eq!(sorted, tables, "keep the exemption list sorted by table");
     }
 
-    /// The three selection sets are the whole vocabulary of a keyed leg.
+    /// The selection sets are the whole vocabulary of a keyed leg.
     #[test]
     fn every_homed_key_shape_maps_to_a_selection_set() {
         use proxiima_core::spiice::KeyShape;
@@ -1891,6 +1918,13 @@ mod tests {
         assert_eq!(
             keyed_set(KeyShape::GoalT { column: "g" }),
             Some((KeyedSet::Goals, "g"))
+        );
+        assert_eq!(
+            keyed_set(KeyShape::GoalHandle {
+                column: "handle",
+                trailing: &[],
+            }),
+            Some((KeyedSet::GoalHandles, "handle"))
         );
         assert_eq!(
             keyed_set(KeyShape::BlobId { column: "b" }),

@@ -202,10 +202,13 @@ pub(super) async fn prepare_goal_insert<'a>(
         state: draft.state,
         request_id: draft.request_id.clone(),
         close_fact_t: None,
-        assignment_t: draft
+
+        motivated_by: draft
             .topology
-            .assignment()
-            .map(|target| target.perspective_id().into_inner()),
+            .motivated_by()
+            .iter()
+            .map(|target| target.perspective_id().into_inner())
+            .collect(),
         dependency_t: draft
             .topology
             .dependencies()
@@ -316,6 +319,7 @@ pub(super) async fn persist_prepared_goal_insert(
 
     Ok(InsertedGoal {
         goal_id: GoalId::new(out.t),
+        handle: out.handle,
         idempotent_replay: out.replay,
     })
 }

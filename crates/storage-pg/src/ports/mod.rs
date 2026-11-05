@@ -2,6 +2,7 @@ use proxiima_core::storage_ports::OwnerWritePermit;
 use proxiima_core::{OwnerId, StorageError};
 
 mod embeddings;
+pub(crate) mod goal_collaboration;
 mod goals;
 mod host_state;
 mod host_state_dispatch;

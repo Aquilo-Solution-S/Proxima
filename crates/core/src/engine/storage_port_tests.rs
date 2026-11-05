@@ -161,12 +161,14 @@ impl crate::MemoryReadPort for ReadOnlyFake {
 #[derive(Debug)]
 struct GoalFake;
 
+impl crate::GoalCollaborationPort for GoalFake {}
+
 #[async_trait::async_trait]
 impl GoalWritePort for GoalFake {
     async fn resolve_goal_replay(
         &self,
         _req: crate::verbs::goal_write::GoalReplayRequest<'_, '_>,
-        _permit: &crate::storage_ports::OwnerWritePermit,
+        _permit: crate::goal_collaboration::GoalEditPermit<'_>,
     ) -> Result<Option<crate::verbs::goal_write::GoalReplayOutcome>, StorageError> {
         Err(StorageError::Internal("goal fake rejects writes".into()))
     }
@@ -182,7 +184,7 @@ impl GoalWritePort for GoalFake {
     async fn transition_goal_atomic(
         &self,
         _req: &crate::verbs::goal_write::TransitionGoalAtomicRequest<'_>,
-        _permit: &crate::storage_ports::OwnerWritePermit,
+        _permit: crate::goal_collaboration::GoalEditPermit<'_>,
     ) -> Result<crate::verbs::goal_write::GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal("goal fake rejects writes".into()))
     }
@@ -190,7 +192,7 @@ impl GoalWritePort for GoalFake {
     async fn achieve_goal_atomic(
         &self,
         _req: &crate::verbs::goal_write::AchieveGoalAtomicRequest<'_>,
-        _permit: &crate::storage_ports::OwnerWritePermit,
+        _permit: crate::goal_collaboration::GoalEditPermit<'_>,
     ) -> Result<crate::verbs::goal_write::GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal("goal fake rejects writes".into()))
     }
@@ -198,7 +200,7 @@ impl GoalWritePort for GoalFake {
     async fn modify_goal_atomic(
         &self,
         _req: &crate::verbs::goal_write::ModifyGoalAtomicRequest<'_>,
-        _permit: &crate::storage_ports::OwnerWritePermit,
+        _permit: crate::goal_collaboration::GoalEditPermit<'_>,
     ) -> Result<crate::verbs::goal_write::GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal("goal fake rejects writes".into()))
     }
@@ -259,6 +261,7 @@ async fn goal_helper_accepts_only_goal_command_handles() {
     let goal = Arc::new(GoalFake);
     let ports = GoalCommandStoragePorts {
         goal_write: goal.clone(),
+        goal_collaboration: goal.clone(),
         owner_access_read: goal,
     };
     let registry = crate::SpiiceRegistry::new().freeze_or_panic_for_tests();
@@ -282,9 +285,13 @@ async fn goal_helper_accepts_only_goal_command_handles() {
         None,
     );
 
-    let err = super::goal_write::transition_goal_authorized(&ports, &req, &permit)
-        .await
-        .expect_err("goal fake should reject writes");
+    let err = super::goal_write::transition_goal_authorized(
+        &ports,
+        &req,
+        crate::GoalEditPermit::Owner(&permit),
+    )
+    .await
+    .expect_err("goal fake should reject writes");
 
     assert_eq!(err.code, crate::error::ErrorCode::Internal);
 }

@@ -2,16 +2,17 @@ use super::{Engine, pipeline::WritePermit};
 use crate::access::{AccessKind, EntityId};
 use crate::authz::{AuthzContext, EngineAuthority};
 use crate::error::ProtocolError;
+use crate::goal_collaboration::GoalEditPermit;
 use crate::publication::PublicationStamp;
 use crate::storage::StorageError;
 use crate::storage_ports::GoalCommandStoragePorts;
 use crate::storage_ports::OwnerWritePermit;
 use crate::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    DecomposeGoalOutcome, GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship,
-    GoalCreateRequest, GoalDraft, GoalEvidenceRef, GoalPayloadWrite, GoalReplayOutcome,
-    GoalReplayRequest, GoalTopologyWrite, GoalTransitionKind, GoalWriteBuildError,
-    GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+    DecomposeGoalOutcome, GoalAtomicContext, GoalAuthorship, GoalCreateRequest, GoalDraft,
+    GoalEvidenceRef, GoalPayloadWrite, GoalReplayOutcome, GoalReplayRequest, GoalTopologyWrite,
+    GoalTransitionKind, GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey,
+    ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use crate::verbs::schema::PayloadKind;
 use crate::{EntityKind, FactPayload, GoalChangeV1, GoalPayload, MemoryId, SchemaVersion};
@@ -54,6 +55,7 @@ pub struct GoalModifyRequest {
     pub authorship: GoalAuthorship,
     pub request_id: IdempotencyKey,
     pub evidence: Option<Vec<crate::verbs::goal_write::GoalEvidenceRef>>,
+    pub motivated_by: Option<Vec<crate::verbs::goal_write::GoalMotivationRef>>,
     pub author_self_perspective_id: Option<MemoryId>,
 }
 
@@ -67,7 +69,64 @@ pub struct GoalDecomposeRequest {
     pub author_self_perspective_id: Option<MemoryId>,
 }
 
+enum GoalEditAuthority {
+    Owner(WritePermit),
+    Goal(crate::GoalCommandPermit),
+}
+
+impl GoalEditAuthority {
+    fn permit(&self) -> GoalEditPermit<'_> {
+        match self {
+            Self::Owner(permit) => GoalEditPermit::Owner(permit.owner_write_permit()),
+            Self::Goal(permit) => GoalEditPermit::Goal(permit),
+        }
+    }
+}
+
 impl Engine {
+    async fn authorize_goal_edit(
+        &self,
+        authz: &AuthzContext,
+        owner: crate::OwnerId,
+        prior: crate::GoalId,
+    ) -> Result<GoalEditAuthority, ProtocolError> {
+        if authz.may_write(&owner, AccessKind::Goal) {
+            return self
+                .authorize_write(authz, &owner, AccessKind::Goal)
+                .await
+                .map(GoalEditAuthority::Owner);
+        }
+        let entry = self
+            .authorize_entry_read(authz, EntityId::Goal(prior))
+            .await?;
+        if entry.owner() != &owner {
+            return Err(ProtocolError::forbidden(
+                super::pipeline::ENTRY_NOT_FOUND_MESSAGE,
+            ));
+        }
+        let scope = authz
+            .owner_scope()
+            .filter(|scope| scope.goal_principal().is_some())
+            .ok_or_else(|| {
+                ProtocolError::forbidden("direct authenticated Goal authority required")
+            })?;
+        let goal = self
+            .storage()
+            .goal_command
+            .goal_collaboration
+            .goal_handle_for_version(scope, prior)
+            .await
+            .map_err(map_goal_storage_error)?
+            .ok_or_else(|| ProtocolError::not_found("Goal not found"))?;
+        self.goal_command_permit(
+            authz,
+            goal,
+            crate::authz::hooks::GoalCollaborationChange::Edit,
+        )
+        .await
+        .map(GoalEditAuthority::Goal)
+    }
+
     pub(in crate::engine) fn normalize_goal_request<P: GoalPayload>(
         &self,
         request: GoalCreateRequest<P>,
@@ -160,7 +219,7 @@ impl Engine {
         if let Some(replay) = resolve_single_goal_replay(
             &self.storage().goal_command,
             GoalReplayRequest::Create(&atomic),
-            permit.owner_write_permit(),
+            GoalEditPermit::Owner(permit.owner_write_permit()),
         )
         .await?
         {
@@ -199,7 +258,7 @@ impl Engine {
         req: &GoalTransitionRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.owner, AccessKind::Goal)
+            .authorize_goal_edit(authz, req.owner, req.prior_goal_id)
             .await?;
         let context = self.goal_atomic_context(authz, req.author_self_perspective_id)?;
         // `Achieved` is not a `GoalTransitionKind`: achievement has
@@ -207,7 +266,7 @@ impl Engine {
         // authoritative legality matrix is `GoalState::may_transition_to`,
         // enforced storage-side.
         let atomic = TransitionGoalAtomicRequest {
-            owner: *permit.owner(),
+            owner: req.owner,
             prior_goal_id: req.prior_goal_id,
             transition: req.transition,
             authorship: req.authorship.clone(),
@@ -217,7 +276,7 @@ impl Engine {
         if let Some(replay) = resolve_single_goal_replay(
             &self.storage().goal_command,
             GoalReplayRequest::Transition(&atomic),
-            permit.owner_write_permit(),
+            permit.permit(),
         )
         .await?
         {
@@ -225,12 +284,7 @@ impl Engine {
         }
         self.author_self_perspective_authorized(authz, req.author_self_perspective_id)
             .await?;
-        transition_goal_authorized(
-            &self.storage().goal_command,
-            &atomic,
-            permit.owner_write_permit(),
-        )
-        .await
+        transition_goal_authorized(&self.storage().goal_command, &atomic, permit.permit()).await
     }
 
     /// Mark a Goal head Achieved with optional evidence.
@@ -252,11 +306,11 @@ impl Engine {
         req: &GoalMarkAchievedRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.owner, AccessKind::Goal)
+            .authorize_goal_edit(authz, req.owner, req.prior_goal_id)
             .await?;
         let context = self.goal_atomic_context(authz, req.author_self_perspective_id)?;
         let atomic = AchieveGoalAtomicRequest {
-            owner: *permit.owner(),
+            owner: req.owner,
             prior_goal_id: req.prior_goal_id,
             authorship: req.authorship.clone(),
             request_id: req.request_id.clone(),
@@ -266,7 +320,7 @@ impl Engine {
         if let Some(replay) = resolve_single_goal_replay(
             &self.storage().goal_command,
             GoalReplayRequest::Achieve(&atomic),
-            permit.owner_write_permit(),
+            permit.permit(),
         )
         .await?
         {
@@ -279,9 +333,9 @@ impl Engine {
         self.storage()
             .goal_command
             .goal_write
-            .achieve_goal_atomic(&atomic, permit.owner_write_permit())
+            .achieve_goal_atomic(&atomic, permit.permit())
             .await
-            .map_err(map_goal_storage_error)
+            .map_err(|err| map_goal_edit_storage_error(permit.permit(), err))
     }
 
     /// Replace an Active Goal head's content.
@@ -299,23 +353,29 @@ impl Engine {
         req: &GoalModifyRequest,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
         let permit = self
-            .authorize_write(authz, &req.owner, AccessKind::Goal)
+            .authorize_goal_edit(authz, req.owner, req.prior_goal_id)
             .await?;
+        if matches!(permit, GoalEditAuthority::Goal(_)) && req.motivated_by.is_some() {
+            return Err(ProtocolError::forbidden(
+                "changing Goal motivations requires owner authority",
+            ));
+        }
         let replacement = self.normalize_payload_write(req.replacement.clone())?;
         let context = self.goal_atomic_context(authz, req.author_self_perspective_id)?;
         let atomic = ModifyGoalAtomicRequest {
-            owner: *permit.owner(),
+            owner: req.owner,
             prior_goal_id: req.prior_goal_id,
             replacement,
             authorship: req.authorship.clone(),
             request_id: req.request_id.clone(),
             context,
             evidence: req.evidence.clone(),
+            motivated_by: req.motivated_by.clone(),
         };
         if let Some(replay) = resolve_single_goal_replay(
             &self.storage().goal_command,
             GoalReplayRequest::Modify(&atomic),
-            permit.owner_write_permit(),
+            permit.permit(),
         )
         .await?
         {
@@ -326,12 +386,12 @@ impl Engine {
         if let Some(evidence) = &req.evidence {
             self.validate_goal_evidence_authorized(authz, evidence)
                 .await?;
-        } else {
+        } else if let GoalEditAuthority::Owner(owner_permit) = &permit {
             let carried = self
                 .storage()
                 .read_verb
                 .goal_read
-                .load_goal_evidence(permit.owner_scope(), permit.owner(), req.prior_goal_id)
+                .load_goal_evidence(owner_permit.owner_scope(), &req.owner, req.prior_goal_id)
                 .await
                 .map_err(|err| super::errors::internal_storage_error("load_goal_evidence", &err))?;
             if let Some(ids) = carried {
@@ -346,12 +406,18 @@ impl Engine {
                     .await?;
             }
         }
+        if let Some(motivated_by) = &req.motivated_by {
+            let topology = GoalTopologyWrite::new(motivated_by.clone(), Vec::new(), Vec::new())
+                .map_err(|err| ProtocolError::invalid_argument("motivated_by", err.to_string()))?;
+            self.validate_goal_topology_authorized(authz, &req.owner, &topology)
+                .await?;
+        }
         self.storage()
             .goal_command
             .goal_write
-            .modify_goal_atomic(&atomic, permit.owner_write_permit())
+            .modify_goal_atomic(&atomic, permit.permit())
             .await
-            .map_err(map_goal_storage_error)
+            .map_err(|err| map_goal_edit_storage_error(permit.permit(), err))
     }
 
     /// Create Active child Goals under a parent Goal.
@@ -506,13 +572,12 @@ impl Engine {
         topology: &GoalTopologyWrite,
         written: &[MemoryId],
     ) -> Result<(), ProtocolError> {
-        if let Some(assignment) = topology
-            .assignment()
-            .map(GoalAssignmentTarget::perspective_id)
-            && !written.contains(&assignment)
-        {
-            self.target_perspective_authorized(authz, goal_owner, assignment)
-                .await?;
+        for motivation in topology.motivated_by() {
+            let perspective = motivation.perspective_id();
+            if !written.contains(&perspective) {
+                self.motivated_by_authorized(authz, goal_owner, perspective)
+                    .await?;
+            }
         }
         let held: Vec<EntityId> = topology
             .evidence()
@@ -535,7 +600,7 @@ impl Engine {
         })
     }
 
-    async fn target_perspective_authorized(
+    async fn motivated_by_authorized(
         &self,
         authz: &AuthzContext,
         goal_owner: &crate::OwnerId,
@@ -554,7 +619,7 @@ impl Engine {
         }
         self.authorize_owner_read(authz, &home_owner, AccessKind::Perspective)
             .await?;
-        self.require_perspective_kind(authz, &home_owner, memory_id, "target_perspective")
+        self.require_perspective_kind(authz, &home_owner, memory_id, "motivated_by")
             .await?;
         Ok(memory_id)
     }
@@ -638,7 +703,7 @@ fn map_goal_build_error(err: GoalWriteBuildError) -> ProtocolError {
 async fn resolve_single_goal_replay(
     ports: &GoalCommandStoragePorts,
     req: GoalReplayRequest<'_, '_>,
-    permit: &OwnerWritePermit,
+    permit: GoalEditPermit<'_>,
 ) -> Result<Option<GoalWriteOutcome>, ProtocolError> {
     resolve_goal_replay_shaped(ports, req, permit, GoalReplayOutcome::into_goal).await
 }
@@ -648,20 +713,26 @@ async fn resolve_decompose_goal_replay(
     req: GoalReplayRequest<'_, '_>,
     permit: &OwnerWritePermit,
 ) -> Result<Option<DecomposeGoalOutcome>, ProtocolError> {
-    resolve_goal_replay_shaped(ports, req, permit, GoalReplayOutcome::into_decompose).await
+    resolve_goal_replay_shaped(
+        ports,
+        req,
+        GoalEditPermit::Owner(permit),
+        GoalReplayOutcome::into_decompose,
+    )
+    .await
 }
 
 async fn resolve_goal_replay_shaped<T>(
     ports: &GoalCommandStoragePorts,
     req: GoalReplayRequest<'_, '_>,
-    permit: &OwnerWritePermit,
+    permit: GoalEditPermit<'_>,
     shape: fn(GoalReplayOutcome) -> Result<T, &'static str>,
 ) -> Result<Option<T>, ProtocolError> {
     let Some(outcome) = ports
         .goal_write
         .resolve_goal_replay(req, permit)
         .await
-        .map_err(map_goal_storage_error)?
+        .map_err(|err| map_goal_edit_storage_error(permit, err))?
     else {
         return Ok(None);
     };
@@ -671,13 +742,26 @@ async fn resolve_goal_replay_shaped<T>(
 pub(in crate::engine) async fn transition_goal_authorized(
     ports: &GoalCommandStoragePorts,
     req: &TransitionGoalAtomicRequest<'_>,
-    permit: &OwnerWritePermit,
+    permit: GoalEditPermit<'_>,
 ) -> Result<GoalWriteOutcome, ProtocolError> {
     ports
         .goal_write
         .transition_goal_atomic(req, permit)
         .await
-        .map_err(map_goal_storage_error)
+        .map_err(|err| map_goal_edit_storage_error(permit, err))
+}
+
+fn map_goal_edit_storage_error(permit: GoalEditPermit<'_>, error: StorageError) -> ProtocolError {
+    match (permit, error) {
+        (
+            GoalEditPermit::Goal(_),
+            StorageError::GoalChildrenOpen { .. } | StorageError::GoalChildrenAllAbandoned,
+        ) => ProtocolError::invalid_argument(
+            "goal",
+            "Goal completion requirements are not satisfied",
+        ),
+        (_, error) => map_goal_storage_error(error),
+    }
 }
 
 /// Goal storage errors for the standalone and unit-of-work paths alike.
@@ -702,7 +786,7 @@ mod tests {
     use crate::access::Relation;
     use crate::error::ErrorCode;
     use crate::verbs::goal_write::{
-        GoalAssignmentTarget, GoalEvidenceRef, GoalTopologyWrite, SystemOrigin,
+        GoalEvidenceRef, GoalMotivationRef, GoalTopologyWrite, SystemOrigin,
     };
     use crate::{
         AuthPath, Engine, GoalId, GoalPayload, GroupId, OwnerId, SchemaId, SchemaVersion,
@@ -824,7 +908,7 @@ mod tests {
 
     fn topology(target: MemoryId) -> GoalTopologyWrite {
         GoalTopologyWrite::new(
-            Some(GoalAssignmentTarget::perspective(target)),
+            vec![GoalMotivationRef::perspective(target)],
             Vec::new(),
             Vec::new(),
         )
@@ -998,6 +1082,7 @@ mod tests {
             authorship: GoalAuthorship::User,
             request_id: request_id("modify"),
             evidence: None,
+            motivated_by: None,
             author_self_perspective_id: None,
         };
         let err = engine()
@@ -1024,6 +1109,7 @@ mod tests {
             authorship: GoalAuthorship::User,
             request_id: request_id("modify-carry-evidence"),
             evidence: None,
+            motivated_by: None,
             author_self_perspective_id: None,
         };
 

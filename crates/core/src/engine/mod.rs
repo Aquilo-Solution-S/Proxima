@@ -5,6 +5,7 @@ mod access_admin;
 mod builder;
 mod embeddings;
 mod errors;
+mod goal_collaboration;
 mod goal_write;
 mod ingest;
 pub mod mcp_listener;

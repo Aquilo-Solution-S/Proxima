@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use proxiima_core::read_models::{MemorySchemaSpec, MemorySnapshot, resolve_memory_schema};
 use proxiima_core::storage::{MemoryGraphIdentity, MemoryGraphPayloadRow};
-use proxiima_core::{EntityKind, MemoryId, OwnerId, SchemaId, SidecarPayload, StorageError};
+use proxiima_core::{
+    EntityKind, GoalId, MemoryId, OwnerId, SchemaId, SidecarPayload, StorageError,
+};
 use sqlx::PgConnection;
 
 use crate::error::map_err;
@@ -18,12 +20,13 @@ pub(crate) async fn load_memory_by_id_on_connection(
     schemas: &[MemorySchemaSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
     let raw: Option<StoredMemoryRow> = sqlx::query_as(
-        "SELECT m.t, m.handle, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxiima_core.memory m JOIN proxiima_core.owners o ON o.owner_id = m.owner_id WHERE m.t = $1",
+        "SELECT m.t, m.handle, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via, m.guided_by FROM proxiima_core.memory m WHERE m.t = $1",
     ).bind(memory_id.into_inner()).fetch_optional(&mut *connection).await.map_err(map_err)?;
     let Some(row) = raw.map(StoredMemoryRow::into_hydration) else {
         return Ok(None);
     };
-    let rows = [row];
+    let mut rows = [row];
+    filter_guided_by_on_connection(connection, &mut rows).await?;
     let mut snapshots =
         snapshots_from_rows_on_connection(connection, pg_sidecars, &rows, schemas).await?;
     Ok(snapshots.pop())
@@ -48,13 +51,45 @@ pub(crate) async fn load_memories_by_ids_on_connection(
         .collect();
     let ids: Vec<uuid::Uuid> = memory_ids.iter().map(|id| id.into_inner()).collect();
     let raw: Vec<StoredMemoryRow> = sqlx::query_as(
-        "SELECT m.t, m.handle, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via FROM proxiima_core.memory m JOIN proxiima_core.owners o ON o.owner_id = m.owner_id WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
+        "SELECT m.t, m.handle, m.kind AS kind, m.schema_id, m.owner_id, m.sidecar_tables, m.occurred_at, m.\"by\", m.via, m.guided_by FROM proxiima_core.memory m WHERE m.owner_id = ANY($1::uuid[]) AND m.t = ANY($2::uuid[]) ORDER BY m.t",
     ).bind(&owner_ids).bind(&ids).fetch_all(&mut *connection).await.map_err(map_err)?;
-    let rows = raw
+    let mut rows = raw
         .into_iter()
         .map(StoredMemoryRow::into_hydration)
         .collect::<Vec<_>>();
+    filter_guided_by_on_connection(connection, &mut rows).await?;
     snapshots_from_rows_on_connection(connection, pg_sidecars, &rows, schemas).await
+}
+
+/// Resolve guidance through the same owner-scoped transaction as the memory
+/// read. Goal RLS is the visibility authority: erased, foreign, or otherwise
+/// unreadable targets simply do not enter the typed snapshot projection.
+async fn filter_guided_by_on_connection(
+    connection: &mut PgConnection,
+    rows: &mut [MemoryHydrationRow],
+) -> Result<(), StorageError> {
+    let candidates: Vec<uuid::Uuid> = rows
+        .iter()
+        .flat_map(|row| row.guided_by.iter().copied())
+        .collect();
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let visible: std::collections::HashSet<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT t
+           FROM proxiima_core.goal
+          WHERE t = ANY($1::uuid[])",
+    )
+    .bind(candidates)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(map_err)?
+    .into_iter()
+    .collect();
+    for row in rows {
+        row.guided_by.retain(|id| visible.contains(id));
+    }
+    Ok(())
 }
 
 /// The newest version of the series of one memory `read_owners` can read.
@@ -75,10 +110,14 @@ pub(crate) async fn load_series_head_on_connection(
         .map(proxiima_core::OwnerId::into_inner)
         .collect();
     let head: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT h.t
-           FROM proxiima_core.memory m
-           JOIN proxiima_core.memory_head h ON h.handle = m.handle
-          WHERE m.t = $1 AND m.owner_id = ANY($2::uuid[])",
+        "WITH source AS MATERIALIZED (
+             SELECT m.handle FROM proxiima_core.memory m
+              WHERE m.t=$1 AND m.owner_id=ANY($2::uuid[])
+         ), candidates AS (
+             SELECT h.t FROM source s JOIN proxiima_core.memory_head h ON h.handle=s.handle JOIN proxiima_core.memory current_head ON current_head.t=h.t AND current_head.forgotten_at IS NULL
+             UNION
+             SELECT v.memory_t FROM source s JOIN proxiima_core.goal_visible_memory_heads() v ON v.memory_handle=s.handle
+         ) SELECT t FROM candidates ORDER BY t DESC LIMIT 1"
     )
     .bind(memory_id.into_inner())
     .bind(&owner_ids)
@@ -191,6 +230,7 @@ struct StoredMemoryRow {
     owner_id: uuid::Uuid,
     by: uuid::Uuid,
     via: Option<uuid::Uuid>,
+    guided_by: Vec<uuid::Uuid>,
     sidecar_tables: Vec<String>,
     occurred_at: Option<time::OffsetDateTime>,
 }
@@ -207,6 +247,7 @@ impl StoredMemoryRow {
                 by: self.by,
                 via: self.via,
             },
+            guided_by: self.guided_by,
             sidecar_tables: self.sidecar_tables,
             occurred_at: self.occurred_at,
         }
@@ -223,6 +264,7 @@ struct MemoryHydrationRow {
     writer: proxiima_core::WriterAttribution,
     sidecar_tables: Vec<String>,
     occurred_at: Option<time::OffsetDateTime>,
+    guided_by: Vec<uuid::Uuid>,
 }
 
 async fn snapshots_from_rows_on_connection(
@@ -270,6 +312,7 @@ async fn snapshots_from_rows_on_connection(
             schema_version: spec.schema_version,
             owner: row.owner,
             writer: row.writer,
+            guided_by: row.guided_by.iter().copied().map(GoalId::new).collect(),
             occurred_at: row.occurred_at,
             text: spec.display_body(
                 payload.as_ref(),
@@ -371,6 +414,7 @@ mod tests {
                 owner,
                 sidecar_tables: Vec::new(),
                 occurred_at: None,
+                guided_by: Vec::new(),
             },
             MemoryHydrationRow {
                 writer: crate::test_fixtures::writer(),
@@ -381,6 +425,7 @@ mod tests {
                 owner,
                 sidecar_tables: vec!["proxiima_core.write_act_v1".to_owned()],
                 occurred_at: None,
+                guided_by: Vec::new(),
             },
         ];
         let schemas = [fact_spec::<UploadV1>(), fact_spec::<AgentNoteV1>()];

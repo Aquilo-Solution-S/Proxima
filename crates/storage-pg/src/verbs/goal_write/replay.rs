@@ -144,7 +144,13 @@ pub(super) fn modify_replay_declaration(
     ))
 }
 
-type ReplayProbeRow = (i64, Option<uuid::Uuid>, Option<i32>, Option<bool>);
+type ReplayProbeRow = (
+    i64,
+    Option<uuid::Uuid>,
+    Option<uuid::Uuid>,
+    Option<i32>,
+    Option<bool>,
+);
 
 pub(super) fn decompose_child_replay_declaration(
     req: &DecomposeGoalAtomicRequest<'_>,
@@ -193,7 +199,7 @@ pub(super) async fn resolve_decompose_replay_set(
         .map(serde_json::Value::to_string)
         .collect::<Vec<_>>();
     let rows: Vec<ReplayProbeRow> = sqlx::query_as(
-        "SELECT r.ordinality::bigint, g.t, d.edge_count,
+        "SELECT r.ordinality::bigint, g.t, g.handle, d.edge_count,
                 d.declaration = r.declaration::jsonb
            FROM unnest($2::text[], $3::text[]) WITH ORDINALITY
                   AS r(request_id, declaration, ordinality)
@@ -216,7 +222,7 @@ pub(super) async fn resolve_decompose_replay_set(
     }
     let mut replayed = Vec::with_capacity(rows.len());
     let mut reused: Option<&str> = None;
-    for (child, (_, goal_t, edge_count, matches)) in req.children.iter().zip(rows) {
+    for (child, (_, goal_t, goal_handle, edge_count, matches)) in req.children.iter().zip(rows) {
         let Some(goal_t) = goal_t else {
             replayed.push(None);
             continue;
@@ -225,7 +231,9 @@ pub(super) async fn resolve_decompose_replay_set(
         match judge(Some((goal_t, matches == Some(true))), key) {
             Ok(KeyVerdict::Replay(t)) => {
                 reused.get_or_insert(child.request_id.as_str());
-                replayed.push(Some(replay_outcome(t, edge_count)?));
+                let goal_handle =
+                    goal_handle.ok_or_else(|| internal("Goal replay row missing stable handle"))?;
+                replayed.push(Some(replay_outcome(t, goal_handle, edge_count)?));
             }
             Ok(KeyVerdict::Fresh) => replayed.push(None),
             Err(conflict) => {
@@ -303,8 +311,8 @@ pub(super) async fn resolve_goal_replay(
     request_id: &str,
     declaration: &serde_json::Value,
 ) -> Result<Option<GoalWriteOutcome>, StorageError> {
-    let row: Option<(uuid::Uuid, Option<i32>, Option<bool>)> = sqlx::query_as(
-        "SELECT g.t, d.edge_count, d.declaration = $3::jsonb
+    let row: Option<(uuid::Uuid, uuid::Uuid, Option<i32>, Option<bool>)> = sqlx::query_as(
+        "SELECT g.t, g.handle, d.edge_count, d.declaration = $3::jsonb
            FROM proxiima_core.goal g
            LEFT JOIN proxiima_core.goal_replay_declaration d
              ON d.goal_t = g.t
@@ -316,13 +324,13 @@ pub(super) async fn resolve_goal_replay(
     .fetch_optional(&mut *conn)
     .await
     .map_err(map_err)?;
-    let Some((goal_t, edge_count, matches)) = row else {
+    let Some((goal_t, goal_handle, edge_count, matches)) = row else {
         return Ok(None);
     };
     let key =
         IdempotencyKey::new(request_id.to_string()).map_err(StorageError::ConstraintViolation)?;
     match judge(Some((goal_t, matches == Some(true))), &key) {
-        Ok(KeyVerdict::Replay(t)) => replay_outcome(t, edge_count).map(Some),
+        Ok(KeyVerdict::Replay(t)) => replay_outcome(t, goal_handle, edge_count).map(Some),
         Ok(KeyVerdict::Fresh) => Ok(None),
         Err(conflict) => Err(idempotency_conflict(&conflict.key, Some(conflict.existing))),
     }
@@ -330,6 +338,7 @@ pub(super) async fn resolve_goal_replay(
 
 fn replay_outcome(
     goal_t: uuid::Uuid,
+    goal_handle: uuid::Uuid,
     edge_count: Option<i32>,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let edge_count = edge_count
@@ -337,6 +346,7 @@ fn replay_outcome(
         .ok_or_else(|| internal("Goal replay declaration has invalid edge_count"))?;
     Ok(GoalWriteOutcome {
         goal_id: GoalId::new(goal_t),
+        goal_handle: proxiima_core::goal_collaboration::GoalHandle::new(goal_handle),
         edge_count,
         idempotent_replay: true,
     })

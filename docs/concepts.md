@@ -50,7 +50,7 @@ Writer attribution records how a version was written and grants no access.
 | Owner (`OwnerId`) | Whose storage scope contains this memory or Goal? The registry distinguishes a personal owner from a group owner. |
 | Group (`GroupId`) | Which principals participate in this shared owner, directly or through a subgroup? |
 | Role | How high may this principal read and write, and may it manage the group? |
-| Default owner | Where does a request write when it names no `space`? Selecting it neither grants nor confines authority. |
+| Default or selected owner | Which authorized owner is this request acting in, and where does an omitted `space` write? Selection does not change the principal or grant authority. |
 | Tool capability | Which exact tool, action, or resource key may this request reach? |
 | Writer (`by`, `via`) | Which attested principal wrote the version, and through which caller/session, if any? |
 
@@ -115,9 +115,12 @@ flowchart TD
     O -->|no| R
 ```
 
-Allowing a tool does not make a viewer an editor, and an admin cannot invoke
-a command its caller scope excludes. Some operations, such as owner erase, also
-require explicit host authority. See
+`ServedSurface` controls the deployment's tool surface; `ToolScope` controls
+the caller's exact keys. Neither supplies an owner role. Allowing a tool does
+not make a viewer an editor. Conversely, an admin cannot invoke a command
+excluded from its caller scope. Listings and invocation use the same catalog
+policy. Some operations, such as owner erase, also require explicit host
+authority; the role alone does not authorize them. See
 [capability admission](host-integration.md#capability-admission).
 
 ### Nested groups: access travels upward
@@ -158,11 +161,14 @@ strongest read/write ceilings and management from either path. A viewer path
 therefore does not cancel a separate editor membership. Removing a relation
 removes that path; another membership can still confer access.
 
-Changing the tree needs group management; who must manage which endpoint is
-in [membership and authority transactions](host-integration.md#membership-and-authority-transactions).
-PostgreSQL maintains the effective-role
+Attaching a subgroup or changing its relation requires management of both
+groups. Detaching requires management of either endpoint; removing a person
+requires management of the containing group. Membership edits serialize on
+the group tree, recheck the caller's management authority, and preserve a
+group's last manager once one exists. PostgreSQL maintains the effective-role
+projection from the membership tree. See the
 [projection](https://github.com/Aquilo-Solution-S/proxiima/blob/main/crates/storage-pg/definitions/functions.sql)
-from the membership tree.
+and [nested-group behaviour tests](https://github.com/Aquilo-Solution-S/proxiima/blob/main/crates/storage-pg/tests/nested_groups.rs).
 
 Moving a subgroup changes inherited access for the people throughout its
 subtree. A team already inside a department cannot also be attached to a
@@ -175,11 +181,17 @@ access; it is not a way to share a few selected memories.
 and their roles; it does not collect memories from several owners into a
 shared folder. A query, tag, list, or pin does not create a new audience.
 
-To share selected memories with a different audience, choose a group for that
-audience and place those memory series under its ownership. Reuse an existing
-group when its membership and roles already match. Create a dedicated group
-when the selected memories need their own access policy. Several sets with
-the same policy can use the same group.
+For a durable ownership boundary, choose a group for that audience and place
+the memory series under its ownership. Reuse an existing group when its
+membership and roles match. A separate group is useful when a body of
+knowledge needs its own readers, maintainers, retention, and transfer policy.
+Several sets with the same policy can use the same group.
+
+The [Goal collaboration design](#goal-collaboration) adds a second option:
+publish selected exact versions to a Goal audience while their owner stays
+responsible for them. Goal work bindings delegate contribution to selected
+series. They avoid creating a new owner group for each customer conversation.
+They cannot hide information from people who already have owner access.
 
 For example, a hiring panel can bring together selected people from two teams
 without moving either team out of its department:
@@ -207,17 +219,24 @@ other team members do not gain access to the panel through their team.
 | Leave unselected series with their existing owners | Their access policy stays with those owners |
 | Remove a panel membership | Remove that access path; other roles held through other paths still count |
 
-Transfer moves one memory series per call, with all its versions, to one
-group owner, so a selection moves series by series; there is no
-collection-level share. It needs personal authority or group admin at the
-source and group admin at the destination. Goals do not transfer, and a
-personal owner is never a destination. Writer attribution survives, and
-references to other owners' memories still require independent read access.
-See [ownership and lifecycle](data-and-erasure.md#ownership-and-lifecycle) and
-the [transfer contract](https://github.com/Aquilo-Solution-S/proxiima/blob/main/crates/core/src/engine/access_admin.rs).
+The current transfer operation handles one memory series per call and needs
+authority at both owners. A selection is therefore moved series by series;
+this is not a collection-level share transaction. Goals do not transfer.
+Transfer refuses a move that would split a live same-owner motivation or
+guidance relationship. An independent adaptation uses the
+[fork contract](#revision-shared-editing-and-fork): a new series starts from
+one exact source version, with explicit source-use and destination-write
+authority. The original proposal is recorded in
+[issue #669](https://github.com/Aquilo-Solution-S/Proxiima/issues/669).
+Selecting a current note also moves its older versions. Writer attribution
+survives, and references to other owners' memories still
+require independent read access. The
+[transfer contract](https://github.com/Aquilo-Solution-S/proxiima/blob/main/crates/core/src/engine/access_admin.rs)
+owns these restrictions.
 
-This produces a **shallow, wider set of sharing groups** alongside the
-organizational trees. Each audience can change independently. Giving the
+This produces **shallow, wider ownership groups** alongside the organizational
+trees. Goal audiences then support selected publication and project work
+without reshaping those owner groups. Each audience can change independently. Giving the
 panel a department as parent would instead give panel members capped access
 to department-owned data; it would not give department members panel access.
 
@@ -235,6 +254,9 @@ The design choice is which people and memories belong together:
 |---|---|---|
 | Department-wide guidance | Teams nested in a department with appropriate caps | Team members gain department context without opening each team's work to every department member |
 | A hiring panel across departments | Independent sharing group with direct person memberships | The panel has its own audience without giving a team a second parent |
+| Selected approved guidance for an external audience | Exact-version publications to a Goal | Share the chosen admissions without moving ownership or exposing later drafts |
+| Confidential records hidden from existing department readers | Separate owner group for those series | Goal access is additive; it cannot take away existing owner access |
+| Customer-specific interpretation of common guidance | Fork an approved A/P version into a working Goal | Keep an independent revision history with an exact source anchor |
 | A subset of department memories for a smaller circle | Separate owner group for those series | Adding a viewer to the department would expose all department-owned memories within that role |
 | One person working in a team and several panels | Several person memberships | Organizational placement and collaboration can coexist |
 
@@ -265,10 +287,19 @@ Membership changes affect subsequent role resolution. For open streams, the
 host supplies authentication-epoch revocation; changing a membership does not
 by itself cancel an already admitted operation.
 
-A delegated worker keeps a `DelegationId`, not a bearer, and redeems it
-against current authority when work starts; see
-[delegated work](host-integration.md#delegated-work). A **trusted forwarder**
-acts at one registered owner with only its configured ceiling; see
+A delegated worker retains a `DelegationId` and redeems it when work starts;
+it does not retain a broad bearer or reusable authorization context.
+Membership promotion cannot widen the recorded ceiling, and a demotion below
+it refuses the next redemption. A redeemed phase is a bounded in-process
+execution capability. Revocation blocks later redemption; it does not cancel
+an already redeemed phase. Expiry still bounds operations using that phase.
+See [delegated work](host-integration.md#delegated-work).
+
+A **trusted forwarder** is a separate host integration: its verified credential
+binds one registered owner and the attested `by`/`via` pair. The forwarder
+stays the authenticated subject and receives only the configured viewer,
+ingest, or editor ceiling at that owner. Ordinary memberships are not added
+to this request. It cannot manage groups or issue delegation grants. See
 [forwarding](host-integration.md#forwarded-owner-access).
 
 ### Map a use case to the model
@@ -285,6 +316,12 @@ acts at one registered owner with only its configured ceiling; see
 | Remove a collaborator | Remove every membership path that grants the unwanted role | Future resolution loses that access; prior reads are not retracted |
 | Broadcast an event or delete an account | Use host publication or authorized inverse operations | Delivery and erasure have their own contracts; neither is a membership shortcut |
 
+Transfer moves the whole memory series, including its versions, to one group
+owner. It requires authority on both sides: personal authority or group admin
+at the source, and group administration at the destination. Goals do not
+transfer, and a personal owner cannot be the destination. Transfer is not an
+additional share; the old owner loses the series. Original publication
+attribution is independent. See [ownership and lifecycle](data-and-erasure.md#ownership-and-lifecycle).
 For example, Alex first writes a private observation, then transfers its
 series to Project with both sides authorized. A Project viewer can now read
 it. Removing that viewer's final membership path removes future group access,
@@ -352,10 +389,12 @@ can inform the decision to set a Goal, as the
 flow is not a persisted Perspective-to-Goal derivation rule.
 
 The [operator vocabulary](https://github.com/Aquilo-Solution-S/proxiima/blob/main/docs/lean/Causa/Operators.lean)
-also names `atogoal` (Rust `OperatorKind::AtoGoal`): its Abstraction inputs
-are recorded as Goal evidence, using references rather than memory-origin pins.
-There is no Perspective-to-Goal operator. Evidence and assignment are the
-distinct [Goal relationships](#goals), not another step of the F/A/P ladder.
+also names `AtoGoal`: its Abstraction inputs are recorded as Goal evidence,
+using references rather than memory-origin pins. There is no corresponding
+`PtoGoal` operator. Ordinary Goal creation can have no evidence at all; when
+supplied, evidence is a Fact or Abstraction. Perspectives and Goals can also
+record explicit motivation and guidance. These are the distinct
+[Goal relationships](#goals), not another step of the F/A/P ladder.
 
 ## Pins
 
@@ -366,35 +405,62 @@ role:
 | Pin | Meaning | Stored on |
 |---|---|---|
 | Origin | What produced this derived row | `memory.origins[]` |
-| Reference | What a typed payload points at | `memory.refs[]` or `memory.goal_refs[]` |
+| Reference | What a typed payload or explicit causal declaration points at | `memory.refs[]`, `memory.goal_refs[]`, or `memory.guided_by[]`; Goal-owned reference fields |
 
 The operation determines the pin kind; no public verb writes an edge. Origins
 and references are source-owned and rebuildable from node content. A source may
 remain visible while an unreadable target is independently redacted. The two
-pin kinds use three arrays: `origins[]`, `refs[]`, and `goal_refs[]`.
+pin kinds remain distinct from the meanings of motivation and guidance.
+`guided_by[]` and `motivated_by[]` are explicit source-owned declarations;
+their pins are ordinary References, not a third pin kind.
 
 ## Goals
 
 A Goal states what is desired, whose direction it is, its lifecycle state, and
-what it depends on. Goal decomposition, evidence, and assignment are fields of
-the Goal version, so the Goal owns those references. Assignment and evidence
-are optional: a goal may contain only its title and words. Supplied evidence
-must be a Fact or Abstraction, and an assignment must name a Perspective.
+what it depends on. Goal decomposition, evidence, and motivation are fields of
+the Goal version, so the Goal owns those references. Motivation and evidence
+are optional: a Goal may contain only its title and words. Supplied evidence
+must be a Fact or Abstraction. A Perspective can explain why a Goal was chosen
+without being evidence for it.
 A lifecycle transition is
 an appended `t`; there is no supersession pointer and no in-place mutation.
 
-Here the arrows show **stored references from the Goal to their targets**:
+Here the arrows show **stored references from each declaring version to its targets**:
 
 ```mermaid
 flowchart LR
     G[Goal] -->|optional evidence| F[Fact]
     G -->|optional evidence| A[Abstraction]
-    G -->|optional assignment| P[Perspective]
+    G -->|motivated_by: zero or many| P1["Earlier Perspective versions"]
+    P2["Later Perspective version"] -->|guided_by: zero or many| G
 ```
 
-Assignment is distinct from evidence: naming a Perspective does not make
-that interpretation evidence for the Goal, or record why someone chose the
-Goal. The target Perspective belongs to the same owner as the Goal.
+`motivated_by` records the exact Perspective versions that motivated a Goal
+version. `guided_by` records the exact Goal versions that actually guided a
+new Perspective version. Both lists can name several targets, and every
+target belongs to the same owner as the declaring version. Creating a Goal
+does not change its motivating Perspectives or assign work to an actor.
+
+Conceptually, the feedback is `Perspective@1` motivates `Goal@1`, which guides
+`Perspective@2`. Stored references point backward from each declaration to
+its inputs: `Goal@1.motivated_by = [Perspective@1]`, then
+`Perspective@2.guided_by = [Goal@1]`. Later versions never retarget those pins.
+Goal guidance is context for a Perspective; it does not replace its required
+F/A/P grounding.
+
+| Relationship | Targets per source version |
+|---|---|
+| Goal to owner | Exactly one |
+| Goal to motivating Perspectives | Zero or many |
+| Perspective to guiding Goals | Zero or many |
+| Goal to evidence Facts or Abstractions | Zero or many |
+| Goal to dependency Goals | Zero or many |
+| Goal to parent Goal | Zero or one |
+
+The former singular Perspective assignment remains historical metadata on
+the Goal versions that stored it. New Goal writes do not accept an assignment
+or copy it into a successor. An intended recipient is not relabelled as
+motivation or actual guidance.
 
 Goals form a plain tree. `decompose` creates child Goals under a parent; each
 child records its parent's series once, at creation, and every later version
@@ -410,12 +476,138 @@ dependencies between Goals do not make a tree.
 Scheduling and execution are host decisions. See
 [host integration](host-integration.md) for the boundary.
 
+## Goal collaboration
+
+A Goal organises work and can carry explicitly delegated authority over that
+work. Each Goal and memory series retains one durable owner, either personal
+or a Group. Participation never makes the Goal an owner, changes a memory's owner, or adds its owner to a
+participant's general owner scope.
+
+| Relationship | Target | Effect |
+|---|---|---|
+| Context | A memory related to a Goal | Organises work without granting access |
+| Publication | An exact admission and a Goal audience | Grants access under the source owner's consent |
+| Work binding | A series and a working Goal | Authorised collaborators share one revision history |
+
+These relationships are N:M. One memory can be relevant to several Goals,
+published to several audiences, and intentionally edited through several
+working Goals. Motivation, evidence, guidance, and provenance retain their
+existing meanings; they do not publish targets or mint permissions. Parent,
+child, sibling, and dependency relationships grant no implicit access.
+
+```mermaid
+flowchart TB
+    O["Group owner"] -->|owns| G["Goal: Customer A"]
+    O -->|owns| M["Memory series"]
+    R["Goal reader"] -->|read grant| G
+    G -->|explicit publication| V["Selected admission"]
+    M -->|contains| V
+    W["Goal collaborator"] -->|scoped work grant| G
+    G -.->|explicit work binding| M
+```
+
+A publication delegates access to the Goal’s managed audience: members of
+its owning Group participate through their existing Roles, alongside explicit
+Goal guests. This includes people invited later. The two routes combine;
+removing a guest grant does not remove an existing Group Role. A source-owner or Goal-controller transfer invalidates
+that delegation; transferring back does not revive it. Forking a published
+version into another owner requires explicit source-owner fork permission
+and write permission at the destination.
+
+Erasing a person removes their Goal guest access. Sharing decisions and issuer
+attribution owned by a Group remain with that Group, alongside its Goals and
+memories. Recreating the person's identity does not restore their removed grants.
+
+### Facts and versioned knowledge
+
+A Fact is one immutable admitted observation. A new or corrected observation
+is another Fact. Abstractions and Perspectives append later versions to their
+series; Goals are versioned separately as intent and progress change.
+
+Publication means **publish a Fact, or a specific Abstraction or Perspective
+version, to a Goal audience**. Publishing `P1@3` does not publish `P1@4`.
+A private later version neither leaks to that audience nor hides its earlier
+publication. Reads choose the latest authorised version after applying
+visibility, rather than filtering only the series' global head.
+
+### Revision, shared editing, and fork
+
+A revision improves the same Perspective or Abstraction. A fork starts a new
+series from a chosen exact version so an adaptation develops independently.
+Fork once to establish that line; later refinements append within the new series.
+
+```mermaid
+flowchart LR
+    P13["P1 @ 3"] -->|canonical improvement| P14["P1 @ 4"]
+    P13 -->|fork for Customer A| P21["P2 @ 1"]
+    P21 -->|refinement in that context| P22["P2 @ 2"]
+```
+
+Both series may retain the same Group owner. A different destination requires
+authorised source use and destination writing; a Goal relationship alone
+grants neither. The exact source stays identifiable in provenance, and attribution records the
+writer of each new admission. A revision may retain its existing grounding
+without granting access to hidden source payloads; newly declared sources
+still require read permission. Withdrawing a publication removes that access
+route. An independently authorised fork remains the destination owner's
+knowledge, subject to its own erase and retention rules.
+
+For one company playbook, two teams may intentionally edit the same series
+through their Goals. They share its drafts and history. For customer-specific
+pricing, use independent series or forks. Two Goals linked to one editable
+series do not create two isolated histories. A universal one-working-Goal
+limit is therefore unnecessary.
+
+### Work and sharing boundaries
+
+| Operation | Authority boundary |
+|---|---|
+| Read a publication | Exact admission, source-owner consent, and an applicable owning-Group Role or Goal guest grant |
+| Read a working draft | Explicit series work binding and applicable read ceiling |
+| Create or revise Abstractions or Perspectives | Explicit work destination and applicable write ceiling |
+| Edit a Goal's title or progress | Owning-Group Role or explicit guest Role with Goal-level write; ordinary lifecycle rules still apply |
+| Publish or change an audience | Explicit authority for that sharing operation |
+| Transfer or erase | Existing owner/lifecycle authority; Goal work grants do not provide it |
+
+A narrow work grant never becomes an owner-wide write permit. Goal permissions
+add access routes, so a private Goal cannot hide HR material from someone who
+already reads the owning Group. Restricted owners remain necessary for durable
+confidentiality boundaries.
+
+Goal metadata is information too. Title, progress, participants, children, and
+history need a deliberate audience; memory publication does not implicitly
+disclose the surrounding Goal or provenance graph. Hiding source pins does not
+remove sensitive claims or source identifiers from a published payload. Reading
+a named target still requires its own permission.
+
+Revoking one Goal route leaves other valid routes intact. Transfer or controller
+changes invalidate stale authorisations permanently: changing A to B and back
+to A cannot revive them. Permission changes and writes have a defined atomic
+ordering. Completing a Goal preserves explicitly granted publications.
+Revocation and disabling/deleting an access route are separate actions; none
+implicitly deletes the owner's memories.
+
+For example, Sales owns the internal proposal and the Customer A Goal. Sales
+publishes a selected version to Customer A while keeping pricing drafts
+private. A collaborator edits only bound working series. Independent customer
+adaptations fork; customer access does not reach Customer B, the parent sales
+Goal, or undisclosed source material.
+
+Types, mandatory row security, atomic command ports, and host round-trip tests
+must enforce these boundaries. The Lean kernel states their principles;
+diagrams and benchmarks are not runtime enforcement.
+
 ## Citations
 
 `blob_id` is an optional citation on Facts and Abstractions. Perspectives do
 not cite. A citation is bibliographic or artefact provenance, not a graph node,
 pin, or proof that the cited material is true. Its storage and ownership
 contract is part of the data and erasure surface.
+
+A Goal publication of a Fact citing an uploaded object captures its completed
+upload. The audience reads that object version through the exact publication;
+a later upload does not silently change the shared file or its metadata.
+Revoking the publication removes this route as well.
 
 ## Self
 

@@ -61,25 +61,30 @@ the database maintains the effective-role projection. See
 [nested groups](concepts.md#nested-groups-access-travels-upward) for the
 direction, examples, and executable evidence.
 
-### A distinct sharing policy has its own owner
+### Durable ownership and Goal collaboration have separate scopes
 
-Nesting composes membership into an organizational tree. A selected set of
-memories with a different audience belongs to a separate group owner, with
-direct person memberships when the people already sit in other group trees.
-Reuse an owner for sets that share its access policy. This permits many
-independent collaboration groups while preserving the one-parent hierarchy.
-It also makes sharing an ownership choice: a transfer moves the whole series
-rather than adding another ACL. See
+Nesting composes membership into an organizational tree. A body of knowledge
+that needs a different durable owner policy belongs to a separate group, with
+direct person memberships when people already sit in other group trees.
+Reuse an owner for sets with the same policy. A transfer moves the entire
+series and its responsibility. The [Goal collaboration design](#goal-collaboration-keeps-one-durable-owner)
+adds selected version publications and delegated work without changing the
+owner or the one-parent hierarchy. Goal routes are additive: confidential
+data that must be hidden from existing owner readers needs its own owner. See
 [sharing a set of memories](concepts.md#sharing-a-set-of-memories) for the
 consequences and the enforcing transfer contract.
 
 ### Capabilities and delegation only narrow authority
 
 A deployment's served surface and a caller's exact operation keys do not
-grant data access; owner roles remain a separate gate. A delegated grant binds
-one owner, one command, a role ceiling and an expiry, and is checked again at
-redemption, so a queued job never outgrows the authority it was issued with.
-See [delegated work](host-integration.md#delegated-work).
+grant data access. Owner roles remain a separate gate. A delegated grant
+additionally binds one owner, one command, a non-managing role ceiling, and
+finite expiry. Fresh checks at redemption prevent a queued job from gaining
+rights through a later promotion or running after a demotion below its
+recorded ceiling. The opaque redeemed phase bounds in-process execution;
+revoking the grant prevents future redemption rather than cancelling work
+already admitted. See [delegated work](host-integration.md#delegated-work)
+for its enforcing types and service.
 
 ### Attribution survives authority changes
 
@@ -103,6 +108,23 @@ A Goal owns its desired end-state, owner, state, and dependencies. Scheduling,
 wake policy, and execution belong to the host. See [Concepts](concepts.md) and
 [Host integration](host-integration.md) for the current boundaries.
 
+### Motivation and guidance are versioned references
+
+A Goal version names the Perspective versions that motivated it. A new
+Perspective version names the Goal versions that guided it. The declaring
+version owns each statement, and both roles are ordinary Reference pins.
+This supports feedback across versions without retargeting history or making
+motivation evidence. New causal targets share the source's owner; existing
+F/A/P grounding and Fact/Abstraction evidence rules remain separate.
+
+The version fields and valid-store predicates are stated in
+[Goals](https://github.com/Aquilo-Solution-S/proxiima/blob/main/docs/lean/Causa/Goals.lean)
+and [Provenance](https://github.com/Aquilo-Solution-S/proxiima/blob/main/docs/lean/Causa/Provenance.lean).
+Runtime constructors, source-owned pin projections, and database admission
+enforce the implementation. Former singular assignments stay on their
+original versions as historical data; they are not converted into assertions
+of actual influence. See [Goal relationships](concepts.md#goals).
+
 ## Pins are node-owned
 
 Only `origin` and `reference` pins exist. Their kind follows the operation, and
@@ -110,3 +132,33 @@ the node that declares a relation owns it. If a statement needs its own
 meaning, it is a node rather than a new edge kind.
 
 See [Concepts](concepts.md) for the current pin model.
+
+## Goal collaboration keeps one durable owner
+
+Goal-level write includes the title and progress of that existing Goal.
+Creating Goals and changing their decomposition still require owner authority;
+a guest grant never becomes owner-wide Goal write.
+
+The target collaboration model keeps each Goal and memory series under one
+personal or Group owner. Context, exact-admission publication, and series work bindings
+have distinct authority. Goal topology and semantic pins do not grant access.
+N:M publication and explicitly delegated N:M editing support overlapping work
+without changing ownership. Independent adaptations fork an exact source
+version into a new series; later refinements revise that series.
+
+Facts stay immutable observations. A publication identifies a Fact itself or
+an exact Abstraction/Perspective version. Private revisions cannot replace a
+previously published admission in the audience's view. Goal access is additive
+and cannot restrict existing owner membership. Completion is separate from
+revocation and erasure. Source-owner/controller changes must invalidate prior
+authorisations without A-to-B-to-A resurrection.
+
+The [collaboration model](concepts.md#goal-collaboration) owns the explanation
+and examples. Runtime implementation is in progress; its permission contract
+must amend the kernel before the new authorisation path is enabled.
+
+Publication consent covers the Goal’s managed audience, including future
+invitees. Existing Roles on the Goal's owning Group apply automatically,
+alongside explicit Goal grants; their permissions combine. Source-owner and Goal-controller transfers invalidate existing
+consent. A cross-owner fork requires explicit source-owner fork permission
+and destination write permission.

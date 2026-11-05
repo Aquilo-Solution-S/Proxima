@@ -2491,7 +2491,8 @@ async fn visible_home_owners_answer_each_entity_in_order() {
                 state: GoalState::Active,
                 request_id: "home-owner-goal".into(),
                 close_fact_t: None,
-                assignment_t: None,
+
+                motivated_by: Vec::new(),
                 dependency_t: vec![],
                 evidence_t: vec![],
                 mint_write_act: false,
@@ -2561,7 +2562,8 @@ async fn transfer_refuses_goal_entities() {
                 state: GoalState::Active,
                 request_id: "pub-g".into(),
                 close_fact_t: None,
-                assignment_t: None,
+
+                motivated_by: Vec::new(),
                 dependency_t: vec![],
                 evidence_t: vec![],
                 mint_write_act: false,

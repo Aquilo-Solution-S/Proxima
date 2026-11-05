@@ -49,6 +49,19 @@ pub struct InterpretArgs {
         description = "Memory space key from core_memory_spaces. The interpretation is authored in this space; subjects may live in other readable spaces."
     )]
     pub space: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Working Goal handle for scoped collaboration. Mutually exclusive with space."
+    )]
+    pub working_goal: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Exact Goal version handles that guided this Perspective version.")]
+    pub guided_by: Vec<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional live Perspective version to revise in its existing series; a Goal working binding may retain its hidden grounding pins."
+    )]
+    pub supersedes: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -85,95 +98,37 @@ impl McpTool for InterpretTool {
         args: InterpretArgs,
     ) -> futures::future::BoxFuture<'static, Result<InterpretOutput, McpToolError>> {
         Box::pin(async move {
-            let claim = validate_trimmed_len("claim", &args.claim, MAX_CLAIM_CHARS)?.to_string();
-            // Not clamped: a caller who says 140 has said something the
-            // scale cannot express, and silently rewriting it to 100
-            // would store a number nobody meant.
-            if args.confidence > 100 {
-                return Err(McpToolError::InvalidInput(
-                    "confidence must be 0..=100".into(),
-                ));
-            }
-            if args.subjects.is_empty() {
-                return Err(McpToolError::InvalidInput(
-                    "an interpretation must be about at least one memory".into(),
-                ));
-            }
-            if args.subjects.len() > MAX_SUBJECTS {
-                return Err(McpToolError::InvalidInput(format!(
-                    "subjects must contain at most {MAX_SUBJECTS} handles"
-                )));
-            }
-            let model_id = super::util::operator_label(&ctx, args.model_id.as_deref())?;
-
-            let space = super::super::memory_spaces::resolve_space_owner(
-                &ctx,
-                args.space.as_deref(),
-                super::super::memory_spaces::SpaceDefault::Current,
-            )?;
-
-            let subjects =
-                super::super::other_stores::resolve_references(&ctx, &args.subjects).await?;
-            let mut local_subjects = Vec::new();
-            let mut read_subjects = Vec::new();
-            for subject in subjects {
-                let (id, kind) = subject.classified()?;
-                match subject {
-                    super::super::other_stores::ResolvedMemory::Local(..) => {
-                        local_subjects.push((id, subject_kind(kind)));
-                    }
-                    super::super::other_stores::ResolvedMemory::Remote(origin) => {
-                        read_subjects.push(origin);
-                    }
-                }
-            }
-            if local_subjects.is_empty() {
-                return Err(McpToolError::InvalidInput(
-                    "subjects must include at least one memory of this store; memories of other stores only join local ones".into(),
-                ));
-            }
-            let external = read_subjects
-                .iter()
-                .map(crate::storage_ports::other_stores::ReadOrigin::handle)
-                .collect::<Vec<_>>();
-            let (subject_memory_ids, subject_kinds): (Vec<uuid::Uuid>, Vec<_>) = local_subjects
-                .into_iter()
-                .map(|(id, kind)| (id.into_inner(), kind))
-                .unzip();
-
-            let memory_id = MemoryId::new(interpretation_memory_id(
-                &space.owner,
-                &model_id,
-                &claim,
-                args.confidence,
-                &subject_memory_ids,
+            let prepared = prepare_interpretation(&ctx, args).await?;
+            let memory_id = MemoryId::new(fold_external_subjects(
+                prepared.memory_id.into_inner(),
+                &prepared.external,
             ));
-            let memory_id =
-                MemoryId::new(fold_external_subjects(memory_id.into_inner(), &external));
-            reject_self_subject(memory_id, &subject_memory_ids)?;
-
+            reject_self_subject(memory_id, &prepared.subject_memory_ids)?;
             let payload = InterpretationV1 {
-                claim: claim.clone(),
-                confidence: args.confidence,
-                subject_memory_ids,
-                subject_kinds,
-                model_id: model_id.clone(),
+                claim: prepared.claim.clone(),
+                confidence: prepared.confidence,
+                subject_memory_ids: prepared.subject_memory_ids,
+                subject_kinds: prepared.subject_kinds,
+                model_id: prepared.model_id.clone(),
                 client_name: ctx.author.client_name.clone(),
                 client_version: ctx.author.client_version.clone(),
             };
-
-            let engine = ctx.require_engine()?;
-            let outcome = engine
+            let outcome = ctx
+                .require_engine()?
                 .derive_memory(
                     &ctx.authz,
-                    DerivedMemory::interpretation(
-                        crate::MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
-                        space.owner,
-                        claim,
+                    DerivedMemory::guided_interpretation(
+                        prepared.supersedes.map_or(
+                            crate::MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
+                            crate::MemoryTarget::Revision,
+                        ),
+                        prepared.destination,
+                        prepared.claim,
                         payload,
+                        prepared.guided_by,
                     )
                     .lexical_language(crate::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT)
-                    .external_references(read_subjects),
+                    .external_references(prepared.read_subjects),
                 )
                 .await?;
 
@@ -185,6 +140,134 @@ impl McpTool for InterpretTool {
             })
         })
     }
+}
+
+struct PreparedInterpretation {
+    claim: String,
+    confidence: u8,
+    model_id: String,
+    guided_by: Vec<crate::GoalId>,
+    destination: crate::MemoryDestination,
+    memory_id: MemoryId,
+    subject_memory_ids: Vec<uuid::Uuid>,
+    subject_kinds: Vec<InterpretationSubjectKind>,
+    read_subjects: Vec<crate::storage_ports::other_stores::ReadOrigin>,
+    external: Vec<uuid::Uuid>,
+    supersedes: Option<MemoryId>,
+}
+
+async fn prepare_interpretation(
+    ctx: &McpToolCtx,
+    args: InterpretArgs,
+) -> Result<PreparedInterpretation, McpToolError> {
+    let claim = validate_trimmed_len("claim", &args.claim, MAX_CLAIM_CHARS)?.to_string();
+    if args.confidence > 100 {
+        return Err(McpToolError::InvalidInput(
+            "confidence must be 0..=100".into(),
+        ));
+    }
+    if args.subjects.is_empty() {
+        return Err(McpToolError::InvalidInput(
+            "an interpretation must be about at least one memory".into(),
+        ));
+    }
+    if args.subjects.len() > MAX_SUBJECTS {
+        return Err(McpToolError::InvalidInput(format!(
+            "subjects must contain at most {MAX_SUBJECTS} handles"
+        )));
+    }
+    let model_id = super::util::operator_label(ctx, args.model_id.as_deref())?;
+    let guided_by = resolve_guided_goals(ctx, &args.guided_by)?;
+    let supersedes = if let Some(raw) = args.supersedes.as_deref() {
+        Some(MemoryId::new(crate::mcp::ids::parse_wire_uuid(raw)?))
+    } else {
+        None
+    };
+    let destination =
+        super::util::resolve_destination(ctx, args.space.as_deref(), args.working_goal.as_deref())?;
+    let retained = match supersedes {
+        Some(prior) => ctx
+            .require_engine()?
+            .retained_revision_sources(
+                &ctx.authz,
+                destination,
+                prior,
+                crate::EntityKind::Perspective,
+            )
+            .await?
+            .into_iter()
+            .filter_map(|(id, kind)| {
+                crate::mcp::MemoryHandleClass::from_entity_kind(kind).map(|class| (id, class))
+            })
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
+    let subjects = super::super::other_stores::resolve_references_with_retained(
+        ctx,
+        &args.subjects,
+        &retained,
+    )
+    .await?;
+    let mut local_subjects = Vec::new();
+    let mut read_subjects = Vec::new();
+    for subject in subjects {
+        let (id, kind) = subject.classified()?;
+        match subject {
+            super::super::other_stores::ResolvedMemory::Local(..) => {
+                local_subjects.push((id, subject_kind(kind)));
+            }
+            super::super::other_stores::ResolvedMemory::Remote(origin) => {
+                read_subjects.push(origin);
+            }
+        }
+    }
+    if local_subjects.is_empty() {
+        return Err(McpToolError::InvalidInput("subjects must include at least one memory of this store; memories of other stores only join local ones".into()));
+    }
+    let external = read_subjects
+        .iter()
+        .map(crate::storage_ports::other_stores::ReadOrigin::handle)
+        .collect::<Vec<_>>();
+    let (subject_memory_ids, subject_kinds): (Vec<uuid::Uuid>, Vec<_>) = local_subjects
+        .into_iter()
+        .map(|(id, kind)| (id.into_inner(), kind))
+        .unzip();
+    let planning_namespace = match destination {
+        crate::MemoryDestination::Owner(owner) => owner.into_inner(),
+        crate::MemoryDestination::WorkingGoal(goal) => {
+            super::derive::goal_planning_namespace(ctx, goal)?
+        }
+    };
+    let memory_id = MemoryId::new(interpretation_memory_id(
+        planning_namespace,
+        &model_id,
+        &claim,
+        args.confidence,
+        &subject_memory_ids,
+    ));
+    Ok(PreparedInterpretation {
+        claim,
+        confidence: args.confidence,
+        model_id,
+        guided_by,
+        destination,
+        memory_id,
+        subject_memory_ids,
+        subject_kinds,
+        read_subjects,
+        external,
+        supersedes,
+    })
+}
+
+fn resolve_guided_goals(
+    ctx: &McpToolCtx,
+    handles: &[String],
+) -> Result<Vec<crate::GoalId>, McpToolError> {
+    handles
+        .iter()
+        .map(|handle| ctx.resolve_goal(handle))
+        .collect()
 }
 
 /// A node cannot be about itself: the reference would be a self-loop,
@@ -243,15 +326,14 @@ pub(crate) fn fold_external_subjects(id: uuid::Uuid, external: &[uuid::Uuid]) ->
 }
 
 pub(crate) fn interpretation_memory_id(
-    owner: &crate::OwnerId,
+    planning_namespace: uuid::Uuid,
     model_id: &str,
     claim: &str,
     confidence: u8,
     subjects: &[uuid::Uuid],
 ) -> uuid::Uuid {
-    let principal_id = owner.into_inner();
     let mut buf = Vec::with_capacity(96 + claim.len() + subjects.len() * 16);
-    buf.extend_from_slice(principal_id.as_bytes());
+    buf.extend_from_slice(planning_namespace.as_bytes());
     buf.push(0);
     buf.extend_from_slice(model_id.as_bytes());
     buf.push(0);
@@ -298,6 +380,9 @@ mod tests {
             subjects,
             model_id: Some("test-model".into()),
             space: None,
+            working_goal: None,
+            supersedes: None,
+            guided_by: Vec::new(),
         }
     }
 

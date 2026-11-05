@@ -136,7 +136,7 @@ async fn debt_reaches_the_index_in_bounded_calls() {
         }
         async fn nearest(
             &self,
-            _: &[OwnerId],
+            _: &proxiima_core::storage_ports::VectorCandidateFilter,
             _: &SpaceVector,
             _: u32,
         ) -> Result<Vec<proxiima_core::storage_ports::VectorCandidate>, StorageError> {

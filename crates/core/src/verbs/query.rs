@@ -163,12 +163,20 @@ impl SearchCursor {
     }
 }
 
-/// Owner-scoped memory search. Semantic modes require the engine/tool
-/// layer to populate [`MemorySearchRequest::semantic`] before dispatching
-/// to storage.
+/// Search scope selected at the request boundary. `Owner` preserves the
+/// original owner-only search; `Readable` admits the caller's complete
+/// authenticated read set, including exact Goal publications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MemorySearchScope {
+    Owner(OwnerId),
+    Readable,
+}
+
+/// Memory search. Semantic modes require the engine/tool layer to populate
+/// [`MemorySearchRequest::semantic`] before dispatching to storage.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemorySearchRequest {
-    pub owner: OwnerId,
+    pub scope: MemorySearchScope,
     #[serde(skip)]
     pub read_owners: Vec<OwnerId>,
     pub query: String,
@@ -346,16 +354,16 @@ pub enum SupersessionStatus {
     IncludeSuperseded,
 }
 
-/// Which goals a goal-stream query keeps by assignment (`goal.assignment_t`).
+/// Which goals a goal-stream query keeps by their motivation links.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum GoalAssignmentFilter {
-    /// Every goal, assigned or not.
+pub enum GoalMotivationFilter {
+    /// Every goal, motivated or not.
     #[default]
     Any,
-    /// Goals with no assigned Perspective.
-    Unassigned,
-    /// Goals assigned to any of these Perspectives; none when the list is empty.
-    AssignedTo(Vec<MemoryId>),
+    /// Goals with no motivating Perspective.
+    Unmotivated,
+    /// Goals motivated by any of these Perspectives; none when the list is empty.
+    MotivatedBy(Vec<MemoryId>),
 }
 
 fn default_include_payloads() -> bool {
@@ -426,7 +434,7 @@ pub struct QueryRequest {
     /// Goal-stream assignment filter. Only meaningful with
     /// `entity_kind == Some(EntityKind::Goal)`.
     #[serde(default)]
-    pub assignment: GoalAssignmentFilter,
+    pub motivated_by: GoalMotivationFilter,
     /// Goal-stream evidence filter (`$id = ANY(goal.evidence_t)`). Only
     /// meaningful with `entity_kind == Some(EntityKind::Goal)`.
     #[serde(default)]
@@ -459,7 +467,7 @@ impl QueryRequest {
             goal_states: BTreeSet::new(),
             goal_handles: Vec::new(),
             referenced_goal_handles: Vec::new(),
-            assignment: GoalAssignmentFilter::Any,
+            motivated_by: GoalMotivationFilter::Any,
             evidence_contains: None,
             limit: 100,
             page: QueryPage::default(),
@@ -491,6 +499,9 @@ pub struct MemoryRow {
     /// outside this query's visible Goal set are folded into [`Self::refs`]
     /// so their stored kind is not disclosed.
     pub goal_refs: Vec<GoalId>,
+    /// Exact Goal versions that guided this Perspective version. Targets
+    /// the reader cannot see are omitted by the storage projection.
+    pub guided_by: Vec<GoalId>,
     /// When the observation occurred (`memory.occurred_at`): `Some` for
     /// every Fact, `None` for an Abstraction or Perspective. Supersession
     /// and recency still order by `id`.
@@ -509,6 +520,7 @@ impl From<&MemoryRow> for crate::PinNode {
             origins: row.origins.clone(),
             refs: row.refs.clone(),
             goal_refs: row.goal_refs.clone(),
+            guided_by: row.guided_by.clone(),
         }
     }
 }
@@ -534,9 +546,13 @@ pub struct GoalRow {
     pub text: Option<String>,
     pub state: GoalState,
     pub dependency_goal_ids: Vec<GoalId>,
-    /// Assigned Perspective (`goal.assignment_t`).
+    /// Historical intended Perspective assignment (`goal.assignment_t`) on
+    /// original versions only; new writes use `motivated_by`.
     #[serde(default)]
-    pub assignment: Option<MemoryId>,
+    pub historical_assignment: Option<MemoryId>,
+    /// Exact Perspective versions that motivated this Goal version.
+    #[serde(default)]
+    pub motivated_by: Vec<MemoryId>,
     /// Evidence pins (`goal.evidence_t`).
     #[serde(default)]
     pub evidence: Vec<MemoryId>,
@@ -823,7 +839,8 @@ mod tests {
                 text: Some("stored prompt".into()),
                 state: super::GoalState::Active,
                 dependency_goal_ids: Vec::new(),
-                assignment: None,
+                historical_assignment: None,
+                motivated_by: Vec::new(),
                 evidence: Vec::new(),
                 set_at: time::OffsetDateTime::UNIX_EPOCH,
                 changed_at: time::OffsetDateTime::UNIX_EPOCH,

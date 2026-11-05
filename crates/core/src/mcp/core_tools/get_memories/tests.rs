@@ -158,6 +158,7 @@ fn fixture() -> Fixture {
             text: Some("local body".into()),
             tags: Vec::new(),
             payload: None,
+            guided_by: Vec::new(),
         },
         requested: Mutex::new(Vec::new()),
     });

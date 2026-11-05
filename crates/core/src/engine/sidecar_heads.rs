@@ -29,7 +29,7 @@ impl Engine {
                 self.authorize_owner_read(authz, owner, AccessKind::Fact)
                     .await?,
             ],
-            SidecarHeadsScope::Readable => self.authorize_read(authz).await?,
+            SidecarHeadsScope::Readable => self.authorize_row_read(authz).await?,
         };
         if read_owners.is_empty() {
             return Ok(SidecarHeadsPage::default());

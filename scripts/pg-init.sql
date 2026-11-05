@@ -20,10 +20,19 @@ BEGIN
         CREATE ROLE proxiima_search NOLOGIN NOSUPERUSER NOBYPASSRLS
             NOCREATEDB NOCREATEROLE NOINHERIT;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'proxiima_goal_reader') THEN
+        CREATE ROLE proxiima_goal_reader NOLOGIN NOSUPERUSER NOBYPASSRLS
+            NOCREATEDB NOCREATEROLE NOINHERIT;
+    END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'proxiima_search'
                AND (rolcanlogin OR rolsuper OR rolbypassrls OR rolcreaterole
                     OR rolcreatedb OR rolinherit)) THEN
         RAISE EXCEPTION 'search role has unsafe privileges';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'proxiima_goal_reader'
+               AND (rolcanlogin OR rolsuper OR rolbypassrls OR rolcreaterole
+                    OR rolcreatedb OR rolinherit)) THEN
+        RAISE EXCEPTION 'Goal reader role has unsafe privileges';
     END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('proxiima_platform', 'proxiima_runtime')
                AND (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb)) THEN
@@ -34,8 +43,10 @@ END
 $roles$;
 GRANT proxiima_search TO proxiima_platform WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
 REVOKE proxiima_search FROM proxiima_runtime;
+GRANT proxiima_goal_reader TO proxiima_platform WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+REVOKE proxiima_goal_reader FROM proxiima_runtime;
 GRANT USAGE, CREATE ON SCHEMA public TO proxiima_platform;
-GRANT USAGE ON SCHEMA public TO proxiima_runtime, proxiima_search;
+GRANT USAGE ON SCHEMA public TO proxiima_runtime, proxiima_search, proxiima_goal_reader;
 ALTER DEFAULT PRIVILEGES FOR ROLE proxiima_platform
     GRANT USAGE ON SCHEMAS TO proxiima_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE proxiima_platform
@@ -43,6 +54,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE proxiima_platform
 ALTER DEFAULT PRIVILEGES FOR ROLE proxiima_platform
     GRANT USAGE, SELECT ON SEQUENCES TO proxiima_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE proxiima_search
+    GRANT EXECUTE ON FUNCTIONS TO proxiima_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE proxiima_goal_reader
     GRANT EXECUTE ON FUNCTIONS TO proxiima_runtime;
 
 -- Empty SQLx ledgers: only SQLx records applied migrations. Creating these
@@ -86,14 +99,14 @@ BEGIN
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         JOIN pg_roles owner_role ON owner_role.oid = p.proowner
         WHERE n.nspname IN ('proxiima_core', 'proxiima_example')
-          AND owner_role.rolname <> 'proxiima_search' LOOP
+          AND owner_role.rolname NOT IN ('proxiima_search', 'proxiima_goal_reader') LOOP
         EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO proxiima_platform', object.nspname, object.proname, object.args);
     END LOOP;
     FOR object IN SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) args
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         JOIN pg_roles owner_role ON owner_role.oid = p.proowner
         WHERE n.nspname IN ('proxiima_core', 'proxiima_example')
-          AND owner_role.rolname = 'proxiima_search' AND p.prosecdef LOOP
+          AND owner_role.rolname IN ('proxiima_search', 'proxiima_goal_reader') AND p.prosecdef LOOP
         EXECUTE format('GRANT EXECUTE ON FUNCTION %I.%I(%s) TO proxiima_runtime', object.nspname, object.proname, object.args);
     END LOOP;
     FOR object IN SELECT n.nspname, t.typname FROM pg_type t

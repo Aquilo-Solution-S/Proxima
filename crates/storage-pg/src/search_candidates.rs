@@ -232,7 +232,7 @@ fn substring_execution(candidates: &SubstringCandidates) -> String {
             format!(
                 "IF requested_schemas && ARRAY[{schemas}]::text[] THEN \
                  legs := legs || '{}'::text; END IF;",
-                quoted(&leg.sql)
+                quoted(&format!("({})", leg.sql))
             )
         })
         .collect::<Vec<_>>()

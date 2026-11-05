@@ -348,7 +348,7 @@ fn host_api_can_build_a_search_read_request() {
     let owner: proxiima::OwnerId = proxiima::company_owner(uuid::Uuid::nil());
     let request = proxiima::SearchReadRequest {
         search: proxiima::MemorySearchRequest {
-            owner,
+            scope: proxiima::MemorySearchScope::Owner(owner),
             read_owners: vec![owner],
             query: "Schnittzeichnung Getriebe".to_owned(),
             mode: proxiima::SearchMode::Hybrid,
@@ -417,9 +417,9 @@ fn spiice_sdk_imports_from_spiice_module() {
 fn spiice_sdk_constructs_contract_goal_and_session_values() {
     use proxiima::spiice::{
         CounterRule, DbConstraint, EmbedUnit, EmbeddingRecipe, EraseRule, ExportRule, ForgetRule,
-        GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalDependencyRef,
-        GoalEvidenceRef, GoalTopologyWrite, IdempotencyKey, KeyShape, LanguagePolicy, PayloadKind,
-        ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, SidecarAtom,
+        GoalAuthorship, GoalCreateRequest, GoalDependencyRef, GoalEvidenceRef, GoalMotivationRef,
+        GoalTopologyWrite, IdempotencyKey, KeyShape, LanguagePolicy, PayloadKind, ProjectionDecl,
+        Provenance, SchemaContract, SchemaRef, SearchProjectionDecl, SidecarAtom,
         SidecarSessionRead, SpiiceContract, SpiiceDescriptor, SpiiceProvenance, Surface,
         TransferRule,
     };
@@ -491,7 +491,7 @@ fn spiice_sdk_constructs_contract_goal_and_session_values() {
     let memory = proxiima::spiice::MemoryId::new(uuid::Uuid::now_v7());
     let goal = proxiima::spiice::GoalId::new(uuid::Uuid::now_v7());
     let topology = GoalTopologyWrite::new(
-        Some(GoalAssignmentTarget::perspective(memory)),
+        vec![GoalMotivationRef::perspective(memory)],
         vec![GoalDependencyRef::new(goal)],
         vec![GoalEvidenceRef::new(memory)],
     )
@@ -1375,7 +1375,8 @@ impl proxiima::spiice::AuthorizationHook for TierAuthzHook {
                 change: proxiima::spiice::MembershipChange::Add,
                 ..
             }
-            | proxiima::spiice::AuthzOperation::EntityTransfer { .. } => Ok(()),
+            | proxiima::spiice::AuthzOperation::EntityTransfer { .. }
+            | proxiima::spiice::AuthzOperation::GoalCollaboration { .. } => Ok(()),
             proxiima::spiice::AuthzOperation::Membership {
                 change: proxiima::spiice::MembershipChange::Remove,
                 ..

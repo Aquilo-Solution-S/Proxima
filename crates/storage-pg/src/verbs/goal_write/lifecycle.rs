@@ -9,7 +9,7 @@ use super::{
 pub(super) struct LifecycleWrite<'a> {
     pub(super) owner: &'a OwnerId,
     pub(super) inserted: InsertedGoal,
-    pub(super) assignment: Option<MemoryId>,
+    pub(super) motivated_by: &'a [MemoryId],
     pub(super) dependencies: &'a [GoalId],
     /// What the write rests on, empty for the verbs that name nothing.
     pub(super) evidence: &'a [EvidenceTarget],
@@ -30,13 +30,14 @@ pub(super) async fn lifecycle_outcome(
         tx,
         write.owner,
         write.inserted.goal_id,
-        write.assignment,
+        write.motivated_by,
         write.dependencies,
         write.evidence,
     )
     .await?;
     Ok(GoalWriteOutcome {
         goal_id: write.inserted.goal_id,
+        goal_handle: proxiima_core::goal_collaboration::GoalHandle::new(write.inserted.handle),
         edge_count,
         idempotent_replay: false,
     })

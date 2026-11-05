@@ -195,6 +195,13 @@ structure Memory where
       `refs` is typed. Goal-declared pins still live on the Goal row; this
       is the Memory row's own reference to a Goal. -/
   goal_refs  : List GoalId
+  /-- Exact Goal versions that actually guided this Perspective version.
+      These are causal references, not F/A/P grounding origins. -/
+  guided_by  : List GoalId
+  /-- Exact source version from which an independent A/P series was forked.
+      This is an ordinary source-owned Memory reference, not a new edge kind.
+      Later versions on the same handle retain the same anchor. -/
+  forked_from : Option MemoryId
   blob_id    : Option BlobId
   content_id : Option ContentId
   tick       : Instant
@@ -202,6 +209,8 @@ structure Memory where
       payload and its pins stay where they are; readers that serve live
       memory skip a forgotten row. -/
   forgotten  : Bool
+  /-- Only Perspective versions may record Goal guidance. -/
+  guided_by_only_perspective : kind ≠ .Perspective → guided_by = []
   /-- Fact origins are empty (UML §2). -/
   fact_origins_empty : kind = .Fact → origins = []
   /-- A Perspective never cites (UML §4). -/
@@ -219,6 +228,8 @@ def memory_writer : Memory → WriterAttribution := Memory.writer
 def memory_origins : Memory → List MemoryId := Memory.origins
 def memory_refs : Memory → List MemoryId := Memory.refs
 def memory_goal_refs : Memory → List GoalId := Memory.goal_refs
+def memory_guided_by : Memory → List GoalId := Memory.guided_by
+def memory_forked_from : Memory → Option MemoryId := Memory.forked_from
 def memory_blob_id : Memory → Option BlobId := Memory.blob_id
 def memory_content_id : Memory → Option ContentId := Memory.content_id
 def memory_tick : Memory → Instant := Memory.tick
@@ -227,15 +238,18 @@ def memory_forgotten : Memory → Bool := Memory.forgotten
 theorem memory_field_projection
     (handle : Handle) (t : MemoryId) (kind : MemoryKind) (owner : Owner)
     (writer : WriterAttribution)
-    (origins refs : List MemoryId) (goal_refs : List GoalId)
+    (origins refs : List MemoryId) (goal_refs guided_by : List GoalId)
+    (forked_from : Option MemoryId)
     (blob_id : Option BlobId)
     (content_id : Option ContentId) (tick : Instant) (forgotten : Bool)
+    (guided_by_only_perspective : kind ≠ .Perspective → guided_by = [])
     (fact_origins_empty : kind = .Fact → origins = [])
     (perspective_never_cites : kind = .Perspective → blob_id = none)
     (blob_fa_only : blob_id ≠ none → kind = .Fact ∨ kind = .Abstraction) :
     memory_t
-      (Memory.mk handle t kind owner writer origins refs goal_refs blob_id content_id
-        tick forgotten fact_origins_empty perspective_never_cites blob_fa_only) = t := rfl
+      (Memory.mk handle t kind owner writer origins refs goal_refs guided_by forked_from blob_id content_id
+        tick forgotten guided_by_only_perspective fact_origins_empty
+        perspective_never_cites blob_fa_only) = t := rfl
 
 /-- `t` uniqueness is a table/store invariant. -/
 def MemoryIdUnique (memories : Set Memory) : Prop :=
@@ -253,6 +267,19 @@ theorem memory_version_writer_unique
     (ht : memory_t m1 = memory_t m2) :
     memory_writer m1 = memory_writer m2 :=
   congrArg memory_writer (hunique m1 m2 hm1 hm2 ht)
+
+def ForkAnchorAligned (memories : Set Memory) : Prop :=
+  ∀ m1 m2 : Memory,
+    m1 ∈ memories → m2 ∈ memories →
+    memory_handle m1 = memory_handle m2 →
+    memory_forked_from m1 = memory_forked_from m2
+
+theorem fork_anchor_same_series_is_retained
+    (memories : Set Memory) (haligned : ForkAnchorAligned memories)
+    (m1 m2 : Memory) (hm1 : m1 ∈ memories) (hm2 : m2 ∈ memories)
+    (hhandle : memory_handle m1 = memory_handle m2) :
+    memory_forked_from m2 = memory_forked_from m1 := by
+  exact (haligned m1 m2 hm1 hm2 hhandle).symm
 
 instance : AppendOnly Memory := ⟨⟩
 

@@ -102,6 +102,7 @@ pub(crate) struct PreparedMemoryAdmissionNew {
     origins: Vec<Uuid>,
     refs: Vec<Uuid>,
     goal_refs: Vec<Uuid>,
+    guided_by: Vec<Uuid>,
     sidecar_tables: Vec<String>,
     handle: Uuid,
     fresh_handle: bool,
@@ -113,6 +114,7 @@ pub(crate) struct PreparedMemoryAdmissionNew {
     occurred_at: Option<time::OffsetDateTime>,
     expected_head_t: Option<Uuid>,
     targets: Vec<Uuid>,
+    pub(crate) forked_from: Option<Uuid>,
 }
 
 impl PreparedMemoryAdmission {
@@ -158,6 +160,8 @@ pub(crate) async fn prepare_memory_admission(
         PreparationOptions {
             identity: None,
             extra_targets: &[],
+            guided_by: &[],
+            forked_from: None,
         },
     )
     .await
@@ -169,6 +173,7 @@ pub(crate) async fn prepare_memory_admission_with_extra_targets(
     tx: &mut Transaction<'_, Postgres>,
     admission: MemoryAdmissionDraft<'_>,
     extra_targets: &[Uuid],
+    guided_by: &[proxiima_core::GoalId],
 ) -> Result<PreparedMemoryAdmission, StorageError> {
     prepare_memory_admission_at(
         tx,
@@ -176,6 +181,8 @@ pub(crate) async fn prepare_memory_admission_with_extra_targets(
         PreparationOptions {
             identity: None,
             extra_targets,
+            guided_by,
+            forked_from: None,
         },
     )
     .await
@@ -218,6 +225,8 @@ pub(crate) async fn ingest_unpinned_fact_at(
         PreparationOptions {
             identity: Some(identity),
             extra_targets: &[],
+            guided_by: &[],
+            forked_from: None,
         },
     )
     .await?;
@@ -277,9 +286,11 @@ async fn fence_declared_scopes(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PreparationOptions<'a> {
-    identity: Option<(Uuid, Uuid)>,
-    extra_targets: &'a [Uuid],
+pub(crate) struct PreparationOptions<'a> {
+    pub(crate) identity: Option<(Uuid, Uuid)>,
+    pub(crate) extra_targets: &'a [Uuid],
+    pub(crate) guided_by: &'a [proxiima_core::GoalId],
+    pub(crate) forked_from: Option<Uuid>,
 }
 
 enum AdmissionReplay {
@@ -323,7 +334,26 @@ async fn decide_admission_replay(
     )
 }
 
-async fn prepare_memory_admission_at(
+async fn inherited_fork_source(
+    tx: &mut Transaction<'_, Postgres>,
+    source: Option<Uuid>,
+    prior: Option<Uuid>,
+) -> Result<Option<Uuid>, StorageError> {
+    Ok(if let Some(anchor) = source {
+        Some(anchor)
+    } else if let Some(head) = prior {
+        sqlx::query_scalar("SELECT forked_from FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (series provenance is retained across revisions) */ WHERE t = $1")
+            .bind(head)
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(map_err)?
+            .flatten()
+    } else {
+        None
+    })
+}
+
+pub(crate) async fn prepare_memory_admission_at(
     tx: &mut Transaction<'_, Postgres>,
     admission: MemoryAdmissionDraft<'_>,
     options: PreparationOptions<'_>,
@@ -390,6 +420,11 @@ async fn prepare_memory_admission_at(
             .fetch_optional(tx.as_mut())
             .await
             .map_err(map_err)?;
+    // A revision of a forked series retains its original exact source anchor.
+    // The anchor is provenance, not a new edge kind, and is copied only from
+    // the series head already held by this admission's owner fence.
+    let inherited_fork_anchor =
+        inherited_fork_source(tx, options.forked_from, expected_head_t).await?;
     let t: Uuid = if let Some((_, t)) = options.identity {
         t
     } else if let Some(head_t) = expected_head_t {
@@ -412,7 +447,8 @@ async fn prepare_memory_admission_at(
             + persisted_origins.len()
             + refs.len()
             + goal_refs.len()
-            + options.extra_targets.len(),
+            + options.extra_targets.len()
+            + options.guided_by.len(),
     );
     targets.push(t);
     if let Some(head_t) = expected_head_t {
@@ -422,6 +458,8 @@ async fn prepare_memory_admission_at(
     targets.extend(refs.iter().copied());
     targets.extend(goal_refs.iter().copied());
     targets.extend(options.extra_targets.iter().copied());
+    targets.extend(inherited_fork_anchor);
+    targets.extend(options.guided_by.iter().map(|id| id.into_inner()));
     let mut draft = draft.clone();
     if reobservation_key.is_some() {
         draft.ingest_key = reobservation_key;
@@ -436,6 +474,7 @@ async fn prepare_memory_admission_at(
             origins: persisted_origins,
             refs,
             goal_refs,
+            guided_by: options.guided_by.iter().map(|id| id.into_inner()).collect(),
             sidecar_tables: admission.sidecar_tables.to_vec(),
             handle,
             fresh_handle,
@@ -443,6 +482,7 @@ async fn prepare_memory_admission_at(
             occurred_at,
             expected_head_t,
             targets,
+            forked_from: inherited_fork_anchor,
         },
     )))
 }
@@ -925,7 +965,7 @@ async fn lock_and_validate_prepared_memory(
 /// these locks can still run the validation: the two are separate obligations,
 /// and bundling them let the reserved-identity path drop the head check while
 /// it was only trying to avoid re-acquiring the locks.
-async fn lock_prepared_memory_targets(
+pub(crate) async fn lock_prepared_memory_targets(
     tx: &mut Transaction<'_, Postgres>,
     prepared: &PreparedMemoryAdmissionNew,
 ) -> Result<(), StorageError> {
@@ -982,7 +1022,7 @@ pub(crate) async fn materialize_prepared_memory_admission(
 /// it cannot acquire a Memory handle after the Goal transaction already holds
 /// lifecycle `t` locks. The head validation still runs here — only the lock
 /// acquisition is the caller's.
-async fn materialize_prepared_memory_admission_after_locks(
+pub(crate) async fn materialize_prepared_memory_admission_after_locks(
     tx: &mut Transaction<'_, Postgres>,
     mut prepared: Box<PreparedMemoryAdmissionNew>,
     blob_id: Option<Uuid>,
@@ -1112,11 +1152,11 @@ async fn insert_memory_revision(
     sqlx::query(
         "INSERT INTO proxiima_core.memory /* FORGET-POLICY: includes-forgotten (a new row is live; the insert reads no other row) */
             (handle, t, kind, owner_id, schema_id, source_id, ingest_key, blob_id,
-             content_id, origins, refs, goal_refs, sidecar_tables, occurred_at, \"by\", via,
+             content_id, origins, refs, goal_refs, guided_by, sidecar_tables, occurred_at, \"by\", via, forked_from,
              lexical_language)
-         VALUES ($1, $2, $3::proxiima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                 $13, $14, $15, $16,
-                 COALESCE($17::regconfig, proxiima_core.lexical_config()))",
+         VALUES ($1, $2, $3::proxiima_core.memory_kind, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                 $14, $15, $16, $17, $18,
+                 COALESCE($19::regconfig, proxiima_core.lexical_config()))",
     )
     .bind(prepared.handle)
     .bind(prepared.t)
@@ -1130,10 +1170,12 @@ async fn insert_memory_revision(
     .bind(&prepared.origins)
     .bind(&prepared.refs)
     .bind(&prepared.goal_refs)
+    .bind(&prepared.guided_by)
     .bind(&prepared.sidecar_tables)
     .bind(prepared.occurred_at)
     .bind(prepared.writer.by)
     .bind(prepared.writer.via)
+    .bind(prepared.forked_from)
     .bind(stamped_language(draft.lexical_language.as_deref()))
     .execute(tx.as_mut())
     .await

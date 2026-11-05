@@ -43,7 +43,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         let schemas = self.memory_schema_specs();
         query_authorized(
             &self.storage.query,
@@ -97,7 +97,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &EdgeReadRequest,
     ) -> Result<EdgeReadResponse, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         read_edges_authorized(&self.storage.query, authz.owner_scope(), &read_owners, req).await
     }
 
@@ -114,7 +114,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &EdgeExistsRequest,
     ) -> Result<EdgeExistsResponse, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         edge_exists_authorized(&self.storage.query, authz.owner_scope(), &read_owners, req).await
     }
 
@@ -140,7 +140,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &MemoryLineageRequest,
     ) -> Result<MemoryLineageResponse, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         walk_memory_lineage_authorized(&self.storage.query, authz.owner_scope(), &read_owners, req)
             .await
     }
@@ -157,7 +157,7 @@ impl Engine {
         authz: &AuthzContext,
         memory_ids: &[crate::MemoryId],
     ) -> Result<Vec<(crate::MemoryId, uuid::Uuid, crate::EdgeKind)>, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         if read_owners.is_empty() || memory_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -181,7 +181,7 @@ impl Engine {
         authz: &AuthzContext,
         memory_ids: &[crate::MemoryId],
     ) -> Result<Vec<crate::verbs::query::MemoryLineageNode>, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         if read_owners.is_empty() || memory_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -207,7 +207,7 @@ impl Engine {
         authz: &AuthzContext,
         memory_ids: &[crate::MemoryId],
     ) -> Result<Vec<crate::verbs::query::MemoryLineageNode>, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         if read_owners.is_empty() || memory_ids.is_empty() {
             return Ok(Vec::new());
         }

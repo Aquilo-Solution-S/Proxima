@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use proxiima_core::StorageError;
 use proxiima_core::verbs::goal_write::GoalState;
 use proxiima_core::verbs::query::{
-    EntityKind, GoalAssignmentFilter, GoalRow, QueryCursor, QueryRequest, SupersessionStatus,
+    EntityKind, GoalMotivationFilter, GoalRow, QueryCursor, QueryRequest, SupersessionStatus,
 };
 use sqlx::PgConnection;
 
@@ -21,7 +21,17 @@ pub(super) async fn query_goals_on_connection(
         return Ok((Vec::new(), None));
     }
     let single_goal_stream = matches!(req.entity_kind, Some(EntityKind::Goal));
-    let filters = goal_filters(req);
+    let visible_motivations = match &req.motivated_by {
+        GoalMotivationFilter::MotivatedBy(ids) => {
+            let candidates = ids.iter().map(|id| id.into_inner()).collect::<Vec<_>>();
+            Some(load_visible_perspective_ids(connection, owner_ids, &candidates).await?)
+        }
+        GoalMotivationFilter::Any | GoalMotivationFilter::Unmotivated => None,
+    };
+    if visible_motivations.as_ref().is_some_and(Vec::is_empty) {
+        return Ok((Vec::new(), None));
+    }
+    let filters = goal_filters(req, visible_motivations.as_deref());
     let sql = goal_page_sql(req, &filters);
     // SQL-POLICY: fixed-fragment
     let mut q = sqlx::query_as::<_, GoalRowDb>(sqlx::AssertSqlSafe(sql)).bind(owner_ids);
@@ -30,8 +40,8 @@ pub(super) async fn query_goals_on_connection(
             GoalFilter::Schema(value) => q.bind(value),
             GoalFilter::States(value) => q.bind(value),
             GoalFilter::Evidence(value) => q.bind(value),
-            GoalFilter::Unassigned => q,
-            GoalFilter::Assignments(value)
+            GoalFilter::Unmotivated => q,
+            GoalFilter::MotivatedBy(value)
             | GoalFilter::Ids(value)
             | GoalFilter::Handles(value) => q.bind(value),
             GoalFilter::Cursor(handle, goal_id) => q.bind(handle).bind(goal_id),
@@ -49,11 +59,78 @@ pub(super) async fn query_goals_on_connection(
     } else {
         None
     };
-    let goals = rows
+    let mut goals = rows
         .into_iter()
         .map(goal_row_from_db)
         .collect::<Result<Vec<_>, _>>()?;
+    filter_goal_memory_references(connection, owner_ids, &mut goals).await?;
     Ok((goals, next_cursor))
+}
+
+/// Goal causal metadata is stored as exact Memory ids, but a readable Goal
+/// does not make an erased or foreign Perspective readable.  Apply the same
+/// owner-scoped visibility boundary used by Memory reads before projecting
+/// either the new motivation field or the historical assignment pin.
+async fn filter_goal_memory_references(
+    connection: &mut PgConnection,
+    owner_ids: &[uuid::Uuid],
+    rows: &mut [GoalRow],
+) -> Result<(), StorageError> {
+    let candidates: Vec<uuid::Uuid> = rows
+        .iter()
+        .flat_map(|row| {
+            row.historical_assignment
+                .map(proxiima_core::MemoryId::into_inner)
+                .into_iter()
+                .chain(row.motivated_by.iter().map(|id| id.into_inner()))
+        })
+        .collect();
+    if candidates.is_empty() || owner_ids.is_empty() {
+        return Ok(());
+    }
+
+    let visible: std::collections::HashSet<_> =
+        load_visible_perspective_ids(connection, owner_ids, &candidates)
+            .await?
+            .into_iter()
+            .collect();
+
+    for row in rows {
+        if row
+            .historical_assignment
+            .is_some_and(|id| !visible.contains(&id.into_inner()))
+        {
+            row.historical_assignment = None;
+        }
+        row.motivated_by
+            .retain(|id| visible.contains(&id.into_inner()));
+    }
+    Ok(())
+}
+
+async fn load_visible_perspective_ids(
+    connection: &mut PgConnection,
+    owner_ids: &[uuid::Uuid],
+    candidates: &[uuid::Uuid],
+) -> Result<Vec<uuid::Uuid>, StorageError> {
+    if candidates.is_empty() || owner_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT t
+           FROM proxiima_core.memory
+          WHERE t = ANY($1::uuid[])
+            AND owner_id = ANY($2::uuid[])
+            AND kind = 'perspective'::proxiima_core.memory_kind",
+    )
+    .bind(candidates)
+    .bind(owner_ids)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(map_err)?
+    .into_iter()
+    .collect();
+    Ok(rows)
 }
 
 /// The time a Goal `t` was minted at, decoded by the shared UUID timestamp function.
@@ -80,6 +157,7 @@ fn goal_columns() -> String {
          g.owner_id, g.\"by\", g.via, g.title, g.text, g.state, \
          g.dependency_t AS dependency_goal_ids, \
          g.assignment_t AS assignment, \
+         g.motivated_by, \
          g.evidence_t AS evidence"
     )
 }
@@ -97,11 +175,11 @@ fn goal_page_sql(req: &QueryRequest, filters: &[GoalFilter]) -> String {
         && filters.iter().all(|filter| {
             !matches!(
                 filter,
-                GoalFilter::Unassigned | GoalFilter::Assignments(_) | GoalFilter::Evidence(_)
+                GoalFilter::Unmotivated | GoalFilter::MotivatedBy(_) | GoalFilter::Evidence(_)
             )
         })
     {
-        return owner_head_page_sql(filters, fetch_limit);
+        return audience_head_page_sql(filters, fetch_limit);
     }
     let from = if heads_only {
         "FROM proxiima_core.goal_head h \
@@ -114,7 +192,6 @@ fn goal_page_sql(req: &QueryRequest, filters: &[GoalFilter]) -> String {
     let mut sql = format!(
         "SELECT {columns} \
          {from} \
-         JOIN proxiima_core.owners o ON o.owner_id = g.owner_id \
          WHERE g.owner_id = ANY($1::uuid[])"
     );
     append_goal_filters(&mut sql, filters, |filter, next| {
@@ -171,20 +248,41 @@ fn owner_head_page_sql(filters: &[GoalFilter], fetch_limit: u64) -> String {
     sql
 }
 
+/// Keep the indexed owner stream and merge only explicitly granted Goal heads.
+/// Goal controller owners remain selectors, never owner-role entries.
+fn audience_head_page_sql(filters: &[GoalFilter], fetch_limit: u64) -> String {
+    let owner = owner_head_page_sql(filters, fetch_limit);
+    let columns = goal_columns();
+    let mut guests = format!(
+        "SELECT {columns} FROM proxiima_core.goal_access_grant a \
+         JOIN proxiima_core.goal_head h ON h.handle=a.goal_handle \
+         JOIN proxiima_core.goal g ON g.t=h.t \
+         WHERE a.subject_id=NULLIF(current_setting('app.goal_subject',true),'')::uuid \
+           AND a.controller_generation=h.authority_generation AND a.read_ceiling>=4 \
+           AND (a.expires_at IS NULL OR a.expires_at>statement_timestamp()) \
+           AND g.owner_id=ANY($1::uuid[])"
+    );
+    append_goal_filters(&mut guests, filters, GoalFilter::head_predicate);
+    let _ = write!(guests, " ORDER BY h.handle DESC LIMIT {fetch_limit}");
+    format!(
+        "SELECT * FROM (({owner}) UNION ({guests})) visible ORDER BY handle DESC,goal_id DESC LIMIT {fetch_limit}"
+    )
+}
+
 /// The statement [`query_goals_on_connection`] runs for `req`: `$1` is the
 /// owner list and the filter binds follow in [`goal_filters`] order.
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 #[doc(hidden)]
 #[must_use]
 pub fn goal_page_sql_for_tests(req: &QueryRequest) -> String {
-    goal_page_sql(req, &goal_filters(req))
+    goal_page_sql(req, &goal_filters(req, None))
 }
 
 enum GoalFilter {
     Schema(String),
     States(Vec<GoalState>),
-    Unassigned,
-    Assignments(Vec<uuid::Uuid>),
+    Unmotivated,
+    MotivatedBy(Vec<uuid::Uuid>),
     Evidence(uuid::Uuid),
     Ids(Vec<uuid::Uuid>),
     Handles(Vec<uuid::Uuid>),
@@ -195,10 +293,10 @@ impl GoalFilter {
     fn bind_count(&self) -> u32 {
         match self {
             Self::Cursor(..) => 2,
-            Self::Unassigned => 0,
+            Self::Unmotivated => 0,
             Self::Schema(_)
             | Self::States(_)
-            | Self::Assignments(_)
+            | Self::MotivatedBy(_)
             | Self::Evidence(_)
             | Self::Ids(_)
             | Self::Handles(_) => 1,
@@ -224,8 +322,13 @@ impl GoalFilter {
             Self::States(_) => {
                 format!(" AND g.state = ANY(${placeholder}::proxiima_core.goal_state[])")
             }
-            Self::Unassigned => " AND g.assignment_t IS NULL".to_owned(),
-            Self::Assignments(_) => format!(" AND g.assignment_t = ANY(${placeholder}::uuid[])"),
+            Self::Unmotivated => " AND g.motivated_by = '{}'::uuid[]".to_owned(),
+            Self::MotivatedBy(_) => format!(
+                " AND g.t IN (SELECT mi.goal_t \
+                    FROM proxiima_core.goal_motivation_index mi \
+                   WHERE mi.owner_id = ANY($1::uuid[]) \
+                     AND mi.perspective_t = ANY(${placeholder}::uuid[]))"
+            ),
             Self::Evidence(_) => format!(" AND ${placeholder} = ANY(g.evidence_t)"),
             Self::Ids(_) => format!(" AND g.t = ANY(${placeholder}::uuid[])"),
             Self::Handles(_) => format!(
@@ -240,7 +343,7 @@ impl GoalFilter {
     }
 }
 
-fn goal_filters(req: &QueryRequest) -> Vec<GoalFilter> {
+fn goal_filters(req: &QueryRequest, visible_motivations: Option<&[uuid::Uuid]>) -> Vec<GoalFilter> {
     let mut filters = Vec::new();
     if let Some(schema) = &req.schema_id {
         filters.push(GoalFilter::Schema(schema.as_str().to_owned()));
@@ -250,12 +353,15 @@ fn goal_filters(req: &QueryRequest) -> Vec<GoalFilter> {
             req.goal_states.iter().copied().collect(),
         ));
     }
-    match &req.assignment {
-        GoalAssignmentFilter::Any => {}
-        GoalAssignmentFilter::Unassigned => filters.push(GoalFilter::Unassigned),
-        GoalAssignmentFilter::AssignedTo(perspectives) => filters.push(GoalFilter::Assignments(
-            perspectives.iter().map(|id| id.into_inner()).collect(),
-        )),
+    match &req.motivated_by {
+        GoalMotivationFilter::Any => {}
+        GoalMotivationFilter::Unmotivated => filters.push(GoalFilter::Unmotivated),
+        GoalMotivationFilter::MotivatedBy(perspectives) => {
+            filters.push(GoalFilter::MotivatedBy(visible_motivations.map_or_else(
+                || perspectives.iter().map(|id| id.into_inner()).collect(),
+                <[uuid::Uuid]>::to_vec,
+            )));
+        }
     }
     if let Some(evidence) = req.evidence_contains {
         filters.push(GoalFilter::Evidence(evidence.into_inner()));

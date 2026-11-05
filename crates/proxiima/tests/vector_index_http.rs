@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use proxiima::vector_index_http::{VectorIndexClient, vector_index_router};
 use proxiima_core::storage_ports::{
-    InMemoryVectorIndex, VectorCandidate, VectorEntry, VectorIndex, VectorKey,
+    InMemoryVectorIndex, VectorCandidate, VectorCandidateFilter, VectorEntry, VectorIndex,
+    VectorKey,
 };
 use proxiima_core::{
     EmbeddableEntityRef, EmbeddingDim, EmbeddingSpace, EntityKind, GoalId, MemoryId, OwnerId,
@@ -103,9 +104,29 @@ async fn the_wire_carries_every_call_to_its_stores_index() {
         .unwrap();
 
     let query = vector([1.0, 0.0]);
-    let wire = remote.nearest(&[me], &query, 10).await.unwrap();
-    assert_eq!(wire, mine.nearest(&[me], &query, 10).await.unwrap());
+    let filter = VectorCandidateFilter {
+        owners: vec![me],
+        memories: vec![],
+    };
+    let wire = remote.nearest(&filter, &query, 10).await.unwrap();
+    assert_eq!(wire, mine.nearest(&filter, &query, 10).await.unwrap());
     assert_eq!(wire.len(), 2, "a goal is no candidate");
+    remote
+        .put(memory(4), you, 1, &[vector([1.0, 0.0])])
+        .await
+        .unwrap();
+    remote
+        .put(memory(5), you, 1, &[vector([0.0, 1.0])])
+        .await
+        .unwrap();
+    let exact = VectorCandidateFilter {
+        owners: vec![],
+        memories: vec![MemoryId::new(Uuid::from_u128(5))],
+    };
+    let exact_ranked = remote.nearest(&exact, &query, 1).await.unwrap();
+    assert_eq!(exact_ranked.len(), 1);
+    assert_eq!(exact_ranked[0].memory_id, MemoryId::new(Uuid::from_u128(5)));
+    remote.delete(&[key(4), key(5)]).await.unwrap();
     assert_eq!(
         remote.entries(None, 10).await.unwrap(),
         mine.entries(None, 10).await.unwrap()
@@ -116,14 +137,64 @@ async fn the_wire_carries_every_call_to_its_stores_index() {
 
     remote.set_owner(&[key(2)], you).await.unwrap();
     remote.delete(&[key(1), key(99)]).await.unwrap();
-    assert!(remote.nearest(&[me], &query, 10).await.unwrap().is_empty());
-    let moved = remote.nearest(&[you], &query, 10).await.unwrap();
+    assert!(
+        remote
+            .nearest(&filter, &query, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let moved = remote
+        .nearest(
+            &VectorCandidateFilter {
+                owners: vec![you],
+                memories: vec![],
+            },
+            &query,
+            10,
+        )
+        .await
+        .unwrap();
     assert_eq!(moved.len(), 1);
     assert_eq!(moved[0].memory_id, MemoryId::new(Uuid::from_u128(2)));
     let left: Vec<VectorEntry> = mine.entries(None, 10).await.unwrap();
     assert_eq!(left.len(), 2);
     assert_eq!(left[0].version, 1);
     assert!(other.entries(None, 10).await.unwrap().is_empty());
+}
+
+/// Filtering happens before ranking and the window: a nearer vector owned by
+/// nobody in the store's scope cannot consume the exact candidate's slot.
+#[tokio::test]
+async fn the_wire_filters_private_nearer_vectors_before_the_window() {
+    let index = Arc::new(InMemoryVectorIndex::default());
+    let served = serve(BTreeMap::from([(0, index.clone() as Arc<dyn VectorIndex>)])).await;
+    let remote = client(&served, 0);
+    let private = owner(10);
+    let allowed = owner(11);
+    let target = MemoryId::new(Uuid::from_u128(2));
+    remote
+        .put(memory(1), private, 1, &[vector([1.0, 0.0])])
+        .await
+        .unwrap();
+    remote
+        .put(memory(2), private, 1, &[vector([0.0, 1.0])])
+        .await
+        .unwrap();
+
+    let candidates = remote
+        .nearest(
+            &VectorCandidateFilter {
+                owners: vec![allowed],
+                memories: vec![target],
+            },
+            &vector([1.0, 0.0]),
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].memory_id, target);
 }
 
 /// The router parses each body where it enters: an unknown store, a body
@@ -137,7 +208,14 @@ async fn the_router_refuses_unknown_stores_and_malformed_calls() {
     )]))
     .await;
     let unknown = client(&served, 9)
-        .nearest(&[owner(1)], &vector([1.0, 0.0]), 5)
+        .nearest(
+            &VectorCandidateFilter {
+                owners: vec![owner(1)],
+                memories: vec![],
+            },
+            &vector([1.0, 0.0]),
+            5,
+        )
         .await;
     assert!(
         matches!(unknown, Err(StorageError::Unavailable(_))),
@@ -171,7 +249,7 @@ async fn the_router_refuses_unknown_stores_and_malformed_calls() {
         status(
             post(
                 "nearest",
-                "{\"owners\":[],\"model_id\":\"m\",\"dim\":384,\"query\":[1.0],\"window\":1}"
+                "{\"owners\":[],\"memories\":[],\"model_id\":\"m\",\"dim\":384,\"query\":[1.0],\"window\":1}"
             )
             .await
             .unwrap()
@@ -214,7 +292,7 @@ impl VectorIndex for Lying {
 
     async fn nearest(
         &self,
-        _: &[OwnerId],
+        _: &VectorCandidateFilter,
         _: &SpaceVector,
         _: u32,
     ) -> Result<Vec<VectorCandidate>, StorageError> {
@@ -266,12 +344,48 @@ async fn the_client_refuses_answers_that_break_the_port() {
     let unavailable =
         |result: Result<_, StorageError>| matches!(result, Err(StorageError::Unavailable(_)));
     assert!(
-        unavailable(first.nearest(&[owner(1)], &query, 1).await.map(drop)),
+        unavailable(
+            first
+                .nearest(
+                    &VectorCandidateFilter {
+                        owners: vec![owner(1)],
+                        memories: vec![],
+                    },
+                    &query,
+                    1,
+                )
+                .await
+                .map(drop),
+        ),
         "past the window"
     );
-    assert!(first.nearest(&[owner(1)], &query, 2).await.is_ok());
     assert!(
-        unavailable(second.nearest(&[owner(1)], &query, 5).await.map(drop)),
+        first
+            .nearest(
+                &VectorCandidateFilter {
+                    owners: vec![owner(1)],
+                    memories: vec![],
+                },
+                &query,
+                2,
+            )
+            .await
+            .is_ok()
+    );
+    assert!(
+        unavailable(
+            second
+                .nearest(
+                    &VectorCandidateFilter {
+                        owners: vec![owner(1)],
+                        memories: vec![],
+                    },
+                    &query,
+                    5,
+                )
+                .await
+                .map(drop),
+        ),
         "score above 1"
     );
     assert!(

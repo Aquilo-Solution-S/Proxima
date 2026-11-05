@@ -25,7 +25,7 @@ use crate::memory::payloads::write_act::WriteActV1;
 use crate::protocol::tool as protocol_tool;
 use crate::tool::validate_trimmed_len;
 use crate::verbs::goal_write::{
-    GoalAssignmentTarget, GoalEvidenceRef, GoalTopologyWrite, IdempotencyKey,
+    GoalEvidenceRef, GoalMotivationRef, GoalTopologyWrite, IdempotencyKey,
 };
 use crate::{
     DerivationIdentity, DerivedMemory, FactWrite, InterpretationSubjectKind, InterpretationV1,
@@ -128,10 +128,8 @@ pub struct EpisodeGoalItem {
     )]
     pub evidence: Vec<String>,
     #[serde(default)]
-    #[schemars(
-        description = "Optional Perspective the goal is assigned to: `<uuid>` or this call's `stance:N`. Omit to leave the goal unassigned."
-    )]
-    pub target_perspective: Option<String>,
+    #[schemars(description = "Exact Perspective versions that motivated the goal.")]
+    pub motivated_by: Vec<String>,
     #[serde(default)]
     #[schemars(description = "Optional replay key, 1 to 180 chars, unique within this call.")]
     pub idempotency_key: Option<String>,
@@ -438,12 +436,13 @@ impl EpisodeWrite<'_> {
             &origins,
             &[],
             supersedes.map(MemoryId::into_inner),
+            &[],
         )?;
         let derive::DerivationPlan {
             memory_id,
             sidecar,
             authored,
-        } = derive::plan_derivation(ctx, &owner, kind, authored, &sources, &request)?;
+        } = derive::plan_derivation(ctx, owner.into_inner(), kind, authored, &sources, &request)?;
         let extra_refs = pin.then_some(act_id).into_iter().collect::<Vec<_>>();
         let identity = DerivationIdentity::new(
             core_derive_operator_id(kind),
@@ -521,7 +520,7 @@ impl EpisodeWrite<'_> {
             .map(|(memory_id, kind)| (memory_id.into_inner(), kind))
             .unzip();
             let memory_id = MemoryId::new(interpretation_memory_id(
-                &owner,
+                owner.into_inner(),
                 &model_id,
                 &claim,
                 item.confidence,
@@ -587,9 +586,8 @@ impl EpisodeWrite<'_> {
         for (idx, item) in items.iter().enumerate() {
             let payload = encode_goal_payload(ctx, item.payload.clone())?;
             let evidence = resolve_goal_evidence(ctx, &self.slots, &item.evidence).await?;
-            let assignment =
-                resolve_goal_assignment(&self.slots, item.target_perspective.as_deref())?;
-            let topology = GoalTopologyWrite::new(assignment, Vec::new(), evidence)
+            let motivated_by = resolve_goal_motivations(ctx, &self.slots, &item.motivated_by)?;
+            let topology = GoalTopologyWrite::new(motivated_by, Vec::new(), evidence)
                 .map_err(McpToolError::Protocol)?;
             let request_id =
                 IdempotencyKey::optional_or_generated("episode_goal", item.idempotency_key.clone())
@@ -718,27 +716,26 @@ async fn resolve_goal_evidence(
     Ok(resolved)
 }
 
-fn resolve_goal_assignment(
+fn resolve_goal_motivations(
+    ctx: &McpToolCtx,
     slots: &EpisodeSlots,
-    target_perspective: Option<&str>,
-) -> Result<Option<GoalAssignmentTarget>, McpToolError> {
-    match target_perspective {
-        Some(handle) => {
+    handles: &[String],
+) -> Result<Vec<GoalMotivationRef>, McpToolError> {
+    handles
+        .iter()
+        .map(|handle| {
             if let Some(slot) = resolve_local_slot(slots, handle)? {
                 if slot.class != MemoryHandleClass::Perspective {
                     return Err(McpToolError::InvalidInput(
-                        "target_perspective must name a Perspective".into(),
+                        "motivated_by must name a Perspective".into(),
                     ));
                 }
-                return Ok(Some(GoalAssignmentTarget::perspective(slot.id)));
+                return Ok(GoalMotivationRef::perspective(slot.id));
             }
-            crate::mcp::ids::parse_wire_uuid(handle)
-                .map(crate::MemoryId::new)
-                .map(GoalAssignmentTarget::perspective)
-                .map(Some)
-        }
-        None => Ok(None),
-    }
+            ctx.resolve_memory(handle)
+                .map(GoalMotivationRef::perspective)
+        })
+        .collect()
 }
 
 fn resolve_local_slot<'a>(

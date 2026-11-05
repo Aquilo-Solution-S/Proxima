@@ -283,8 +283,9 @@ impl GoalDraft {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalWriteOutcome {
     pub goal_id: GoalId,
+    pub goal_handle: crate::goal_collaboration::GoalHandle,
     /// Index rows the goal write asserted — one `reference` per
-    /// declared topology entry (assignment Perspective, dependency
+    /// declared topology entry (motivating Perspective, dependency
     /// Goals, evidence memories). A count, not ids: an edge has no
     /// identity beyond its content.
     pub edge_count: usize,
@@ -341,11 +342,11 @@ impl GoalEvidenceRef {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct GoalAssignmentTarget {
+pub struct GoalMotivationRef {
     perspective_id: MemoryId,
 }
 
-impl GoalAssignmentTarget {
+impl GoalMotivationRef {
     #[must_use]
     pub const fn perspective(perspective_id: MemoryId) -> Self {
         Self { perspective_id }
@@ -379,31 +380,37 @@ impl GoalDependencyRef {
 /// What a Goal row points at, declared by its creating write.
 ///
 /// Every entry here is a reference the Goal itself owns the statement
-/// for — the Goal knows the Perspective it inspires, the Goals it waits
+/// for — the Goal records the Perspectives that motivated it, the Goals it waits
 /// on, and the evidence it rests on — so storage derives one
 /// [`crate::EdgeKind::Reference`] index row per entry inside the goal
 /// write's own transaction (docs/concepts.md). No relation is
 /// named and no kind is chosen: the declaration is the whole statement.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalTopologyWrite {
-    assignment: Option<GoalAssignmentTarget>,
+    motivated_by: Vec<GoalMotivationRef>,
     dependencies: Vec<GoalDependencyRef>,
     evidence: Vec<GoalEvidenceRef>,
 }
 
 impl GoalTopologyWrite {
-    /// Declare an optional assignment and any dependencies or evidence.
-    /// An unassigned Goal belongs to its Owner alone; both reference lists
+    /// Declare optional Perspective motivations and any dependencies or evidence.
+    /// An unmotivated Goal belongs to its Owner alone; both reference lists
     /// may be empty.
     ///
     /// # Errors
     ///
     /// Returns `InvalidArgument` when dependency or evidence refs contain duplicates.
     pub fn new(
-        assignment: Option<GoalAssignmentTarget>,
+        motivated_by: Vec<GoalMotivationRef>,
         dependencies: Vec<GoalDependencyRef>,
         evidence: Vec<GoalEvidenceRef>,
     ) -> Result<Self, ProtocolError> {
+        let mut normalized_motivated_by = Vec::with_capacity(motivated_by.len());
+        for motivation in motivated_by {
+            if !normalized_motivated_by.contains(&motivation) {
+                normalized_motivated_by.push(motivation);
+            }
+        }
         let mut dependency_set = std::collections::BTreeSet::new();
         for dependency in &dependencies {
             if !dependency_set.insert(dependency.goal_id()) {
@@ -423,15 +430,15 @@ impl GoalTopologyWrite {
             }
         }
         Ok(Self {
-            assignment,
+            motivated_by: normalized_motivated_by,
             dependencies,
             evidence,
         })
     }
 
     #[must_use]
-    pub const fn assignment(&self) -> Option<GoalAssignmentTarget> {
-        self.assignment
+    pub fn motivated_by(&self) -> &[GoalMotivationRef] {
+        &self.motivated_by
     }
 
     #[must_use]
@@ -531,7 +538,7 @@ impl<P> GoalCreateRequest<P> {
     /// for the signed-in owner. Use [`Self::with_authorship`] for
     /// system-originated goals.
     ///
-    /// The optional assignment names the Perspective the Goal inspires.
+    /// Optional motivations name exact Perspective versions that informed the Goal.
     /// Without one, the Goal belongs to its Owner alone.
     ///
     /// # Panics
@@ -541,7 +548,7 @@ impl<P> GoalCreateRequest<P> {
     #[must_use]
     pub fn product(
         owner: OwnerId,
-        assignment: Option<GoalAssignmentTarget>,
+        motivated_by: Vec<GoalMotivationRef>,
         request_id: IdempotencyKey,
         title: impl Into<String>,
         text: impl Into<String>,
@@ -549,7 +556,7 @@ impl<P> GoalCreateRequest<P> {
     ) -> Self {
         Self {
             owner,
-            topology: GoalTopologyWrite::new(assignment, Vec::new(), Vec::new())
+            topology: GoalTopologyWrite::new(motivated_by, Vec::new(), Vec::new())
                 .expect("empty topology is valid"),
             title: title.into(),
             text: text.into(),
@@ -614,7 +621,7 @@ pub struct CreateGoalAtomicRequest<'a> {
     pub write_act_t: Option<MemoryId>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TransitionGoalAtomicRequest<'a> {
     pub owner: OwnerId,
     pub prior_goal_id: GoalId,
@@ -624,7 +631,7 @@ pub struct TransitionGoalAtomicRequest<'a> {
     pub context: GoalAtomicContext<'a>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AchieveGoalAtomicRequest<'a> {
     pub owner: OwnerId,
     pub prior_goal_id: GoalId,
@@ -634,7 +641,7 @@ pub struct AchieveGoalAtomicRequest<'a> {
     pub evidence: Vec<GoalEvidenceRef>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModifyGoalAtomicRequest<'a> {
     pub owner: OwnerId,
     pub prior_goal_id: GoalId,
@@ -643,6 +650,7 @@ pub struct ModifyGoalAtomicRequest<'a> {
     pub request_id: IdempotencyKey,
     pub context: GoalAtomicContext<'a>,
     pub evidence: Option<Vec<GoalEvidenceRef>>,
+    pub motivated_by: Option<Vec<GoalMotivationRef>>,
 }
 
 #[derive(Debug)]

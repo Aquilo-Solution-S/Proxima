@@ -1,6 +1,6 @@
 use proxiima::spiice::{GoalPayload, PayloadKeyBuilder};
 use proxiima::{
-    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalPayloadWrite, IdempotencyKey,
+    GoalAuthorship, GoalCreateRequest, GoalMotivationRef, GoalPayloadWrite, IdempotencyKey,
     MemoryId, OwnerId, SystemOrigin,
 };
 use proxiima_core::{ToolId, UserId};
@@ -37,7 +37,7 @@ fn facade_reexports_typed_goalwrite_surface_for_embedded_hosts() {
 
     let request = GoalCreateRequest::product(
         owner,
-        Some(GoalAssignmentTarget::perspective(target_self)),
+        vec![GoalMotivationRef::perspective(target_self)],
         IdempotencyKey::new("product:daily-practice").expect("stable product request id is valid"),
         "First goal",
         "Practice daily",
@@ -47,8 +47,8 @@ fn facade_reexports_typed_goalwrite_surface_for_embedded_hosts() {
     );
     assert_eq!(request.owner, owner);
     assert_eq!(
-        request.topology.assignment(),
-        Some(GoalAssignmentTarget::perspective(target_self))
+        request.topology.motivated_by(),
+        &[GoalMotivationRef::perspective(target_self)]
     );
 
     let system_request = request.with_authorship(GoalAuthorship::System(SystemOrigin::Tool {

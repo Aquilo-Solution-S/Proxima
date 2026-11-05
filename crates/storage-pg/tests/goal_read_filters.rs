@@ -98,7 +98,8 @@ async fn goal(
             state,
             request_id: Uuid::now_v7().to_string(),
             close_fact_t,
-            assignment_t: None,
+
+            motivated_by: Vec::new(),
             dependency_t: Vec::new(),
             evidence_t: Vec::new(),
             mint_write_act: false,

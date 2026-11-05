@@ -31,7 +31,9 @@ const OUTPUT_SCHEMA_URL: &str = "https://proxiima.test/core-fact-output.json";
 /// `core_forget` for its own `core_restore`, after trimming both tools' prose;
 /// 41,267 when an unanswered store became `{store, why}` (#523); 43,586 when
 /// retention added `core_retention` and `core_set_retention`, prose trimmed.
-const TOOLS_LIST_BUDGET: usize = 44_000;
+/// Goal collaboration adds six actions, typed access/use vocabularies and
+/// `core_fork`; their descriptions are compacted before this bounded increase.
+const TOOLS_LIST_BUDGET: usize = 47_000;
 
 #[test]
 fn an_explicit_object_root_constrains_every_union_branch() {
@@ -392,6 +394,14 @@ async fn assert_union_reply_matches_schema(
         json!({ "query": "observation", "mode": "lexical" }),
     )
     .await?;
+    assert!(
+        found.get("error").is_none(),
+        "core_search_memories raw MCP reply: {found}"
+    );
+    assert!(
+        found["result"]["structuredContent"].is_object(),
+        "core_search_memories missing structuredContent: {found}"
+    );
     assert_reply_matches_listed_schema(
         listed,
         "core_search_memories",

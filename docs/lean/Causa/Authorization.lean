@@ -7,18 +7,19 @@ how high one may READ and how high one may WRITE. Read and write are
 independent, so an `Ingest` owner role (write Facts only) never widens into a
 general editor.
 
-Each entity has a SINGLE owning Group. There is no `is_home`/`reaches`/
-`entity_owner` share layer (removed with the share set, D11): a read-only share
-is just a viewer-role membership in that one group, and sharing beyond that is
-an owner-to-owner TRANSFER of the entity into another group. The host resolves
-the DATA — who populates each group at what role — ONCE; the kernel fixes only
-the RULE (read/write = the role's ceiling over the kind). There is no
-universal-read owner: ordinary access follows the owning group's membership. A
-verified forwarding request instead carries one registered owner and one
-non-managing policy role, without changing the authenticated requester or the
-stored membership map. No
-grant or visibility flag lives on the entity (invariant #5); the retired
-owner-space `AccessGrant` / `MemoryAction` layer is gone.
+Each entity has a SINGLE owning Group for the owner-scoped lane. There is no
+`is_home`/`reaches`/`entity_owner` share layer in that lane: a read-only owner
+share is a viewer-role membership in the owning group, and owner-to-owner
+sharing is a TRANSFER. The host resolves the DATA — who populates each group
+at what role — ONCE; the kernel fixes only the RULE (read/write = the role's
+ceiling over the kind). There is no universal-read owner in this lane.
+
+Goal collaboration is a separate, narrow exact-version route. A Goal
+publication or work grant does not become an Owner role, does not add an owner
+to a requester's OwnerScope, and does not replace owner transfer, membership,
+erase, or forwarding authority. The predicates for that route live in
+`Causa.EdgeAuthorization`; the owner laws below remain literal owner-scope
+laws. The retired owner-space `AccessGrant` / `MemoryAction` layer is gone.
 -/
 
 import Causa.Prelude

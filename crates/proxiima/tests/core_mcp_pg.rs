@@ -45,6 +45,9 @@ mod goal_evidence_kinds;
 #[path = "core_mcp_pg/goal_tree.rs"]
 mod goal_tree;
 
+#[path = "core_mcp_pg/goal_collaboration.rs"]
+mod goal_collaboration;
+
 #[path = "core_mcp_pg/unassigned_goals.rs"]
 mod unassigned_goals;
 
@@ -1695,7 +1698,7 @@ async fn facade_core_recall_returns_cue_packet_and_rejects_empty_cue() {
                 "text": "Pursue the interpretation",
                 "body": {},
                 "evidence": [abstraction],
-                "target_perspective": perspective,
+                "motivated_by": [perspective],
                 "idempotency_key": "facade-core-recall-goal"
             }),
         )
@@ -2428,7 +2431,7 @@ async fn facade_core_episode_commit_bound_replay_fails() {
                 "text": "same goal text",
                 "body": {},
                 "evidence": ["derive"],
-                "target_perspective": "stance:0",
+                "motivated_by": ["stance:0"],
                 "idempotency_key": "episode-replay-goal"
             }]
         });

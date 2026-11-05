@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use proxiima_core::MemoryKind;
 use proxiima_core::publication::{
     PublicationExtensions, PublicationLimits, PublicationSource, PublicationStamp,
 };
@@ -13,14 +12,15 @@ use proxiima_core::storage_ports::{FactIngestPort, GoalWritePort, OwnerWritePerm
 use proxiima_core::verbs::fact_ingest::FactWriteCommand;
 use proxiima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDependencyRef, GoalDraft,
-    GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalTransitionKind,
+    GoalAtomicContext, GoalAuthorship, GoalDependencyRef, GoalDraft, GoalEvidenceRef,
+    GoalMotivationRef, GoalPayloadWrite, GoalState, GoalTopologyWrite, GoalTransitionKind,
     GoalWriteOutcome, IdempotencyKey, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
 };
 use proxiima_core::{
     AccessKind, EdgeEndpoint, EntityKind, GoalId, MemoryId, OwnerId, PendingWork, SchemaId,
     SchemaVersion, SpiiceRegistry, SpiiceRegistryFrozen, StorageError, UserId,
 };
+use proxiima_core::{GoalEditPermit, MemoryKind};
 use proxiima_pg_testkit::{db_url, drop_db};
 use proxiima_storage_pg::PgStorage;
 use proxiima_storage_pg::test_fixtures::create_core_db;
@@ -137,7 +137,7 @@ impl Tree {
 
     fn topology(&self, dependencies: &[GoalId], evidence: bool) -> GoalTopologyWrite {
         GoalTopologyWrite::new(
-            Some(GoalAssignmentTarget::perspective(self.perspective)),
+            vec![GoalMotivationRef::perspective(self.perspective)],
             dependencies
                 .iter()
                 .copied()
@@ -223,7 +223,7 @@ impl Tree {
                     request_id: key(request),
                     context: self.context(),
                 },
-                &self.permit,
+                GoalEditPermit::Owner(&self.permit),
             )
             .await?;
         Ok(outcome.goal_id)
@@ -245,6 +245,7 @@ impl Tree {
             .pg
             .modify_goal_atomic(
                 &ModifyGoalAtomicRequest {
+                    motivated_by: None,
                     owner: self.owner,
                     prior_goal_id: prior,
                     replacement: payload(request),
@@ -253,7 +254,7 @@ impl Tree {
                     context: self.context(),
                     evidence: None,
                 },
-                &self.permit,
+                GoalEditPermit::Owner(&self.permit),
             )
             .await?;
         Ok(outcome.goal_id)
@@ -274,7 +275,7 @@ impl Tree {
                     context: self.context(),
                     evidence: vec![GoalEvidenceRef::new(self.fact)],
                 },
-                &self.permit,
+                GoalEditPermit::Owner(&self.permit),
             )
             .await
     }
@@ -294,7 +295,7 @@ impl Tree {
                     request_id: key(request),
                     context: self.context(),
                 },
-                &self.permit,
+                GoalEditPermit::Owner(&self.permit),
             )
             .await
     }
@@ -314,7 +315,7 @@ impl Tree {
                     request_id: key(request),
                     context: self.context(),
                 },
-                &self.permit,
+                GoalEditPermit::Owner(&self.permit),
             )
             .await
     }

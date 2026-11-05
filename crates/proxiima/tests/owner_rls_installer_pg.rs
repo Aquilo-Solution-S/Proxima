@@ -946,6 +946,16 @@ async fn empty_sql_run_replaces_an_owner_only_follows_policy() {
     .execute(&mut *transaction)
     .await
     .expect("the spiice installs the owner-only class");
+    // The current installer also admits exact Goal publications. Reproduce
+    // the historical owner-only read policy this upgrade is intended to repair.
+    sqlx::query(
+        "ALTER POLICY proxiima_owner_read ON proxiima_example.stamp_v1
+         USING (owner_id = ANY(COALESCE(
+             NULLIF(current_setting('app.owner', true), '')::uuid[], '{}'::uuid[])))",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("restore the historical owner-only read predicate");
     transaction.commit().await.expect("commit");
     drop(connection);
 

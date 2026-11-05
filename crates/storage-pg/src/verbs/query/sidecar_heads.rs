@@ -26,24 +26,44 @@ pub(crate) async fn sidecar_heads_by_key_on_connection(
         .collect::<Result<Vec<_>, _>>()?;
 
     // SQL-POLICY: QueryBuilder-bound-values
-    let mut sql = QueryBuilder::<Postgres>::new("SELECT m.t");
-    for column in &columns {
-        // SQL-POLICY: PgIdent — every column comes from the frozen contract.
-        sql.push(", s.").push(column.as_str());
-    }
-    // SQL-POLICY: PgIdent — table and memory key come from the frozen contract.
-    sql.push(" FROM ").push(table.as_str());
-    sql.push(" s JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (head listing excludes forgotten admissions) */ ON m.t = s.");
-    // SQL-POLICY: PgIdent
-    sql.push(memory_key.as_str());
-    sql.push(" JOIN proxiima_core.memory_head h ON h.handle = m.handle AND h.t = m.t WHERE m.forgotten_at IS NULL AND m.owner_id = ANY(");
+    let mut sql = QueryBuilder::<Postgres>::new(
+        "WITH goal_visible AS MATERIALIZED (
+             SELECT DISTINCT ON (memory_handle) memory_t, memory_handle, owner_id
+               FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($1::uuid[])
+              ORDER BY memory_handle, memory_t DESC
+         ), candidates AS (
+             SELECT m.t, m.handle, m.owner_id
+               FROM proxiima_core.memory m
+               JOIN proxiima_core.memory_head h ON h.handle = m.handle AND h.t = m.t
+              WHERE m.forgotten_at IS NULL AND m.owner_id = ANY(",
+    );
     sql.push_bind(
         read_owners
             .iter()
             .map(|owner| owner.into_inner())
             .collect::<Vec<_>>(),
     );
-    sql.push("::uuid[]) AND m.schema_id = ");
+    sql.push(
+        "::uuid[]) UNION ALL SELECT v.memory_t, v.memory_handle, v.owner_id FROM goal_visible v",
+    );
+    // SQL-POLICY: fixed-fragment — fixed latest-visible projection.
+    sql.push(
+        "), visible AS (
+             SELECT DISTINCT ON (handle) t, handle, owner_id
+               FROM candidates
+              ORDER BY handle, t DESC
+         ) SELECT visible.t",
+    );
+    for column in &columns {
+        // SQL-POLICY: PgIdent — every column comes from the frozen contract.
+        sql.push(", s.").push(column.as_str());
+    }
+    // SQL-POLICY: PgIdent — table and memory key come from the frozen contract.
+    sql.push(" FROM ").push(table.as_str());
+    sql.push(" s JOIN visible ON visible.t = s.");
+    // SQL-POLICY: PgIdent
+    sql.push(memory_key.as_str());
+    sql.push(" JOIN proxiima_core.memory m ON m.t = visible.t WHERE m.schema_id = ");
     sql.push_bind(query.schema_id().as_str());
     sql.push(" AND m.kind = 'fact'");
     for (column, value) in columns.iter().zip(query.key_prefix()) {

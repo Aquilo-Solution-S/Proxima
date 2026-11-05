@@ -3,6 +3,7 @@ use super::{GoalId, GoalState, MemoryId, SchemaId, SchemaVersion};
 #[derive(Debug)]
 pub(super) struct InsertedGoal {
     pub(super) goal_id: GoalId,
+    pub(super) handle: uuid::Uuid,
     pub(super) idempotent_replay: bool,
 }
 
@@ -15,7 +16,7 @@ pub(super) struct StoredGoal {
     pub(super) text: Option<String>,
     pub(super) payload: Vec<u8>,
     pub(super) state: GoalState,
-    pub(super) assignment: Option<MemoryId>,
+    pub(super) motivated_by: Vec<MemoryId>,
     pub(super) dependencies: Vec<GoalId>,
 }
 

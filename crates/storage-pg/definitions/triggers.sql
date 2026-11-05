@@ -67,6 +67,12 @@ CREATE OR REPLACE TRIGGER erased_pin_target_insert_guard BEFORE INSERT ON proxii
 
 
 -- goal
+CREATE OR REPLACE TRIGGER goal_motivation_index_sync
+    AFTER INSERT ON proxiima_core.goal
+    FOR EACH ROW EXECUTE FUNCTION proxiima_core.sync_goal_motivation_index();
+CREATE OR REPLACE TRIGGER goal_motivation_index_sync_update
+    AFTER UPDATE OF motivated_by ON proxiima_core.goal
+    FOR EACH ROW EXECUTE FUNCTION proxiima_core.sync_goal_motivation_index();
 CREATE OR REPLACE TRIGGER goal_append_only BEFORE UPDATE ON proxiima_core.goal FOR EACH ROW EXECUTE FUNCTION proxiima_core.enforce_row_append_only();
 CREATE OR REPLACE TRIGGER goal_erased_pin_target BEFORE DELETE ON proxiima_core.goal FOR EACH ROW EXECUTE FUNCTION proxiima_core.goal_erase_witness();
 CREATE OR REPLACE TRIGGER goal_no_later_after_terminal BEFORE INSERT ON proxiima_core.goal FOR EACH ROW EXECUTE FUNCTION proxiima_core.goal_no_later_after_terminal();

@@ -106,17 +106,25 @@ impl Engine {
         req: &SearchReadRequest,
     ) -> Result<SearchReadResponse, ProtocolError> {
         validate_search_request(&req.search)?;
-        let owner = crate::stage_timing::timed(
-            "search_authorization",
-            self.authorize_owner_read(authz, &req.search.owner, AccessKind::Fact),
-        )
-        .await?;
+        let owners = match req.search.scope {
+            crate::verbs::query::MemorySearchScope::Readable => {
+                self.authorize_row_read(authz).await?
+            }
+            crate::verbs::query::MemorySearchScope::Owner(owner) => {
+                let owner = crate::stage_timing::timed(
+                    "search_authorization",
+                    self.authorize_owner_read(authz, &owner, AccessKind::Fact),
+                )
+                .await?;
+                vec![owner]
+            }
+        };
         search_authorized(
             &self.storage.read_verb,
             self.registry.search_projections(),
             &self.memory_schema_specs(),
             authz.owner_scope(),
-            std::slice::from_ref(&owner),
+            &owners,
             req,
         )
         .await
@@ -138,7 +146,7 @@ impl Engine {
         // Home, visibility, and the row are one owner-scoped inspect.
         // Absent and invisible are both "not returned" — do not probe
         // `home_owner` / `visible_to_any` first.
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         let schemas = self.memory_schema_specs();
         get_memory_authorized(
             &self.storage.read_verb,
@@ -164,7 +172,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &GetMemoriesReadRequest,
     ) -> Result<GetMemoriesReadResponse, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         if read_owners.is_empty() {
             return Ok(GetMemoriesReadResponse {
                 memories: Vec::new(),
@@ -191,7 +199,7 @@ impl Engine {
         authz: &AuthzContext,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<crate::read_models::MemorySketch>, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         if read_owners.is_empty() {
             return Ok(Vec::new());
         }
@@ -212,7 +220,7 @@ impl Engine {
     /// `Forbidden` when the context authorizes no reads (a denied context
     /// authorizes nothing); `Internal` on storage.
     pub async fn memory_counts(&self, authz: &AuthzContext) -> Result<MemoryCounts, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         if read_owners.is_empty() {
             return Ok(MemoryCounts::default());
         }
@@ -235,7 +243,7 @@ impl Engine {
         authz: &AuthzContext,
         memory_ids: &[MemoryId],
     ) -> Result<Vec<crate::PinNode>, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         if read_owners.is_empty() {
             return Ok(Vec::new());
         }
@@ -257,7 +265,7 @@ impl Engine {
         authz: &AuthzContext,
         query: crate::storage_ports::InboundPinQuery<'_>,
     ) -> Result<Vec<crate::PinNode>, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         if read_owners.is_empty() {
             return Ok(Vec::new());
         }
@@ -336,7 +344,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &FactCitationReadRequest,
     ) -> Result<Option<FactCitationReadback>, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         if read_owners.is_empty() {
             return Err(ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE));
         }
@@ -381,7 +389,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &FactsCitingObjectReadRequest,
     ) -> Result<crate::verbs::query::FactCitationPage, ProtocolError> {
-        let read_owners = self.authorize_read(authz).await?;
+        let read_owners = self.authorize_row_read(authz).await?;
         if read_owners.is_empty() {
             return Ok(crate::verbs::query::FactCitationPage {
                 facts: Vec::new(),
@@ -822,7 +830,7 @@ mod tests {
     fn search_req(owner: &OwnerId) -> SearchReadRequest {
         SearchReadRequest {
             search: MemorySearchRequest {
-                owner: *owner,
+                scope: crate::verbs::query::MemorySearchScope::Owner(*owner),
                 read_owners: vec![*owner],
                 query: "needle".into(),
                 mode: SearchMode::Lexical,

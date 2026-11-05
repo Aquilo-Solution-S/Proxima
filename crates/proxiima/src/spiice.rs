@@ -35,6 +35,10 @@ pub use proxiima_core::engine::{
 };
 pub use proxiima_core::engine::{UploadCompleted, UploadCompletionExpectation};
 pub use proxiima_core::error::{ErrorCode, ProtocolError};
+pub use proxiima_core::goal_collaboration::{
+    ForkMemoryOutcome, ForkMemoryRequest, GoalAudienceGrantInput, GoalHandle, GoalPublicationInput,
+    GoalWorkBindingInput, MemoryDestination, PublicationUse,
+};
 /// Explicitly select the deployment's lexical configuration for a memory write.
 pub use proxiima_core::lexical_language::LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT;
 /// Transport-neutral tool metadata.
@@ -93,8 +97,8 @@ pub use proxiima_core::verbs::fact_ingest::{
     FactWriteCommand, IngestReceipt, InlineCitedObjectDraft,
 };
 pub use proxiima_core::verbs::goal_write::{
-    ChildGoalDraft, DecomposeGoalOutcome, GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest,
-    GoalDependencyRef, GoalEvidenceRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
+    ChildGoalDraft, DecomposeGoalOutcome, GoalAuthorship, GoalCreateRequest, GoalDependencyRef,
+    GoalEvidenceRef, GoalMotivationRef, GoalPayloadWrite, GoalState, GoalTopologyWrite,
     GoalWriteBuildError, GoalWriteOutcome, IdempotencyKey, OperatorKind, SystemOrigin,
 };
 /// Spiice-scoped erase ([`UnitOfWork::erase_own_series`]): the selection,
@@ -105,8 +109,9 @@ pub use proxiima_core::verbs::own_erase::{
     SeriesEraseReceipt, SeriesEraseRefusal, SeriesEraseRefusalKind, SeriesSelection,
 };
 pub use proxiima_core::verbs::query::{
-    GoalRow, MAX_SIDECAR_HEAD_PAGE_LIMIT, QueryRequest, QueryResponse, SearchMode, SidecarAtom,
-    SidecarHead, SidecarHeadsPage, SidecarHeadsRequest, SidecarHeadsScope, SupersessionStatus,
+    GoalRow, MAX_SIDECAR_HEAD_PAGE_LIMIT, MemorySearchScope, QueryRequest, QueryResponse,
+    SearchMode, SidecarAtom, SidecarHead, SidecarHeadsPage, SidecarHeadsRequest, SidecarHeadsScope,
+    SupersessionStatus,
 };
 pub use proxiima_core::verbs::schema::PayloadKind;
 /// [`FactTombstone`] is the return type of [`FactPayload::tombstone`], so a
@@ -144,7 +149,7 @@ pub use proxiima_core::{
 /// observers get one read decision per owner gated.
 pub use proxiima_core::{
     AuthorizationHook, AuthzInput, AuthzOperation, AuthzOutcome, AuthzVeto, EntityId,
-    MembershipChange, OwnerResolver,
+    GoalCollaborationChange, MembershipChange, OwnerResolver,
 };
 /// Typed derived-memory writes. `DerivedMemory` infers kind/schema from its payload;
 /// `Engine::derive_memory` resolves actual origin kinds and validates provenance.
@@ -227,8 +232,8 @@ pub use proxiima_storage_pg::pg_sidecar;
 pub use proxiima_storage_pg::projection::{Artifact, ProjectionArtifacts, projection_artifacts};
 pub use proxiima_storage_pg::search_candidates::candidate_artifacts as search_candidate_artifacts;
 pub use proxiima_storage_pg::sidecars::{
-    PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar, PgRetiredFactSidecar,
-    PgSidecarFuture, PgSidecarReadCtx, SidecarInsertPermit, SidecarOwnerMode,
+    ForkPolicy, PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar,
+    PgRetiredFactSidecar, PgSidecarFuture, PgSidecarReadCtx, SidecarInsertPermit, SidecarOwnerMode,
 };
 pub use proxiima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, register_core_pg_sidecars,

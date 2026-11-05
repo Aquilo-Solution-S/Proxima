@@ -17,6 +17,7 @@ use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
 use crate::error::{internal, map_err};
 use crate::sidecars::{PgSidecarKey, PgSidecarRegistryFrozen};
+pub(crate) mod authority;
 mod children;
 mod commands;
 mod edges;

@@ -2226,7 +2226,7 @@ impl VectorIndex for RendezvousIndex {
 
     async fn nearest(
         &self,
-        owners: &[OwnerId],
+        filter: &proxiima_core::storage_ports::VectorCandidateFilter,
         query: &proxiima_core::SpaceVector,
         window: u32,
     ) -> Result<Vec<proxiima_core::storage_ports::VectorCandidate>, proxiima_core::StorageError>
@@ -2238,7 +2238,7 @@ impl VectorIndex for RendezvousIndex {
                     proxiima_core::StorageError::Internal("the other lane never arrived".to_owned())
                 })?;
         }
-        self.inner.nearest(owners, query, window).await
+        self.inner.nearest(filter, query, window).await
     }
 
     async fn entries(

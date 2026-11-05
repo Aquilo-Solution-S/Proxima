@@ -6,14 +6,16 @@ use std::num::NonZeroU64;
 use proxiima_core::storage_ports::{
     CitedBlobIntegrityMismatch, CitedBlobReadError, CitedBlobReadPort, VerifiedCitedBlob,
 };
-use proxiima_core::{AuthzContext, OwnerId};
+use proxiima_core::{AuthzContext, GoalHandle, MemoryId, OwnerId};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 use super::CitedBlobStore;
 use super::guards::ensure_owner_access;
-use super::rows::{BlobReadRecord, load_blob_read_record_on_connection};
+use super::rows::{
+    BlobReadRecord, load_blob_read_record_on_connection, load_goal_blob_read_record_on_connection,
+};
 use proxiima_storage_pg::begin_owner_transaction;
 
 fn within_ceiling(byte_len: u64, max_bytes: NonZeroU64) -> Result<(), CitedBlobReadError> {
@@ -114,6 +116,42 @@ async fn verify_body(
     Ok(bytes)
 }
 
+async fn collect_record_bytes(
+    store: &CitedBlobStore,
+    row: &BlobReadRecord,
+    max_bytes: NonZeroU64,
+) -> Result<Vec<u8>, CitedBlobReadError> {
+    if !canonical_for_store(store, row) {
+        return Err(CitedBlobReadError::NotFound);
+    }
+    within_ceiling(row.byte_len, max_bytes)?;
+    let object = store
+        .client()
+        .get_object()
+        .bucket(&row.bucket)
+        .key(&row.object_key)
+        .send()
+        .await
+        .map_err(|err| {
+            if err
+                .as_service_error()
+                .is_some_and(aws_sdk_s3::operation::get_object::GetObjectError::is_no_such_key)
+            {
+                CitedBlobReadError::NotFound
+            } else {
+                CitedBlobReadError::Unavailable(format!("read cited blob: {err}"))
+            }
+        })?;
+    if let Some(content_length) = object.content_length()
+        && u64::try_from(content_length).ok() != Some(row.byte_len)
+    {
+        return Err(CitedBlobReadError::IntegrityMismatch(
+            CitedBlobIntegrityMismatch::ByteLength,
+        ));
+    }
+    verify_body(object.body, row, max_bytes).await
+}
+
 #[async_trait::async_trait]
 impl CitedBlobReadPort for CitedBlobStore {
     async fn collect_verified(
@@ -140,38 +178,51 @@ impl CitedBlobReadPort for CitedBlobStore {
         tx.commit()
             .await
             .map_err(|err| CitedBlobReadError::Unavailable(err.to_string()))?;
-        if !canonical_for_store(self, &row) {
-            return Err(CitedBlobReadError::NotFound);
-        }
         // Reject from immutable metadata before constructing the S3 client or
         // issuing GET. The stream repeats this bound against the actual bytes.
-        within_ceiling(row.byte_len, max_bytes)?;
+        let bytes = collect_record_bytes(self, &row, max_bytes).await?;
 
-        let object =
-            self.client()
-                .get_object()
-                .bucket(&row.bucket)
-                .key(&row.object_key)
-                .send()
-                .await
-                .map_err(|err| {
-                    if err.as_service_error().is_some_and(
-                        aws_sdk_s3::operation::get_object::GetObjectError::is_no_such_key,
-                    ) {
-                        CitedBlobReadError::NotFound
-                    } else {
-                        CitedBlobReadError::Unavailable(format!("read cited blob: {err}"))
-                    }
-                })?;
-        if let Some(content_length) = object.content_length()
-            && u64::try_from(content_length).ok() != Some(row.byte_len)
-        {
-            return Err(CitedBlobReadError::IntegrityMismatch(
-                CitedBlobIntegrityMismatch::ByteLength,
-            ));
-        }
-        let bytes = verify_body(object.body, &row, max_bytes).await?;
+        Ok(VerifiedCitedBlob {
+            cited_object_id: row.cited_object_id,
+            content_hash: row.content_hash,
+            sha256: row.sha256,
+            byte_len: row.byte_len,
+            mime: row.mime,
+            filename: row.filename,
+            bytes,
+        })
+    }
 
+    async fn collect_verified_for_goal(
+        &self,
+        authz: &AuthzContext,
+        owner: OwnerId,
+        goal: GoalHandle,
+        fact_memory: MemoryId,
+        cited_object_id: Uuid,
+        max_bytes: NonZeroU64,
+    ) -> Result<VerifiedCitedBlob, CitedBlobReadError> {
+        let owner_scope = authz
+            .owner_scope()
+            .filter(|scope| scope.goal_principal().is_some())
+            .ok_or(CitedBlobReadError::AccessDenied)?;
+        let mut tx = begin_owner_transaction(&self.pool, owner_scope)
+            .await
+            .map_err(|err| CitedBlobReadError::Unavailable(err.to_string()))?;
+        let row = load_goal_blob_read_record_on_connection(
+            tx.as_mut(),
+            &owner,
+            goal,
+            fact_memory,
+            cited_object_id,
+        )
+        .await
+        .map_err(|err| CitedBlobReadError::Unavailable(err.to_string()))?
+        .ok_or(CitedBlobReadError::NotFound)?;
+        tx.commit()
+            .await
+            .map_err(|err| CitedBlobReadError::Unavailable(err.to_string()))?;
+        let bytes = collect_record_bytes(self, &row, max_bytes).await?;
         Ok(VerifiedCitedBlob {
             cited_object_id: row.cited_object_id,
             content_hash: row.content_hash,

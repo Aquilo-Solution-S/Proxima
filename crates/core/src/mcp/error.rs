@@ -99,7 +99,7 @@ impl McpToolError {
                 crate::StorageError::NotFound | crate::StorageError::ScopeMissing { .. } => {
                     McpToolErrorKind::NotFound
                 }
-                crate::StorageError::MembershipForbidden(_)
+                crate::StorageError::Forbidden(_)
                 | crate::StorageError::Conflict(_)
                 | crate::StorageError::Suppressed(_)
                 | crate::StorageError::IdempotencyConflict { .. }

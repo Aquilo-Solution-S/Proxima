@@ -40,6 +40,7 @@ theorem principle_3c_causal_closure_is_perspectival :
     ∀ (g : Goal),
       goalDeclaredTargetIds g =
         (goal_assignment g).toList ++ goal_dependencies g ++ goal_evidence g ++
+          goal_motivated_by g ++
           (goal_close_fact_t g).toList ++ (goal_write_act_t g).toList :=
   goal_declared_rows_are_references
 
@@ -123,7 +124,10 @@ theorem principle_8b_long_term_knowledge_artifact_has_text_memory :
 
 /-- P9 — the pin set IS node content. No Edge table to rebuild. -/
 theorem principle_9_index_is_a_function_of_node_content :
-    ∀ m : Memory, derivePins m = (memory_origins m, memory_refs m, memory_goal_refs m) :=
+    ∀ m : Memory,
+      derivePins m =
+        (memory_origins m, memory_refs m ++ (memory_forked_from m).toList,
+          memory_goal_refs m, memory_guided_by m) :=
   derived_table_rebuildable
 
 /-- H2 — shared payload does not collapse admission identity. -/

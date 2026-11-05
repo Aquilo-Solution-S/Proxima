@@ -67,7 +67,7 @@ fn test_semantic(vector: Vec<f32>) -> proxiima_core::SpaceVector {
 
 fn search_req(owner: OwnerId, query: &str) -> MemorySearchRequest {
     MemorySearchRequest {
-        owner,
+        scope: proxiima_core::verbs::query::MemorySearchScope::Owner(owner),
         read_owners: vec![owner],
         query: query.into(),
         mode: SearchMode::Lexical,
@@ -1128,7 +1128,7 @@ async fn semantic_scan_binds_a_typed_query_vector_under_a_generic_plan() {
         let (parameter_types, generic_plans): (Vec<String>, i64) = sqlx::query_as(
             "SELECT parameter_types::text[], generic_plans
                FROM pg_prepared_statements
-              WHERE statement LIKE '%proxiima_core.vector_candidates_d1024($1, $2, $3, $4)%'
+              WHERE statement LIKE '%proxiima_core.vector_candidates_d1024($1, $2, $3, $4, $5)%'
                 AND statement NOT LIKE '%pg_prepared_statements%'",
         )
         .fetch_one(&runtime_pool)

@@ -31,11 +31,25 @@ pub(crate) async fn count_memories_on_connection(
     let mut counts = MemoryCounts::default();
 
     let heads: Vec<(PgMemoryKind, i64)> = sqlx::query_as(
-        "SELECT kind, count(*)::bigint
-           FROM proxiima_core.memory_head h
-          WHERE h.owner_id = ANY($1::uuid[])
-            AND EXISTS (SELECT 1 FROM proxiima_core.memory m WHERE m.t = h.t)
-          GROUP BY kind",
+        "WITH goal_visible AS MATERIALIZED (
+             SELECT DISTINCT ON (memory_handle) memory_t, memory_handle, owner_id
+               FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($1::uuid[])
+              ORDER BY memory_handle, memory_t DESC
+         ), candidates AS (
+             SELECT h.handle, h.t, h.kind
+               FROM proxiima_core.memory_head h
+               JOIN proxiima_core.memory m ON m.t = h.t
+              WHERE h.owner_id = ANY($1::uuid[])
+             UNION ALL
+             SELECT v.memory_handle, v.memory_t, m.kind
+               FROM goal_visible v
+               JOIN proxiima_core.memory m ON m.t = v.memory_t
+         ), latest AS (
+             SELECT DISTINCT ON (handle) handle, kind
+               FROM candidates
+              ORDER BY handle, t DESC
+         )
+         SELECT kind, count(*)::bigint FROM latest GROUP BY kind",
     )
     .bind(&owner_ids)
     .fetch_all(&mut *connection)
@@ -46,9 +60,19 @@ pub(crate) async fn count_memories_on_connection(
     }
 
     let goals: i64 = sqlx::query_scalar(
-        "SELECT count(*)::bigint
-           FROM proxiima_core.goal_head
-          WHERE owner_id = ANY($1::uuid[])",
+        "WITH candidates AS (
+             SELECT handle FROM proxiima_core.goal_head
+              WHERE owner_id = ANY($1::uuid[])
+             UNION
+             SELECT h.handle
+               FROM proxiima_core.goal_head h
+               JOIN proxiima_core.goal_access_grant a
+                 ON a.goal_handle = h.handle
+                AND a.controller_generation = h.authority_generation
+              WHERE h.owner_id=ANY($1::uuid[]) AND a.subject_id = NULLIF(current_setting('app.goal_subject', true), '')::uuid
+                AND a.read_ceiling >= 4
+                AND (a.expires_at IS NULL OR a.expires_at > statement_timestamp())
+         ) SELECT count(*)::bigint FROM candidates",
     )
     .bind(&owner_ids)
     .fetch_one(&mut *connection)

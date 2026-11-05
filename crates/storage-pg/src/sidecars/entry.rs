@@ -51,6 +51,7 @@ pub struct PgSidecarEntry {
     /// and export can find owner-pinned tables without knowing which payload
     /// types they belong to, and so freeze can cross-check Follows.
     pub owner: super::SidecarOwnerMode,
+    pub fork: super::ForkPolicy,
     /// See [`super::PgMemoryPayload::MEMORY_KEY_COLUMN`]. `None` for a Goal
     /// registration, which hangs off no memory.
     ///

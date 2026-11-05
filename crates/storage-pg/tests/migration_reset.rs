@@ -62,6 +62,33 @@ fn declared_names(source: &str, keyword: &str) -> BTreeMap<String, usize> {
     names
 }
 
+fn declared_goal_reader_tables(source: &str) -> BTreeSet<String> {
+    let mut grant = String::new();
+    let mut tables = BTreeSet::new();
+    for line in source.lines().map(str::trim) {
+        if grant.is_empty() && line.starts_with("GRANT SELECT ON ") {
+            grant.push_str(line);
+        } else if !grant.is_empty() {
+            grant.push(' ');
+            grant.push_str(line);
+        }
+        if !grant.ends_with("TO proxiima_goal_reader;") {
+            continue;
+        }
+        let Some(list) = grant.strip_prefix("GRANT SELECT ON ") else {
+            grant.clear();
+            continue;
+        };
+        let list = list.trim_end_matches(" TO proxiima_goal_reader;");
+        tables.extend(
+            list.split(',')
+                .map(|table| table.trim().trim_start_matches("proxiima_core.").to_owned()),
+        );
+        grant.clear();
+    }
+    tables
+}
+
 async fn catalog_snapshot(pool: &sqlx::PgPool) -> Vec<String> {
     let functions: Vec<String> = sqlx::query_scalar(
         "SELECT format('%s|%s|%s|%s', p.proname,
@@ -367,6 +394,11 @@ async fn census(vectors: VectorStorage) {
                 let table = rest.split_whitespace().next()?;
                 Some((table.to_owned(), policy.to_owned()))
             }),
+    );
+    declared_policies.extend(
+        declared_goal_reader_tables(definitions::FUNCTIONS)
+            .into_iter()
+            .map(|table| (table, "proxiima_goal_reader".to_owned())),
     );
     let live_policies: BTreeSet<(String, String)> = sqlx::query_as(
         "SELECT c.relname, p.polname FROM pg_policy p

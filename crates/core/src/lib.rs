@@ -23,6 +23,7 @@ pub mod entity;
 pub mod env;
 pub mod error;
 pub mod goal;
+pub mod goal_collaboration;
 pub mod ids;
 pub mod lexical_language;
 pub mod llm;
@@ -120,7 +121,7 @@ pub use verbs::fact_ingest::{
     FactIngestOutcome, FactReceiptDraft, FactWriteCommand, IngestReceipt, OCCURRED_AT_FUTURE_BOUND,
 };
 pub use verbs::goal_write::{
-    GoalAssignmentTarget, GoalDependencyRef, GoalEvidenceRef, GoalTopologyWrite, IdempotencyKey,
+    GoalDependencyRef, GoalEvidenceRef, GoalMotivationRef, GoalTopologyWrite, IdempotencyKey,
 };
 pub use verbs::idempotency::{
     ContentFingerprint, KeyConflict, KeyScope, KeyVerdict, RequestKey, judge,
@@ -384,6 +385,12 @@ macro_rules! proxiima_spiice {
     };
 }
 
+pub use goal_collaboration::{
+    ForkCommandPermit, ForkDestinationPermit, ForkMemoryOutcome, ForkMemoryRequest,
+    GoalAudienceGrantInput, GoalCollaborationPort, GoalCommandPermit, GoalEditPermit, GoalHandle,
+    GoalPrincipalScope, GoalPublicationInput, GoalWorkBindingInput, GoalWorkPermit,
+    MemoryDestination, PublicationUse, RetainedPins, RevisionCopyPermit, RevisionPinSnapshot,
+};
 pub use storage_ports::{
     CitationPort, DelegatedAuthorityError, DelegatedAuthorityService, DelegatedCommand,
     DelegationId, DelegationIssued, DelegationRevocation, EMBEDDING_RECONCILE_DEFAULT_LIMIT,

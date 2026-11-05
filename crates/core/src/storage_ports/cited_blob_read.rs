@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
+use crate::GoalHandle;
 use crate::OwnerId;
 use crate::authz::DelegationRuntimeBinding;
 use crate::authz::{
@@ -81,6 +82,21 @@ pub trait CitedBlobReadPort: Send + Sync {
         cited_object_id: Uuid,
         max_bytes: NonZeroU64,
     ) -> Result<VerifiedCitedBlob, CitedBlobReadError>;
+
+    /// Collect one cited blob admitted through an exact Goal route. The
+    /// backend must re-check the route and the Fact/blob link under the same
+    /// owner-scoped transaction; this is not an owner-role conversion.
+    async fn collect_verified_for_goal(
+        &self,
+        _authz: &AuthzContext,
+        _owner: OwnerId,
+        _goal: GoalHandle,
+        _fact_memory: crate::MemoryId,
+        _cited_object_id: Uuid,
+        _max_bytes: NonZeroU64,
+    ) -> Result<VerifiedCitedBlob, CitedBlobReadError> {
+        Err(CitedBlobReadError::AccessDenied)
+    }
 }
 
 /// Shared verified-read handle published through the composed spiice services.
@@ -155,6 +171,51 @@ impl CitedBlobReadService {
             .map_err(|_| CitedBlobReadError::AccessDenied)?;
         self.port
             .collect_verified(operation.authz(), owner, cited_object_id, max_bytes)
+            .await
+    }
+
+    /// Collect a cited blob through an exact, currently visible Goal route.
+    /// The storage backend performs the atomic route, Fact, and blob checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CitedBlobReadError::AccessDenied`] when the authority is not
+    /// a bound Goal principal or the runtime binding does not match, and
+    /// otherwise forwards the backend's verified-read taxonomy.
+    pub async fn collect_verified_for_goal<A>(
+        &self,
+        authority: &A,
+        owner: OwnerId,
+        goal: GoalHandle,
+        fact_memory: crate::MemoryId,
+        cited_object_id: Uuid,
+        max_bytes: NonZeroU64,
+    ) -> Result<VerifiedCitedBlob, CitedBlobReadError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let operation = context_for_engine_operation(authority)
+            .map_err(|_| CitedBlobReadError::AccessDenied)?;
+        operation
+            .validate_runtime_binding(self.runtime_binding.as_ref())
+            .map_err(|_| CitedBlobReadError::AccessDenied)?;
+        if operation
+            .authz()
+            .owner_scope()
+            .and_then(|scope| scope.goal_principal())
+            .is_none()
+        {
+            return Err(CitedBlobReadError::AccessDenied);
+        }
+        self.port
+            .collect_verified_for_goal(
+                operation.authz(),
+                owner,
+                goal,
+                fact_memory,
+                cited_object_id,
+                max_bytes,
+            )
             .await
     }
 }

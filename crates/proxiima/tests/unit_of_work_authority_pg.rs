@@ -27,7 +27,7 @@ use proxiima::{
     Proxiima, ServedSurface,
 };
 use proxiima_core::verbs::goal_write::{
-    GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalEvidenceRef, GoalTopologyWrite,
+    GoalAuthorship, GoalCreateRequest, GoalEvidenceRef, GoalMotivationRef, GoalTopologyWrite,
     IdempotencyKey,
 };
 use proxiima_core::{
@@ -375,7 +375,7 @@ fn goal_request(
     GoalCreateRequest {
         owner,
         topology: GoalTopologyWrite::new(
-            Some(GoalAssignmentTarget::perspective(assignment)),
+            vec![GoalMotivationRef::perspective(assignment)],
             Vec::new(),
             vec![GoalEvidenceRef::new(evidence)],
         )

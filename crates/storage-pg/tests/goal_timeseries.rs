@@ -8,11 +8,11 @@
 use std::collections::BTreeSet;
 
 use proxiima_core::storage_ports::FactIngestPort;
-use proxiima_core::storage_ports::{MemoryReadPort, OwnerWritePermit};
+use proxiima_core::storage_ports::{MemoryAuthoringPort, MemoryReadPort, OwnerWritePermit};
 use proxiima_core::test_fixtures::owner_scope_for_tests;
 use proxiima_core::verbs::fact_ingest::FactWriteCommand;
 use proxiima_core::verbs::goal_write::GoalState;
-use proxiima_core::verbs::query::{EntityKind, GoalAssignmentFilter, QueryRequest};
+use proxiima_core::verbs::query::{EntityKind, GoalMotivationFilter, QueryRequest};
 use proxiima_core::{AccessKind, EdgeEndpoint, MemoryId, OwnerId, SchemaId, SchemaVersion, UserId};
 use proxiima_pg_testkit::{db_url, drop_db};
 use proxiima_storage_pg::PgStorage;
@@ -75,7 +75,8 @@ async fn goal_write_replay_terminal_and_write_act() {
                 state: GoalState::Active,
                 request_id: "req-1".into(),
                 close_fact_t: None,
-                assignment_t: None,
+
+                motivated_by: Vec::new(),
                 dependency_t: vec![],
                 evidence_t: vec![],
                 mint_write_act: true,
@@ -127,7 +128,8 @@ async fn goal_write_replay_terminal_and_write_act() {
                 state: GoalState::Active,
                 request_id: "req-1".into(),
                 close_fact_t: None,
-                assignment_t: None,
+
+                motivated_by: Vec::new(),
                 dependency_t: vec![],
                 evidence_t: vec![],
                 mint_write_act: true,
@@ -156,7 +158,8 @@ async fn goal_write_replay_terminal_and_write_act() {
                 state: GoalState::Achieved,
                 request_id: "req-close".into(),
                 close_fact_t: Some(close.memory_id.into_inner()),
-                assignment_t: None,
+
+                motivated_by: Vec::new(),
                 dependency_t: vec![],
                 evidence_t: vec![],
                 mint_write_act: false,
@@ -203,7 +206,8 @@ async fn goal_write_replay_terminal_and_write_act() {
                 state: GoalState::Active,
                 request_id: "req-after-term".into(),
                 close_fact_t: None,
-                assignment_t: None,
+
+                motivated_by: Vec::new(),
                 dependency_t: vec![],
                 evidence_t: vec![],
                 mint_write_act: false,
@@ -227,7 +231,7 @@ async fn goal_write_replay_terminal_and_write_act() {
 }
 
 #[tokio::test]
-async fn goal_query_projects_assignment_and_evidence_filters() {
+async fn goal_query_projects_motivation_and_evidence_filters() {
     let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());
     if let Err(e) = create_core_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
@@ -267,7 +271,8 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
                 state: GoalState::Active,
                 request_id: "req-assign".into(),
                 close_fact_t: None,
-                assignment_t: Some(assignment.memory_id.into_inner()),
+
+                motivated_by: vec![assignment.memory_id.into_inner()],
                 dependency_t: vec![],
                 evidence_t: vec![evidence.memory_id.into_inner()],
                 mint_write_act: false,
@@ -282,7 +287,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         let mut by_assignment = QueryRequest::readable();
         by_assignment.entity_kind = Some(EntityKind::Goal);
         by_assignment.goal_states = BTreeSet::from([GoalState::Active]);
-        by_assignment.assignment = GoalAssignmentFilter::AssignedTo(vec![assignment.memory_id]);
+        by_assignment.motivated_by = GoalMotivationFilter::MotivatedBy(vec![assignment.memory_id]);
         let assigned = pg
             .query_memories(
                 Some(&owner_scope_for_tests(&[owner])),
@@ -297,7 +302,7 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
             assigned.goals[0].writer,
             proxiima_storage_pg::test_fixtures::writer()
         );
-        assert_eq!(assigned.goals[0].assignment, Some(assignment.memory_id));
+        assert_eq!(assigned.goals[0].motivated_by, vec![assignment.memory_id]);
         assert_eq!(assigned.goals[0].evidence, vec![evidence.memory_id]);
 
         let mut by_evidence = QueryRequest::readable();
@@ -335,7 +340,8 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
                 state: GoalState::Active,
                 request_id: "req-assign-second".into(),
                 close_fact_t: None,
-                assignment_t: Some(second.memory_id.into_inner()),
+
+                motivated_by: vec![second.memory_id.into_inner()],
                 dependency_t: vec![],
                 evidence_t: vec![],
                 mint_write_act: false,
@@ -348,8 +354,8 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         tx.commit().await?;
         let mut by_either = QueryRequest::readable();
         by_either.entity_kind = Some(EntityKind::Goal);
-        by_either.assignment =
-            GoalAssignmentFilter::AssignedTo(vec![assignment.memory_id, second.memory_id]);
+        by_either.motivated_by =
+            GoalMotivationFilter::MotivatedBy(vec![assignment.memory_id, second.memory_id]);
         let either = pg
             .query_memories(
                 Some(&owner_scope_for_tests(&[owner])),
@@ -366,11 +372,24 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
 
         let mut miss = QueryRequest::readable();
         miss.entity_kind = Some(EntityKind::Goal);
-        miss.assignment = GoalAssignmentFilter::AssignedTo(vec![MemoryId::new(Uuid::now_v7())]);
+        miss.motivated_by = GoalMotivationFilter::MotivatedBy(vec![MemoryId::new(Uuid::now_v7())]);
         let empty = pg
             .query_memories(Some(&owner_scope_for_tests(&[owner])), &[owner], &miss, &[])
             .await?;
         assert!(empty.goals.is_empty());
+
+        // A forgotten Perspective is not a readable motivation target and
+        // must not remain usable as a Goal-filter existence oracle.
+        MemoryAuthoringPort::forget_memory(&pg, &permit, assignment.memory_id).await?;
+        let hidden = pg
+            .query_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &[owner],
+                &by_assignment,
+                &[],
+            )
+            .await?;
+        assert!(hidden.goals.is_empty());
 
         // A goal with no assignment is what `Unassigned` keeps; an empty
         // `AssignedTo` keeps none, and `Any` keeps all.
@@ -387,7 +406,8 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
                 state: GoalState::Active,
                 request_id: "req-unassigned".into(),
                 close_fact_t: None,
-                assignment_t: None,
+
+                motivated_by: Vec::new(),
                 dependency_t: vec![],
                 evidence_t: vec![],
                 mint_write_act: false,
@@ -398,10 +418,10 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
         )
         .await?;
         tx.commit().await?;
-        let goals_under = |filter: GoalAssignmentFilter| {
+        let goals_under = |filter: GoalMotivationFilter| {
             let mut req = QueryRequest::readable();
             req.entity_kind = Some(EntityKind::Goal);
-            req.assignment = filter;
+            req.motivated_by = filter;
             let pg = &pg;
             async move {
                 let page = pg
@@ -413,17 +433,17 @@ async fn goal_query_projects_assignment_and_evidence_filters() {
             }
         };
         assert_eq!(
-            goals_under(GoalAssignmentFilter::Unassigned).await?,
+            goals_under(GoalMotivationFilter::Unmotivated).await?,
             [loose.t]
         );
         assert!(
-            goals_under(GoalAssignmentFilter::AssignedTo(Vec::new()))
+            goals_under(GoalMotivationFilter::MotivatedBy(Vec::new()))
                 .await?
                 .is_empty()
         );
         let mut all = vec![created.t, second_goal.t, loose.t];
         all.sort_unstable();
-        assert_eq!(goals_under(GoalAssignmentFilter::Any).await?, all);
+        assert_eq!(goals_under(GoalMotivationFilter::Any).await?, all);
         Ok(())
     }
     .await;

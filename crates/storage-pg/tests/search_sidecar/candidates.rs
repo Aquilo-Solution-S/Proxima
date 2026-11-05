@@ -58,7 +58,7 @@ async fn vector_candidates(
 ) -> Result<Vec<CandidateRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT memory_id, similarity_score, count(*) OVER ()
-           FROM proxiima_core.vector_candidates_d1024($1, 'test-embed', $2, 8)",
+           FROM proxiima_core.vector_candidates_d1024($1, 'test-embed', $2, 8, true)",
     )
     .bind(owners)
     .bind(vector)

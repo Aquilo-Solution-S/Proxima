@@ -42,6 +42,7 @@ pub(crate) async fn local_nearest(
     owners: &[OwnerId],
     query: &SpaceVector,
     window: u32,
+    supersession: proxiima_core::verbs::query::SupersessionStatus,
 ) -> Result<Vec<VectorCandidate>, StorageError> {
     if owners.is_empty() || window == 0 {
         return Ok(Vec::new());
@@ -51,7 +52,7 @@ pub(crate) async fn local_nearest(
     // SQL-POLICY: fixed-fragment — the width comes from the closed Lane.
     let sql = format!(
         "SELECT memory_id, similarity_score
-           FROM proxiima_core.vector_candidates_d{}($1, $2, $3, $4)",
+           FROM proxiima_core.vector_candidates_d{}($1, $2, $3, $4, $5)",
         lane.width
     );
     // SQL-POLICY: fixed-fragment — only the closed width is interpolated above.
@@ -60,6 +61,10 @@ pub(crate) async fn local_nearest(
         .bind(query.space().model_id())
         .bind(vector(query.values()))
         .bind(i64::from(window))
+        .bind(matches!(
+            supersession,
+            proxiima_core::verbs::query::SupersessionStatus::HeadsOnly
+        ))
         .fetch_all(context.as_mut())
         .await
         .map_err(map_err)?;
@@ -84,11 +89,12 @@ pub fn vector_candidate_artifacts() -> Result<Vec<Artifact>, StorageError> {
         .map(|dim| {
             let lane = Lane::of(dim);
             let name = format!("proxiima_core.vector_candidates_d{}", lane.width);
-            let signature = format!("{name}(uuid[], text, public.vector, bigint)");
+            let signature = format!("{name}(uuid[], text, public.vector, bigint, boolean)");
             let body = nearest_sql(lane);
             // SQL-POLICY: fixed-fragment — names and body derive from closed width lanes.
             let forward = format!(
-                "CREATE OR REPLACE FUNCTION {name}(uuid[], text, public.vector, bigint)
+                "DROP FUNCTION IF EXISTS {name}(uuid[], text, public.vector, bigint);
+                 CREATE OR REPLACE FUNCTION {name}(uuid[], text, public.vector, bigint, boolean)
                  RETURNS TABLE(memory_id uuid, similarity_score real)
                  LANGUAGE plpgsql STABLE SECURITY DEFINER
                  SET search_path = pg_catalog, pg_temp
@@ -195,7 +201,9 @@ fn best_chunk_scores_sql(lane: Lane, candidates_only: bool) -> String {
            AND head.embedding_version = emb.embedding_version
           JOIN proxiima_core.memory m /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ ON m.t = emb.entity_id
          WHERE m.owner_id = ANY($1)
-           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */{chunk_limit}
+           AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t)){chunk_limit}
         )
         SELECT emb.entity_id,
                LEAST(1.0, GREATEST(0.0, MAX(emb.chunk_score)))::real AS score
@@ -227,6 +235,8 @@ fn candidate_scan_sql(lane: Lane, limit: &str) -> String {
                     WHERE m.t = emb.entity_id
                       AND m.owner_id = ANY($1)
                       AND m.forgotten_at IS NULL /* FORGET-POLICY: live-only (semantic candidates under owner RLS) */
+           AND (NOT $5::boolean OR m.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads())
+                OR EXISTS (SELECT 1 FROM proxiima_core.memory_head mh WHERE mh.handle=m.handle AND mh.t=m.t))
                )
              ORDER BY {vec} OPERATOR(public.<=>) $3{cast}
              LIMIT {limit}",

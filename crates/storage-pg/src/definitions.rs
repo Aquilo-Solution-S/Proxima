@@ -208,6 +208,24 @@ pub async fn current_matches_with_policy(
     })
 }
 
+/// Invalidate a historical definitions record restored during catalog
+/// finalization so the current definitions bundle is reapplied.
+pub(crate) async fn invalidate_replayed_definitions(
+    connection: &mut PgConnection,
+    policy: crate::MissingMigrationPolicy,
+) -> Result<(), StorageError> {
+    if matches!(
+        AppliedDefinitions::read(connection, policy).await?,
+        Some(AppliedDefinitions::Current { .. })
+    ) {
+        sqlx::query("DROP FUNCTION IF EXISTS proxiima_core.definitions_applied()")
+            .execute(&mut *connection)
+            .await
+            .map_err(internal)?;
+    }
+    Ok(())
+}
+
 /// Preserve the release refusal while replaying the immutable historical catalog.
 pub(crate) async fn validate_historical_release(
     connection: &mut PgConnection,

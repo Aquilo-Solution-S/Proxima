@@ -64,7 +64,7 @@ pub(in crate::engine) fn map_write_storage_error(
             "transaction_isolation",
             "membership writes require READ COMMITTED isolation",
         ),
-        StorageError::MembershipForbidden(message) => ProtocolError::forbidden(message),
+        StorageError::Forbidden(message) => ProtocolError::forbidden(message),
         StorageError::Suppressed(message) => ProtocolError::suppressed(message),
         StorageError::PublicationRefused(ref publication) => map_publication_error(publication),
         // A transient deadlock/serialization failure that outlived the

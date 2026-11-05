@@ -132,9 +132,19 @@ pub struct DeriveArgs {
     pub space: Option<String>,
     #[serde(default)]
     #[schemars(
+        description = "Working Goal handle for scoped collaboration. Mutually exclusive with space."
+    )]
+    pub working_goal: Option<String>,
+    #[serde(default)]
+    #[schemars(
         description = "Optional lexical language of the derived text: a PostgreSQL text-search configuration name (e.g. 'german'), an ISO 639 / BCP-47 code (e.g. 'de', 'de-DE'), or 'auto' to detect it from title+body (an unreliable detection falls back to the database default). Affects lexical search tokenisation only; embeddings are language-agnostic. Omit for the database default."
     )]
     pub language: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Exact Goal version handles that guided this Perspective version; rejected for Abstraction."
+    )]
+    pub guided_by: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -201,6 +211,7 @@ impl McpTool for DeriveTool {
 async fn resolve_derive_sources(
     ctx: &McpToolCtx,
     source_handles: &[String],
+    retained: &[(crate::MemoryId, MemoryHandleClass)],
 ) -> Result<
     (
         Vec<(crate::MemoryId, MemoryHandleClass)>,
@@ -213,7 +224,8 @@ async fn resolve_derive_sources(
             "source_handles must contain at most {MAX_SOURCE_HANDLES} handles"
         )));
     }
-    let resolved = other_stores::resolve_references(ctx, source_handles).await?;
+    let resolved =
+        other_stores::resolve_references_with_retained(ctx, source_handles, retained).await?;
     let sources = resolved
         .iter()
         .map(ResolvedMemory::classified)
@@ -230,30 +242,91 @@ async fn resolve_derive_sources(
     Ok((sources, resolved))
 }
 
-async fn derive_call(ctx: McpToolCtx, args: DeriveArgs) -> Result<DeriveOutput, McpToolError> {
-    let authored = authored_derivation(
-        &ctx,
-        DerivationFields {
-            title: &args.title,
-            body: &args.body,
-            tags: &args.tags,
-            model_id: args.model_id.as_deref(),
-            idempotency_key: args.idempotency_key.as_deref(),
-        },
-    )?;
+fn resolve_guided_goals(
+    ctx: &McpToolCtx,
+    kind: DerivedKind,
+    handles: &[String],
+) -> Result<Vec<crate::GoalId>, McpToolError> {
+    if matches!(kind, DerivedKind::Abstraction) && !handles.is_empty() {
+        return Err(McpToolError::InvalidInput(
+            "guided_by is only valid for a Perspective".into(),
+        ));
+    }
+    handles
+        .iter()
+        .map(|handle| ctx.resolve_goal(handle))
+        .collect()
+}
 
-    let space = super::super::memory_spaces::resolve_space_owner(
+fn build_derived_memory(
+    kind: DerivedKind,
+    target: crate::MemoryTarget,
+    destination: crate::MemoryDestination,
+    plan: &DerivationPlan,
+    origins: Vec<MemoryId>,
+    identity: DerivationIdentity,
+    guided_by: Vec<crate::GoalId>,
+) -> Result<DerivedMemory, McpToolError> {
+    Ok(match kind {
+        DerivedKind::Abstraction => DerivedMemory::abstraction(
+            target,
+            destination,
+            plan.authored.body.clone(),
+            plan.sidecar.clone(),
+            origins,
+            identity,
+        )?,
+        DerivedKind::Perspective => DerivedMemory::guided_perspective(
+            target,
+            destination,
+            plan.authored.body.clone(),
+            plan.sidecar.clone(),
+            origins,
+            identity,
+            guided_by,
+        )?,
+    })
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "derive preparation keeps retained revision sources and identity together"
+)]
+async fn derive_call(ctx: McpToolCtx, args: DeriveArgs) -> Result<DeriveOutput, McpToolError> {
+    let engine = ctx.require_engine()?;
+    let supersedes = resolve_supersedes(
+        &ctx,
+        args.kind,
+        args.idempotency_key.as_deref(),
+        args.supersedes.as_deref(),
+    )
+    .await?;
+    let destination = super::util::resolve_destination(
         &ctx,
         args.space.as_deref(),
-        super::super::memory_spaces::SpaceDefault::Current,
+        args.working_goal.as_deref(),
     )?;
-    let (sources, resolved) = resolve_derive_sources(&ctx, &args.source_handles).await?;
-    let lexical_language = crate::lexical_language::resolve_lexical_language(
-        args.language.as_deref(),
-        &format!("{}\n{}", authored.title, authored.body),
-    )
-    .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-    let engine = ctx.require_engine()?;
+    let retained = match supersedes {
+        Some(prior) => engine
+            .retained_revision_sources(
+                &ctx.authz,
+                destination,
+                prior,
+                match args.kind {
+                    DerivedKind::Abstraction => crate::EntityKind::Abstraction,
+                    DerivedKind::Perspective => crate::EntityKind::Perspective,
+                },
+            )
+            .await?
+            .into_iter()
+            .filter_map(|(id, kind)| {
+                MemoryHandleClass::from_entity_kind(kind).map(|class| (id, class))
+            })
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
+    let (authored, sources, resolved, lexical_language) =
+        prepare_derivation(&ctx, &args, &retained).await?;
     let origins = sources
         .iter()
         .map(|(id, _class)| *id)
@@ -274,47 +347,41 @@ async fn derive_call(ctx: McpToolCtx, args: DeriveArgs) -> Result<DeriveOutput, 
         core_derive_operator_id(args.kind),
         core_derive_input_contract_id(args.kind),
     );
-    let supersedes = resolve_supersedes(
-        &ctx,
-        args.kind,
-        args.idempotency_key.as_deref(),
-        args.supersedes.as_deref(),
-    )
-    .await?;
+    let guided_by = resolve_guided_goals(&ctx, args.kind, &args.guided_by)?;
     let request = derive_request_key(
         args.kind,
         &authored,
         &origins,
         &external_ids,
         supersedes.map(MemoryId::into_inner),
+        &guided_by,
     )?;
-    let DerivationPlan {
-        memory_id,
-        sidecar,
+    let planning_namespace = match destination {
+        crate::MemoryDestination::Owner(owner) => owner.into_inner(),
+        crate::MemoryDestination::WorkingGoal(goal) => goal_planning_namespace(&ctx, goal)?,
+    };
+    let plan = plan_derivation(
+        &ctx,
+        planning_namespace,
+        args.kind,
         authored,
-    } = plan_derivation(&ctx, &space.owner, args.kind, authored, &sources, &request)?;
+        &sources,
+        &request,
+    )?;
+    let memory_id = plan.memory_id;
     let target = supersedes.map_or(
         crate::MemoryTarget::Series(SeriesHandle::new(memory_id.into_inner())),
         crate::MemoryTarget::Revision,
     );
-    let memory = match args.kind {
-        DerivedKind::Abstraction => DerivedMemory::abstraction(
-            target,
-            space.owner,
-            authored.body.clone(),
-            sidecar,
-            origins,
-            identity,
-        )?,
-        DerivedKind::Perspective => DerivedMemory::perspective(
-            target,
-            space.owner,
-            authored.body.clone(),
-            sidecar,
-            origins,
-            identity,
-        )?,
-    }
+    let memory = build_derived_memory(
+        args.kind,
+        target,
+        destination,
+        &plan,
+        origins,
+        identity,
+        guided_by,
+    )?
     .lexical_language(lexical_language)
     .external_origins(external)
     .request_key(request);
@@ -330,6 +397,38 @@ async fn derive_call(ctx: McpToolCtx, args: DeriveArgs) -> Result<DeriveOutput, 
         edge_count: outcome.edge_count,
         embedding_deferred: outcome.embedding_deferred,
     })
+}
+
+async fn prepare_derivation(
+    ctx: &McpToolCtx,
+    args: &DeriveArgs,
+    retained: &[(crate::MemoryId, MemoryHandleClass)],
+) -> Result<
+    (
+        AuthoredDerivation,
+        Vec<(crate::MemoryId, MemoryHandleClass)>,
+        Vec<ResolvedMemory>,
+        String,
+    ),
+    McpToolError,
+> {
+    let authored = authored_derivation(
+        ctx,
+        DerivationFields {
+            title: &args.title,
+            body: &args.body,
+            tags: &args.tags,
+            model_id: args.model_id.as_deref(),
+            idempotency_key: args.idempotency_key.as_deref(),
+        },
+    )?;
+    let (sources, resolved) = resolve_derive_sources(ctx, &args.source_handles, retained).await?;
+    let lexical_language = crate::lexical_language::resolve_lexical_language(
+        args.language.as_deref(),
+        &format!("{}\n{}", authored.title, authored.body),
+    )
+    .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    Ok((authored, sources, resolved, lexical_language))
 }
 
 /// What a `core_derive` request carries once it is validated: the authored
@@ -407,7 +506,7 @@ pub(crate) struct DerivationPlan {
 /// name a layer this `kind` cannot be derived from — see [`operator_shape`].
 pub(crate) fn plan_derivation(
     ctx: &McpToolCtx,
-    owner: &crate::OwnerId,
+    planning_namespace: uuid::Uuid,
     kind: DerivedKind,
     authored: AuthoredDerivation,
     sources: &[(MemoryId, MemoryHandleClass)],
@@ -415,7 +514,7 @@ pub(crate) fn plan_derivation(
 ) -> Result<DerivationPlan, McpToolError> {
     operator_shape(kind, sources)?;
     let memory_id = MemoryId::new(derived_memory_id(
-        owner,
+        planning_namespace,
         kind.as_str(),
         request.key().as_str(),
     ));
@@ -482,12 +581,20 @@ pub(crate) fn derive_request_key(
     origins: &[MemoryId],
     external_origins: &[uuid::Uuid],
     supersedes_id: Option<uuid::Uuid>,
+    guided_by: &[crate::GoalId],
 ) -> Result<crate::RequestKey, McpToolError> {
     let scope = match kind {
         DerivedKind::Abstraction => crate::KeyScope::Abstraction,
         DerivedKind::Perspective => crate::KeyScope::Perspective,
     };
-    let fp = fingerprint_derivation(scope, authored, origins, external_origins, supersedes_id);
+    let fp = fingerprint_derivation(
+        scope,
+        authored,
+        origins,
+        external_origins,
+        supersedes_id,
+        guided_by,
+    );
     let key = authored
         .idempotency_key
         .clone()
@@ -506,6 +613,7 @@ fn fingerprint_derivation(
     origins: &[MemoryId],
     external_origins: &[uuid::Uuid],
     supersedes_id: Option<uuid::Uuid>,
+    guided_by: &[crate::GoalId],
 ) -> crate::ContentFingerprint {
     let mut fp = crate::ContentFingerprint::builder(scope)
         .text("title", &authored.title)
@@ -518,7 +626,29 @@ fn fingerprint_derivation(
         Some(id) => fp.uuid_set("supersedes", [id]),
         None => fp.absent_uuid_set("supersedes"),
     };
+    let fp = if guided_by.is_empty() {
+        fp.absent_uuid_set("guided_by")
+    } else {
+        fp.bytes("guided_by", &ordered_goal_ids(guided_by))
+    };
     fp.absent_uuid_set("references").build()
+}
+
+/// The memory row preserves guidance order after de-duplication, so the
+/// request fingerprint must do the same rather than using the set helper.
+fn ordered_goal_ids(guided_by: &[crate::GoalId]) -> Vec<u8> {
+    let mut ids = Vec::with_capacity(guided_by.len());
+    for goal in guided_by {
+        if !ids.contains(goal) {
+            ids.push(*goal);
+        }
+    }
+    let mut bytes = Vec::with_capacity(8 + ids.len() * 16);
+    bytes.extend_from_slice(&(ids.len() as u64).to_be_bytes());
+    for goal in ids {
+        bytes.extend_from_slice(goal.into_inner().as_bytes());
+    }
+    bytes
 }
 
 pub(crate) fn map_derive_authoring_error(err: crate::error::ProtocolError) -> McpToolError {
@@ -535,15 +665,28 @@ pub(crate) fn map_derive_authoring_error(err: crate::error::ProtocolError) -> Mc
     err.into()
 }
 
-pub(crate) fn derived_memory_id(owner: &crate::OwnerId, kind: &str, key: &str) -> uuid::Uuid {
-    let principal_id = owner.into_inner();
+fn derived_memory_id(namespace: uuid::Uuid, kind: &str, key: &str) -> uuid::Uuid {
     let mut buf = Vec::with_capacity(96 + key.len());
-    buf.extend_from_slice(principal_id.as_bytes());
+    buf.extend_from_slice(namespace.as_bytes());
     buf.push(0);
     buf.extend_from_slice(kind.as_bytes());
     buf.push(0);
     buf.extend_from_slice(key.as_bytes());
     uuid::Uuid::new_v5(&DERIVED_NAMESPACE, &buf)
+}
+
+pub(crate) fn goal_planning_namespace(
+    ctx: &McpToolCtx,
+    goal: crate::GoalHandle,
+) -> Result<uuid::Uuid, McpToolError> {
+    let subject = ctx
+        .authz
+        .subject()
+        .ok_or_else(|| McpToolError::InvalidInput("working_goal requires a subject".into()))?;
+    let mut identity = ctx.owner.into_inner().as_bytes().to_vec();
+    identity.extend_from_slice(goal.into_inner().as_bytes());
+    identity.extend_from_slice(subject.into_inner().as_bytes());
+    Ok(uuid::Uuid::new_v5(&DERIVED_NAMESPACE, &identity))
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@
 //! | `/v1/stores/{store}/put` | `{entity, owner, version, model_id, dim, vectors}` | `{}` |
 //! | `/v1/stores/{store}/delete` | `{keys}` | `{}` |
 //! | `/v1/stores/{store}/owner` | `{keys, owner}` | `{}` |
-//! | `/v1/stores/{store}/nearest` | `{owners, model_id, dim, query, window}` | `{candidates: [{memory_id, score}]}` |
+//! | `/v1/stores/{store}/nearest` | `{owners, memories, model_id, dim, query, window}` | `{candidates: [{memory_id, score}]}` |
 //! | `/v1/stores/{store}/entries` | `{after, limit}` | `{entries: [{entity_id, model_id, dim, owner, version}]}` |
 //!
 //! `entity` is `{"kind": "Fact" | "Abstraction" | "Perspective" | "Goal", "id": uuid}`;
@@ -29,7 +29,9 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use proxiima_core::storage_ports::{VectorCandidate, VectorEntry, VectorIndex, VectorKey};
+use proxiima_core::storage_ports::{
+    VectorCandidate, VectorCandidateFilter, VectorEntry, VectorIndex, VectorKey,
+};
 use proxiima_core::{
     EmbeddableEntityRef, EmbeddingDim, EmbeddingSpace, EndpointUrlPolicy, EntityKind, GoalId,
     MemoryId, OwnerId, PlaintextHosts, SpaceVector, StorageError, validate_endpoint_url_for_hosts,
@@ -85,6 +87,7 @@ struct OwnerBody {
 #[derive(Serialize, Deserialize)]
 struct NearestBody {
     owners: Vec<Uuid>,
+    memories: Vec<Uuid>,
     model_id: String,
     dim: usize,
     query: Vec<f32>,
@@ -335,12 +338,22 @@ impl VectorIndex for VectorIndexClient {
 
     async fn nearest(
         &self,
-        owners: &[OwnerId],
+        filter: &VectorCandidateFilter,
         query: &SpaceVector,
         window: u32,
     ) -> Result<Vec<VectorCandidate>, StorageError> {
         let body = NearestBody {
-            owners: owners.iter().copied().map(OwnerId::into_inner).collect(),
+            owners: filter
+                .owners
+                .iter()
+                .copied()
+                .map(OwnerId::into_inner)
+                .collect(),
+            memories: filter
+                .memories
+                .iter()
+                .map(|memory| memory.into_inner())
+                .collect(),
             model_id: query.space().model_id().to_owned(),
             dim: query.space().dim().width(),
             query: query.values().to_vec(),
@@ -534,8 +547,11 @@ async fn nearest(State(indexes): State<Indexes>, Path(store): Path<u16>, body: B
         &body,
         |index, body: NearestBody| async move {
             let query = space_vector(&space(body.model_id, body.dim)?, body.query)?;
-            let owners: Vec<OwnerId> = body.owners.into_iter().map(OwnerId::new).collect();
-            let candidates = index.nearest(&owners, &query, body.window).await?;
+            let filter = VectorCandidateFilter {
+                owners: body.owners.into_iter().map(OwnerId::new).collect(),
+                memories: body.memories.into_iter().map(MemoryId::new).collect(),
+            };
+            let candidates = index.nearest(&filter, &query, body.window).await?;
             Ok(NearestAnswer {
                 candidates: candidates
                     .into_iter()

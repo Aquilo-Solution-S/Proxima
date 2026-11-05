@@ -33,19 +33,24 @@ impl MemoryAuthoringPort for PgStorage {
             )
             .await?;
             let draft = verbs::derive_append::DerivedDraft::from_request(req, self.store_number);
+            verbs::derive_append::validate_retained_pins_in_tx(&mut tx, &draft, req.retained_pins)
+                .await?;
+            let new_origins = verbs::derive_append::new_origins(req.origins, req.retained_pins);
+            let new_references =
+                verbs::derive_append::new_references(req.references, req.retained_pins);
             // Share origin validation with the write-session authoring path.
             verbs::derive_append::validate_derived_origins_in_tx(
                 &mut tx,
                 &draft,
-                req.origins,
-                req.references,
+                &new_origins,
+                &new_references,
             )
             .await?;
             verbs::derive_append::validate_derived_reference_kinds_in_tx(
                 &mut tx,
                 &draft,
-                req.origins,
-                req.references,
+                &new_origins,
+                &new_references,
             )
             .await?;
             let sidecars = self.sidecars.writing_derived(&draft);
@@ -422,14 +427,25 @@ impl MemoryReadPort for PgStorage {
             crate::owner_scope::require_owner_scope(owner_scope)?,
         )
         .await?;
+        if matches!(
+            req.scope,
+            proxiima_core::verbs::query::MemorySearchScope::Owner(_)
+        ) {
+            sqlx::query("SELECT set_config('app.goal_subject', '', true)")
+                .execute(tx.as_mut())
+                .await
+                .map_err(crate::error::map_err)?;
+        }
         let result = async {
-            // A request can narrow authenticated authority. The database helper
-            // is also the candidate functions' source of the owner-set union.
-            let authenticated_owners: Vec<uuid::Uuid> =
-                sqlx::query_scalar("SELECT proxiima_core.search_owner_ids()")
-                    .fetch_one(tx.as_mut())
-                    .await
-                    .map_err(crate::error::map_err)?;
+            // Requested owners narrow the authenticated routes; they never add
+            // authority. Goal candidates include exact admitted publications.
+            let authenticated_owners: Vec<uuid::Uuid> = sqlx::query_scalar(
+                "SELECT proxiima_core.search_owner_ids() || ARRAY(
+                    SELECT DISTINCT owner_id FROM proxiima_core.goal_visible_memory_ids())",
+            )
+            .fetch_one(tx.as_mut())
+            .await
+            .map_err(crate::error::map_err)?;
             let mut req = req.clone();
             req.read_owners
                 .retain(|owner| authenticated_owners.contains(&owner.into_inner()));

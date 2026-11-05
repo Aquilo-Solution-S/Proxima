@@ -10,8 +10,8 @@ use proxiima_core::verbs::query::{
     EntityKind, MemorySearchRequest, SearchMode, SearchOrder, SupersessionStatus, TagMatch,
 };
 use proxiima_core::{
-    EmbeddableEntityRef, EmbeddingDim, EmbeddingSpace, MemoryId, OwnerId, SpaceVector,
-    StorageError, UserId,
+    EmbeddableEntityRef, EmbeddingDim, EmbeddingSpace, MemoryId, OwnerId, Role, SchemaId,
+    SpaceVector, StorageError, UserId,
 };
 use proxiima_storage_pg::test_fixtures::fresh_pg_host_index;
 use sqlx::PgPool;
@@ -48,12 +48,12 @@ impl VectorIndex for RecordingIndex {
 
     async fn nearest(
         &self,
-        owners: &[OwnerId],
+        filter: &proxiima_core::storage_ports::VectorCandidateFilter,
         query: &SpaceVector,
         window: u32,
     ) -> Result<Vec<VectorCandidate>, StorageError> {
         self.windows.lock().unwrap().push(window);
-        self.inner.nearest(owners, query, window).await
+        self.inner.nearest(filter, query, window).await
     }
 
     async fn entries(
@@ -78,7 +78,7 @@ fn vector(score: f32) -> SpaceVector {
 
 fn request(owner: OwnerId) -> MemorySearchRequest {
     MemorySearchRequest {
-        owner,
+        scope: proxiima_core::verbs::query::MemorySearchScope::Owner(owner),
         read_owners: vec![owner],
         query: "unrelated lexical text".into(),
         mode: SearchMode::Semantic,
@@ -86,6 +86,50 @@ fn request(owner: OwnerId) -> MemorySearchRequest {
         limit: 1,
         kind: Some(EntityKind::Fact),
         schema_id: None,
+        tags: vec!["wanted".into()],
+        tag_match: TagMatch::All,
+        since: None,
+        until: None,
+        order: SearchOrder::Relevance,
+        min_score: None,
+        semantic_weight: None,
+        after: None,
+        semantic: Some(vector(1.0)),
+    }
+}
+
+fn readable_request(source_owner: OwnerId) -> MemorySearchRequest {
+    MemorySearchRequest {
+        scope: proxiima_core::verbs::query::MemorySearchScope::Readable,
+        read_owners: vec![source_owner],
+        query: "unrelated lexical text".into(),
+        mode: SearchMode::Semantic,
+        supersession: SupersessionStatus::HeadsOnly,
+        limit: 1,
+        kind: Some(EntityKind::Fact),
+        schema_id: Some(SchemaId::new("core/agent-note-v1".into())),
+        tags: vec!["wanted".into()],
+        tag_match: TagMatch::All,
+        since: None,
+        until: None,
+        order: SearchOrder::Relevance,
+        min_score: None,
+        semantic_weight: None,
+        after: None,
+        semantic: Some(vector(1.0)),
+    }
+}
+
+fn readable_perspective_request(source_owner: OwnerId) -> MemorySearchRequest {
+    MemorySearchRequest {
+        scope: proxiima_core::verbs::query::MemorySearchScope::Readable,
+        read_owners: vec![source_owner],
+        query: "unrelated lexical text".into(),
+        mode: SearchMode::Semantic,
+        supersession: SupersessionStatus::HeadsOnly,
+        limit: 1,
+        kind: Some(EntityKind::Perspective),
+        schema_id: Some(SchemaId::new("core/agent-derivation-v1".into())),
         tags: vec!["wanted".into()],
         tag_match: TagMatch::All,
         since: None,
@@ -114,6 +158,72 @@ async fn seed(pool: &PgPool, owner: OwnerId, schema: &str, tag: &str) -> Result<
         sqlx::query("INSERT INTO proxiima_core.agent_note_v1(t, note_id, title, body, tags) VALUES ($1, $2, 'Index result', 'Hydrated from memory', ARRAY[$3])")
             .bind(t).bind(Uuid::now_v7()).bind(tag).execute(&mut *tx).await?;
     }
+    sqlx::query("INSERT INTO proxiima_core.projection(memory_id, schema_id, owner_id, search_tsv, tag) VALUES ($1, $2, $3, ''::tsvector, ARRAY[$4])")
+        .bind(t).bind(schema).bind(owner.into_inner()).bind(tag).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(t)
+}
+
+async fn seed_perspective(
+    pool: &PgPool,
+    owner: OwnerId,
+    tag: &str,
+    origin: Uuid,
+) -> Result<Uuid, sqlx::Error> {
+    let schema = "core/agent-derivation-v1";
+    sqlx::query("INSERT INTO proxiima_core.owners(owner_id, kind) VALUES ($1, 'personal') ON CONFLICT DO NOTHING")
+        .bind(owner.into_inner()).execute(pool).await?;
+    let t = Uuid::now_v7();
+    let handle = Uuid::now_v7();
+    sqlx::query("INSERT INTO proxiima_core.memory_head(handle, t, kind, owner_id, schema_id) VALUES ($1, $2, 'perspective', $3, $4)")
+        .bind(handle).bind(t).bind(owner.into_inner()).bind(schema).execute(pool).await?;
+    let mut tx = pool.begin().await?;
+    let content_id = Uuid::now_v7();
+    let mut content_hash = Vec::with_capacity(32);
+    content_hash.extend_from_slice(content_id.as_bytes());
+    content_hash.extend_from_slice(content_id.as_bytes());
+    sqlx::query("INSERT INTO proxiima_core.content(content_id, owner_id, schema_id, content_hash) VALUES ($1, $2, $3, $4)")
+        .bind(content_id).bind(owner.into_inner()).bind(schema).bind(content_hash)
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO proxiima_core.memory(handle, t, kind, owner_id, schema_id, content_id, origins, sidecar_tables, occurred_at, \"by\", via) VALUES ($1, $2, 'perspective', $3, $4, $5, ARRAY[$6]::uuid[], $7, NULL, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
+        .bind(handle).bind(t).bind(owner.into_inner()).bind(schema)
+        .bind(content_id).bind(origin)
+        .bind(vec!["proxiima_core.agent_derivation_v1"])
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO proxiima_core.agent_derivation_v1(t, title, body, tags, source_memory_ids, model_id, client_name, client_version) VALUES ($1, 'Published perspective', 'Hydrated perspective', ARRAY[$2], '{}', 'test', 'test', '1')")
+        .bind(t).bind(tag).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO proxiima_core.projection(memory_id, schema_id, owner_id, search_tsv, tag) VALUES ($1, $2, $3, ''::tsvector, ARRAY[$4])")
+        .bind(t).bind(schema).bind(owner.into_inner()).bind(tag).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(t)
+}
+
+async fn seed_abstraction(
+    pool: &PgPool,
+    owner: OwnerId,
+    tag: &str,
+    origin: Uuid,
+) -> Result<Uuid, sqlx::Error> {
+    let schema = "core/agent-derivation-v1";
+    let t = Uuid::now_v7();
+    let handle = Uuid::now_v7();
+    sqlx::query("INSERT INTO proxiima_core.memory_head(handle, t, kind, owner_id, schema_id) VALUES ($1, $2, 'abstraction', $3, $4)")
+        .bind(handle).bind(t).bind(owner.into_inner()).bind(schema).execute(pool).await?;
+    let mut tx = pool.begin().await?;
+    let content_id = Uuid::now_v7();
+    let mut content_hash = Vec::with_capacity(32);
+    content_hash.extend_from_slice(content_id.as_bytes());
+    content_hash.extend_from_slice(content_id.as_bytes());
+    sqlx::query("INSERT INTO proxiima_core.content(content_id, owner_id, schema_id, content_hash) VALUES ($1, $2, $3, $4)")
+        .bind(content_id).bind(owner.into_inner()).bind(schema).bind(content_hash)
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO proxiima_core.memory(handle, t, kind, owner_id, schema_id, content_id, origins, sidecar_tables, occurred_at, \"by\", via) VALUES ($1, $2, 'abstraction', $3, $4, $5, ARRAY[$6]::uuid[], $7, NULL, '00000000-0000-0000-0000-000000000509'::uuid, NULL)")
+        .bind(handle).bind(t).bind(owner.into_inner()).bind(schema)
+        .bind(content_id).bind(origin)
+        .bind(vec!["proxiima_core.agent_derivation_v1"])
+        .execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO proxiima_core.agent_derivation_v1(t, title, body, tags, source_memory_ids, model_id, client_name, client_version) VALUES ($1, 'Grounding abstraction', 'Grounding abstraction', ARRAY[$2], '{}', 'test', 'test', '1')")
+        .bind(t).bind(tag).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO proxiima_core.projection(memory_id, schema_id, owner_id, search_tsv, tag) VALUES ($1, $2, $3, ''::tsvector, ARRAY[$4])")
         .bind(t).bind(schema).bind(owner.into_inner()).bind(tag).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -156,6 +266,231 @@ async fn semantic_port_expands_past_stale_foreign_and_filtered_candidates() -> T
     assert!(page.results[0].snippet.contains("Hydrated from memory"));
     assert!(!page.has_more);
     assert_eq!(*index.windows.lock().unwrap(), vec![20, 40]);
+    Ok(())
+}
+
+async fn publish_semantic_fixture(
+    pg: &proxiima_storage_pg::PgStorage,
+    source_owner: OwnerId,
+    guest: UserId,
+    published: Uuid,
+    read_ceiling: i16,
+) -> TestResult {
+    let guest_owner = OwnerId::from(guest);
+    let goal_handle = Uuid::now_v7();
+    let goal_t = Uuid::now_v7();
+    let mut platform = pg.platform_scope_for_host().begin().await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.owners(owner_id, kind)
+         VALUES ($1, 'personal'), ($2, 'personal')
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(source_owner.into_inner())
+    .bind(guest_owner.into_inner())
+    .execute(&mut *platform)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal_head
+             (handle, schema_id, owner_id, t, authority_generation)
+         VALUES ($1, 'core/simple-text-v1', $2, $3, 0)",
+    )
+    .bind(goal_handle)
+    .bind(source_owner.into_inner())
+    .bind(goal_t)
+    .execute(&mut *platform)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal
+             (handle, t, owner_id, title, state, request_id, \"by\", via)
+         VALUES ($1, $2, $3, 'semantic publication', 'Active', $4, $3, NULL)",
+    )
+    .bind(goal_handle)
+    .bind(goal_t)
+    .bind(source_owner.into_inner())
+    .bind(goal_t.to_string())
+    .execute(&mut *platform)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal_access_grant
+             (goal_handle, subject_id, read_ceiling, write_ceiling, manage,
+              controller_generation, granted_by)
+         SELECT $1, $2, $4, 0, false, authority_generation, $3
+           FROM proxiima_core.goal_head
+          WHERE handle = $1",
+    )
+    .bind(goal_handle)
+    .bind(guest.into_inner())
+    .bind(source_owner.into_inner())
+    .bind(read_ceiling)
+    .execute(&mut *platform)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal_memory_publication
+             (goal_handle, memory_t, source_owner, source_generation,
+              controller_generation, permitted_use, published_by)
+         SELECT $1, $2, mh.owner_id, mh.authority_generation,
+                gh.authority_generation, 'read', $3
+           FROM proxiima_core.memory_head mh
+           JOIN proxiima_core.goal_head gh ON gh.handle = $1
+          WHERE mh.t = $2 AND mh.owner_id = $4",
+    )
+    .bind(goal_handle)
+    .bind(published)
+    .bind(source_owner.into_inner())
+    .bind(source_owner.into_inner())
+    .execute(&mut *platform)
+    .await?;
+    platform.commit().await?;
+
+    Ok(())
+}
+
+/// A Goal audience must not lose its exact published Fact when nearer private
+/// source-owner vectors consume the remote index's scan cap. The source owner
+/// is a selector in `read_owners`, not an authenticated owner Role.
+#[tokio::test]
+async fn readable_goal_semantic_search_reaches_a_far_published_fact() -> TestResult {
+    let index = Arc::new(InMemoryVectorIndex::default());
+    let (pg, _database) = fresh_pg_host_index("semantic_goal_publication", index.clone()).await;
+    let source_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let guest = UserId::new(Uuid::now_v7());
+    let published = seed(
+        pg.pool_for_tests(),
+        source_owner,
+        "core/agent-note-v1",
+        "wanted",
+    )
+    .await?;
+    let mut private = Vec::with_capacity(1_200);
+    for _ in 0..1_200 {
+        private.push(
+            seed(
+                pg.pool_for_tests(),
+                source_owner,
+                "core/agent-note-v1",
+                "wanted",
+            )
+            .await?,
+        );
+    }
+
+    publish_semantic_fixture(&pg, source_owner, guest, published, 1).await?;
+
+    for memory in &private {
+        index
+            .put(fact(*memory), source_owner, 1, &[vector(0.999)])
+            .await?;
+    }
+    index
+        .put(fact(published), source_owner, 1, &[vector(0.1)])
+        .await?;
+
+    let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
+    let scope = proxiima_core::test_fixtures::authenticated_context(
+        proxiima_core::AuthzContext::for_subject(guest, proxiima_core::AuthPath::HostBearer),
+    )
+    .owner_scope()
+    .expect("direct guest scope")
+    .clone();
+    let page = pg
+        .search_memories(
+            Some(&scope),
+            &readable_request(source_owner),
+            registry.search_projections(),
+        )
+        .await?;
+    assert_eq!(
+        page.results.len(),
+        1,
+        "published result must survive admission"
+    );
+    assert_eq!(page.results[0].memory_id.into_inner(), published);
+    assert!(
+        !private.contains(&page.results[0].memory_id.into_inner()),
+        "private source-owner memories must remain omitted"
+    );
+    Ok(())
+}
+
+/// A Fact-only source-owner role must not let nearer private Perspectives
+/// consume the remote candidate cap before a Goal-published Perspective.
+#[tokio::test]
+async fn fact_role_source_owner_does_not_starve_goal_published_perspective() -> TestResult {
+    let index = Arc::new(InMemoryVectorIndex::default());
+    let (pg, _database) =
+        fresh_pg_host_index("semantic_goal_perspective_role", index.clone()).await;
+    let source_owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let guest = UserId::new(Uuid::now_v7());
+    let origin = seed(
+        pg.pool_for_tests(),
+        source_owner,
+        "core/agent-note-v1",
+        "grounding",
+    )
+    .await?;
+    let abstraction =
+        seed_abstraction(pg.pool_for_tests(), source_owner, "grounding", origin).await?;
+    let published =
+        seed_perspective(pg.pool_for_tests(), source_owner, "wanted", abstraction).await?;
+    let mut private = Vec::with_capacity(1_200);
+    for _ in 0..1_200 {
+        private.push(
+            seed_perspective(pg.pool_for_tests(), source_owner, "wanted", abstraction).await?,
+        );
+    }
+
+    publish_semantic_fixture(&pg, source_owner, guest, published, 3).await?;
+
+    for memory in &private {
+        index
+            .put(
+                EmbeddableEntityRef::Memory {
+                    kind: EntityKind::Perspective,
+                    memory_id: MemoryId::new(*memory),
+                },
+                source_owner,
+                1,
+                &[vector(0.999)],
+            )
+            .await?;
+    }
+    index
+        .put(
+            EmbeddableEntityRef::Memory {
+                kind: EntityKind::Perspective,
+                memory_id: MemoryId::new(published),
+            },
+            source_owner,
+            1,
+            &[vector(0.1)],
+        )
+        .await?;
+
+    let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
+    let scope = proxiima_core::test_fixtures::authenticated_context(
+        proxiima_core::AuthzContext::for_subject_with_role(
+            guest,
+            [(source_owner, Role::ingest())],
+            proxiima_core::AuthPath::HostBearer,
+        ),
+    )
+    .owner_scope()
+    .expect("verified Fact-only source-owner scope")
+    .clone();
+    let page = pg
+        .search_memories(
+            Some(&scope),
+            &readable_perspective_request(source_owner),
+            registry.search_projections(),
+        )
+        .await?;
+    assert_eq!(
+        page.results.len(),
+        1,
+        "published Perspective must survive admission"
+    );
+    assert_eq!(page.results[0].memory_id.into_inner(), published);
+    assert!(!private.contains(&page.results[0].memory_id.into_inner()));
     Ok(())
 }
 

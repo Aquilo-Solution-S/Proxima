@@ -79,12 +79,20 @@ async fn export_owner_bundle_snapshot(
     }
 
     // Pins come from every memory row, forgotten or not, so a forgotten
-    // memory's origins and refs stay in the graph (#478, #488).
-    let edges = pins_from_memories(
+    // memory and Goal causal/reference declarations stay in the graph
+    // (including forgotten rows and historical versions).
+    let mut edges = pins_from_memories(
         tables
             .get("proxiima_core.memory")
             .map_or(&[][..], Vec::as_slice),
     );
+    edges.extend(pins_from_goals(
+        tables
+            .get("proxiima_core.goal")
+            .map_or(&[][..], Vec::as_slice),
+    ));
+    edges.sort_by_key(pin_sort_key);
+    edges.dedup_by(|left, right| pin_sort_key(left) == pin_sort_key(right));
 
     let mut counts: BTreeMap<String, usize> = tables
         .iter()
@@ -416,6 +424,21 @@ fn pins_from_memories(memories: &[Value]) -> Vec<Value> {
         };
         push_pins(&mut edges, source_t, memory.get("origins"), "origin");
         push_pins(&mut edges, source_t, memory.get("refs"), "reference");
+        push_pins(&mut edges, source_t, memory.get("goal_refs"), "reference");
+        push_pins(&mut edges, source_t, memory.get("guided_by"), "reference");
+        push_scalar_pin(&mut edges, source_t, memory.get("forked_from"), "reference");
+    }
+    edges.sort_by_key(pin_sort_key);
+    edges
+}
+
+fn pins_from_goals(goals: &[Value]) -> Vec<Value> {
+    let mut edges = Vec::new();
+    for goal in goals {
+        let Some(source_t) = goal.get("t") else {
+            continue;
+        };
+        push_pins(&mut edges, source_t, goal.get("motivated_by"), "reference");
     }
     edges.sort_by_key(pin_sort_key);
     edges
@@ -449,9 +472,25 @@ fn push_pins(edges: &mut Vec<Value>, source_t: &Value, pins: Option<&Value>, kin
     }
 }
 
+fn push_scalar_pin(
+    edges: &mut Vec<Value>,
+    source_t: &Value,
+    target_t: Option<&Value>,
+    kind: &'static str,
+) {
+    let Some(target_t) = target_t.filter(|value| !value.is_null()) else {
+        return;
+    };
+    edges.push(serde_json::json!({
+        "source_t": source_t,
+        "target_t": target_t,
+        "kind": kind,
+    }));
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{export_statement, pin_sort_key, pins_from_memories};
+    use super::{export_statement, pin_sort_key, pins_from_goals, pins_from_memories};
     use proxiima_core::SPIICE_0;
     use proxiima_core::spiice::{ExportRule, Surface};
     use serde_json::json;
@@ -524,6 +563,46 @@ mod tests {
             ]
         );
         assert!(pin_sort_key(&edges[0]) < pin_sort_key(&edges[1]));
+    }
+
+    #[test]
+    fn causal_memory_and_goal_declarations_are_reference_edges() {
+        let memory = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let goal = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let edges = pins_from_memories(&[json!({
+            "t": memory,
+            "origins": [],
+            "refs": [],
+            "goal_refs": [],
+            "guided_by": [goal],
+            "forked_from": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        })]);
+        let goal_edges = pins_from_goals(&[json!({
+            "t": goal,
+            "motivated_by": [memory],
+        })]);
+        assert_eq!(edges[0]["kind"], "reference");
+        assert_eq!(goal_edges[0]["kind"], "reference");
+    }
+
+    #[test]
+    fn forked_from_is_a_reference_edge() {
+        let source = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let parent = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let edges = pins_from_memories(&[json!({
+            "t": source,
+            "origins": [],
+            "refs": [],
+            "forked_from": parent,
+        })]);
+        assert_eq!(
+            edges,
+            vec![json!({
+                "source_t": source,
+                "target_t": parent,
+                "kind": "reference",
+            })]
+        );
     }
 
     /// Pinning the generated text is what keeps an allowlist an allowlist

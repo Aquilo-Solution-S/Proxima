@@ -411,7 +411,7 @@ async fn an_accept_that_never_returns_is_released_and_delivered_again() {
 /// Sets a goal through a unit of work, then pauses it through the engine.
 async fn set_and_pause(world: &World, pending: PendingWork) -> (GoalId, GoalId) {
     use proxiima_core::verbs::goal_write::{
-        GoalAssignmentTarget, GoalAuthorship, GoalCreateRequest, GoalTopologyWrite,
+        GoalAuthorship, GoalCreateRequest, GoalMotivationRef, GoalTopologyWrite,
         GoalTransitionKind, IdempotencyKey,
     };
     use proxiima_core::{DerivedMemory, InterpretationSubjectKind, InterpretationV1};
@@ -437,7 +437,7 @@ async fn set_and_pause(world: &World, pending: PendingWork) -> (GoalId, GoalId) 
         .await
         .expect("assignment");
     let topology = GoalTopologyWrite::new(
-        Some(GoalAssignmentTarget::perspective(assignment.memory_id)),
+        vec![GoalMotivationRef::perspective(assignment.memory_id)],
         Vec::new(),
         Vec::new(),
     );

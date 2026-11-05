@@ -3,10 +3,11 @@ use std::sync::Arc;
 
 use super::handles::{
     CitationHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle,
-    EmbeddingWriteHandle, FactIngestHandle, GoalReadHandle, GoalWriteHandle, MemoryAuthoringHandle,
-    MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
-    OwnerEraseAuthorityHandle, OwnerInverseHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    RetentionHandle, SourceCursorHandle, WriteSessionFactoryHandle,
+    EmbeddingWriteHandle, FactIngestHandle, GoalCollaborationHandle, GoalReadHandle,
+    GoalWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle,
+    OwnerAccessReadHandle, OwnerDropProofHandle, OwnerEraseAuthorityHandle, OwnerInverseHandle,
+    OwnerMembershipAdminHandle, OwnerTransferHandle, RetentionHandle, SourceCursorHandle,
+    WriteSessionFactoryHandle,
 };
 use super::rejecting::RejectingStorage;
 
@@ -23,6 +24,7 @@ pub struct StoragePorts {
     embedding_maintenance: EmbeddingMaintenanceHandle,
     goal_write: GoalWriteHandle,
     goal_read: GoalReadHandle,
+    goal_collaboration: GoalCollaborationHandle,
     citation: CitationHandle,
     owner_access_read: OwnerAccessReadHandle,
     owner_membership_admin: OwnerMembershipAdminHandle,
@@ -56,6 +58,8 @@ pub(crate) struct RetentionStoragePorts {
 #[derive(Clone)]
 pub(crate) struct GoalCommandStoragePorts {
     pub goal_write: GoalWriteHandle,
+    #[allow(dead_code)]
+    pub goal_collaboration: GoalCollaborationHandle,
     pub owner_access_read: OwnerAccessReadHandle,
 }
 
@@ -75,6 +79,7 @@ pub(crate) struct MemoryAuthoringStoragePorts {
 #[derive(Clone)]
 pub(crate) struct PipelineStoragePorts {
     pub owner_access_read: OwnerAccessReadHandle,
+    pub goal_collaboration: GoalCollaborationHandle,
 }
 
 #[derive(Clone)]
@@ -126,6 +131,7 @@ pub struct StoragePortsBuilder {
     embedding_maintenance: Option<EmbeddingMaintenanceHandle>,
     goal_write: Option<GoalWriteHandle>,
     goal_read: Option<GoalReadHandle>,
+    goal_collaboration: Option<GoalCollaborationHandle>,
     citation: Option<CitationHandle>,
     owner_access_read: Option<OwnerAccessReadHandle>,
     owner_membership_admin: Option<OwnerMembershipAdminHandle>,
@@ -171,6 +177,7 @@ impl StoragePorts {
             embedding_maintenance: rejecting.clone(),
             goal_write: rejecting.clone(),
             goal_read: rejecting.clone(),
+            goal_collaboration: rejecting.clone(),
             citation: rejecting.clone(),
             owner_access_read: rejecting.clone(),
             owner_membership_admin: rejecting.clone(),
@@ -259,6 +266,7 @@ impl From<StoragePorts> for EngineStoragePorts {
             },
             goal_command: GoalCommandStoragePorts {
                 goal_write: ports.goal_write.clone(),
+                goal_collaboration: ports.goal_collaboration.clone(),
                 owner_access_read: ports.owner_access_read.clone(),
             },
             ingest: IngestStoragePorts {
@@ -272,6 +280,7 @@ impl From<StoragePorts> for EngineStoragePorts {
             },
             pipeline: PipelineStoragePorts {
                 owner_access_read: ports.owner_access_read.clone(),
+                goal_collaboration: ports.goal_collaboration.clone(),
             },
             query: QueryStoragePorts {
                 memory_read: ports.memory_read.clone(),
@@ -346,6 +355,12 @@ impl StoragePortsBuilder {
     #[must_use]
     pub fn goal_read(mut self, handle: GoalReadHandle) -> Self {
         self.goal_read = Some(handle);
+        self
+    }
+
+    #[must_use]
+    pub fn goal_collaboration(mut self, handle: GoalCollaborationHandle) -> Self {
+        self.goal_collaboration = Some(handle);
         self
     }
 
@@ -451,6 +466,7 @@ impl StoragePortsBuilder {
             embedding_maintenance,
             goal_write,
             goal_read,
+            goal_collaboration,
             citation,
             owner_access_read,
             owner_membership_admin,

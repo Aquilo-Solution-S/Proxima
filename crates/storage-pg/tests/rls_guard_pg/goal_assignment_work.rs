@@ -3,7 +3,7 @@
 //! (#545), read about the goals they return however many goals the store holds.
 
 use proxiima_core::verbs::goal_write::GoalState;
-use proxiima_core::verbs::query::{EntityKind, GoalAssignmentFilter, QueryRequest};
+use proxiima_core::verbs::query::{EntityKind, GoalMotivationFilter, QueryRequest};
 use proxiima_core::{Credentials, GroupId, MemoryId, OwnerId, OwnerRoles, Role, UserId};
 use proxiima_storage_pg::begin_owner_transaction;
 use proxiima_storage_pg::verbs::query::goal_page_sql_for_tests;
@@ -47,38 +47,90 @@ async fn seed(admin: &PgPool, owner: Uuid) {
     .execute(&mut *seed)
     .await
     .unwrap();
+    seed_perspectives(&mut seed, owner).await;
+    seed_goals(&mut seed, owner).await;
+}
+
+async fn seed_perspectives(seed: &mut sqlx::pool::PoolConnection<sqlx::Postgres>, owner: Uuid) {
+    let perspective_content: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
+         VALUES ($1, 'core/test-perspective-v1', decode(repeat('00', 32), 'hex'))
+         RETURNING content_id",
+    )
+    .bind(owner)
+    .fetch_one(&mut **seed)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         SELECT uuidv7(), 'perspective', 'core/test-perspective-v1', $1,
+                uuid_in(md5('perspective' || n)::cstring)
+           FROM generate_series(0, $2 - 1) n",
+    )
+    .bind(owner)
+    .bind(PERSPECTIVES)
+    .execute(&mut **seed)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory
+             (handle, t, kind, owner_id, schema_id, content_id, occurred_at, \"by\", via)
+         SELECT h.handle, h.t, h.kind, h.owner_id, h.schema_id, $2, NULL,
+                '00000000-0000-0000-0000-000000000539'::uuid, NULL::uuid
+           FROM proxiima_core.memory_head h
+          WHERE h.owner_id = $1 AND h.schema_id = 'core/test-perspective-v1'",
+    )
+    .bind(owner)
+    .bind(perspective_content)
+    .execute(&mut **seed)
+    .await
+    .unwrap();
+}
+
+async fn seed_goals(seed: &mut sqlx::pool::PoolConnection<sqlx::Postgres>, owner: Uuid) {
     sqlx::query(
         "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
          SELECT handle, 'core/simple-text-v1', $1, t2 FROM series",
     )
     .bind(owner)
-    .execute(&mut *seed)
+    .execute(&mut **seed)
     .await
     .unwrap();
     // The first version of each series is Active and superseded; the head is
     // Active for the series marked so, Achieved otherwise.
     sqlx::query(
         "INSERT INTO proxiima_core.goal
-             (handle, t, owner_id, title, state, request_id, assignment_t, \"by\", text)
-         SELECT handle, t1, $1, 'g' || n, 'Active', 'first-' || n, assignment,
+             (handle, t, owner_id, title, state, request_id, motivated_by, \"by\", text)
+         SELECT handle, t1, $1, 'g' || n, 'Active', 'first-' || n, array_remove(ARRAY[assignment], NULL),
                 '00000000-0000-0000-0000-000000000539'::uuid, 'text'
            FROM series",
     )
     .bind(owner)
-    .execute(&mut *seed)
+    .execute(&mut **seed)
     .await
     .unwrap();
     sqlx::query(
         "INSERT INTO proxiima_core.goal
-             (handle, t, owner_id, title, state, request_id, assignment_t, \"by\", text, close_fact_t)
+             (handle, t, owner_id, title, state, request_id, motivated_by, \"by\", text, close_fact_t)
          SELECT handle, t2, $1, 'g' || n,
                 CASE WHEN active THEN 'Active' ELSE 'Achieved' END::proxiima_core.goal_state,
-                'head-' || n, assignment, '00000000-0000-0000-0000-000000000539'::uuid, 'text',
+                'head-' || n, array_remove(ARRAY[assignment], NULL), '00000000-0000-0000-0000-000000000539'::uuid, 'text',
                 CASE WHEN active THEN NULL ELSE uuidv7() END
            FROM series",
     )
     .bind(owner)
-    .execute(&mut *seed)
+    .execute(&mut **seed)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal_motivation_index (goal_t, perspective_t, owner_id)
+         SELECT g.t, p.id, g.owner_id
+           FROM proxiima_core.goal g
+           CROSS JOIN LATERAL unnest(g.motivated_by) p(id)
+          WHERE g.owner_id = $1",
+    )
+    .bind(owner)
+    .execute(&mut **seed)
     .await
     .unwrap();
 }
@@ -151,11 +203,11 @@ async fn run_listing(
     run(runtime, owner, req, None, explain).await
 }
 
-fn goals_under(filter: GoalAssignmentFilter) -> QueryRequest {
+fn goals_under(filter: GoalMotivationFilter) -> QueryRequest {
     let mut req = QueryRequest::readable();
     req.entity_kind = Some(EntityKind::Goal);
     req.goal_states.insert(GoalState::Active);
-    req.assignment = filter;
+    req.motivated_by = filter;
     req.limit = 50;
     req
 }
@@ -187,7 +239,7 @@ fn goal_work(plan: &serde_json::Value) -> (f64, bool) {
 }
 
 #[tokio::test]
-async fn assigned_and_unassigned_goal_reads_do_not_scan_the_goal_table() {
+async fn motivated_and_unmotivated_goal_reads_do_not_scan_the_goal_table() {
     let (database, admin, runtime, platform, platform_role, runtime_role, _) =
         super::setup_full_schema().await;
     let owner = Uuid::now_v7();
@@ -201,10 +253,10 @@ async fn assigned_and_unassigned_goal_reads_do_not_scan_the_goal_table() {
 
     // What each read returns: the first Perspective's Active series are the
     // multiples of PERSPECTIVES that are also multiples of ten.
-    let assigned = goals_under(GoalAssignmentFilter::AssignedTo(vec![MemoryId::new(
+    let assigned = goals_under(GoalMotivationFilter::MotivatedBy(vec![MemoryId::new(
         first_perspective,
     )]));
-    let unassigned = goals_under(GoalAssignmentFilter::Unassigned);
+    let unassigned = goals_under(GoalMotivationFilter::Unmotivated);
     let expected_assigned = usize::try_from(SERIES / PERSPECTIVES).unwrap();
     let expected_unassigned = usize::try_from(SERIES / UNASSIGNED_EVERY).unwrap();
     assert_eq!(
@@ -330,6 +382,133 @@ async fn an_owner_of_few_goals_lists_them_without_reading_the_store() {
              (sequential: {sequential}); plan: {plan}"
         );
     }
+    runtime.close().await;
+    platform.close().await;
+    super::cleanup(&database, admin, &platform_role, &runtime_role).await;
+}
+
+async fn insert_projection_fact(admin: &PgPool, owner: Uuid) -> Uuid {
+    let fact_t = Uuid::now_v7();
+    let fact_handle = Uuid::now_v7();
+    let fact_content: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
+         VALUES ($1, 'core/test-fact', decode(repeat('11', 32), 'hex'))
+         RETURNING content_id",
+    )
+    .bind(owner)
+    .fetch_one(admin)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'fact', 'core/test-fact', $2, $3)",
+    )
+    .bind(fact_handle)
+    .bind(owner)
+    .bind(fact_t)
+    .execute(admin)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory
+             (handle, t, owner_id, kind, schema_id, content_id, occurred_at, \"by\", via)
+         VALUES ($1, $2, $3, 'fact', 'core/test-fact', $4, now(), $3, NULL)",
+    )
+    .bind(fact_handle)
+    .bind(fact_t)
+    .bind(owner)
+    .bind(fact_content)
+    .execute(admin)
+    .await
+    .unwrap();
+    fact_t
+}
+
+#[tokio::test]
+async fn motivation_projection_matches_canonical_arrays_after_append() {
+    let (database, admin, runtime, platform, platform_role, runtime_role, _) =
+        super::setup_full_schema().await;
+    let owner = Uuid::now_v7();
+    let perspective = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'group'), ($2, 'group')",
+    )
+    .bind(owner)
+    .bind(Uuid::now_v7())
+    .execute(&admin)
+    .await
+    .unwrap();
+    let fact_t = insert_projection_fact(&admin, owner).await;
+    let perspective_handle = Uuid::now_v7();
+    let perspective_content: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxiima_core.content (owner_id, schema_id, content_hash)
+         VALUES ($1, 'core/test', decode(repeat('00', 32), 'hex'))
+         RETURNING content_id",
+    )
+    .bind(owner)
+    .fetch_one(&admin)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory_head (handle, kind, schema_id, owner_id, t)
+         VALUES ($1, 'perspective', 'core/test', $2, $3)",
+    )
+    .bind(perspective_handle)
+    .bind(owner)
+    .bind(perspective)
+    .execute(&admin)
+    .await
+    .unwrap();
+    // The trigger-maintained projection is populated by the normal Goal write
+    // path. This direct platform fixture only supplies the exact target row.
+    sqlx::query(
+        "INSERT INTO proxiima_core.memory
+             (handle, t, owner_id, kind, schema_id, content_id, occurred_at, \"by\", via, refs)
+         VALUES ($1, $2, $3, 'perspective', 'core/test', $4, NULL, $3, NULL, ARRAY[$5])",
+    )
+    .bind(perspective_handle)
+    .bind(perspective)
+    .bind(owner)
+    .bind(perspective_content)
+    .bind(fact_t)
+    .execute(&admin)
+    .await
+    .unwrap();
+    let goal_t = Uuid::now_v7();
+    let handle = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
+         VALUES ($1, 'core/simple-text-v1', $2, $3)",
+    )
+    .bind(handle)
+    .bind(owner)
+    .bind(goal_t)
+    .execute(&admin)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal
+             (handle, t, owner_id, title, state, request_id, motivated_by, \"by\", text)
+         VALUES ($1, $2, $3, 'g', 'Active', 'projection-test-g', $4, $3, 'text')",
+    )
+    .bind(handle)
+    .bind(goal_t)
+    .bind(owner)
+    .bind(vec![perspective])
+    .execute(&admin)
+    .await
+    .unwrap();
+    let indexed: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+        "SELECT goal_t, perspective_t, owner_id
+           FROM proxiima_core.goal_motivation_index
+          WHERE goal_t = $1",
+    )
+    .bind(goal_t)
+    .fetch_all(&admin)
+    .await
+    .unwrap();
+    assert_eq!(indexed, vec![(goal_t, perspective, owner)]);
+
     runtime.close().await;
     platform.close().await;
     super::cleanup(&database, admin, &platform_role, &runtime_role).await;

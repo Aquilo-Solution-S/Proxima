@@ -148,7 +148,7 @@ async fn walk_query_history_and_transfer_over_one_corpus() {
                 state: GoalState::Active,
                 request_id: "walk-g".into(),
                 close_fact_t: None,
-                assignment_t: Some(self_p.memory_id.into_inner()),
+                motivated_by: vec![self_p.memory_id.into_inner()],
                 dependency_t: vec![],
                 evidence_t: vec![sum.memory_id.into_inner()],
                 mint_write_act: true,

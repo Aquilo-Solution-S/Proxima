@@ -688,7 +688,7 @@ async fn multi_space_goal_and_memory_lifecycle_uses_one_http_session()
             bearer,
             4,
             "core_goal",
-            json!({"action": "set", "space": shared_key, "schema_id": "core/simple-text-v1", "title": "shared goal", "text": "shared goal body", "body": {}, "evidence": [private_id], "target_perspective": perspective_id, "idempotency_key": "issue-668-goal"}),
+            json!({"action": "set", "space": shared_key, "schema_id": "core/simple-text-v1", "title": "shared goal", "text": "shared goal body", "body": {}, "evidence": [private_id], "motivated_by": [perspective_id], "idempotency_key": "issue-668-goal"}),
         )
         .await
         .map_err(|error| format!("goal set: {error}"))?,
@@ -792,22 +792,22 @@ async fn multi_space_goal_and_memory_lifecycle_uses_one_http_session()
         (
             61,
             "transition",
-            json!({"action": "transition", "space": "current", "goal": parent["handle"], "transition": "pause", "pending": "keep", "idempotency_key": "issue-668-wrong-transition"}),
+            json!({"action": "transition", "space": default_owner.to_string(), "goal": parent["handle"], "transition": "pause", "pending": "keep", "idempotency_key": "issue-668-wrong-transition"}),
         ),
         (
             62,
             "modify",
-            json!({"action": "modify", "space": "current", "goal": parent["handle"], "schema_id": "core/simple-text-v1", "title": "wrong space", "text": "wrong space body", "body": {}, "idempotency_key": "issue-668-wrong-modify"}),
+            json!({"action": "modify", "space": default_owner.to_string(), "goal": parent["handle"], "schema_id": "core/simple-text-v1", "title": "wrong space", "text": "wrong space body", "body": {}, "idempotency_key": "issue-668-wrong-modify"}),
         ),
         (
             63,
             "mark_achieved",
-            json!({"action": "mark_achieved", "space": "current", "goal": parent["handle"], "idempotency_key": "issue-668-wrong-achieve"}),
+            json!({"action": "mark_achieved", "space": default_owner.to_string(), "goal": parent["handle"], "idempotency_key": "issue-668-wrong-achieve"}),
         ),
         (
             64,
             "decompose",
-            json!({"action": "decompose", "space": "current", "parent_goal": parent["handle"], "children": [{"schema_id": "core/simple-text-v1", "title": "wrong child", "text": "wrong child body", "body": {}}], "idempotency_key": "issue-668-wrong-decompose"}),
+            json!({"action": "decompose", "space": default_owner.to_string(), "parent_goal": parent["handle"], "children": [{"schema_id": "core/simple-text-v1", "title": "wrong child", "text": "wrong child body", "body": {}}], "idempotency_key": "issue-668-wrong-decompose"}),
         ),
     ] {
         let refused =
@@ -892,15 +892,15 @@ async fn multi_space_goal_and_memory_lifecycle_uses_one_http_session()
             .fetch_one(&admin)
             .await?;
     assert_eq!(default_stored_owner, default_owner.into_inner());
-    let assignment: Option<uuid::Uuid> =
-        sqlx::query_scalar("SELECT assignment_t FROM proxiima_core.goal WHERE t = $1")
+    let motivation: (Option<uuid::Uuid>, Vec<uuid::Uuid>) =
+        sqlx::query_as("SELECT assignment_t, motivated_by FROM proxiima_core.goal WHERE t = $1")
             .bind(uuid::Uuid::parse_str(&goal_id)?)
             .fetch_one(&admin)
             .await?;
     assert_eq!(
-        assignment,
-        Some(uuid::Uuid::parse_str(&perspective_id)?),
-        "explicit target Perspective is stored in the selected space"
+        motivation,
+        (None, vec![uuid::Uuid::parse_str(&perspective_id)?]),
+        "exact motivating Perspective is stored in the selected space"
     );
     let refused_writes: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM proxiima_core.goal WHERE request_id LIKE '%issue-668-wrong-%'",

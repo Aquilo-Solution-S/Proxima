@@ -96,11 +96,27 @@ impl ResolvedMemory {
 }
 
 /// Read each unique UUID through its issuing store as the caller.
+#[cfg(test)]
 pub(crate) async fn resolve_references(
     ctx: &McpToolCtx,
     handles: &[String],
 ) -> Result<Vec<ResolvedMemory>, McpToolError> {
+    resolve_references_with_retained(ctx, handles, &[]).await
+}
+
+/// Resolve references while bypassing ordinary reads only for exact pins
+/// sealed from a forked prior revision. All other handles use the caller's
+/// normal local or remote read scope.
+pub(crate) async fn resolve_references_with_retained(
+    ctx: &McpToolCtx,
+    handles: &[String],
+    retained: &[(crate::MemoryId, MemoryHandleClass)],
+) -> Result<Vec<ResolvedMemory>, McpToolError> {
     let local_number = ctx.require_engine()?.store_number();
+    let retained = retained
+        .iter()
+        .map(|(id, kind)| (id.into_inner(), *kind))
+        .collect::<std::collections::HashMap<_, _>>();
     let mut seen = std::collections::HashSet::with_capacity(handles.len());
     let mut ids = Vec::with_capacity(handles.len());
     for raw in handles {
@@ -109,7 +125,12 @@ pub(crate) async fn resolve_references(
             ids.push(id);
         }
     }
-    let (local_ids, remote_ids): (Vec<_>, Vec<_>) = ids
+    let readable_ids = ids
+        .iter()
+        .copied()
+        .filter(|id| !retained.contains_key(id))
+        .collect::<Vec<_>>();
+    let (local_ids, remote_ids): (Vec<_>, Vec<_>) = readable_ids
         .iter()
         .copied()
         .partition(|id| crate::memory_store_number(*id) == local_number);
@@ -122,18 +143,26 @@ pub(crate) async fn resolve_references(
         .resolve_memory_ids_with_kind(&local_ids)
         .await?
         .into_iter();
-    let resolved = ids
+    let mut resolved = readable_ids
         .into_iter()
         .map(|id| {
             if crate::memory_store_number(id) == local_number {
                 let (id, kind) = local.next().expect("one classified memory per local UUID");
-                ResolvedMemory::Local(id, kind)
+                (id.into_inner(), ResolvedMemory::Local(id, kind))
             } else {
-                ResolvedMemory::Remote(remote.next().expect("one bounded result per remote UUID"))
+                let origin = remote.next().expect("one bounded result per remote UUID");
+                (origin.handle(), ResolvedMemory::Remote(origin))
             }
         })
-        .collect::<Vec<_>>();
-    Ok(resolved)
+        .collect::<std::collections::HashMap<_, _>>();
+    ids.into_iter()
+        .map(|id| {
+            retained.get(&id).map_or_else(
+                || resolved.remove(&id).ok_or_else(|| not_found(id)),
+                |kind| Ok(ResolvedMemory::Local(crate::MemoryId::new(id), *kind)),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
 }
 
 pub(crate) async fn resolve_remote_origins(

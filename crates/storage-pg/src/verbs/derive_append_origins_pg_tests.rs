@@ -62,6 +62,7 @@ fn derived_draft(
         supersedes: None,
         lexical_language: None,
         queued_spaces: &[],
+        guided_by: &[],
         request: None,
     }
 }

@@ -1409,6 +1409,7 @@ impl PgStorage {
             .embedding_maintenance(self.clone())
             .goal_write(self.clone())
             .goal_read(self.clone())
+            .goal_collaboration(self.clone())
             .citation(self.clone())
             .owner_access_read(self.clone())
             .owner_membership_admin(self.clone())

@@ -10,7 +10,9 @@ use proxiima::{
 use proxiima_core::{
     AgentNoteV1, AuthPath, AuthzContext, OwnerId, Role, SpiiceRegistry, SpiiceRegistryError, UserId,
 };
-use proxiima_pg_testkit::{admin_url, create_db, db_url, drop_db, quoted_ident, unique_db_name};
+use proxiima_pg_testkit::{
+    admin_url, create_db, db_url, drop_db, provision_goal_reader, quoted_ident, unique_db_name,
+};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{AssertSqlSafe, ConnectOptions, PgPool};
 use std::str::FromStr;
@@ -127,6 +129,9 @@ async fn setup() -> Fixture {
         ),
     )
     .await;
+    provision_goal_reader(&admin, &platform, &runtime)
+        .await
+        .expect("goal reader fixture role");
     Fixture {
         runtime_url: role_url(&database, &runtime, &password),
         platform_url: role_url(&database, &platform, &password),

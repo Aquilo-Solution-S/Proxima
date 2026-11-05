@@ -773,6 +773,12 @@ pub enum KeyShape {
     GoalT {
         column: &'static str,
     },
+    /// Keyed on a stable Goal series handle, under the column named here.
+    /// The owner is reached through `proxiima_core.goal_head.handle`.
+    GoalHandle {
+        column: &'static str,
+        trailing: &'static [&'static str],
+    },
     /// Keyed on a `proxiima_core.blob` id, under the column named here.
     ///
     /// Every keyed variant names its column, because the two verbs that
@@ -820,7 +826,7 @@ pub enum KeyShape {
 
 impl KeyShape {
     /// The table this key lives in and the column it is stored under there,
-    /// for the three keys that name a core entity.
+    /// for the four keys that name a core entity.
     ///
     /// This is what makes a `None` `owner_column` a checkable claim rather
     /// than a hope: a surface that carries no owner asserts it is reached
@@ -838,6 +844,7 @@ impl KeyShape {
         match self {
             Self::MemoryT { column } => Some(("proxiima_core.memory", "t", column)),
             Self::GoalT { column } => Some(("proxiima_core.goal", "t", column)),
+            Self::GoalHandle { column, .. } => Some(("proxiima_core.goal_head", "handle", column)),
             Self::BlobId { column } => Some(("proxiima_core.blob", "blob_id", column)),
             // `EntityT` has two homes, so it has none a join can name.
             Self::EntityT { .. } | Self::OwnerId | Self::Custom(_) => None,
@@ -854,6 +861,11 @@ impl KeyShape {
             | Self::GoalT { column }
             | Self::BlobId { column }
             | Self::EntityT { column } => vec![column],
+            Self::GoalHandle { column, trailing } => {
+                let mut columns = vec![column];
+                columns.extend(trailing.iter().copied());
+                columns
+            }
             Self::OwnerId => vec!["owner_id"],
             Self::Custom(columns) => columns.to_vec(),
         }
@@ -950,6 +962,7 @@ impl EraseLeg {
                     EraseRule::ByKey => match surface.key {
                         KeyShape::MemoryT { .. }
                         | KeyShape::GoalT { .. }
+                        | KeyShape::GoalHandle { .. }
                         | KeyShape::BlobId { .. } => Self::Keyed(surface.key),
                         // Keyed on nothing the erase builds a selection set
                         // for, and no bespoke leg claimed it. The generator

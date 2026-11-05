@@ -26,6 +26,7 @@ pub(super) fn memory_row_from_db(
         origins: r.origins.into_iter().map(MemoryId::new).collect(),
         refs: r.refs.into_iter().map(MemoryId::new).collect(),
         goal_refs: r.goal_refs.into_iter().map(GoalId::new).collect(),
+        guided_by: r.guided_by.into_iter().map(GoalId::new).collect(),
         occurred_at: r.occurred_at,
         payload,
     })
@@ -45,7 +46,8 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
         text: r.text,
         state: r.state,
         dependency_goal_ids: r.dependency_goal_ids.into_iter().map(GoalId::new).collect(),
-        assignment: r.assignment.map(MemoryId::new),
+        historical_assignment: r.assignment.map(MemoryId::new),
+        motivated_by: r.motivated_by.into_iter().map(MemoryId::new).collect(),
         evidence: r.evidence.into_iter().map(MemoryId::new).collect(),
         set_at: r.set_at,
         changed_at: r.created_at,
@@ -75,6 +77,7 @@ pub(super) struct GoalRowDb {
     state: GoalState,
     dependency_goal_ids: Vec<uuid::Uuid>,
     assignment: Option<uuid::Uuid>,
+    motivated_by: Vec<uuid::Uuid>,
     evidence: Vec<uuid::Uuid>,
 }
 
@@ -92,5 +95,6 @@ pub(super) struct MemoryRowDb {
     pub(super) origins: Vec<uuid::Uuid>,
     pub(super) refs: Vec<uuid::Uuid>,
     pub(super) goal_refs: Vec<uuid::Uuid>,
+    pub(super) guided_by: Vec<uuid::Uuid>,
     occurred_at: Option<time::OffsetDateTime>,
 }

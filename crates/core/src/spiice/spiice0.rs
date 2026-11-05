@@ -512,6 +512,84 @@ const STATE_SURFACES: &[Surface] = &[
         },
         completeness: None,
     },
+    Surface {
+        table: "proxiima_core.goal_access_grant",
+        key: KeyShape::GoalHandle {
+            column: "goal_handle",
+            trailing: &["subject_id"],
+        },
+        owner_column: None,
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::Cascade {
+            via: DbConstraint {
+                relation: "proxiima_core.goal_access_grant",
+                name: "goal_access_grant_goal_handle_fkey",
+            },
+        },
+        export: ExportRule::Rows,
+        forget: ForgetRule::Keep {
+            why: "Goal authority is independent of memory forgetting",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "audience authority is not a memory or Goal admission",
+        },
+        completeness: None,
+    },
+    Surface {
+        table: "proxiima_core.goal_memory_publication",
+        key: KeyShape::Custom(&["goal_handle", "memory_t"]),
+        owner_column: Some("source_owner"),
+        transfer: TransferRule::RetainAtSource {
+            why: "publication consent remains attributed to the source owner when the memory moves",
+        },
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Allowlist(&[
+            "goal_handle",
+            "memory_t",
+            "source_owner",
+            "source_generation",
+            "controller_generation",
+            "permitted_use",
+            "published_by",
+            "cited_upload_id",
+        ]),
+        forget: ForgetRule::Keep {
+            why: "publication consent is not memory payload and remains until its inverse erase",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Counted("goal_memory_publications"),
+        completeness: Some(DbConstraint {
+            relation: "proxiima_core.goal_memory_publication",
+            name: "goal_memory_publication_source_owner_fkey",
+        }),
+    },
+    Surface {
+        table: "proxiima_core.goal_work_binding",
+        key: KeyShape::Custom(&["goal_handle", "memory_handle"]),
+        owner_column: Some("source_owner"),
+        transfer: TransferRule::RetainAtSource {
+            why: "a same-owner work binding remains with the source owner when authority changes",
+        },
+        erase: EraseRule::ByOwner,
+        export: ExportRule::Allowlist(&[
+            "goal_handle",
+            "memory_handle",
+            "source_owner",
+            "source_generation",
+            "controller_generation",
+            "bound_by",
+        ]),
+        forget: ForgetRule::Keep {
+            why: "work authority is not memory payload and remains until its inverse erase",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Counted("goal_work_bindings"),
+        completeness: Some(DbConstraint {
+            relation: "proxiima_core.goal_work_binding",
+            name: "goal_work_binding_source_owner_fkey",
+        }),
+    },
 ];
 
 // ── Kernel surfaces ─────────────────────────────────────────────────────
@@ -522,6 +600,30 @@ const STATE_SURFACES: &[Surface] = &[
 // no other spiice may declare a `proxiima_core.*` surface.
 
 const KERNEL_SURFACES: &[Surface] = &[
+    Surface {
+        table: "proxiima_core.goal_motivation_index",
+        key: KeyShape::Custom(&["goal_t", "perspective_t"]),
+        owner_column: Some("owner_id"),
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::Cascade {
+            via: DbConstraint {
+                relation: "proxiima_core.goal_motivation_index",
+                name: "goal_motivation_index_goal_t_fkey",
+            },
+        },
+        export: ExportRule::DerivedFrom {
+            source: "proxiima_core.goal",
+            why: "reverse lookup derived from Goal.motivated_by",
+        },
+        forget: ForgetRule::Keep {
+            why: "the scalar lookup follows the Goal series, which has no forget verb",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "the lookup is maintained by a Goal trigger and removed by cascade",
+        },
+        completeness: None,
+    },
     Surface {
         table: "proxiima_core.memory",
         key: KeyShape::MemoryT { column: "t" },
@@ -1193,8 +1295,24 @@ const TOOLS: &[ToolContract] = &[
         actions: &[],
     },
     ToolContract {
+        wire_name: tool::CORE_FORK,
+        actions: &[],
+    },
+    ToolContract {
         wire_name: tool::CORE_GOAL,
-        actions: &["set", "transition", "modify", "mark_achieved", "decompose"],
+        actions: &[
+            "set",
+            "grant_access",
+            "revoke_access",
+            "publish",
+            "unpublish",
+            "bind_work",
+            "unbind_work",
+            "transition",
+            "modify",
+            "mark_achieved",
+            "decompose",
+        ],
     },
     ToolContract {
         wire_name: tool::CORE_FACT,

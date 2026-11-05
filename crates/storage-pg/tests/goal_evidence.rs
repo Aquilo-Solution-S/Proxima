@@ -4,7 +4,6 @@
 
 use std::sync::Arc;
 
-use proxiima_core::MemoryKind;
 use proxiima_core::storage_ports::FactIngestPort;
 use proxiima_core::storage_ports::MemoryAuthoringPort;
 use proxiima_core::storage_ports::{GoalReadPort, GoalWritePort, OwnerWritePermit};
@@ -12,7 +11,7 @@ use proxiima_core::test_fixtures::owner_scope_for_tests;
 use proxiima_core::verbs::fact_ingest::FactWriteCommand;
 use proxiima_core::verbs::goal_write::{
     AchieveGoalAtomicRequest, ChildGoalDraft, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
-    GoalAssignmentTarget, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef,
+    GoalAtomicContext, GoalAuthorship, GoalDraft, GoalEvidenceRef, GoalMotivationRef,
     GoalPayloadWrite, GoalState, GoalTopologyWrite, IdempotencyKey, ModifyGoalAtomicRequest,
     OperatorKind, SystemOrigin,
 };
@@ -20,6 +19,7 @@ use proxiima_core::{
     AccessKind, EdgeEndpoint, EntityKind, InputContractId, ModelId, OperatorId, OwnerId,
     PromptVersion, SchemaId, SchemaVersion, SpiiceRegistry, StorageError, UserId,
 };
+use proxiima_core::{GoalEditPermit, MemoryKind};
 use proxiima_pg_testkit::{db_url, drop_db};
 use proxiima_storage_pg::PgStorage;
 use proxiima_storage_pg::test_fixtures::create_core_db;
@@ -71,7 +71,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
         let perspective = pg.ingest_fact_atomic(&permit, &perspective, None).await?;
         let registry = SpiiceRegistry::new().freeze_or_panic_for_tests();
         let topology = GoalTopologyWrite::new(
-            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
+            vec![GoalMotivationRef::perspective(perspective.memory_id)],
             Vec::new(),
             vec![GoalEvidenceRef::new(perspective.memory_id)],
         )?;
@@ -113,7 +113,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
         }
 
         let topology = GoalTopologyWrite::new(
-            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
+            vec![GoalMotivationRef::perspective(perspective.memory_id)],
             Vec::new(),
             vec![GoalEvidenceRef::new(fact.memory_id)],
         )?;
@@ -176,7 +176,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         sidecar_payload: None,
                         state: GoalState::Active,
                         topology: GoalTopologyWrite::new(
-                            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
+                            vec![GoalMotivationRef::perspective(perspective.memory_id)],
                             Vec::new(),
                             vec![
                                 GoalEvidenceRef::new(fact.memory_id),
@@ -205,6 +205,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
         let err = pg
             .modify_goal_atomic(
                 &ModifyGoalAtomicRequest {
+                    motivated_by: None,
                     owner,
                     prior_goal_id: stale_goal.goal_id,
                     replacement: GoalPayloadWrite {
@@ -224,7 +225,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     evidence: None,
                 },
-                &permit)
+                GoalEditPermit::Owner(&permit))
             .await
             .expect_err("omitted storage evidence must fail closed on a missing target");
         assert!(
@@ -245,7 +246,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                 },
                 evidence: vec![GoalEvidenceRef::new(fact.memory_id)],
             },
-            &permit)
+                GoalEditPermit::Owner(&permit))
         .await
         .expect("host mark-achieved must accept Fact evidence");
 
@@ -257,7 +258,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
             prompt_version: PromptVersion::new("v1"),
         });
         let operator_fact_topology = GoalTopologyWrite::new(
-            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
+            vec![GoalMotivationRef::perspective(perspective.memory_id)],
             Vec::new(),
             vec![GoalEvidenceRef::new(fact.memory_id)],
         )?;
@@ -295,7 +296,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
         );
 
         let operator_abstraction_topology = GoalTopologyWrite::new(
-            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
+            vec![GoalMotivationRef::perspective(perspective.memory_id)],
             Vec::new(),
             vec![GoalEvidenceRef::new(abs.memory_id)],
         )?;
@@ -349,7 +350,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                 },
                 evidence: vec![GoalEvidenceRef::new(abs.memory_id)],
             },
-            &permit)
+                GoalEditPermit::Owner(&permit))
         .await
         .expect("host mark-achieved must accept Abstraction evidence");
 
@@ -366,7 +367,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         sidecar_payload: None,
                         state: GoalState::Active,
                         topology: GoalTopologyWrite::new(
-                            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
+                            vec![GoalMotivationRef::perspective(perspective.memory_id)],
                             Vec::new(),
                             Vec::new(),
                         )?,
@@ -397,7 +398,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                     },
                     evidence: vec![GoalEvidenceRef::new(perspective.memory_id)],
                 },
-                &permit)
+                GoalEditPermit::Owner(&permit))
             .await
             .expect_err("mark-achieved must reject Perspective evidence");
         assert!(
@@ -418,7 +419,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         sidecar_payload: None,
                         state: GoalState::Active,
                         topology: GoalTopologyWrite::new(
-                            Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
+                            vec![GoalMotivationRef::perspective(perspective.memory_id)],
                             Vec::new(),
                             vec![GoalEvidenceRef::new(fact.memory_id)],
                         )?,
@@ -447,7 +448,7 @@ async fn perspective_evidence_is_rejected_in_tx() {
                         publication: None,
                     },
                     topology: GoalTopologyWrite::new(
-                        Some(GoalAssignmentTarget::perspective(perspective.memory_id)),
+                        vec![GoalMotivationRef::perspective(perspective.memory_id)],
                         Vec::new(),
                         Vec::new(),
                     )?,
@@ -580,7 +581,7 @@ impl Fixture {
         evidence: &[proxiima_core::MemoryId],
     ) -> Result<proxiima_core::verbs::goal_write::GoalWriteOutcome, StorageError> {
         let topology = GoalTopologyWrite::new(
-            Some(GoalAssignmentTarget::perspective(self.perspective)),
+            vec![GoalMotivationRef::perspective(self.perspective)],
             Vec::new(),
             evidence.iter().copied().map(GoalEvidenceRef::new).collect(),
         )
@@ -621,6 +622,7 @@ impl Fixture {
         self.pg
             .modify_goal_atomic(
                 &ModifyGoalAtomicRequest {
+                    motivated_by: None,
                     owner: self.owner,
                     prior_goal_id: prior,
                     replacement: payload(key),
@@ -631,7 +633,7 @@ impl Fixture {
                     evidence: evidence
                         .map(|ids| ids.iter().copied().map(GoalEvidenceRef::new).collect()),
                 },
-                &self.permit,
+                GoalEditPermit::Owner(&self.permit),
             )
             .await
     }
@@ -730,7 +732,7 @@ async fn operator_modify_and_decompose_accept_fact_evidence() {
                     authorship: operator_authorship(),
                     context: context(&registry),
                     topology: GoalTopologyWrite::new(
-                        Some(GoalAssignmentTarget::perspective(fx.perspective)),
+                        vec![GoalMotivationRef::perspective(fx.perspective)],
                         Vec::new(),
                         Vec::new(),
                     )?,
@@ -809,7 +811,7 @@ async fn unassigned_operator_goals_allow_empty_evidence_through_successors() {
             draft: GoalDraft::active_from_payload_write(
                 fx.owner,
                 payload("unassigned goal"),
-                GoalTopologyWrite::new(None, Vec::new(), Vec::new())?,
+                GoalTopologyWrite::new(Vec::new(), Vec::new(), Vec::new())?,
                 operator_authorship(),
                 IdempotencyKey::new("unassigned-create")?,
             ),
@@ -838,7 +840,7 @@ async fn unassigned_operator_goals_allow_empty_evidence_through_successors() {
                     parent_goal_id: modified.goal_id,
                     authorship: operator_authorship(),
                     context: context(&registry),
-                    topology: GoalTopologyWrite::new(None, Vec::new(), Vec::new())?,
+                    topology: GoalTopologyWrite::new(Vec::new(), Vec::new(), Vec::new())?,
                     children: vec![ChildGoalDraft {
                         payload: payload("unassigned child"),
                         evidence: Vec::new(),
@@ -864,7 +866,7 @@ async fn unassigned_operator_goals_allow_empty_evidence_through_successors() {
                         context: context(&registry),
                         evidence: Vec::new(),
                     },
-                    &fx.permit,
+                    GoalEditPermit::Owner(&fx.permit),
                 )
                 .await?;
             versions.push(achieved.goal_id);

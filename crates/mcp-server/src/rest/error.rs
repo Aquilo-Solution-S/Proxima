@@ -294,7 +294,7 @@ const fn storage_status(err: &StorageError) -> (StatusCode, &'static str, &'stat
         | StorageError::GoalChildrenAllAbandoned => {
             (StatusCode::BAD_REQUEST, "invalid-input", "Invalid input")
         }
-        StorageError::MembershipForbidden(_) => (
+        StorageError::Forbidden(_) => (
             StatusCode::FORBIDDEN,
             "forbidden",
             "Membership authorization refused",

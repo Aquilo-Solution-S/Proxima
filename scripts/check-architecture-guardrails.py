@@ -511,6 +511,12 @@ def require_owner_write_permit(
                 "add_group_member", "remove_group_member",
                 "remove_group_member_relation", "replace_group_member_relation",
             }
+            else "GoalEditPermit"
+            if name in {"transition_goal_atomic", "achieve_goal_atomic", "modify_goal_atomic"}
+            and rel_path in {
+                "crates/core/src/storage_ports/goals.rs",
+                "crates/storage-pg/src/verbs/goal_write/commands.rs",
+            }
             else OWNER_WRITE_PERMIT
         )
         if required not in signature:
@@ -885,6 +891,7 @@ LIFECYCLE_GUC_MODULE = "crates/storage-pg/src/lifecycle_scope.rs"
 LIFECYCLE_SCOPE_ENTER = re.compile(r"\bPgLifecycleScope::(?:enter|begin)\(")
 EXPECTED_LIFECYCLE_ENTER_SITES = {
     ("crates/storage-pg/src/ports/owners.rs", "visible_home_owners"): 1,
+    ("crates/storage-pg/src/ports/owners.rs", "visible_entries"): 1,
     ("crates/storage-pg/src/verbs/derive_append.rs", "try_derived_replay"): 1,
     ("crates/storage-pg/src/verbs/derive_append.rs", "assert_derived_index_rows"): 1,
     ("crates/storage-pg/src/verbs/derive_append.rs", "record_external_edges"): 1,

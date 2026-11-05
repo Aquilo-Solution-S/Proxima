@@ -10,8 +10,31 @@ SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class fk_parent', 'p
 -- blob
 SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxiima_core', 'blob', 'owner_id', 'owner_id');
 
+-- A publication grants only the blob explicitly cited by its exact Fact.
+-- The immutable blob identity is distinct from mutable upload routing.
+ALTER POLICY proxiima_owner_read ON proxiima_core.blob USING (
+    owner_id=ANY(COALESCE(NULLIF(current_setting('app.owner',true),'')::uuid[],'{}'))
+    OR EXISTS (SELECT 1 FROM proxiima_core.memory cited
+               WHERE cited.blob_id=blob.blob_id AND cited.owner_id=blob.owner_id
+                 AND cited.kind='fact' AND cited.forgotten_at IS NULL
+                 AND proxiima_core.goal_memory_read_admitted(cited.t))
+);
+
 -- blob_uploads
 SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxiima_core', 'blob_uploads', 'owner_id', 'owner_id');
+ALTER POLICY proxiima_owner_read ON proxiima_core.blob_uploads USING (
+    owner_id=ANY(COALESCE(NULLIF(current_setting('app.owner',true),'')::uuid[],'{}'))
+    OR (status='completed' AND EXISTS (
+        SELECT 1 FROM proxiima_core.goal_memory_publication publication
+        JOIN proxiima_core.memory cited ON cited.t=publication.memory_t
+        JOIN proxiima_core.goal_memory_read_routes() route
+          ON route.memory_t=cited.t AND route.goal_handle=publication.goal_handle
+        WHERE publication.cited_upload_id=blob_uploads.upload_id
+          AND cited.blob_id=blob_uploads.blob_id AND cited.owner_id=blob_uploads.owner_id
+          AND cited.kind='fact' AND cited.forgotten_at IS NULL
+    ))
+);
+
 
 -- closed_handle
 SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'proxiima_core', 'closed_handle', 'ownerless', NULL);
@@ -93,9 +116,18 @@ ALTER POLICY proxiima_owner_read ON proxiima_core.spiice_surface USING (((curren
 -- goal
 SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxiima_core', 'goal', 'owner_id', 'owner_id');
 
-ALTER POLICY proxiima_owner_read ON proxiima_core.goal USING ((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.read_goal'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])));
+ALTER POLICY proxiima_owner_read ON proxiima_core.goal USING (
+    owner_id = ANY ((SELECT COALESCE((NULLIF(current_setting('app.read_goal'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])
+);
 
 ALTER POLICY proxiima_owner_write ON proxiima_core.goal USING ((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_goal'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) WITH CHECK ((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_goal'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])));
+
+-- goal_motivation_index is a derived projection. Goal owners may read rows
+-- through their Goal scope; only the trigger/platform path may write them.
+SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'proxiima_core', 'goal_motivation_index', 'ownerless', NULL);
+ALTER POLICY proxiima_owner_read ON proxiima_core.goal_motivation_index USING (
+    owner_id = ANY (COALESCE(NULLIF(current_setting('app.read_goal', true), '')::uuid[], '{}'::uuid[])
+));
 
 -- goal_change_v1
 SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class fk_parent', 'proxiima_core', 'goal_change_v1', 'fk_parent', NULL);
@@ -106,6 +138,42 @@ SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'pr
 ALTER POLICY proxiima_owner_read ON proxiima_core.goal_head USING ((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.read_goal'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])));
 
 ALTER POLICY proxiima_owner_write ON proxiima_core.goal_head USING ((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_goal'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) WITH CHECK ((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_goal'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])));
+
+-- Goal collaboration routes. These are additive to owner RLS and never add a
+-- subject to app.owner/app.read_* arrays. The trusted host binds app.goal_subject
+-- from the sealed authentication scope. The database role is a trusted host
+-- connection; neither network inputs nor spiices may supply scope SQL.
+SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'proxiima_core', 'goal_access_grant', 'ownerless', NULL);
+ALTER POLICY proxiima_owner_read ON proxiima_core.goal_access_grant USING (
+    proxiima_core.goal_access_grant.subject_id = NULLIF(current_setting('app.goal_subject', true), '')::uuid
+    OR EXISTS (SELECT 1 FROM proxiima_core.goal_head h
+               WHERE h.handle = proxiima_core.goal_access_grant.goal_handle
+                 AND h.owner_id = ANY (COALESCE(NULLIF(current_setting('app.read_goal', true), '')::uuid[], '{}'::uuid[])))
+);
+ALTER POLICY proxiima_owner_write ON proxiima_core.goal_access_grant USING (false) WITH CHECK (false);
+
+SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'proxiima_core', 'goal_memory_publication', 'ownerless', NULL);
+ALTER POLICY proxiima_owner_read ON proxiima_core.goal_memory_publication USING (
+    EXISTS (SELECT 1 FROM proxiima_core.goal_memory_read_routes() route
+             WHERE route.goal_handle=goal_memory_publication.goal_handle
+               AND route.memory_t=goal_memory_publication.memory_t)
+    OR EXISTS (SELECT 1 FROM proxiima_core.memory source
+                WHERE source.t=goal_memory_publication.memory_t
+                  AND source.owner_id=ANY(CASE source.kind
+                      WHEN 'fact' THEN COALESCE(NULLIF(current_setting('app.owner',true),'')::uuid[],'{}')
+                      WHEN 'abstraction' THEN COALESCE(NULLIF(current_setting('app.read_abstraction',true),'')::uuid[],'{}')
+                      WHEN 'perspective' THEN COALESCE(NULLIF(current_setting('app.read_perspective',true),'')::uuid[],'{}') END))
+);
+ALTER POLICY proxiima_owner_write ON proxiima_core.goal_memory_publication USING (false) WITH CHECK (false);
+
+SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'proxiima_core', 'goal_work_binding', 'ownerless', NULL);
+ALTER POLICY proxiima_owner_read ON proxiima_core.goal_work_binding USING (
+    EXISTS (SELECT 1 FROM proxiima_core.goal_memory_read_routes() route
+             WHERE route.goal_handle=goal_work_binding.goal_handle
+               AND route.memory_handle=goal_work_binding.memory_handle)
+    OR EXISTS (SELECT 1 FROM proxiima_core.memory_head h WHERE h.handle=goal_work_binding.memory_handle)
+);
+ALTER POLICY proxiima_owner_write ON proxiima_core.goal_work_binding USING (false) WITH CHECK (false);
 
 -- goal_replay_declaration
 SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class fk_parent', 'proxiima_core', 'goal_replay_declaration', 'fk_parent', NULL);
@@ -169,7 +237,9 @@ ALTER POLICY proxiima_owner_write ON proxiima_core.lexical_languages USING (fals
 -- the transaction runs in the lifecycle scope (PgLifecycleScope, #488).
 SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxiima_core', 'memory', 'owner_id', 'owner_id');
 
-ALTER POLICY proxiima_owner_read ON proxiima_core.memory USING ((((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])) AND (((kind = 'fact'::proxiima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'abstraction'::proxiima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.read_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'perspective'::proxiima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.read_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))))) AND ((forgotten_at IS NULL) OR (current_setting('app.proxiima_lifecycle'::text, true) = 'on'::text))));
+ALTER POLICY proxiima_owner_read ON proxiima_core.memory USING (
+    (((owner_id = ANY ((SELECT COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])) AND (((kind = 'fact'::proxiima_core.memory_kind) AND (owner_id = ANY ((SELECT COALESCE((NULLIF(current_setting('app.owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'abstraction'::proxiima_core.memory_kind) AND (owner_id = ANY ((SELECT COALESCE((NULLIF(current_setting('app.read_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'perspective'::proxiima_core.memory_kind) AND (owner_id = ANY ((SELECT COALESCE((NULLIF(current_setting('app.read_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))))) AND ((forgotten_at IS NULL) OR (current_setting('app.proxiima_lifecycle'::text, true) = 'on'::text)))
+);
 
 ALTER POLICY proxiima_owner_write ON proxiima_core.memory USING ((((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])) AND (((kind = 'fact'::proxiima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'abstraction'::proxiima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'perspective'::proxiima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))))) AND ((forgotten_at IS NULL) OR (current_setting('app.proxiima_lifecycle'::text, true) = 'on'::text)))) WITH CHECK ((((owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[])) AND (((kind = 'fact'::proxiima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_owner'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'abstraction'::proxiima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_abstraction'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))) OR ((kind = 'perspective'::proxiima_core.memory_kind) AND (owner_id = ANY (( SELECT COALESCE((NULLIF(current_setting('app.write_perspective'::text, true), ''::text))::uuid[], '{}'::uuid[]) AS "coalesce")::uuid[]))))) AND ((forgotten_at IS NULL) OR (current_setting('app.proxiima_lifecycle'::text, true) = 'on'::text))));
 
@@ -330,3 +400,25 @@ SELECT proxiima_core.owner_rls_apply_class(
 -- vector_index_debt: read and written at its entity's kind, as its head is;
 -- the platform scope drains it.
 SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class owner_id', 'proxiima_core', 'vector_index_debt', 'owner_id', 'owner_id');
+
+-- Add exact Goal routes after the owner predicates. A head remains owner-only:
+-- publishing an old version never reveals its private global successor.
+DO $goal_routes$
+DECLARE relation_name text; predicate text; extra text;
+BEGIN
+    FOREACH relation_name IN ARRAY ARRAY['memory', 'goal', 'goal_head', 'content', 'sketch'] LOOP
+        SELECT pg_get_expr(p.polqual, p.polrelid) INTO predicate
+          FROM pg_policy p
+         WHERE p.polrelid = format('proxiima_core.%I', relation_name)::regclass
+           AND p.polname = 'proxiima_owner_read';
+        extra := CASE relation_name
+          WHEN 'memory' THEN 'proxiima_core.goal_memory_read_admitted(t)'
+          WHEN 'goal' THEN 'proxiima_core.goal_read_admitted(t)'
+          WHEN 'goal_head' THEN 'proxiima_core.goal_read_admitted(t)'
+          WHEN 'content' THEN 'EXISTS (SELECT 1 FROM proxiima_core.memory m WHERE m.content_id = content.content_id AND m.owner_id = content.owner_id AND proxiima_core.goal_memory_read_admitted(m.t))'
+          WHEN 'sketch' THEN 'EXISTS (SELECT 1 FROM proxiima_core.memory m WHERE m.t=sketch.t AND m.owner_id=sketch.owner_id AND proxiima_core.goal_memory_read_admitted(m.t)) OR EXISTS (SELECT 1 FROM proxiima_core.goal g WHERE g.t=sketch.t AND g.owner_id=sketch.owner_id AND proxiima_core.goal_read_admitted(g.t))'
+        END;
+        EXECUTE format('ALTER POLICY proxiima_owner_read ON proxiima_core.%I USING ((%s) OR (%s))', relation_name, predicate, extra);
+    END LOOP;
+END
+$goal_routes$;

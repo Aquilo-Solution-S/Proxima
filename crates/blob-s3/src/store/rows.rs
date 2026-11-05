@@ -6,7 +6,7 @@
 
 use proxiima_core::citations::UploadedBlobPayload;
 use proxiima_core::storage_ports::{CitedBlobHeld, CitedBlobStaged};
-use proxiima_core::{OwnerId, UPLOADED_BLOB_SCHEMA_ID};
+use proxiima_core::{GoalHandle, MemoryId, OwnerId, UPLOADED_BLOB_SCHEMA_ID};
 use proxiima_storage_pg::verbs::forget::ColdPurgeEntry;
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -370,23 +370,67 @@ pub(super) async fn load_blob_read_record_on_connection(
         .await
         .map_err(BlobError::Db)?;
 
-    row.map(|row| {
-        let sha256 = completed_sha256(&row)?;
-        Ok(BlobReadRecord {
-            cited_object_id: row.get("blob_id"),
-            content_hash: hash32(&row.get::<Vec<u8>, _>("content_hash"), "content_hash")?,
-            bucket: row.get("bucket"),
-            object_store: row.get("object_store"),
-            object_key: row.get("object_key"),
-            upload_id: row.get("upload_id"),
-            mounted_from_upload_id: row.get("mounted_from_upload_id"),
-            sha256,
-            byte_len: byte_len_from_column(row.get("byte_len"))?,
-            mime: row.get("mime"),
-            filename: row.get("filename"),
-        })
+    row.map(|row| decode_blob_read_record(&row)).transpose()
+}
+
+fn decode_blob_read_record(row: &sqlx::postgres::PgRow) -> Result<BlobReadRecord, BlobError> {
+    let sha256 = completed_sha256(row)?;
+    Ok(BlobReadRecord {
+        cited_object_id: row.get("blob_id"),
+        content_hash: hash32(&row.get::<Vec<u8>, _>("content_hash"), "content_hash")?,
+        bucket: row.get("bucket"),
+        object_store: row.get("object_store"),
+        object_key: row.get("object_key"),
+        upload_id: row.get("upload_id"),
+        mounted_from_upload_id: row.get("mounted_from_upload_id"),
+        sha256,
+        byte_len: byte_len_from_column(row.get("byte_len"))?,
+        mime: row.get("mime"),
+        filename: row.get("filename"),
     })
-    .transpose()
+}
+
+/// Read one blob named by a Fact that is visible through the caller's exact
+/// Goal route. The route function and the Fact/blob join execute in the same
+/// owner-scoped transaction, so revocation and erase cannot be observed as a
+/// stale read between authorization and locator lookup.
+pub(super) async fn load_goal_blob_read_record_on_connection(
+    pool: &mut sqlx::PgConnection,
+    owner: &OwnerId,
+    goal: GoalHandle,
+    fact_memory: MemoryId,
+    blob_id: Uuid,
+) -> Result<Option<BlobReadRecord>, BlobError> {
+    const SQL: &str = "SELECT b.blob_id, b.content_hash, u.bucket, u.object_store, u.object_key,
+                u.upload_id, u.mounted_from_upload_id, u.sha256,
+                u.expected_byte_len AS byte_len, u.mime, u.filename
+           FROM proxiima_core.blob b
+           JOIN proxiima_core.memory m ON m.blob_id = b.blob_id
+           JOIN proxiima_core.goal_memory_publication p
+             ON p.memory_t = m.t AND p.goal_handle = $4
+           JOIN proxiima_core.goal_memory_read_routes() route
+             ON route.memory_t = m.t AND route.goal_handle = p.goal_handle
+           JOIN proxiima_core.blob_uploads u
+             ON u.upload_id = p.cited_upload_id
+            AND u.blob_id = b.blob_id
+            AND u.owner_id = m.owner_id
+            AND u.status = 'completed'
+          WHERE b.blob_id = $1
+            AND m.t = $2
+            AND m.owner_id = $3
+            AND b.owner_id = m.owner_id
+            AND b.schema_id = $5";
+    let row = sqlx::query(SQL)
+        .bind(blob_id)
+        .bind(fact_memory.into_inner())
+        .bind(owner.into_inner())
+        .bind(goal.into_inner())
+        .bind(UPLOADED_BLOB_SCHEMA_ID)
+        .fetch_optional(&mut *pool)
+        .await
+        .map_err(BlobError::Db)?;
+
+    row.map(|row| decode_blob_read_record(&row)).transpose()
 }
 
 #[cfg(test)]

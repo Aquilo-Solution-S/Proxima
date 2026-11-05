@@ -54,6 +54,7 @@ struct DefinerRow {
     non_platform_execute: bool,
     settings: Option<Vec<String>>,
     candidate_kind: Option<String>,
+    goal_reader: bool,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -79,6 +80,7 @@ struct PolicyRow {
     platform_role_is_public: bool,
     platform_targets_runtime: bool,
     candidate_role: bool,
+    goal_reader_role: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -100,9 +102,18 @@ async fn assert_candidate_role(
     schemas: &[String],
     platform: bool,
 ) -> Result<(), StorageError> {
+    assert_read_only_role(conn, schemas, platform, "proxiima_search").await
+}
+
+async fn assert_read_only_role(
+    conn: &mut PgConnection,
+    schemas: &[String],
+    platform: bool,
+    role_name: &str,
+) -> Result<(), StorageError> {
     let role: Option<CandidateRoleRow> = sqlx::query_as(
         "SELECT NOT (r.rolcanlogin OR r.rolsuper OR r.rolbypassrls
-                     OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication) AS safe_flags,
+                     OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolinherit) AS safe_flags,
                 EXISTS (SELECT 1 FROM pg_auth_members membership
                          WHERE membership.member = r.oid
                             OR (membership.roleid = r.oid
@@ -127,24 +138,25 @@ async fn assert_candidate_role(
                                         'INSERT,UPDATE,REFERENCES')))) AS can_write,
                 pg_has_role(current_user, r.oid, 'USAGE') AS owner_usage,
                 pg_has_role(current_user, r.oid, 'SET') AS owner_set
-           FROM pg_roles r WHERE r.rolname = 'proxiima_search'",
+           FROM pg_roles r WHERE r.rolname = $2",
     )
     .bind(schemas)
+    .bind(role_name)
     .fetch_optional(&mut *conn)
     .await
     .map_err(|error| refused(format!("inspect candidate role: {error}")))?;
     let Some(role) = role else {
-        return Err(refused("candidate functions require proxiima_search"));
+        return Err(refused(format!("read functions require {role_name}")));
     };
     if !role.safe_flags || role.unsafe_memberships || role.owns_objects || role.can_write {
-        return Err(refused(
-            "proxiima_search must be an isolated NOLOGIN read-only role",
-        ));
+        return Err(refused(format!(
+            "{role_name} must be an isolated NOLOGIN read-only role"
+        )));
     }
     if role.owner_usage || (!platform && role.owner_set) {
-        return Err(refused(
-            "runtime must not inherit or assume proxiima_search",
-        ));
+        return Err(refused(format!(
+            "runtime must not inherit or assume {role_name}"
+        )));
     }
     Ok(())
 }
@@ -187,7 +199,9 @@ async fn assert_policy_structure(
                     ((SELECT oid FROM pg_roles WHERE rolname = current_user) = ANY(p.polroles))
                         AS platform_targets_runtime,
                     COALESCE(p.polroles = ARRAY[(SELECT oid FROM pg_roles
-                        WHERE rolname = 'proxiima_search')], false) AS candidate_role
+                        WHERE rolname = 'proxiima_search')], false) AS candidate_role,
+                    COALESCE(p.polroles = ARRAY[(SELECT oid FROM pg_roles
+                        WHERE rolname = 'proxiima_goal_reader')], false) AS goal_reader_role
                FROM pg_policy AS p JOIN pg_class AS c ON c.oid = p.polrelid
               WHERE p.polrelid::bigint = $1",
         )
@@ -199,10 +213,26 @@ async fn assert_policy_structure(
             .iter()
             .any(|policy| policy.name == "proxiima_search_candidates");
         has_candidate_policy |= candidate_policy;
-        if policies.len() != REQUIRED_POLICIES.len() + usize::from(candidate_policy)
+        let goal_reader_policy = policies
+            .iter()
+            .any(|policy| policy.name == "proxiima_goal_reader");
+        if goal_reader_policy {
+            assert_read_only_role(
+                conn,
+                &schemas,
+                !reject_current_user_platform_policy,
+                "proxiima_goal_reader",
+            )
+            .await?;
+        }
+        if policies.len()
+            != REQUIRED_POLICIES.len()
+                + usize::from(candidate_policy)
+                + usize::from(goal_reader_policy)
             || policies.iter().any(|policy| {
                 (!REQUIRED_POLICIES.contains(&policy.name.as_str())
-                    && policy.name != "proxiima_search_candidates")
+                    && policy.name != "proxiima_search_candidates"
+                    && policy.name != "proxiima_goal_reader")
                     || !policy.permissive
             })
         {
@@ -210,40 +240,66 @@ async fn assert_policy_structure(
                 "{relation_name} has missing or extra RLS policies"
             )));
         }
-        for policy in &policies {
-            match policy.name.as_str() {
-                "proxiima_owner_read"
-                    if policy.command == "r"
-                        && predicate_is_nontrivial(policy.using_expr.as_deref()) => {}
-                "proxiima_owner_write"
-                    if policy.command == "*"
-                        && predicate_is_nontrivial(policy.using_expr.as_deref())
-                        && predicate_is_nontrivial(policy.check_expr.as_deref()) => {}
-                "proxiima_platform"
-                    if policy.command == "*"
-                        && predicate_is_nontrivial(policy.using_expr.as_deref())
-                        && predicate_is_nontrivial(policy.check_expr.as_deref())
-                        && policy.platform_role_is_owner
-                        && !policy.platform_role_is_public
-                        && (!reject_current_user_platform_policy
-                            || !policy.platform_targets_runtime) => {}
-                "proxiima_search_candidates"
-                    if relation.candidate_relation
-                        && policy.command == "r"
-                        && policy.candidate_role
-                        && policy.using_expr.as_deref() == Some("true")
-                        && policy.check_expr.is_none() => {}
-                _ => {
-                    return Err(refused(format!(
-                        "{relation_name} has an invalid {} policy",
-                        policy.name
-                    )));
-                }
-            }
-        }
+        assert_relation_policies(relation, &policies, reject_current_user_platform_policy)?;
     }
     if has_candidate_policy {
         assert_candidate_role(&mut *conn, &schemas, !reject_current_user_platform_policy).await?;
+    }
+    Ok(())
+}
+
+fn assert_relation_policies(
+    relation: &RelationRow,
+    policies: &[PolicyRow],
+    reject_current_user_platform_policy: bool,
+) -> Result<(), StorageError> {
+    let relation_name = relation.name();
+    for policy in policies {
+        match policy.name.as_str() {
+            "proxiima_owner_read"
+                if policy.command == "r"
+                    && predicate_is_nontrivial(policy.using_expr.as_deref()) => {}
+            "proxiima_owner_write"
+                if policy.command == "*"
+                    && predicate_is_nontrivial(policy.using_expr.as_deref())
+                    && predicate_is_nontrivial(policy.check_expr.as_deref()) => {}
+            "proxiima_platform"
+                if policy.command == "*"
+                    && predicate_is_nontrivial(policy.using_expr.as_deref())
+                    && predicate_is_nontrivial(policy.check_expr.as_deref())
+                    && policy.platform_role_is_owner
+                    && !policy.platform_role_is_public
+                    && (!reject_current_user_platform_policy
+                        || !policy.platform_targets_runtime) => {}
+            "proxiima_search_candidates"
+                if relation.candidate_relation
+                    && policy.command == "r"
+                    && policy.candidate_role
+                    && policy.using_expr.as_deref() == Some("true")
+                    && policy.check_expr.is_none() => {}
+            "proxiima_goal_reader"
+                if relation.schema_name == "proxiima_core"
+                    && matches!(
+                        relation.table_name.as_str(),
+                        "memory"
+                            | "memory_head"
+                            | "goal"
+                            | "goal_head"
+                            | "goal_access_grant"
+                            | "goal_memory_publication"
+                            | "goal_work_binding"
+                    )
+                    && policy.command == "r"
+                    && policy.goal_reader_role
+                    && policy.using_expr.as_deref() == Some("true")
+                    && policy.check_expr.is_none() => {}
+            _ => {
+                return Err(refused(format!(
+                    "{relation_name} has an invalid {} policy",
+                    policy.name
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -509,16 +565,32 @@ async fn definers(
                      AND shape.output_names = ARRAY['t', 'lexical_score']::text[]
                     THEN 'substring'
                     WHEN n.nspname = 'proxiima_core' AND p.proname = ANY($3::text[])
-                     AND p.pronargs = 4
+                     AND p.pronargs = 5
                      AND p.proargtypes[0] = 'uuid[]'::regtype
                      AND p.proargtypes[1] = 'text'::regtype
                      AND p.proargtypes[2] = to_regtype('public.vector')
                      AND p.proargtypes[3] = 'bigint'::regtype
+                     AND p.proargtypes[4] = 'boolean'::regtype
                      AND shape.table_result
                      AND shape.output_types = ARRAY['uuid'::regtype::oid, 'real'::regtype::oid]
                      AND shape.output_names = ARRAY['memory_id', 'similarity_score']::text[]
                     THEN 'vector'
-                END AS candidate_kind
+                END AS candidate_kind,
+                (n.nspname = 'proxiima_core' AND (
+                    (p.proname IN ('goal_memory_read_admitted', 'goal_read_admitted')
+                     AND p.pronargs = 1 AND p.proargtypes[0] = 'uuid'::regtype
+                     AND p.prorettype = 'boolean'::regtype AND NOT p.proretset)
+                    OR (p.proname = 'goal_memory_read_routes' AND p.pronargs = 0
+                        AND p.proretset AND p.prorettype = 'record'::regtype
+                        AND p.proallargtypes = ARRAY['uuid'::regtype::oid, 'uuid'::regtype::oid, 'uuid'::regtype::oid, 'uuid'::regtype::oid, 'uuid'::regtype::oid]
+                        AND p.proargmodes = ARRAY['t', 't', 't', 't', 't']::\"char\"[]
+                        AND p.proargnames = ARRAY['memory_t', 'memory_handle', 'owner_id', 'goal_handle', 'controller_owner']::text[])
+                    OR (p.proname IN ('goal_visible_memory_ids', 'goal_visible_memory_heads') AND p.pronargs = 0
+                        AND p.proretset AND p.prorettype = 'record'::regtype
+                        AND p.proallargtypes = ARRAY['uuid'::regtype::oid, 'uuid'::regtype::oid, 'uuid'::regtype::oid]
+                        AND p.proargmodes = ARRAY['t', 't', 't']::\"char\"[]
+                        AND p.proargnames = ARRAY['memory_t', 'memory_handle', 'owner_id']::text[])
+                )) AS goal_reader
            FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
            JOIN pg_roles owner ON owner.oid = p.proowner
            CROSS JOIN text_input
@@ -613,6 +685,25 @@ async fn assert_definers(
         assert_candidate_role(&mut *conn, schemas, platform).await?;
     }
     for function in &functions {
+        if function.goal_reader {
+            assert_read_only_role(conn, schemas, platform, "proxiima_goal_reader").await?;
+            if function.owner_name != "proxiima_goal_reader"
+                || function.owner_superuser
+                || function.owner_bypass_rls
+                || function.public_execute
+                || function.owner_usage
+                || (!platform && function.owner_set)
+                || search_path(function.settings.as_deref()).as_deref()
+                    != Some(&["pg_catalog".to_owned(), "pg_temp".to_owned()])
+            {
+                return Err(refused(format!(
+                    "{} must use isolated Goal read authority",
+                    function.name
+                )));
+            }
+            assert_definer_path(function, &namespaces, platform)?;
+            continue;
+        }
         if function.candidate_kind.is_some() {
             if function.owner_name != "proxiima_search"
                 || function.owner_superuser

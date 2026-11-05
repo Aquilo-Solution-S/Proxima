@@ -70,6 +70,9 @@ pub struct GoalItem {
     /// `proxiima://memory/{id}` (`?version=head` for the newest version the
     /// caller may read).
     pub evidence: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub historical_assignment: Option<String>,
+    pub motivated_by: Vec<String>,
 }
 
 /// Keyset resume point carried inside the opaque goal cursor.
@@ -194,6 +197,14 @@ fn project_goals(rows: Vec<crate::verbs::query::GoalRow>) -> Vec<GoalItem> {
                 .into_iter()
                 .map(|id| id.into_inner().to_string())
                 .collect(),
+            motivated_by: row
+                .motivated_by
+                .into_iter()
+                .map(|id| id.into_inner().to_string())
+                .collect(),
+            historical_assignment: row
+                .historical_assignment
+                .map(|id| id.into_inner().to_string()),
         })
         .collect()
 }
@@ -272,7 +283,8 @@ mod tests {
                 text: Some("stored prompt".into()),
                 state: super::GoalState::Active,
                 dependency_goal_ids: Vec::new(),
-                assignment: None,
+                historical_assignment: None,
+                motivated_by: Vec::new(),
                 evidence: Vec::new(),
                 set_at: time::OffsetDateTime::UNIX_EPOCH,
                 changed_at: time::OffsetDateTime::UNIX_EPOCH,

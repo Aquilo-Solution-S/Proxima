@@ -18,13 +18,17 @@ pub(super) struct Env {
     built: BuiltProxiima,
     tools: CoreMcpTools,
     authz: ResolvedAuthz,
-    owner: OwnerId,
+    pub(super) owner: OwnerId,
 }
 
 impl Env {
     pub(super) async fn new(prefix: &str) -> TestResult<Self> {
-        let split_db = clone_split_core_db(prefix).await?;
         let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        Self::in_owner(prefix, owner, owner).await
+    }
+
+    async fn in_owner(prefix: &str, owner: OwnerId, subject: OwnerId) -> TestResult<Self> {
+        let split_db = clone_split_core_db(prefix).await?;
         let built = Proxiima::<AgentMemoryApp>::app()
             .database_url(split_db.runtime_url().to_owned())
             .store_number(0)
@@ -34,7 +38,7 @@ impl Env {
             .build()
             .await?;
         let tools = built.host().core_mcp_tools();
-        let authz = space_authz(owner, vec![owner], Role::admin());
+        let authz = space_authz(subject, vec![owner], Role::admin());
         Ok(Self {
             split_db,
             built,
@@ -50,6 +54,36 @@ impl Env {
         args: serde_json::Value,
     ) -> Result<serde_json::Value, CoreMcpError> {
         call_test_model_tool(&self.tools, self.authz.clone(), self.owner, tool, args).await
+    }
+
+    pub(super) async fn call_as(
+        &self,
+        subject: OwnerId,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, CoreMcpError> {
+        self.call_as_with_role(subject, Role::viewer(), tool, args)
+            .await
+    }
+
+    pub(super) async fn call_as_with_role(
+        &self,
+        subject: OwnerId,
+        role: Role,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, CoreMcpError> {
+        let authz = space_authz(subject, vec![subject], role);
+        call_test_model_tool(&self.tools, authz, subject, tool, args).await
+    }
+
+    pub(super) async fn read_as(
+        &self,
+        subject: OwnerId,
+        uri: &str,
+    ) -> Result<serde_json::Value, CoreMcpError> {
+        let authz = space_authz(subject, vec![subject], Role::viewer());
+        super::read_test_model_resource(&self.tools, authz, subject, uri).await
     }
 
     pub(super) async fn call_with_self(
@@ -125,7 +159,7 @@ impl Env {
             serde_json::json!({
                 "action": "set", "schema_id": "core/simple-text-v1",
                 "title": key, "text": key, "body": {},
-                "evidence": evidence, "target_perspective": target,
+                "evidence": evidence, "motivated_by": [target],
                 "idempotency_key": key,
             }),
         )
@@ -169,7 +203,7 @@ impl Env {
             "core_goal",
             serde_json::json!({
                 "action": "decompose", "parent_goal": parent, "children": children,
-                "target_perspective": target, "idempotency_key": key,
+                "motivated_by": [target], "idempotency_key": key,
             }),
         )
         .await
@@ -332,7 +366,7 @@ async fn episode_goal_cites_a_remembered_fact_slot() {
                         "subjects": ["remember:0"], "model_id": "test-model"}],
                     "goal": [{"schema_id": "core/simple-text-v1", "title": "ep goal",
                         "text": "ep goal", "body": {}, "evidence": ["remember:0"],
-                        "target_perspective": "stance:0", "idempotency_key": "ep-g"}],
+                        "motivated_by": ["stance:0"], "idempotency_key": "ep-g"}],
                 }),
             )
             .await?;
@@ -360,7 +394,7 @@ async fn episode_goal_cites_an_existing_fact_uuid() {
                 serde_json::json!({
                     "goal": [{"schema_id": "core/simple-text-v1", "title": "ep goal",
                         "text": "ep goal", "body": {}, "evidence": [fact],
-                        "target_perspective": target, "idempotency_key": "ep-uuid-g"}],
+                        "motivated_by": [target], "idempotency_key": "ep-uuid-g"}],
                 }),
             )
             .await?;
@@ -417,7 +451,7 @@ async fn perspective_evidence_is_refused_on_every_goal_write() {
                         "subjects": ["remember:0"], "model_id": "test-model"}],
                     "goal": [{"schema_id": "core/simple-text-v1", "title": "persp ep goal",
                         "text": "persp ep goal", "body": {}, "evidence": ["stance:0"],
-                        "target_perspective": "stance:0", "idempotency_key": "persp-ep-g"}],
+                        "motivated_by": ["stance:0"], "idempotency_key": "persp-ep-g"}],
                 }),
             )
             .await,
@@ -433,7 +467,7 @@ async fn perspective_evidence_is_refused_on_every_goal_write() {
                 serde_json::json!({
                     "goal": [{"schema_id": "core/simple-text-v1", "title": "persp ep uuid",
                         "text": "persp ep uuid", "body": {}, "evidence": [other],
-                        "target_perspective": target, "idempotency_key": "persp-ep-uuid"}],
+                        "motivated_by": [target], "idempotency_key": "persp-ep-uuid"}],
                 }),
             )
             .await,
@@ -445,4 +479,389 @@ async fn perspective_evidence_is_refused_on_every_goal_write() {
     .await;
     env.shutdown().await;
     result.expect("Perspective evidence refused");
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the served MCP workflow includes write, read, revise and redact on the same history"
+)]
+async fn causal_context_round_trips_through_mcp_without_becoming_evidence() {
+    let env = Env::new("proxiima_causal_context_mcp")
+        .await
+        .expect("PG required for tests");
+    let result: TestResult<()> = async {
+        let fact = env.remember("feedback observation").await?;
+        let abstraction = env.derive("feedback pattern", &fact).await?;
+        let first = env.interpret("first motivation", &fact).await?;
+        let second = env.interpret("second motivation", &fact).await?;
+        let goal = handle_of(
+            &env.call(
+                "core_goal",
+                serde_json::json!({
+                    "action": "set", "schema_id": "core/simple-text-v1",
+                    "title": "shared direction", "text": "act on both perspectives", "body": {},
+                    "motivated_by": [first, second], "evidence": [],
+                    "idempotency_key": "causal-context-goal",
+                }),
+            )
+            .await?,
+        )?;
+        let read = super::read_test_model_resource(
+            &env.tools,
+            env.authz.clone(),
+            env.owner,
+            &format!("proxiima://goal/{goal}"),
+        )
+        .await?;
+        assert_eq!(read["motivated_by"], serde_json::json!([first, second]));
+        assert_eq!(read["evidence"], serde_json::json!([]));
+        assert!(read.get("historical_assignment").is_none(), "{read}");
+
+        let guided = env
+            .handle(
+                "core_interpret",
+                serde_json::json!({
+                    "claim": "direction changed my interpretation", "confidence": 80,
+                    "subjects": [fact], "guided_by": [goal],
+                }),
+            )
+            .await?;
+        let derived = env.handle(
+            "core_derive",
+            serde_json::json!({
+                "kind": "Perspective", "title": "guided perspective", "body": "follow direction",
+                "tags": [], "source_handles": [abstraction], "model_id": "test-model",
+                "guided_by": [goal],
+            }),
+        ).await?;
+        for memory in [&guided, &derived] {
+            let read = super::read_test_model_resource(
+                &env.tools,
+                env.authz.clone(),
+                env.owner,
+                &format!("proxiima://memory/{memory}"),
+            )
+            .await?;
+            assert_eq!(read["guided_by"], serde_json::json!([goal]));
+        }
+
+        assert!(
+            env.call(
+                "core_derive",
+                serde_json::json!({
+                    "kind": "Abstraction", "title": "invalid guidance", "body": "invalid",
+                    "tags": [], "source_handles": [fact], "model_id": "test-model",
+                    "guided_by": [goal],
+                }),
+            )
+            .await
+            .is_err(),
+            "Abstractions must not acquire Goal guidance"
+        );
+        assert!(
+            env.set_goal(&[], &fact, "fact-is-not-motivation")
+                .await
+                .is_err()
+        );
+        assert!(
+            env.call(
+                "core_interpret",
+                serde_json::json!({
+                    "claim": "invalid guide", "confidence": 80,
+                    "subjects": [fact], "guided_by": [first],
+                }),
+            )
+            .await
+            .is_err(),
+            "a Perspective ID must not be accepted as a guiding Goal"
+        );
+
+        let mut head = goal.clone();
+        for (key, replacement, expected) in [
+            (
+                "preserve-motivation",
+                None,
+                serde_json::json!([first, second]),
+            ),
+            (
+                "clear-motivation",
+                Some(serde_json::json!([])),
+                serde_json::json!([]),
+            ),
+        ] {
+            let mut args = serde_json::json!({
+                "action": "modify", "goal": head, "schema_id": "core/simple-text-v1",
+                "title": key, "text": key, "body": {}, "idempotency_key": key,
+            });
+            if let Some(replacement) = replacement {
+                args["motivated_by"] = replacement;
+            }
+            head = handle_of(&env.call("core_goal", args).await?)?;
+            let read = super::read_test_model_resource(
+                &env.tools,
+                env.authz.clone(),
+                env.owner,
+                &format!("proxiima://goal/{head}"),
+            )
+            .await?;
+            assert_eq!(read["motivated_by"], expected, "{key}");
+        }
+        let read = super::read_test_model_resource(
+            &env.tools,
+            env.authz.clone(),
+            env.owner,
+            &format!("proxiima://memory/{guided}"),
+        )
+        .await?;
+        assert_eq!(
+            read["guided_by"],
+            serde_json::json!([goal]),
+            "Goal revisions do not retarget guidance"
+        );
+        let redacted = handle_of(&env.set_goal(&[], &first, "redacted-motivation").await?)?;
+        env.call("core_forget", serde_json::json!({"memory": first}))
+            .await?;
+        let read = super::read_test_model_resource(
+            &env.tools,
+            env.authz.clone(),
+            env.owner,
+            &format!("proxiima://goal/{redacted}"),
+        )
+        .await?;
+        assert_eq!(
+            read["motivated_by"],
+            serde_json::json!([]),
+            "forgotten targets are not disclosed"
+        );
+        let admin = env.admin().await?;
+        let stored: Vec<Uuid> =
+            sqlx::query_scalar("SELECT motivated_by FROM proxiima_core.goal WHERE t = $1")
+                .bind(Uuid::parse_str(&redacted)?)
+                .fetch_one(&admin)
+                .await?;
+        assert_eq!(
+            stored,
+            vec![Uuid::parse_str(&first)?],
+            "redaction preserves the stored declaration"
+        );
+        admin.close().await;
+        Ok(())
+    }
+    .await;
+    env.shutdown().await;
+    result.expect("causal context survives the actual MCP write and read paths");
+}
+
+#[tokio::test]
+async fn perspective_reads_hide_guiding_goals_outside_the_read_ceiling() {
+    let subject = OwnerId::from(UserId::new(Uuid::now_v7()));
+    let owner = OwnerId::from(proxiima_core::GroupId::new(Uuid::now_v7()));
+    let env = Env::in_owner("proxiima_guidance_read_ceiling", owner, subject)
+        .await
+        .expect("PG required for tests");
+    let result: TestResult<()> = async {
+        let fact = env.remember("group observation").await?;
+        let motive = env.interpret("group motivation", &fact).await?;
+        let goal = handle_of(&env.set_goal(&[], &motive, "private-goal-context").await?)?;
+        let guided = env
+            .handle(
+                "core_interpret",
+                serde_json::json!({
+                    "claim": "group interpretation", "confidence": 80,
+                    "subjects": [fact], "guided_by": [goal],
+                }),
+            )
+            .await?;
+        let limited = space_authz(
+            subject,
+            vec![owner],
+            Role::new(
+                proxiima_core::AccessCeiling::Perspective,
+                proxiima_core::AccessCeiling::None,
+                false,
+            )?,
+        );
+        let uri = format!("proxiima://memory/{guided}");
+        let full =
+            super::read_test_model_resource(&env.tools, env.authz.clone(), owner, &uri).await?;
+        assert_eq!(full["guided_by"], serde_json::json!([goal]));
+        let read =
+            super::read_test_model_resource(&env.tools, limited.clone(), owner, &uri).await?;
+        assert_eq!(read["guided_by"], serde_json::json!([]));
+        let batch = super::read_test_model_resource(
+            &env.tools,
+            limited.clone(),
+            owner,
+            &format!("proxiima://memories?ids={guided}"),
+        )
+        .await?;
+        assert!(
+            !batch.to_string().contains(&goal),
+            "batch hydration must preserve Goal visibility: {batch}"
+        );
+        assert!(
+            super::read_test_model_resource(
+                &env.tools,
+                limited,
+                owner,
+                &format!("proxiima://goal/{goal}"),
+            )
+            .await
+            .is_err()
+        );
+        Ok(())
+    }
+    .await;
+    env.shutdown().await;
+    result.expect("single and batch Perspective reads respect the Goal read ceiling");
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "MCP acceptance keeps publication, revision, batch, and Goal work evidence together"
+)]
+async fn guest_snapshot_labels_published_home_owner_and_reads_goal_work() {
+    if proxiima_pg_testkit::admin_url_or_skip().is_none() {
+        return;
+    }
+    let env = Env::new("proxiima_goal_home_owner_snapshot")
+        .await
+        .expect("PG required for tests");
+    let result: TestResult<()> = async {
+        let fact = env.remember("snapshot source fact").await?;
+        let abstraction = env.derive("snapshot source abstraction", &fact).await?;
+        let perspective = env
+            .call(
+                "core_derive",
+                serde_json::json!({
+                    "kind": "Perspective", "title": "snapshot publication",
+                    "body": "snapshot publication body", "tags": [],
+                    "source_handles": [abstraction.clone()], "model_id": "test-model",
+                    "idempotency_key": "snapshot-publication",
+                }),
+            )
+            .await?;
+        let perspective_id = perspective["handle"].as_str().ok_or("Perspective")?;
+        let goal = env
+            .set_goal(&[&fact], perspective_id, "snapshot Goal")
+            .await?;
+        let goal_handle = goal["goal_handle"].as_str().ok_or("Goal handle")?;
+        let guest = OwnerId::from(UserId::new(Uuid::now_v7()));
+        env.call(
+            "core_goal",
+            serde_json::json!({
+                "action": "grant_access", "goal_handle": goal_handle,
+                "subject": guest.into_inner(), "read_ceiling": "Goal",
+                "write_ceiling": "Perspective", "manage": false,
+            }),
+        )
+        .await?;
+        env.call(
+            "core_goal",
+            serde_json::json!({
+                "action": "publish", "goal_handle": goal_handle,
+                "memory_id": perspective_id, "permitted_use": "Fork",
+            }),
+        )
+        .await?;
+        let published_snapshot = env
+            .read_as(guest, &format!("proxiima://memory/{perspective_id}"))
+            .await?;
+        assert_eq!(
+            published_snapshot["owner"],
+            serde_json::json!(env.owner.into_inner())
+        );
+        assert_eq!(
+            published_snapshot["space"],
+            serde_json::json!(env.owner.to_string())
+        );
+        let later = env
+            .call(
+                "core_derive",
+                serde_json::json!({
+                    "kind": "Perspective", "title": "later private revision",
+                    "body": "later private body", "tags": [],
+                    "source_handles": [abstraction.clone()], "model_id": "test-model",
+                    "supersedes": perspective_id, "idempotency_key": "later-private-revision",
+                }),
+            )
+            .await?;
+        let later_id = later["handle"].as_str().ok_or("later revision")?;
+        assert!(
+            env.read_as(guest, &format!("proxiima://memory/{perspective_id}"))
+                .await
+                .is_ok()
+        );
+        assert!(
+            env.read_as(guest, &format!("proxiima://memory/{later_id}"))
+                .await
+                .is_err()
+        );
+        let fork = env
+            .call_as(
+                guest,
+                "core_fork",
+                serde_json::json!({
+                    "source": perspective_id, "working_goal": goal_handle,
+                    "idempotency_key": "snapshot-working-fork",
+                }),
+            )
+            .await?;
+        let fork_id = fork["memory"].as_str().ok_or("fork")?.to_owned();
+        let snapshot = env
+            .read_as(guest, &format!("proxiima://memory/{fork_id}"))
+            .await?;
+        assert_eq!(snapshot["owner"], serde_json::json!(env.owner.into_inner()));
+        assert_eq!(snapshot["space"], serde_json::json!(env.owner.to_string()));
+        assert!(
+            env.read_as(guest, &format!("proxiima://memory/{fact}"))
+                .await
+                .is_err(),
+            "unpublished source remains hidden"
+        );
+        let written = env
+            .call_as(
+                guest,
+                "core_derive",
+                serde_json::json!({
+                    "kind": "Perspective", "title": "snapshot writeback",
+                    "body": "snapshot writeback body", "tags": [],
+                    "source_handles": [abstraction], "model_id": "test-model",
+                    "working_goal": goal_handle, "supersedes": fork_id,
+                    "idempotency_key": "snapshot-writeback",
+                }),
+            )
+            .await?;
+        let written_id = written["handle"].as_str().ok_or("writeback")?;
+        let written_snapshot = env
+            .read_as(guest, &format!("proxiima://memory/{written_id}"))
+            .await?;
+        assert_eq!(
+            written_snapshot["owner"],
+            serde_json::json!(env.owner.into_inner())
+        );
+        assert_eq!(
+            written_snapshot["space"],
+            serde_json::json!(env.owner.to_string())
+        );
+        let batch = env
+            .read_as(
+                guest,
+                &format!("proxiima://memories?ids={perspective_id},{fork_id},{written_id}"),
+            )
+            .await?;
+        let memories = batch["memories"].as_array().ok_or("batch memories")?;
+        let handles: Vec<&str> = memories
+            .iter()
+            .filter_map(|memory| memory["memory"].as_str())
+            .collect();
+        assert_eq!(handles, vec![perspective_id, fork_id.as_str(), written_id]);
+        assert_eq!(batch["missing"], serde_json::json!([]));
+        Ok(())
+    }
+    .await;
+    env.shutdown().await;
+    result.expect("Goal publication snapshot labeling failed");
 }

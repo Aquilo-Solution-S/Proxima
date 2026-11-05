@@ -516,9 +516,12 @@ async fn split_roles(
                 .execute(&mut control)
                 .await?;
         }
+        ensure_goal_reader_role(&mut control).await?;
         let search_membership = format!(
             "GRANT proxiima_search TO {platform} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-             REVOKE proxiima_search FROM {runtime}",
+             REVOKE proxiima_search FROM {runtime};
+             GRANT proxiima_goal_reader TO {platform} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+             REVOKE proxiima_goal_reader FROM {runtime}",
             platform = quoted_ident(SPLIT_PLATFORM_ROLE),
             runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
         );
@@ -558,6 +561,30 @@ async fn split_roles(
         .fetch_one(&mut target)
         .await?;
         if prepared {
+            // Reconcile grants on templates prepared before GoalReader was
+            // introduced. This preserves the existing template path while
+            // making the runtime EXECUTE contract deterministic.
+            let runtime_grants = format!(
+                "DO $$ DECLARE function_row record; BEGIN
+                   FOR function_row IN
+                     SELECT n.nspname, p.proname,
+                            pg_get_function_identity_arguments(p.oid) AS args
+                       FROM pg_proc p
+                       JOIN pg_namespace n ON n.oid = p.pronamespace
+                       JOIN pg_roles owner_role ON owner_role.oid = p.proowner
+                      WHERE n.nspname IN ({schema_list})
+                        AND owner_role.rolname IN ('proxiima_search', 'proxiima_goal_reader')
+                        AND p.prosecdef
+                   LOOP
+                     EXECUTE format('GRANT EXECUTE ON FUNCTION %I.%I(%s) TO %I',
+                                    function_row.nspname, function_row.proname,
+                                    function_row.args, '{SPLIT_RUNTIME_ROLE}');
+                   END LOOP;
+                 END $$",
+            );
+            sqlx::raw_sql(AssertSqlSafe(runtime_grants))
+                .execute(&mut target)
+                .await?;
             target.close().await?;
             return Ok(());
         }
@@ -572,7 +599,7 @@ async fn split_roles(
                 .await?;
         }
         let public_grants = format!(
-            "GRANT USAGE ON SCHEMA public TO {runtime}, {platform}, proxiima_search;
+            "GRANT USAGE ON SCHEMA public TO {runtime}, {platform}, proxiima_search, proxiima_goal_reader;
              GRANT CREATE ON SCHEMA public TO {platform}",
             runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
             platform = quoted_ident(SPLIT_PLATFORM_ROLE),
@@ -591,6 +618,8 @@ async fn split_roles(
              ALTER DEFAULT PRIVILEGES FOR ROLE {platform}
                GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {runtime};
              ALTER DEFAULT PRIVILEGES FOR ROLE proxiima_search
+               GRANT EXECUTE ON FUNCTIONS TO {runtime};
+             ALTER DEFAULT PRIVILEGES FOR ROLE proxiima_goal_reader
                GRANT EXECUTE ON FUNCTIONS TO {runtime}",
             runtime = quoted_ident(SPLIT_RUNTIME_ROLE),
             platform = quoted_ident(SPLIT_PLATFORM_ROLE),
@@ -649,7 +678,7 @@ async fn split_roles(
                    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                    JOIN pg_roles owner_role ON owner_role.oid = p.proowner
                   WHERE n.nspname IN ({schema_list})
-                    AND owner_role.rolname <> 'proxiima_search' LOOP
+                    AND owner_role.rolname NOT IN ('proxiima_search', 'proxiima_goal_reader') LOOP
                  EXECUTE format('ALTER FUNCTION %I.%I(%s) OWNER TO %I',
                                 r.nspname, r.proname, r.args, '{SPLIT_PLATFORM_ROLE}');
                END LOOP;
@@ -658,7 +687,7 @@ async fn split_roles(
                    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                    JOIN pg_roles owner_role ON owner_role.oid = p.proowner
                   WHERE n.nspname IN ({schema_list})
-                    AND owner_role.rolname = 'proxiima_search' AND p.prosecdef LOOP
+                    AND owner_role.rolname IN ('proxiima_search', 'proxiima_goal_reader') AND p.prosecdef LOOP
                  EXECUTE format('GRANT EXECUTE ON FUNCTION %I.%I(%s) TO %I',
                                 r.nspname, r.proname, r.args, '{SPLIT_RUNTIME_ROLE}');
                END LOOP;
@@ -1483,9 +1512,86 @@ async fn ensure_search_role(conn: &mut PgConnection) -> Result<(), sqlx::Error> 
            END IF;
          END $$",
     )
-    .execute(conn)
+    .execute(&mut *conn)
     .await?;
-    Ok(())
+    ensure_goal_reader_role(conn).await
+}
+
+/// Provision the fixed, read-only role used by goal-read security-definer
+/// functions. The caller remains responsible for granting it only to the
+/// platform role; runtime roles must never receive this membership.
+///
+/// # Errors
+///
+/// Returns the `PostgreSQL` error from role creation or normalization.
+async fn ensure_goal_reader_role(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'proxiima_goal_reader') THEN
+            CREATE ROLE proxiima_goal_reader NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;
+        ELSIF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'proxiima_goal_reader'
+            AND (rolcanlogin OR rolsuper OR rolbypassrls OR rolcreatedb OR rolcreaterole OR rolinherit OR rolreplication)) THEN
+            ALTER ROLE proxiima_goal_reader NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;
+        END IF;
+    END $$")
+    .execute(&mut *conn)
+    .await
+    .map(|_| ())
+}
+
+/// Grant `proxiima_goal_reader` to one platform fixture role with explicit,
+/// non-inheriting `SET ROLE` membership. Runtime roles must never receive this
+/// membership.
+///
+/// # Errors
+///
+/// Returns the `PostgreSQL` error from role provisioning or membership grant.
+pub async fn provision_goal_reader(
+    target: &PgPool,
+    platform_role: &str,
+    runtime_role: &str,
+) -> Result<(), sqlx::Error> {
+    let mut conn = connect_admin().await?;
+    let lock_key = advisory_lock_key("_proxiima_test.catalog");
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(lock_key)
+        .execute(&mut conn)
+        .await?;
+    let result = async {
+        ensure_goal_reader_role(&mut conn).await?;
+        let statement = format!(
+            "GRANT proxiima_goal_reader TO {platform} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE",
+            platform = quoted_ident(platform_role),
+        );
+        sqlx::raw_sql(AssertSqlSafe(statement))
+            .execute(&mut conn)
+            .await
+            .map(|_| ())
+    }
+    .await;
+    let unlock = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(lock_key)
+        .execute(&mut conn)
+        .await;
+    result?;
+    unlock.map(|_| ())?;
+    let mut target_connection = target.acquire().await?;
+    let defaults = format!(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE proxiima_goal_reader
+           GRANT EXECUTE ON FUNCTIONS TO {runtime};
+         DO $grant_goal_reader$ DECLARE function_name text;
+         BEGIN
+           FOREACH function_name IN ARRAY ARRAY['goal_memory_read_routes()', 'goal_visible_memory_ids()', 'goal_visible_memory_heads()', 'goal_memory_read_admitted(uuid)', 'goal_read_admitted(uuid)'] LOOP
+             IF to_regprocedure('proxiima_core.' || function_name) IS NOT NULL THEN
+               EXECUTE format('GRANT EXECUTE ON FUNCTION proxiima_core.%s TO {runtime}', function_name);
+             END IF;
+           END LOOP;
+         END $grant_goal_reader$",
+        runtime = quoted_ident(runtime_role),
+    );
+    sqlx::raw_sql(AssertSqlSafe(defaults))
+        .execute(&mut *target_connection)
+        .await
+        .map(|_| ())
 }
 
 async fn record_db(conn: &mut PgConnection, name: &str) -> Result<(), sqlx::Error> {
@@ -1498,7 +1604,7 @@ async fn record_db(conn: &mut PgConnection, name: &str) -> Result<(), sqlx::Erro
     .execute(&mut *conn)
     .await?;
     let mut target = PgConnection::connect(&db_url(name)).await?;
-    sqlx::query("GRANT USAGE ON SCHEMA public TO proxiima_search")
+    sqlx::query("GRANT USAGE ON SCHEMA public TO proxiima_search, proxiima_goal_reader")
         .execute(&mut target)
         .await?;
     target.close().await?;

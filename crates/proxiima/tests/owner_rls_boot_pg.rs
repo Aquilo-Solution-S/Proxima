@@ -12,7 +12,9 @@ use proxiima_core::{
     AccessKind, AgentNoteV1, AuthError, AuthPath, Authenticator, AuthzContext, Credentials,
     ErrorCode, GroupId, OwnerId, OwnerRoles, UserId,
 };
-use proxiima_pg_testkit::{admin_url, create_db, db_url, drop_db, quoted_ident, unique_db_name};
+use proxiima_pg_testkit::{
+    admin_url, create_db, db_url, drop_db, provision_goal_reader, quoted_ident, unique_db_name,
+};
 use proxiima_storage_pg::PgPoolConfig;
 use setup_error::expect_described;
 use sqlx::postgres::PgConnectOptions;
@@ -149,6 +151,9 @@ async fn setup_fresh() -> (String, PgPool, String, String, String, String) {
         ),
     )
     .await;
+    provision_goal_reader(&admin, &platform, &runtime)
+        .await
+        .expect("goal reader fixture role");
     assert_no_scope_parameter_grant(&admin, &platform).await;
     let runtime_url = PgConnectOptions::from_str(&db_url(&database))
         .expect("database URL")

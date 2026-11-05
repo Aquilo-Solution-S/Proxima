@@ -67,6 +67,7 @@ pub(in crate::engine) const ENTRY_NOT_FOUND_MESSAGE: &str = "entry not found";
 pub struct EntryReadPermit {
     owner: OwnerId,
     kind: AccessKind,
+    schema_id: Option<crate::SchemaId>,
 }
 
 impl EntryReadPermit {
@@ -77,6 +78,10 @@ impl EntryReadPermit {
 
     pub(in crate::engine) const fn kind(&self) -> AccessKind {
         self.kind
+    }
+
+    pub(in crate::engine) fn schema_id(&self) -> Option<&crate::SchemaId> {
+        self.schema_id.as_ref()
     }
 }
 
@@ -320,6 +325,48 @@ impl Engine {
             .collect())
     }
 
+    /// Candidate owners for row reads. Goal candidates only narrow a scan;
+    /// the authenticated transaction still checks each exact row. They never
+    /// enter the caller's owner roles or the public owner-authority read set.
+    pub(in crate::engine) async fn authorize_row_read<A>(
+        &self,
+        authority: &A,
+    ) -> Result<Vec<OwnerId>, ProtocolError>
+    where
+        A: EngineAuthority + ?Sized,
+    {
+        let operation = self.operation_authority(authority)?;
+        let authz = operation.authz();
+        let candidates = self.row_read_candidates(authz).await?;
+        Ok(candidates
+            .into_iter()
+            .filter(|owner| self.veto_read_owner(authz, owner, AccessKind::Fact).is_ok())
+            .collect())
+    }
+
+    async fn row_read_candidates(
+        &self,
+        authz: &AuthzContext,
+    ) -> Result<Vec<OwnerId>, ProtocolError> {
+        let mut candidates = self.readable_set(authz)?;
+        if let Some(scope) = authz
+            .owner_scope()
+            .filter(|scope| scope.goal_principal().is_some())
+        {
+            let goal_candidates = self
+                .storage()
+                .pipeline
+                .goal_collaboration
+                .read_owner_candidates(scope)
+                .await
+                .map_err(|err| storage_error("goal_read_candidates", &err))?;
+            candidates.extend(goal_candidates);
+            candidates.sort_unstable();
+            candidates.dedup();
+        }
+        Ok(candidates)
+    }
+
     /// The unvetoed read set: every owner this context may read anything of.
     /// A context that reads nothing is refused here, with one
     /// `DeniedResolution` decision for its principal.
@@ -412,23 +459,35 @@ impl Engine {
         }
         let operation = self.operation_authority(authority)?;
         let authz = operation.authz();
-        let read = self.readable_set(authz)?;
+        let read = self.row_read_candidates(authz).await?;
         let homes = self
             .storage()
             .pipeline
             .owner_access_read
-            .visible_home_owners(authz.owner_scope(), entities, &read)
+            .visible_entries(authz.owner_scope(), entities, &read)
             .await
             .map_err(|err| storage_error("visible_home_owner", &err))?;
         homes
             .into_iter()
             .map(|home| {
-                let (owner, kind, _) = home
-                    .filter(|(owner, kind, _)| authz.may_read(owner, *kind))
+                let entry = home
+                    .filter(|entry| match entry.route {
+                        crate::storage_ports::EntryReadRoute::Owner => {
+                            authz.may_read(&entry.owner, entry.kind)
+                        }
+                        crate::storage_ports::EntryReadRoute::Goal => authz
+                            .owner_scope()
+                            .is_some_and(|scope| scope.goal_principal().is_some()),
+                    })
                     .ok_or_else(|| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
+                let (owner, kind) = (entry.owner, entry.kind);
                 self.veto_read_owner(authz, &owner, kind)
                     .map_err(|_| ProtocolError::forbidden(ENTRY_NOT_FOUND_MESSAGE))?;
-                Ok(EntryReadPermit { owner, kind })
+                Ok(EntryReadPermit {
+                    owner,
+                    kind,
+                    schema_id: entry.schema,
+                })
             })
             .collect()
     }
@@ -439,7 +498,9 @@ fn allows(authz: &AuthzContext, owner: &OwnerId, operation: &AuthzOperation) -> 
         AuthzOperation::Read { kind } => authz.may_read(owner, kind),
         AuthzOperation::Write { kind } => authz.may_write(owner, kind),
         AuthzOperation::OwnerAdmin => authz.role_for_owner(owner).is_some_and(Role::administers),
-        AuthzOperation::Membership { .. } | AuthzOperation::EntityTransfer { .. } => false,
+        AuthzOperation::Membership { .. }
+        | AuthzOperation::EntityTransfer { .. }
+        | AuthzOperation::GoalCollaboration { .. } => false,
     }
 }
 

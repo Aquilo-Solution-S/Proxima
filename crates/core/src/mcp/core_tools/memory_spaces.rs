@@ -170,20 +170,9 @@ fn space_for(ctx: &McpToolCtx, owner: OwnerId) -> ResolvedMemorySpace {
 ///
 /// A memory has exactly one home owner at read time (storage fails closed
 /// on a second candidate), so the label is total and deterministic.
-///
-/// # Errors
-///
-/// Returns an internal error when `owner` is not one of the caller's
-/// accessible owners: an engine read can only return readable memories, so
-/// this is an invariant failure, never a reason to report `current`.
-pub fn space_key_for_owner(ctx: &McpToolCtx, owner: OwnerId) -> Result<String, McpToolError> {
-    if ctx.authz.can_access_owner(&owner) {
-        Ok(space_for(ctx, owner).key)
-    } else {
-        Err(McpToolError::Other(
-            "memory read returned an owner outside the caller's spaces".into(),
-        ))
-    }
+#[must_use]
+pub fn space_key_for_owner(ctx: &McpToolCtx, owner: OwnerId) -> String {
+    space_for(ctx, owner).key
 }
 
 fn sorted_accessible_principals(ctx: &McpToolCtx) -> Vec<OwnerId> {
@@ -332,15 +321,17 @@ mod tests {
             .into_iter()
             .map(|space| space.key)
             .collect::<Vec<_>>();
-        let personal = space_key_for_owner(&ctx, OwnerId::from(subject)).unwrap();
-        let group = space_key_for_owner(&ctx, shared).unwrap();
+        let personal = space_key_for_owner(&ctx, OwnerId::from(subject));
+        let group = space_key_for_owner(&ctx, shared);
 
         assert_eq!(personal, "current");
         assert_eq!(group, shared.to_string());
         assert_eq!(advertised, vec![personal, group]);
+        let stranger_key = space_key_for_owner(&ctx, stranger);
+        assert_eq!(stranger_key, stranger.to_string());
         assert!(
-            space_key_for_owner(&ctx, stranger).is_err(),
-            "an owner outside the caller's spaces fails closed, never `current`"
+            resolve_space_owner(&ctx, Some(&stranger_key), SpaceDefault::Current).is_err(),
+            "a presentation key must not authorize owner selection"
         );
     }
 

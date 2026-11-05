@@ -3,6 +3,30 @@ use crate::MemoryId;
 use crate::mcp::McpToolCtx;
 use crate::verbs::goal_write::IdempotencyKey;
 
+/// Parse the authoring destination once for source resolution and admission.
+pub(super) fn resolve_destination(
+    ctx: &McpToolCtx,
+    space: Option<&str>,
+    working_goal: Option<&str>,
+) -> Result<crate::MemoryDestination, McpToolError> {
+    match (space, working_goal) {
+        (Some(_), Some(_)) => Err(McpToolError::InvalidInput(
+            "space and working_goal are mutually exclusive".into(),
+        )),
+        (None, Some(goal)) => Ok(crate::MemoryDestination::WorkingGoal(
+            crate::GoalHandle::new(crate::mcp::ids::parse_wire_uuid(goal)?),
+        )),
+        (space, None) => Ok(crate::MemoryDestination::Owner(
+            super::super::memory_spaces::resolve_space_owner(
+                ctx,
+                space,
+                super::super::memory_spaces::SpaceDefault::Current,
+            )?
+            .owner,
+        )),
+    }
+}
+
 /// Resolve the reserved operator label for an authoring write.
 ///
 /// The [`McpTool`](crate::mcp::McpTool) spelling of
@@ -205,6 +229,14 @@ mod tests {
             UserId::new(Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid")),
             Vec::new(),
         )
+    }
+
+    #[test]
+    fn authoring_destination_refuses_both_space_and_working_goal() {
+        assert!(matches!(
+            super::resolve_destination(&test_ctx(), Some("personal"), Some("goal")),
+            Err(McpToolError::InvalidInput(_))
+        ));
     }
 
     #[test]

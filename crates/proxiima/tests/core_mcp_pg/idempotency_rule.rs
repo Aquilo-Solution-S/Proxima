@@ -443,7 +443,7 @@ async fn idempotency_rule_table() -> TestResult {
     let set_args = serde_json::json!({
         "action": "set", "schema_id": "core/simple-text-v1",
         "title": "goal-set", "text": "goal-set", "body": {},
-        "evidence": [fact], "target_perspective": target,
+        "evidence": [fact], "motivated_by": [target],
         "idempotency_key": "goal-set-k",
     });
     let g1 = call("core_goal", set_args.clone()).await?;
@@ -550,7 +550,7 @@ async fn idempotency_rule_table() -> TestResult {
             serde_json::json!({
                 "action": "set", "schema_id": "core/simple-text-v1",
                 "title": "parent", "text": "parent", "body": {},
-                "evidence": [fact], "target_perspective": target,
+                "evidence": [fact], "motivated_by": [target],
                 "idempotency_key": "goal-parent-k",
             }),
         )
@@ -562,7 +562,7 @@ async fn idempotency_rule_table() -> TestResult {
             "schema_id": "core/simple-text-v1", "title": "child0",
             "text": "child0", "body": {}, "evidence": [fact],
         }],
-        "target_perspective": target,
+        "motivated_by": [target],
         "idempotency_key": "goal-dec-k",
     });
     let gd = call("core_goal", dec_args.clone()).await?;
@@ -599,7 +599,7 @@ async fn idempotency_rule_table() -> TestResult {
                 "schema_id": "core/simple-text-v1",
                 "title": "eg-goal", "text": "eg-goal", "body": {},
                 "evidence": ["remember:0"],
-                "target_perspective": "stance:0",
+                "motivated_by": ["stance:0"],
                 "idempotency_key": "eg-goal-k",
             }],
         }),
@@ -627,7 +627,7 @@ async fn idempotency_rule_table() -> TestResult {
                 "schema_id": "core/simple-text-v1",
                 "title": "eg-goal", "text": "eg-goal", "body": {},
                 "evidence": ["remember:0"],
-                "target_perspective": "stance:0",
+                "motivated_by": ["stance:0"],
                 "idempotency_key": "eg-goal-k",
             }],
         }),
@@ -655,7 +655,7 @@ async fn idempotency_rule_table() -> TestResult {
                 "schema_id": "core/simple-text-v1",
                 "title": "eg-goal", "text": "eg-goal-changed", "body": {},
                 "evidence": ["remember:0"],
-                "target_perspective": "stance:0",
+                "motivated_by": ["stance:0"],
                 "idempotency_key": "eg-goal-k",
             }],
         }),

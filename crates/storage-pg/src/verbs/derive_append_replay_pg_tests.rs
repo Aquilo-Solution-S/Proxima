@@ -8,7 +8,7 @@ use crate::test_fixtures::create_core_db;
 use proxiima_core::storage_ports::{FactIngestPort, MemoryAuthoringPort, OwnerWritePermit};
 use proxiima_core::verbs::fact_ingest::FactWriteCommand;
 use proxiima_core::{
-    AccessKind, ContentFingerprint, EdgeEndpoint, EntityKind, IdempotencyKey, KeyScope,
+    AccessKind, ContentFingerprint, EdgeEndpoint, EntityKind, GoalId, IdempotencyKey, KeyScope,
     MemoryOperatorKind, OwnerId, RequestKey, SchemaId, SchemaVersion, StorageError, UserId,
 };
 use proxiima_pg_testkit::{db_url, drop_db};
@@ -48,8 +48,54 @@ fn derived_draft(owner: OwnerId, handle: Uuid) -> DerivedDraft<'static> {
         supersedes: None,
         lexical_language: None,
         queued_spaces: &[],
+        guided_by: &[],
         request: None,
     }
+}
+
+fn perspective_draft(owner: OwnerId, handle: Uuid, guided_by: &[GoalId]) -> DerivedDraft<'_> {
+    let mut draft = derived_draft(owner, handle);
+    draft.kind = EntityKind::Perspective;
+    draft.operator_kind = MemoryOperatorKind::AtoP;
+    draft.guided_by = guided_by;
+    draft
+}
+
+fn keyed_perspective(owner: OwnerId, handle: Uuid, guided_by: &[GoalId]) -> DerivedDraft<'_> {
+    let mut draft = perspective_draft(owner, handle, guided_by);
+    draft.request = Some(RequestKey::new(
+        KeyScope::Perspective,
+        IdempotencyKey::new("guided-replay").expect("valid key"),
+        ContentFingerprint::builder(KeyScope::Perspective)
+            .text("key", "guided-replay")
+            .build(),
+    ));
+    draft
+}
+
+async fn goal_target(pool: &sqlx::PgPool, owner: OwnerId) -> Result<GoalId, sqlx::Error> {
+    let handle = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
+         VALUES ($1, 'core/task-goal-v1', $2, $1)",
+    )
+    .bind(handle)
+    .bind(owner.into_inner())
+    .execute(pool)
+    .await?;
+    let t: Uuid = sqlx::query_scalar(
+        "INSERT INTO proxiima_core.goal
+             (handle, t, owner_id, title, state, request_id, motivated_by, \"by\")
+         VALUES ($1, $1, $2, 'replay target', 'Active', $3, '{}',
+                 '00000000-0000-0000-0000-000000000509'::uuid)
+         RETURNING t",
+    )
+    .bind(handle)
+    .bind(owner.into_inner())
+    .bind(format!("replay-target-{handle}"))
+    .fetch_one(pool)
+    .await?;
+    Ok(GoalId::new(t))
 }
 
 /// The four steps a derived write is: the origin proof, the reference-kind
@@ -131,6 +177,42 @@ async fn same_first_originsnd_refs_replay() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("same pins must replay");
+}
+
+#[tokio::test]
+async fn changed_perspective_guidance_appends_with_same_origins() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Perspective);
+        let pool = pg.pool_for_tests();
+        let fact = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let mut abstraction = fact_draft();
+        abstraction.kind = proxiima_core::MemoryKind::Abstraction;
+        abstraction.additional_references =
+            vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+        let abstraction = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;
+        let goal_one = goal_target(pool, owner).await?;
+        let goal_two = goal_target(pool, owner).await?;
+        let handle = Uuid::now_v7();
+        let origins = [EdgeEndpoint::memory(
+            EntityKind::Abstraction,
+            abstraction.memory_id,
+        )];
+        let first_guidance = [goal_one];
+        let first_draft = perspective_draft(owner, handle, &first_guidance);
+        let first = append_with_edges(pool, &permit, &first_draft, &origins, &[]).await?;
+        let changed_guidance = [goal_two];
+        let changed_draft = perspective_draft(owner, handle, &changed_guidance);
+        let second = append_with_edges(pool, &permit, &changed_draft, &origins, &[]).await?;
+        assert!(!first.idempotent_replay);
+        assert!(!second.idempotent_replay);
+        assert_ne!(first.memory_id, second.memory_id);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("changed guidance must append a new Perspective version");
 }
 
 async fn head_snapshot(
@@ -259,6 +341,113 @@ async fn same_origins_different_refs_is_conflict() {
     .await;
     let _ = drop_db(&db_name).await;
     result.expect("ref mismatch must Conflict");
+}
+
+#[tokio::test]
+async fn changed_guidance_appends_and_exact_guidance_replays() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Perspective);
+        let pool = pg.pool_for_tests();
+        let fact = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let mut abstraction = fact_draft();
+        abstraction.kind = proxiima_core::MemoryKind::Abstraction;
+        abstraction.additional_references =
+            vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+        let origin = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;
+        let goal_a = goal_target(pool, owner).await?;
+        let goal_b = goal_target(pool, owner).await?;
+        let handle = Uuid::now_v7();
+        let origins = [EdgeEndpoint::memory(
+            EntityKind::Abstraction,
+            origin.memory_id,
+        )];
+        let guidance_a = [goal_a];
+        let guidance_b = [goal_b];
+
+        let first = append_with_edges(
+            pool,
+            &permit,
+            &perspective_draft(owner, handle, &guidance_a),
+            &origins,
+            &[],
+        )
+        .await?;
+        let replay = append_with_edges(
+            pool,
+            &permit,
+            &perspective_draft(owner, handle, &guidance_a),
+            &origins,
+            &[],
+        )
+        .await?;
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.memory_id, first.memory_id);
+
+        let changed = append_with_edges(
+            pool,
+            &permit,
+            &perspective_draft(owner, handle, &guidance_b),
+            &origins,
+            &[],
+        )
+        .await?;
+        assert!(!changed.idempotent_replay);
+        assert_ne!(changed.memory_id, first.memory_id);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("changed guidance must append while exact guidance replays");
+}
+
+#[tokio::test]
+async fn keyed_reuse_with_changed_guidance_conflicts() {
+    let (db_name, pg) = fresh_pg().await;
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let permit = OwnerWritePermit::new_for_tests(owner, AccessKind::Perspective);
+        let pool = pg.pool_for_tests();
+        let fact = pg.ingest_fact_atomic(&permit, &fact_draft(), None).await?;
+        let mut abstraction = fact_draft();
+        abstraction.kind = proxiima_core::MemoryKind::Abstraction;
+        abstraction.additional_references =
+            vec![EdgeEndpoint::memory(EntityKind::Fact, fact.memory_id)];
+        let origin = pg.ingest_fact_atomic(&permit, &abstraction, None).await?;
+        let goal_a = goal_target(pool, owner).await?;
+        let goal_b = goal_target(pool, owner).await?;
+        let handle = Uuid::now_v7();
+        let origins = [EdgeEndpoint::memory(
+            EntityKind::Abstraction,
+            origin.memory_id,
+        )];
+        let guided_a = [goal_a];
+        let guided_b = [goal_b];
+        let first = append_with_edges(
+            pool,
+            &permit,
+            &keyed_perspective(owner, handle, &guided_a),
+            &origins,
+            &[],
+        )
+        .await?;
+        assert!(!first.idempotent_replay);
+        let err = append_with_edges(
+            pool,
+            &permit,
+            &keyed_perspective(owner, handle, &guided_b),
+            &origins,
+            &[],
+        )
+        .await
+        .expect_err("changed guidance must not reuse an idempotency key");
+        assert!(matches!(err, StorageError::ReplayChanged(_)), "got {err:?}");
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("keyed guidance mismatch must conflict");
 }
 
 /// A new origin set appends a new version under the same handle. Each

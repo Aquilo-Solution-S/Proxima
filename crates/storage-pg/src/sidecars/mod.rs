@@ -51,7 +51,7 @@ pub use sql::{
     bytes32, int_to_u32, int_to_u64, memory_insert_sql, memory_select_batch_owner_pinned_sql,
     memory_select_batch_sql,
 };
-pub use traits::{PgGoalSidecar, PgMemoryPayload, PgMemorySidecar};
+pub use traits::{ForkPolicy, PgGoalSidecar, PgMemoryPayload, PgMemorySidecar};
 
 pub type PgSidecarFuture<'t> = Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
 pub type PgMemoryPayloadFuture<'t> =

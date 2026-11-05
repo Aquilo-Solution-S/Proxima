@@ -1035,7 +1035,8 @@ async fn hard_erase_witnesses_each_hot_memory_kind() {
                 state: GoalState::Active,
                 request_id: "witness-goal".into(),
                 close_fact_t: None,
-                assignment_t: None,
+
+                motivated_by: Vec::new(),
                 dependency_t: vec![],
                 evidence_t: vec![],
                 mint_write_act: false,

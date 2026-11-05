@@ -26,7 +26,10 @@ mod retention;
 mod vector_index;
 mod write_session;
 
-pub use access::{OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort};
+pub use crate::goal_collaboration::GoalCollaborationPort;
+pub use access::{
+    EntryReadRoute, OwnerAccessReadPort, OwnerMembershipAdminPort, OwnerTransferPort, VisibleEntry,
+};
 pub(crate) use bundle::{
     EngineStoragePorts, GoalCommandStoragePorts, QueryStoragePorts, ReadVerbStoragePorts,
 };
@@ -65,10 +68,10 @@ pub use fact::FactIngestPort;
 pub use goals::{GoalReadPort, GoalWritePort};
 pub use handles::{
     CitationHandle, EmbeddingJobHandle, EmbeddingMaintenanceHandle, EmbeddingTextHandle,
-    EmbeddingWriteHandle, FactIngestHandle, GoalReadHandle, GoalWriteHandle, MemoryAuthoringHandle,
-    MemoryInspectHandle, MemoryReadHandle, OwnerAccessReadHandle, OwnerDropProofHandle,
-    OwnerEraseAuthorityHandle, OwnerInverseHandle, OwnerMembershipAdminHandle, OwnerTransferHandle,
-    SourceCursorHandle, WriteSessionFactoryHandle,
+    EmbeddingWriteHandle, FactIngestHandle, GoalCollaborationHandle, GoalReadHandle,
+    GoalWriteHandle, MemoryAuthoringHandle, MemoryInspectHandle, MemoryReadHandle,
+    OwnerAccessReadHandle, OwnerDropProofHandle, OwnerEraseAuthorityHandle, OwnerInverseHandle,
+    OwnerMembershipAdminHandle, OwnerTransferHandle, SourceCursorHandle, WriteSessionFactoryHandle,
 };
 pub use host_state::{
     HostStateCommand, HostStateOutcome, HostStateParticipantDescriptor, HostStateParticipantId,
@@ -93,7 +96,10 @@ pub use publication::{
     PublisherIdError, ReleaseOutcome,
 };
 pub use retention::RetentionPort;
-pub use vector_index::{InMemoryVectorIndex, VectorCandidate, VectorEntry, VectorIndex, VectorKey};
+pub use vector_index::{
+    InMemoryVectorIndex, VectorCandidate, VectorCandidateFilter, VectorEntry, VectorIndex,
+    VectorKey,
+};
 pub use write_session::{
     SIDECAR_SESSION_READ_MAX_ROWS, SidecarSessionRead, WriteSession, WriteSessionFactory,
 };

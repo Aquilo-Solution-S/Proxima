@@ -678,7 +678,14 @@ pub async fn dump_database(
         // owner (`TransferRule::StaysOnKey`), as the generated leg declares.
         if matches!(
             table.as_str(),
-            "publication_consumer"
+            // These are the four tables introduced by migrations 0063/0064;
+            // the pinned baseline predates them. Their dedicated transfer
+            // and export tests cover the new contracts.
+            "goal_access_grant"
+                | "goal_memory_publication"
+                | "goal_motivation_index"
+                | "goal_work_binding"
+                | "publication_consumer"
                 | "publication_delivery"
                 | "memory_external_origin"
                 | "publication_counter"
@@ -722,6 +729,21 @@ pub async fn dump_database(
                 // `goal_text.rs` and `migrations/goal_text.rs` assert the
                 // column; this differential compares transfer behaviour.
                 object.remove("text");
+                // 0063 causal declarations are covered by the feedback,
+                // replay, export and transfer-refusal tests; this baseline
+                // predates them and compares every surviving older column.
+                object.remove("motivated_by");
+            }
+            if table == "memory"
+                && let Some(object) = row.as_object_mut()
+            {
+                object.remove("guided_by");
+                object.remove("forked_from");
+            }
+            if matches!(table.as_str(), "memory_head" | "goal_head")
+                && let Some(object) = row.as_object_mut()
+            {
+                object.remove("authority_generation");
             }
             if table == "blob_uploads"
                 && let Some(object) = row.as_object_mut()
