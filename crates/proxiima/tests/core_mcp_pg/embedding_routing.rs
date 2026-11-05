@@ -2052,8 +2052,12 @@ async fn a_drain_pass_sends_its_concurrent_batches_at_once() {
             Some(proxiima_core::llm::BoundEmbeddingClient::bind(client).expect("lane width")),
         );
         let handles = [
-            fixture.remember("current", "needle concurrent first").await?,
-            fixture.remember("current", "needle concurrent second").await?,
+            fixture
+                .remember("current", "needle concurrent first")
+                .await?,
+            fixture
+                .remember("current", "needle concurrent second")
+                .await?,
         ];
         let engine = fixture.built.host().engine();
         let drained = tokio::time::timeout(
