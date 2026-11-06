@@ -32,6 +32,9 @@ mod owner_transfer_differential_pg_tests;
 
 #[derive(Debug, Clone, Default)]
 pub struct PgSidecarRegistryFrozen {
+    pub(super) active_schema_ids: Arc<[(proxiima_core::verbs::schema::PayloadKind, String)]>,
+    pub(super) evolutions: Arc<[proxiima_core::spiice::SchemaEvolution]>,
+    pub(super) evolution_programs: Arc<HashMap<&'static str, super::PgSchemaEvolution>>,
     pub(super) entries: Arc<HashMap<PgSidecarKey, PgSidecarEntry>>,
     pub(super) retired_facts: Arc<[super::PgRetiredFactSidecar]>,
     pub(super) spiice_schema_names: Arc<[String]>,
@@ -315,6 +318,9 @@ impl PgSidecarRegistryFrozen {
             retired_facts: self.retired_facts.clone(),
             spiice_schema_names: self.spiice_schema_names.clone(),
             search_definitions: self.search_definitions.clone(),
+            active_schema_ids: self.active_schema_ids.clone(),
+            evolutions: self.evolutions.clone(),
+            evolution_programs: self.evolution_programs.clone(),
         }
     }
 
@@ -892,6 +898,38 @@ impl PgSidecarRegistryFrozen {
                 key.schema_id.as_str(),
                 key.schema_version.into_inner(),
                 key.kind,
+            ))
+        })?;
+        insert(tx, goal_id, payload).await
+    }
+
+    pub(crate) async fn insert_migration_memory_sidecar_entry(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        memory_id: MemoryId,
+        payload: &SidecarPayload,
+        entry: &PgSidecarEntry,
+    ) -> Result<(), StorageError> {
+        let insert = entry.memory_insert.ok_or_else(|| {
+            StorageError::ConstraintViolation(format!(
+                "PG sidecar for {} is not a memory sidecar",
+                entry.key.schema_id.as_str()
+            ))
+        })?;
+        insert(tx, memory_id, payload, super::SidecarInsertPermit::new()).await
+    }
+
+    pub(crate) async fn insert_migration_goal_sidecar_entry(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        goal_id: GoalId,
+        payload: &SidecarPayload,
+        entry: &PgSidecarEntry,
+    ) -> Result<(), StorageError> {
+        let insert = entry.goal_insert.ok_or_else(|| {
+            StorageError::ConstraintViolation(format!(
+                "PG sidecar for {} is not a Goal sidecar",
+                entry.key.schema_id.as_str()
             ))
         })?;
         insert(tx, goal_id, payload).await

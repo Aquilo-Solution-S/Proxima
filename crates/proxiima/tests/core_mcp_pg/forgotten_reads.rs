@@ -208,6 +208,14 @@ impl proxiima::host::OtherStores for ForwardTo {
                         },
                         kind: proxiima_core::verbs::query::EntityKind::Fact,
                         schema_id: "core/fact".into(),
+                        schema_version: proxiima_core::SchemaVersion::new(
+                            u32::try_from(
+                                memory["schema_version"]
+                                    .as_u64()
+                                    .expect("a memory has a schema version"),
+                            )
+                            .expect("a memory schema version fits u32"),
+                        ),
                         payload: memory["payload"].clone(),
                         title: memory["title"].as_str().map(str::to_owned),
                         body: memory.to_string(),

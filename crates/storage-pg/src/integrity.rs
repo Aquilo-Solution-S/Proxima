@@ -320,7 +320,21 @@ pub const DELETE_GUARD_FUNCTION: &str = r"CREATE OR REPLACE FUNCTION proxiima_co
 DECLARE
     surface text := TG_ARGV[0];
     memory_t uuid := (to_jsonb(OLD) ->> TG_ARGV[1])::uuid;
+    replaced boolean;
 BEGIN
+    EXECUTE format('SELECT EXISTS (SELECT 1 FROM %s WHERE %I = $1)', surface, TG_ARGV[1])
+       INTO replaced USING memory_t;
+    IF replaced AND EXISTS (
+        SELECT 1
+          FROM proxiima_core.schema_evolution_authority authority
+         WHERE authority.xact = pg_current_xact_id()
+           AND authority.record_kind = 'memory'
+           AND authority.source_id = memory_t
+           AND authority.target_id = memory_t
+           AND authority.primary_target
+    ) THEN
+        RETURN NULL;
+    END IF;
     IF EXISTS (
         SELECT 1
           FROM proxiima_core.memory m
@@ -424,9 +438,25 @@ pub const PRESENCE_TRIGGER_FUNCTION: &str = r"CREATE OR REPLACE FUNCTION proxiim
 DECLARE
     surface text := TG_ARGV[0];
     present boolean;
+    persisted_sidecars text[];
 BEGIN
     IF NOT (surface = ANY (NEW.sidecar_tables)) THEN
         RETURN NULL;
+    END IF;
+    SELECT m.sidecar_tables
+      INTO persisted_sidecars
+      FROM proxiima_core.memory m
+     WHERE m.t = NEW.t;
+    IF NOT (surface = ANY (COALESCE(persisted_sidecars, '{}'::text[]))) THEN
+        IF proxiima_core.schema_evolution_intermediate_memory_schema_permits(
+            NEW.t, NEW.schema_id
+        ) THEN
+            RETURN NULL;
+        END IF;
+        RAISE EXCEPTION
+            'memory % declares % in memory.sidecar_tables with no row in that table',
+            NEW.t, surface
+            USING ERRCODE = '23503';
     END IF;
     EXECUTE format('SELECT EXISTS (SELECT 1 FROM %s WHERE %I = $1)', surface, TG_ARGV[1])
        INTO present
@@ -1040,6 +1070,7 @@ mod tests {
             resources: &[],
             bespoke_erase_legs: &[],
             bespoke_transfer_legs: &[],
+            evolutions: &[],
             projection: ProjectionDecl::None {
                 why: "inverse only",
             },

@@ -152,7 +152,7 @@ their owner RLS and leading `owner_id` indexes around the spiice migration lanes
 A spiice need not classify them in `install_owner_rls`: the host's marks preserve
 the Follows policy when that installer runs. The policy checks both the sidecar's
 owner and its memory; a forgotten memory hides the row from owner reads while
-restore and erase still reach it. Skip-migration boot validates the generated
+restore and erase still reach it. Serving boot validates the generated
 marks and indexes without DDL. An existing table adopted as Follows must already
 have its UUID `owner_id` and memory FK when this host first runs; new tables may
 be created by their spiice lane.
@@ -178,6 +178,44 @@ Await and propagate this `Result` during host boot; a sidecar registry is not
 installed until its key columns, SQL types, and nullability pass validation.
 
 ## 3. Declare and register the contract
+
+### Evolve a persisted schema
+
+Each active version after v1 needs an executable path from its previous
+contracts. Declare `SchemaEvolution` in `SpiiceContract.evolutions`, with the
+source and target `SchemaContract`s, the spiice SQL migration that creates the
+target tables, dependencies, and consumer-facing `change` and `consumer_action`.
+The schema catalog publishes those two descriptions. Selection includes both
+payload kind and schema ID; a shared Abstraction/Perspective schema can evolve
+each kind independently.
+
+Keep historical payload types and sidecar codecs in `PgMigrationSchemas`.
+Bind the declaration, codecs, and transformation with `PgSchemaEvolution::new`,
+then include that executable in `spiice_bundle!`'s `evolutions = [...]` list.
+The ordinary schema lists contain the target types. Intermediate types stay in
+the migration codecs. Registry freeze checks that the declarations, typed
+sidecars, executable steps, and dependency graph agree.
+
+The transformation receives `MigrationInput` and a `MigrationPlan`. It reads
+typed source payloads and stages typed targets; core owns the transaction.
+For a representation-only Fact conversion, `retain_fact` preserves admission
+and series, derives the new receipt key through the ordinary Fact constructor,
+and retains old receipt aliases. For a split or merge, choose placement and
+explicitly map every source to a primary replay target and any additional
+targets. A dependent spiice uses the preceding mappings to rewrite its own
+reference-bearing payloads. Core refuses missing mappings and invalid target
+graphs; it never chooses a timezone, default business value, or split target.
+Each callback receives one owner's records. When replacements span owners,
+use a dependent step to rewrite references after the preceding step has
+produced every owner's identity mapping. The callback can inspect another
+owner's mapping only for a target already referenced by its input records.
+
+The migration changes persisted representation without admitting another
+business occurrence. Previously captured publication bytes remain unchanged.
+Search projections and sketches are rebuilt; obsolete embeddings are discarded
+and existing embedding spaces are queued again. Run the composed host's
+dedicated migration command before starting the new serving composition.
+Serving reads the completed target representation and validates completion.
 
 For a removed Fact, put a `RetiredFactContract` in the contract's
 `retired_facts` slice and remove its type from the active schema lists.

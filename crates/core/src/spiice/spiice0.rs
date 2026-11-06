@@ -906,6 +906,30 @@ const KERNEL_SURFACES: &[Surface] = &[
         completeness: None,
     },
     Surface {
+        table: "proxiima_core.schema_evolution_publication",
+        key: KeyShape::MemoryT { column: "memory_t" },
+        owner_column: None,
+        transfer: TransferRule::StaysOnKey,
+        erase: EraseRule::Cascade {
+            via: DbConstraint {
+                relation: "proxiima_core.schema_evolution_publication",
+                name: "schema_evolution_publication_memory_t_fkey",
+            },
+        },
+        export: ExportRule::DerivedFrom {
+            source: "proxiima_core.memory",
+            why: "payload-free capture identity mapping of the replacement memories",
+        },
+        forget: ForgetRule::Keep {
+            why: "the publication's existing lifecycle determines capture retention",
+        },
+        lexical_language_column: None,
+        counter: CounterRule::Uncounted {
+            why: "the mapped capture is counted by the publication erase leg",
+        },
+        completeness: None,
+    },
+    Surface {
         table: "proxiima_core.publication_origin",
         key: KeyShape::Custom(&["original_owner_id"]),
         owner_column: Some("original_owner_id"),
@@ -1585,6 +1609,7 @@ pub const SPIICE_0: SpiiceContract = SpiiceContract {
     projection: ProjectionDecl::Table(CORE_PROJECTION),
     bespoke_erase_legs: BESPOKE_ERASE_LEGS,
     bespoke_transfer_legs: BESPOKE_TRANSFER_LEGS,
+    evolutions: &[],
 };
 
 /// Look up a spiice-#0 resource by its palette scope key.

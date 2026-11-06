@@ -132,6 +132,7 @@ mod tests {
             resources: &[],
             bespoke_erase_legs: &[],
             bespoke_transfer_legs: &[],
+            evolutions: &[],
             projection: ProjectionDecl::None {
                 why: "retired Facts have no search surface",
             },

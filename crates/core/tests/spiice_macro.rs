@@ -59,6 +59,7 @@ static MACRO_SPIICE_CONTRACT: SpiiceContract = SpiiceContract {
     resources: &[],
     bespoke_erase_legs: &[],
     bespoke_transfer_legs: &[],
+    evolutions: &[],
     projection: ProjectionDecl::None {
         why: "a macro fixture registers no search surface",
     },
@@ -78,6 +79,7 @@ static EMPTY_SPIICE_CONTRACT: SpiiceContract = SpiiceContract {
     resources: &[],
     bespoke_erase_legs: &[],
     bespoke_transfer_legs: &[],
+    evolutions: &[],
     projection: ProjectionDecl::None {
         why: "a macro fixture registers no search surface",
     },

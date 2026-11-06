@@ -236,10 +236,16 @@ pub use proxiima_storage_pg::pg_sidecar;
 /// The generator returns [`ProjectionArtifacts`], whose fields are [`Artifact`]s.
 pub use proxiima_storage_pg::projection::{Artifact, ProjectionArtifacts, projection_artifacts};
 pub use proxiima_storage_pg::search_candidates::candidate_artifacts as search_candidate_artifacts;
+pub use proxiima_storage_pg::sidecars::evolution::{
+    MigrationAdmission, MigrationBlob, MigrationGoal, MigrationGoalPins, MigrationInput,
+    MigrationMemory, MigrationPins, MigrationPlacement, MigrationPlan, MigrationSeries,
+    PgMigrationGoalPayload, SchemaMigrationFn,
+};
 pub use proxiima_storage_pg::sidecars::{
     ForkPolicy, PgGoalSidecar, PgMemoryPayload, PgMemoryPayloadFuture, PgMemorySidecar,
     PgRetiredFactSidecar, PgSidecarFuture, PgSidecarReadCtx, SidecarInsertPermit, SidecarOwnerMode,
 };
+pub use proxiima_storage_pg::{PgMigrationSchemas, PgSchemaEvolution};
 pub use proxiima_storage_pg::{
     PgSidecarRegistry, PgSidecarRegistryFrozen, register_core_pg_sidecars,
 };

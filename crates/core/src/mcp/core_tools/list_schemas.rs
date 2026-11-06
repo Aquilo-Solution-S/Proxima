@@ -24,6 +24,10 @@ pub struct SchemaItem {
     /// `CloudEvents` publication record in the same transaction (issue
     /// #305). Always `false` for the non-Fact kinds.
     pub listenable: bool,
+    /// Consumer-facing meaning of this target after an explicit evolution.
+    pub change: Option<String>,
+    /// Required action for consumers of this target schema.
+    pub consumer_action: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -44,11 +48,18 @@ pub async fn list_schemas(
         .list()
         .into_iter()
         .filter(|info| args.kind.is_none_or(|k| info.kind == k))
-        .map(|info| SchemaItem {
-            schema_id: info.schema_id.as_str().to_string(),
-            schema_version: info.schema_version.into_inner(),
-            kind: info.kind,
-            listenable: info.listenable,
+        .map(|info| {
+            let metadata =
+                ctx.registry
+                    .evolution_metadata(&info.schema_id, info.schema_version, info.kind);
+            SchemaItem {
+                schema_id: info.schema_id.as_str().to_string(),
+                schema_version: info.schema_version.into_inner(),
+                kind: info.kind,
+                listenable: info.listenable,
+                change: metadata.map(|(change, _)| change.to_owned()),
+                consumer_action: metadata.map(|(_, action)| action.to_owned()),
+            }
         })
         .collect();
     Ok(ListSchemasOutput { schemas })
@@ -63,6 +74,8 @@ pub struct GetSchemaOutput {
     pub schema_version: u32,
     pub kind: PayloadKind,
     pub listenable: bool,
+    pub change: Option<String>,
+    pub consumer_action: Option<String>,
     /// The registered `json_schema()` of the payload type.
     pub json_schema: serde_json::Value,
 }
@@ -96,11 +109,16 @@ pub async fn get_schema(
         .payload_json_schema(&id, version, info.kind)
         .ok_or_else(missing)?
         .clone();
+    let metadata = ctx
+        .registry
+        .evolution_metadata(&info.schema_id, info.schema_version, info.kind);
     Ok(GetSchemaOutput {
         schema_id: info.schema_id.as_str().to_string(),
         schema_version: info.schema_version.into_inner(),
         kind: info.kind,
         listenable: info.listenable,
+        change: metadata.map(|(change, _)| change.to_owned()),
+        consumer_action: metadata.map(|(_, action)| action.to_owned()),
         json_schema,
     })
 }

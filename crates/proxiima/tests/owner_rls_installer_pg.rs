@@ -840,7 +840,6 @@ async fn automatic_follows_installation_precedes_spiice_lanes_and_serves_skip_bo
         .owner(owner)
         .allow_insecure_single_owner()
         .served_surface(proxiima::ServedSurface::All)
-        .skip_migrations()
         .build()
         .await
         .expect("skip boot validates generated Follows state without installing it");
@@ -890,6 +889,7 @@ async fn preflight_refuses_missing_follows_state_and_empty_sql_run_repairs_it() 
         let pending = proxiima::pending_migrations(
             &pg.clone_pool_for_backend(),
             &ExampleSpiice::migrators(),
+            &proxiima::spiice::PgSidecarRegistryFrozen::default(),
             proxiima::VectorStorage::Local,
         )
         .await
@@ -980,6 +980,7 @@ async fn empty_sql_run_replaces_an_owner_only_follows_policy() {
         proxiima::pending_migrations(
             &pg.clone_pool_for_backend(),
             &ExampleSpiice::migrators(),
+            &proxiima::spiice::PgSidecarRegistryFrozen::default(),
             proxiima::VectorStorage::Local
         )
         .await

@@ -10,6 +10,9 @@ use proxiima_core::{AgentNoteV1, ProtocolError};
 use proxiima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use uuid::Uuid;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 type TestResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug)]
@@ -243,6 +246,7 @@ impl SpiiceApp for CoreApp {
 
 async fn boot(database: &str, owner: OwnerId) -> TestResult<BuiltProxiima> {
     let (runtime_url, platform_url) = split_role_urls(database).await?;
+    migrated_app::migrate_app::<CoreApp>(&platform_url).await;
     Ok(Proxiima::<CoreApp>::app()
         .database_url(runtime_url)
         .store_number(0)

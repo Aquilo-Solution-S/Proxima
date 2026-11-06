@@ -13,7 +13,7 @@ use futures::stream::{self, StreamExt};
 use uuid::Uuid;
 
 use crate::verbs::query::{EntityKind, SearchMode, SearchOrder, SupersessionStatus, TagMatch};
-use crate::{AuthzContext, OwnerId, WriterAttribution};
+use crate::{AuthzContext, OwnerId, SchemaVersion, WriterAttribution};
 
 /// How long a search waits for one other store before reporting it as
 /// unanswered.
@@ -163,6 +163,7 @@ pub struct RemoteMemory {
     pub writer: WriterAttribution,
     pub kind: EntityKind,
     pub schema_id: String,
+    pub schema_version: SchemaVersion,
     /// The stored payload, independently of its display title and body.
     pub payload: serde_json::Value,
     pub title: Option<String>,
@@ -190,6 +191,7 @@ impl RemoteMemory {
             },
             kind: EntityKind::Fact,
             schema_id: "test/fact-v1".into(),
+            schema_version: SchemaVersion::new(1),
             payload: serde_json::json!({"observation": {"count": 7, "unit": "sample"}}),
             title: None,
             body: String::new(),

@@ -81,6 +81,7 @@ const TEST_CONTRACT: SpiiceContract = SpiiceContract {
     },
     bespoke_erase_legs: &[],
     bespoke_transfer_legs: &[],
+    evolutions: &[],
 };
 
 proxiima::spiice::proxiima_spiice! {
@@ -314,7 +315,6 @@ async fn exercise_full_registry_erase(
         .owner(owner)
         .allow_insecure_single_owner()
         .served_surface(proxiima::ServedSurface::All)
-        .skip_migrations()
         .host_state_participant(Arc::new(Participant(Arc::new(Lifecycle))))
         .build()
         .await?;

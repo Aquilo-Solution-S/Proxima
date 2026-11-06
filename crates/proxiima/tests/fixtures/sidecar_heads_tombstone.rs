@@ -122,6 +122,7 @@ static CONTRACT: SpiiceContract = SpiiceContract {
     },
     bespoke_erase_legs: &[],
     bespoke_transfer_legs: &[],
+    evolutions: &[],
 };
 
 proxiima_core::proxiima_spiice! {

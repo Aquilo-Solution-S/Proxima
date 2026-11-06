@@ -67,6 +67,8 @@ pub async fn get_graph(
             schema_version: info.schema_version.into_inner(),
             kind: info.kind,
             listenable: info.listenable,
+            change: None,
+            consumer_action: None,
         })
         .collect();
 

@@ -513,6 +513,7 @@ pub struct SpiiceRegistryFrozen {
     request_behaviors: Vec<Arc<dyn RequestBehavior>>,
     spiices: Vec<SpiiceDescriptor>,
     contracts: Vec<&'static SpiiceContract>,
+    evolutions: Vec<&'static crate::spiice::SchemaEvolution>,
     /// Every linked spiice's scope declarations, flattened at freeze.
     ///
     /// Flattened rather than walked per lookup because the consumer is a
@@ -704,6 +705,10 @@ impl SpiiceRegistryFrozen {
             .iter()
             .flat_map(|contract| contract.scopes.iter().copied())
             .collect();
+        let evolutions = contracts
+            .iter()
+            .flat_map(|contract| contract.evolutions.iter())
+            .collect();
         let schema_capability_tags = crate::spiice::schema_capability_map(&schema_capability_tags);
         let search_projections = contract_search_projections(&contracts)?;
         let embed_units = contract_embed_units(&contracts)?;
@@ -718,6 +723,7 @@ impl SpiiceRegistryFrozen {
             request_behaviors,
             spiices,
             contracts,
+            evolutions,
             scopes,
             owner_resolver,
             authorization_hooks,
@@ -742,6 +748,29 @@ impl SpiiceRegistryFrozen {
     #[must_use]
     pub fn contracts(&self) -> &[&'static SpiiceContract] {
         &self.contracts
+    }
+
+    /// Explicit representation changes in the frozen composition.
+    #[must_use]
+    pub fn evolutions(&self) -> &[&'static crate::spiice::SchemaEvolution] {
+        &self.evolutions
+    }
+
+    /// Consumer-facing change metadata for a target schema, if one is an
+    /// output of an explicit evolution step.
+    #[must_use]
+    pub fn evolution_metadata(
+        &self,
+        schema_id: &SchemaId,
+        schema_version: SchemaVersion,
+        kind: PayloadKind,
+    ) -> Option<(&'static str, &'static str)> {
+        crate::spiice::evolution::evolution_for_schema(
+            &self.evolutions,
+            schema_id,
+            schema_version,
+            kind,
+        )
     }
 
     /// Every spiice-owned lifecycle scope declaration in this binary

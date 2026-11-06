@@ -31,6 +31,9 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 /// Links no spiice and contributes no worker.
 struct BareApp;
 
@@ -264,6 +267,7 @@ async fn an_unconfigured_boot_starts_nothing_and_says_why_per_feature() {
     let db = SplitRoleDb::create("proxiima_features_off", &[])
         .await
         .expect("PG required");
+    migrated_app::migrate_app::<BareApp>(db.platform_url()).await;
     let captured = captured();
 
     let built = Proxiima::<BareApp>::app()
@@ -311,6 +315,7 @@ async fn build_and_run_start_every_configured_feature_and_shutdown_joins_them() 
     let db = SplitRoleDb::create("proxiima_features_on", &[])
         .await
         .expect("PG required");
+    migrated_app::migrate_app::<WorkerApp>(db.platform_url()).await;
     let owner = company_owner(Uuid::now_v7());
     let subject = UserId::new(Uuid::now_v7());
     let app = || {
@@ -398,6 +403,7 @@ async fn a_retention_without_a_publisher_is_off_and_says_so() {
     let db = SplitRoleDb::create("proxiima_features_prune", &[])
         .await
         .expect("PG required");
+    migrated_app::migrate_app::<BareApp>(db.platform_url()).await;
     let built = Proxiima::<BareApp>::app()
         .database_url(db.runtime_url())
         .store_number(0)

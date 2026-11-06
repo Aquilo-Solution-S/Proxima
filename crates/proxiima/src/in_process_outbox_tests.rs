@@ -20,7 +20,9 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::in_process_outbox::{AfterAccept, Drain, Proceed, Settings, spawn};
-use crate::outbox_test_fixture::{OutboxProbeApp, PROBE_SOURCE, capture, wait_for_outbox};
+use crate::outbox_test_fixture::{
+    OutboxProbeApp, PROBE_SOURCE, capture, migrate_probe_database, wait_for_outbox,
+};
 use proxiima_core::test_fixtures::authenticated_context;
 use proxiima_core::{
     GoalId, GoalTransitionRequest, MemoryTarget, PendingWork, SeriesHandle, SimpleTextGoalV1,
@@ -186,6 +188,7 @@ impl World {
         let (db_url, platform_url) = proxiima_pg_testkit::split_role_urls(&db_name)
             .await
             .expect("split fixture roles");
+        migrate_probe_database(&platform_url).await;
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
             .connect(&platform_url)
@@ -547,6 +550,7 @@ async fn an_intake_without_a_publication_source_fails_boot_naming_the_goal_chang
     let (db_url, platform_url) = proxiima_pg_testkit::split_role_urls(&db_name)
         .await
         .expect("split fixture roles");
+    migrate_probe_database(&platform_url).await;
     let refused = crate::Proxiima::<OutboxProbeApp>::app()
         .database_url(db_url)
         .store_number(0)

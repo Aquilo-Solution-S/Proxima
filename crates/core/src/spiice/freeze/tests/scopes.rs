@@ -40,6 +40,7 @@ const fn scoped_contract(
         projection: ProjectionDecl::None {
             why: "a fixture registry has no schema that is a search surface",
         },
+        evolutions: &[],
     }
 }
 

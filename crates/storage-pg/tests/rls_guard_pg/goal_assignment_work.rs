@@ -100,8 +100,8 @@ async fn seed_goals(seed: &mut sqlx::pool::PoolConnection<sqlx::Postgres>, owner
     // Active for the series marked so, Achieved otherwise.
     sqlx::query(
         "INSERT INTO proxiima_core.goal
-             (handle, t, owner_id, title, state, request_id, motivated_by, \"by\", text)
-         SELECT handle, t1, $1, 'g' || n, 'Active', 'first-' || n, array_remove(ARRAY[assignment], NULL),
+             (handle, t, owner_id, schema_id, title, state, request_id, motivated_by, \"by\", text)
+         SELECT handle, t1, $1, 'core/simple-text-v1', 'g' || n, 'Active', 'first-' || n, array_remove(ARRAY[assignment], NULL),
                 '00000000-0000-0000-0000-000000000539'::uuid, 'text'
            FROM series",
     )
@@ -111,8 +111,8 @@ async fn seed_goals(seed: &mut sqlx::pool::PoolConnection<sqlx::Postgres>, owner
     .unwrap();
     sqlx::query(
         "INSERT INTO proxiima_core.goal
-             (handle, t, owner_id, title, state, request_id, motivated_by, \"by\", text, close_fact_t)
-         SELECT handle, t2, $1, 'g' || n,
+             (handle, t, owner_id, schema_id, title, state, request_id, motivated_by, \"by\", text, close_fact_t)
+         SELECT handle, t2, $1, 'core/simple-text-v1', 'g' || n,
                 CASE WHEN active THEN 'Active' ELSE 'Achieved' END::proxiima_core.goal_state,
                 'head-' || n, array_remove(ARRAY[assignment], NULL), '00000000-0000-0000-0000-000000000539'::uuid, 'text',
                 CASE WHEN active THEN NULL ELSE uuidv7() END
@@ -334,8 +334,8 @@ async fn an_owner_of_few_goals_lists_them_without_reading_the_store() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO proxiima_core.goal (handle, t, owner_id, title, state, request_id, \"by\", text)
-             SELECT handle, t1, $1, 'g' || n, 'Active', 'first-' || n,
+            "INSERT INTO proxiima_core.goal (handle, t, owner_id, schema_id, title, state, request_id, \"by\", text)
+             SELECT handle, t1, $1, 'core/simple-text-v1', 'g' || n, 'Active', 'first-' || n,
                     '00000000-0000-0000-0000-000000000545'::uuid, 'text'
                FROM listed",
         )
@@ -345,8 +345,8 @@ async fn an_owner_of_few_goals_lists_them_without_reading_the_store() {
         .unwrap();
         sqlx::query(
             "INSERT INTO proxiima_core.goal
-                 (handle, t, owner_id, title, state, request_id, \"by\", text, close_fact_t)
-             SELECT handle, t2, $1, 'g' || n,
+                 (handle, t, owner_id, schema_id, title, state, request_id, \"by\", text, close_fact_t)
+             SELECT handle, t2, $1, 'core/simple-text-v1', 'g' || n,
                     CASE WHEN n % 10 = 0 THEN 'Active' ELSE 'Achieved' END::proxiima_core.goal_state,
                     'head-' || n, '00000000-0000-0000-0000-000000000545'::uuid, 'text',
                     CASE WHEN n % 10 = 0 THEN NULL ELSE uuidv7() END
@@ -488,8 +488,8 @@ async fn motivation_projection_matches_canonical_arrays_after_append() {
     .unwrap();
     sqlx::query(
         "INSERT INTO proxiima_core.goal
-             (handle, t, owner_id, title, state, request_id, motivated_by, \"by\", text)
-         VALUES ($1, $2, $3, 'g', 'Active', 'projection-test-g', $4, $3, 'text')",
+             (handle, t, owner_id, schema_id, title, state, request_id, motivated_by, \"by\", text)
+         VALUES ($1, $2, $3, 'core/simple-text-v1', 'g', 'Active', 'projection-test-g', $4, $3, 'text')",
     )
     .bind(handle)
     .bind(goal_t)

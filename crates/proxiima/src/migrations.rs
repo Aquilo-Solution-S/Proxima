@@ -18,11 +18,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use proxiima_core::StorageError;
+use proxiima_core::{SchemaEvolution, StorageError};
 pub use proxiima_storage_pg::{MissingMigrationPolicy, VectorStorage};
 use proxiima_storage_pg::{
     PgMigrationStorage, PgSidecarRegistryFrozen, PgStorage, core_migrator_for,
-    ensure_core_ledger_compatible_on_connection_with_policy, ensure_core_schema_current,
+    ensure_core_ledger_compatible_on_connection_with_policy,
 };
 use sqlx::migrate::{MigrateError, Migration, Migrator};
 use sqlx::pool::PoolConnection;
@@ -116,6 +116,108 @@ impl NamedMigrator {
     pub fn migrator(&self) -> &Migrator {
         &self.migrator
     }
+
+    fn has_version(&self, version: i64) -> bool {
+        self.lane()
+            .iter()
+            .any(|migration| migration.version == version)
+    }
+}
+
+/// Validate and topologically order the explicit evolution steps for one
+/// composed host. The order is deterministic: dependencies first, then the
+/// declaration order supplied by the frozen composition. SQL execution uses
+/// `after_migration` as the owning lane's anchor; this helper only proves that
+/// every anchor and dependency is present before the first write.
+pub(crate) fn schema_evolution_schedule<'a>(
+    sources: &[&NamedMigrator],
+    evolutions: &'a [SchemaEvolution],
+) -> Result<Vec<&'a SchemaEvolution>, MigrationError> {
+    let mut by_id = BTreeMap::new();
+    for evolution in evolutions {
+        by_id.insert(evolution.id, evolution);
+        let owner = evolution.sources.first().map(|source| source.id.spiice);
+        if !sources.iter().any(|source| {
+            Some(source.source()) == owner && source.has_version(evolution.after_migration)
+        }) {
+            return Err(MigrationError::EvolutionAnchorMissing {
+                evolution_id: evolution.id,
+                after_migration: evolution.after_migration,
+            });
+        }
+        for required in evolution.requires {
+            if !by_id.contains_key(required)
+                && !evolutions.iter().any(|candidate| candidate.id == *required)
+            {
+                return Err(MigrationError::EvolutionDependencyMissing {
+                    evolution_id: evolution.id,
+                    required,
+                });
+            }
+        }
+    }
+    let mut dependencies = BTreeMap::<&'static str, BTreeSet<&'static str>>::new();
+    for evolution in evolutions {
+        let entry = dependencies.entry(evolution.id).or_default();
+        entry.extend(evolution.requires.iter().copied());
+        for prior in evolutions {
+            if prior.id != evolution.id
+                && prior.targets.iter().any(|target| {
+                    evolution
+                        .sources
+                        .iter()
+                        .any(|source| source.id == target.id && source.kind == target.kind)
+                })
+            {
+                entry.insert(prior.id);
+            }
+        }
+    }
+    let mut result = Vec::with_capacity(evolutions.len());
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    for evolution in evolutions {
+        visit_evolution(
+            evolution,
+            &by_id,
+            &dependencies,
+            &mut visiting,
+            &mut visited,
+            &mut result,
+        )?;
+    }
+    Ok(result)
+}
+
+fn visit_evolution<'a>(
+    evolution: &'a SchemaEvolution,
+    by_id: &BTreeMap<&'static str, &'a SchemaEvolution>,
+    dependencies: &BTreeMap<&'static str, BTreeSet<&'static str>>,
+    visiting: &mut BTreeSet<&'static str>,
+    visited: &mut BTreeSet<&'static str>,
+    result: &mut Vec<&'a SchemaEvolution>,
+) -> Result<(), MigrationError> {
+    if visited.contains(evolution.id) {
+        return Ok(());
+    }
+    if !visiting.insert(evolution.id) {
+        return Err(MigrationError::EvolutionCycle {
+            evolution_id: evolution.id,
+        });
+    }
+    for required in dependencies.get(evolution.id).into_iter().flatten() {
+        let dependency = by_id
+            .get(required)
+            .ok_or(MigrationError::EvolutionDependencyMissing {
+                evolution_id: evolution.id,
+                required,
+            })?;
+        visit_evolution(dependency, by_id, dependencies, visiting, visited, result)?;
+    }
+    visiting.remove(evolution.id);
+    visited.insert(evolution.id);
+    result.push(evolution);
+    Ok(())
 }
 
 /// The tracking table [`NamedMigrator::spiice`] gives spiice `id`:
@@ -217,6 +319,20 @@ pub enum MigrationError {
         #[source]
         err: sqlx::Error,
     },
+    #[error(
+        "schema evolution {evolution_id:?} has no migration source for its anchor {after_migration}"
+    )]
+    EvolutionAnchorMissing {
+        evolution_id: &'static str,
+        after_migration: i64,
+    },
+    #[error("schema evolution dependency graph contains a cycle at {evolution_id:?}")]
+    EvolutionCycle { evolution_id: &'static str },
+    #[error("schema evolution {evolution_id:?} requires missing step {required:?}")]
+    EvolutionDependencyMissing {
+        evolution_id: &'static str,
+        required: &'static str,
+    },
     #[error("failed to read migration ledger {ledger} for {source}: {err}")]
     LedgerRead {
         source: &'static str,
@@ -266,10 +382,10 @@ pub enum LedgerConflict {
         pending: Vec<i64>,
         unknown: Vec<i64>,
     },
-    /// `skip_migrations` boot found migrations that were never applied; it
-    /// issues no DDL, so the lane would serve against an older schema.
+    /// Serving validation found migrations that were never applied; it issues
+    /// no DDL, so the lane would serve against an older schema.
     #[error(
-        "migrations {pending:?} are not applied, and a boot that skips migrations issues no DDL: run the migration step first (docs/operate.md)"
+        "migrations {pending:?} are not applied, and serving validation issues no DDL: run the migration step first (docs/operate.md)"
     )]
     Unapplied { pending: Vec<i64> },
 }
@@ -323,39 +439,7 @@ pub async fn run_core_and_spiice_migrations_with_policy<P: MigrationStorage>(
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
 ) -> Result<MigrationRunReport, MigrationError> {
-    run_lineup_with_policy(
-        pg,
-        &lineup(spiices, pg.vector_storage()),
-        sidecars,
-        policy,
-        SearchDefinitions::Apply,
-    )
-    .await
-}
-
-/// Startup can run schema migrations, but cannot replace the search program
-/// installed by the host's explicit migration run. Check before any DDL and
-/// again after the lanes, under their existing whole-run lock.
-pub(crate) async fn run_serving_migrations<P: MigrationStorage>(
-    pg: &P,
-    spiices: impl IntoIterator<Item = NamedMigrator>,
-    sidecars: &PgSidecarRegistryFrozen,
-    policy: MissingMigrationPolicy,
-) -> Result<MigrationRunReport, MigrationError> {
-    run_lineup_with_policy(
-        pg,
-        &lineup(spiices, pg.vector_storage()),
-        sidecars,
-        policy,
-        SearchDefinitions::Validate,
-    )
-    .await
-}
-
-#[derive(Clone, Copy)]
-enum SearchDefinitions {
-    Apply,
-    Validate,
+    run_lineup_with_policy(pg, &lineup(spiices, pg.vector_storage()), sidecars, policy).await
 }
 
 /// [`run_core_and_spiice_migrations`] over a [`lineup`] the caller keeps: the
@@ -367,14 +451,7 @@ pub(crate) async fn run_lineup<P: MigrationStorage>(
     sources: &[NamedMigrator],
     sidecars: &PgSidecarRegistryFrozen,
 ) -> Result<MigrationRunReport, MigrationError> {
-    run_lineup_with_policy(
-        pg,
-        sources,
-        sidecars,
-        MissingMigrationPolicy::Reject,
-        SearchDefinitions::Apply,
-    )
-    .await
+    run_lineup_with_policy(pg, sources, sidecars, MissingMigrationPolicy::Reject).await
 }
 
 async fn run_lineup_with_policy<P: MigrationStorage>(
@@ -382,7 +459,6 @@ async fn run_lineup_with_policy<P: MigrationStorage>(
     sources: &[NamedMigrator],
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
-    search_definitions: SearchDefinitions,
 ) -> Result<MigrationRunReport, MigrationError> {
     check_lineup(sources)?;
     run_lineup_with_pool(
@@ -391,7 +467,6 @@ async fn run_lineup_with_policy<P: MigrationStorage>(
         sidecars,
         policy,
         pg.vector_storage(),
-        search_definitions,
     )
     .await
 }
@@ -402,7 +477,6 @@ async fn run_lineup_with_pool(
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
     vectors: VectorStorage,
-    search_definitions: SearchDefinitions,
 ) -> Result<MigrationRunReport, MigrationError> {
     let report = MigrationRunReport::from_sources(sources);
 
@@ -412,15 +486,7 @@ async fn run_lineup_with_pool(
         .await
         .map_err(MigrationError::PinSearchPath)?;
 
-    let migration_result = run_locked_sources(
-        &mut conn,
-        sources,
-        sidecars,
-        policy,
-        vectors,
-        search_definitions,
-    )
-    .await;
+    let migration_result = run_locked_sources(&mut conn, sources, sidecars, policy, vectors).await;
     let reset_result = reset_migration_search_path(&mut conn).await;
 
     match (migration_result, reset_result) {
@@ -443,7 +509,6 @@ async fn run_locked_sources(
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
     vectors: VectorStorage,
-    search_definitions: SearchDefinitions,
 ) -> Result<(), MigrationError> {
     let lock = SessionLock::acquire(conn).await.map_err(execute_error)?;
     let result = async {
@@ -454,13 +519,7 @@ async fn run_locked_sources(
             vectors,
         )
         .await?;
-        if let SearchDefinitions::Validate = search_definitions {
-            sidecars
-                .ensure_search_definitions(lock.conn)
-                .await
-                .map_err(MigrationError::SearchDefinitions)?;
-        }
-        run_sources_on_connection(lock.conn, sources, sidecars, vectors, search_definitions).await
+        run_sources_on_connection(lock.conn, sources, sidecars, vectors).await
     }
     .await;
     let released = lock.release().await;
@@ -548,6 +607,18 @@ pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
             vectors,
         )
         .await?;
+        let core_pending = proxiima_storage_pg::pending_core_schema(
+            snapshot.as_mut(),
+            MissingMigrationPolicy::Allow,
+            vectors,
+        )
+        .await
+        .map_err(MigrationError::CorePreflight)?;
+        if !core_pending.is_empty() {
+            return Err(MigrationError::CorePreflight(StorageError::Internal(
+                "core migrations or definitions are not current; run migrations before boot".into(),
+            )));
+        }
         for source in sources
             .iter()
             .filter(|source| !is_core_ledger(&source.migrator.table_name))
@@ -572,7 +643,11 @@ pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
         sidecars
             .ensure_search_definitions(&mut snapshot)
             .await
-            .map_err(MigrationError::SearchDefinitions)
+            .map_err(MigrationError::SearchDefinitions)?;
+        sidecars
+            .ensure_schema_evolutions(snapshot.as_mut())
+            .await
+            .map_err(MigrationError::SidecarOwnerRls)
     }
     .await;
     let ended = snapshot.rollback().await;
@@ -580,10 +655,6 @@ pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
     result?;
     ended.map_err(execute_error)?;
     released.map_err(execute_error)?;
-    drop(conn);
-    ensure_core_schema_current(&pool, MissingMigrationPolicy::Allow, vectors)
-        .await
-        .map_err(MigrationError::CorePreflight)?;
     Ok(report)
 }
 
@@ -613,6 +684,12 @@ pub enum PendingMigration {
     /// Replace the core functions, triggers and policies in place.
     #[non_exhaustive]
     CoreDefinitions { checksum: Vec<u8>, release: String },
+    SchemaEvolution {
+        spiice: &'static str,
+        id: &'static str,
+        from: Vec<String>,
+        to: Vec<String>,
+    },
 }
 
 /// Pending embedded SQL and core definitions, applying nothing.
@@ -663,9 +740,17 @@ pub enum PendingMigration {
 pub async fn pending_migrations(
     pool: &PgPool,
     sources: &[NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
     vectors: VectorStorage,
 ) -> Result<Vec<PendingMigration>, MigrationError> {
-    pending_migrations_with_policy(pool, sources, MissingMigrationPolicy::Reject, vectors).await
+    pending_migrations_with_policy(
+        pool,
+        sources,
+        sidecars,
+        MissingMigrationPolicy::Reject,
+        vectors,
+    )
+    .await
 }
 
 /// [`pending_migrations`] that waits `lock_timeout` for the runner's
@@ -677,12 +762,14 @@ pub async fn pending_migrations(
 pub async fn pending_migrations_with_lock_timeout(
     pool: &PgPool,
     sources: &[NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
     vectors: VectorStorage,
     lock_timeout: Duration,
 ) -> Result<Vec<PendingMigration>, MigrationError> {
     pending_migrations_with_policy_and_lock_timeout(
         pool,
         sources,
+        sidecars,
         MissingMigrationPolicy::Reject,
         vectors,
         lock_timeout,
@@ -699,12 +786,14 @@ pub async fn pending_migrations_with_lock_timeout(
 pub async fn pending_migrations_with_policy(
     pool: &PgPool,
     sources: &[NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
     vectors: VectorStorage,
 ) -> Result<Vec<PendingMigration>, MigrationError> {
     pending_migrations_with_policy_and_lock_timeout(
         pool,
         sources,
+        sidecars,
         policy,
         vectors,
         Duration::from_secs(5),
@@ -715,6 +804,7 @@ pub async fn pending_migrations_with_policy(
 async fn pending_migrations_with_policy_and_lock_timeout(
     pool: &PgPool,
     sources: &[NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
     vectors: VectorStorage,
     lock_timeout: Duration,
@@ -723,7 +813,7 @@ async fn pending_migrations_with_policy_and_lock_timeout(
     let lineup: Vec<&NamedMigrator> = std::iter::once(&core).chain(sources).collect();
     validate_sources(&lineup)?;
     let mut conn = acquire_session_connection(pool).await?;
-    plan_under_lock(&mut conn, &lineup, policy, vectors, lock_timeout).await
+    plan_under_lock(&mut conn, &lineup, sidecars, policy, vectors, lock_timeout).await
 }
 
 /// The lock wait and the snapshot's statements are a run's own, so their
@@ -735,6 +825,7 @@ fn execute_error(err: sqlx::Error) -> MigrationError {
 async fn plan_under_lock(
     conn: &mut PgConnection,
     lineup: &[&NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
     vectors: VectorStorage,
     lock_timeout: Duration,
@@ -746,7 +837,7 @@ async fn plan_under_lock(
         .map_err(execute_error)?;
     let mut lock = SessionLock::acquire(conn).await.map_err(execute_error)?;
     let mut snapshot = lock.begin_snapshot().await.map_err(execute_error)?;
-    let plan = plan_snapshot(&mut snapshot, lineup, policy, vectors).await;
+    let plan = plan_snapshot(&mut snapshot, lineup, sidecars, policy, vectors).await;
     // Nothing to commit: the snapshot only read.
     let ended = snapshot.rollback().await;
     let released = lock.release().await;
@@ -800,11 +891,42 @@ impl<'c> SessionLock<'c> {
 async fn plan_snapshot(
     snapshot: &mut PgConnection,
     lineup: &[&NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
     vectors: VectorStorage,
 ) -> Result<Vec<PendingMigration>, MigrationError> {
     validate_ledgers(snapshot, lineup, policy, vectors).await?;
     let mut plan = Vec::new();
+    let pending_evolutions = sidecars
+        .pending_schema_evolutions(snapshot)
+        .await
+        .map_err(MigrationError::SidecarOwnerRls)?;
+    let pending_ids = pending_evolutions
+        .iter()
+        .map(|evolution| evolution.id)
+        .collect::<BTreeSet<_>>();
+    for evolution in schema_evolution_schedule(lineup, sidecars.schema_evolutions())? {
+        let spiice = evolution
+            .sources
+            .first()
+            .map_or("", |source| source.id.spiice);
+        if pending_ids.contains(evolution.id) {
+            plan.push(PendingMigration::SchemaEvolution {
+                spiice,
+                id: evolution.id,
+                from: evolution
+                    .sources
+                    .iter()
+                    .map(|source| source.schema_id().to_string())
+                    .collect(),
+                to: evolution
+                    .targets
+                    .iter()
+                    .map(|target| target.schema_id().to_string())
+                    .collect(),
+            });
+        }
+    }
     for source in lineup {
         if source.source == CORE_SOURCE {
             source.require_transactional()?;
@@ -834,6 +956,15 @@ async fn plan_snapshot(
             plan.extend(plan_source(snapshot, source).await?);
         }
     }
+    let ordered = order_pending_operations(plan, lineup, sidecars.schema_evolutions())?;
+    Ok(ordered)
+}
+
+fn order_pending_operations(
+    plan: Vec<PendingMigration>,
+    lineup: &[&NamedMigrator],
+    evolutions: &[SchemaEvolution],
+) -> Result<Vec<PendingMigration>, MigrationError> {
     let phases: BTreeMap<i64, (proxiima_storage_pg::MigrationPhase, bool)> = lineup
         .iter()
         .flat_map(|source| {
@@ -853,30 +984,103 @@ async fn plan_snapshot(
     let mut current = Vec::new();
     let mut consumer_finalization = Vec::new();
     for operation in plan {
-        match &operation {
+        let phase = match &operation {
             PendingMigration::Sql { version, .. } => {
-                let (phase, core) = phases
+                phases
                     .get(version)
-                    .expect("planned migration belongs to its source");
-                match phase {
-                    proxiima_storage_pg::MigrationPhase::Historical => historical.push(operation),
-                    proxiima_storage_pg::MigrationPhase::Finalize => {
-                        if *core {
-                            core_finalization.push(operation);
-                        } else {
-                            consumer_finalization.push(operation);
-                        }
-                    }
-                    proxiima_storage_pg::MigrationPhase::Current => current.push(operation),
+                    .expect("planned migration belongs to its source")
+                    .0
+            }
+            PendingMigration::CoreDefinitions { .. } | PendingMigration::SchemaEvolution { .. } => {
+                proxiima_storage_pg::MigrationPhase::Current
+            }
+        };
+        match phase {
+            proxiima_storage_pg::MigrationPhase::Historical => historical.push(operation),
+            proxiima_storage_pg::MigrationPhase::Finalize => {
+                if matches!(&operation, PendingMigration::Sql { version, .. }
+                    if phases.get(version).expect("planned migration belongs to its source").1)
+                {
+                    core_finalization.push(operation);
+                } else {
+                    consumer_finalization.push(operation);
                 }
             }
-            PendingMigration::CoreDefinitions { .. } => current.push(operation),
+            proxiima_storage_pg::MigrationPhase::Current => current.push(operation),
         }
     }
     historical.extend(core_finalization);
-    historical.extend(current);
+    if evolutions.is_empty() {
+        historical.extend(current);
+    } else {
+        historical.extend(order_current_evolution_operations(
+            current, lineup, evolutions,
+        )?);
+    }
     historical.extend(consumer_finalization);
     Ok(historical)
+}
+
+fn order_current_evolution_operations(
+    current: Vec<PendingMigration>,
+    lineup: &[&NamedMigrator],
+    evolutions: &[SchemaEvolution],
+) -> Result<Vec<PendingMigration>, MigrationError> {
+    let mut core = Vec::new();
+    let mut by_source = BTreeMap::<&'static str, Vec<PendingMigration>>::new();
+    let mut pending_steps = BTreeMap::<&'static str, PendingMigration>::new();
+    for operation in current {
+        match &operation {
+            PendingMigration::Sql { ledger, .. } => {
+                let source = lineup
+                    .iter()
+                    .find(|source| source.ledger() == *ledger)
+                    .expect("planned migration belongs to its source")
+                    .source();
+                if source == CORE_SOURCE {
+                    core.push(operation);
+                } else {
+                    by_source.entry(source).or_default().push(operation);
+                }
+            }
+            PendingMigration::CoreDefinitions { .. } => core.push(operation),
+            PendingMigration::SchemaEvolution { id, .. } => {
+                pending_steps.insert(id, operation);
+            }
+        }
+    }
+    let schedule = schema_evolution_schedule(lineup, evolutions)?;
+    let mut ordered = core;
+    let mut cursors = BTreeMap::<&'static str, usize>::new();
+    for evolution in schedule {
+        let Some(source) = lineup.iter().find(|source| {
+            source.source != CORE_SOURCE && source.has_version(evolution.after_migration)
+        }) else {
+            return Err(MigrationError::EvolutionAnchorMissing {
+                evolution_id: evolution.id,
+                after_migration: evolution.after_migration,
+            });
+        };
+        let source_id = source.source();
+        let cursor = cursors.entry(source_id).or_default();
+        if let Some(pending) = by_source.get(source_id) {
+            while *cursor < pending.len()
+                && matches!(&pending[*cursor], PendingMigration::Sql { version, .. }
+                    if *version <= evolution.after_migration)
+            {
+                ordered.push(pending[*cursor].clone());
+                *cursor += 1;
+            }
+        }
+        if let Some(step) = pending_steps.remove(evolution.id) {
+            ordered.push(step);
+        }
+    }
+    for (source, pending) in by_source {
+        let cursor = cursors.entry(source).or_default();
+        ordered.extend(pending.into_iter().skip(*cursor));
+    }
+    Ok(ordered)
 }
 
 async fn plan_source(
@@ -985,8 +1189,10 @@ async fn run_sources_on_connection(
     sources: &[NamedMigrator],
     sidecars: &PgSidecarRegistryFrozen,
     vectors: VectorStorage,
-    search_definitions: SearchDefinitions,
 ) -> Result<(), MigrationError> {
+    if !sidecars.schema_evolutions().is_empty() {
+        return run_evolution_sources(conn, sources, sidecars, vectors).await;
+    }
     run_historical_sources(conn, sources, sidecars, vectors).await?;
     for source in sources {
         if source.source != CORE_SOURCE {
@@ -1018,16 +1224,166 @@ async fn run_sources_on_connection(
         .await?;
     }
     let mut transaction = sync_owner_follows(conn, sidecars).await?;
-    match search_definitions {
-        SearchDefinitions::Apply => sidecars.apply_search_definitions(&mut transaction).await,
-        SearchDefinitions::Validate => sidecars.ensure_search_definitions(&mut transaction).await,
-    }
-    .map_err(MigrationError::SearchDefinitions)?;
+    sidecars
+        .apply_search_definitions(&mut transaction)
+        .await
+        .map_err(MigrationError::SearchDefinitions)?;
     sidecars
         .ensure_owner_follows(&mut transaction)
         .await
         .map_err(MigrationError::SidecarOwnerRls)?;
     transaction.commit().await.map_err(execute_error)
+}
+
+async fn run_evolution_sources(
+    conn: &mut PgConnection,
+    sources: &[NamedMigrator],
+    sidecars: &PgSidecarRegistryFrozen,
+    vectors: VectorStorage,
+) -> Result<(), MigrationError> {
+    for source in sources {
+        prepare_ledger(conn, source).await?;
+    }
+    let source_refs = sources.iter().collect::<Vec<_>>();
+    let schedule = schema_evolution_schedule(&source_refs, sidecars.schema_evolutions())?;
+    let mut transaction = proxiima_storage_pg::begin_migration_transaction(conn)
+        .await
+        .map_err(MigrationError::CorePreflight)?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(MIGRATION_LOCK_KEY)
+        .execute(&mut *transaction)
+        .await
+        .map_err(execute_error)?;
+    if historical_pending(transaction.as_mut(), sources).await? {
+        run_historical_transaction(&mut transaction, sources, sidecars, vectors).await?;
+    }
+    if sources.iter().any(|source| source.source == CORE_SOURCE) {
+        proxiima_storage_pg::run_core_phase(
+            &mut transaction,
+            MissingMigrationPolicy::Allow,
+            vectors,
+            proxiima_storage_pg::MigrationPhase::Current,
+        )
+        .await
+        .map_err(MigrationError::CorePreflight)?;
+    }
+    let mut applied = BTreeMap::<&'static str, i64>::new();
+    sidecars
+        .sync_owner_follows(&mut transaction)
+        .await
+        .map_err(MigrationError::SidecarOwnerRls)?;
+    for evolution in schedule {
+        let Some(source) = sources.iter().find(|source| {
+            source.source != CORE_SOURCE && source.has_version(evolution.after_migration)
+        }) else {
+            return Err(MigrationError::EvolutionAnchorMissing {
+                evolution_id: evolution.id,
+                after_migration: evolution.after_migration,
+            });
+        };
+        let previous = applied.get(source.source).copied().unwrap_or(i64::MIN);
+        run_source_range(
+            &mut transaction,
+            source,
+            vectors,
+            previous,
+            evolution.after_migration,
+        )
+        .await?;
+        applied.insert(source.source, evolution.after_migration);
+        sidecars
+            .run_schema_evolution(&mut transaction, evolution)
+            .await
+            .map_err(MigrationError::SidecarOwnerRls)?;
+        sidecars
+            .checkpoint_schema_evolution(&mut transaction)
+            .await
+            .map_err(MigrationError::SidecarOwnerRls)?;
+    }
+    sidecars
+        .finish_schema_evolutions(&mut transaction)
+        .await
+        .map_err(MigrationError::SidecarOwnerRls)?;
+    // Source rows and deferred sidecar obligations are drained before a
+    // trailing spiice migration may remove their obsolete tables.
+    for source in sources.iter().filter(|source| source.source != CORE_SOURCE) {
+        let previous = applied.get(source.source).copied().unwrap_or(i64::MIN);
+        run_source_range(&mut transaction, source, vectors, previous, i64::MAX).await?;
+        proxiima_storage_pg::migrations_for_phase(
+            &source.migrator,
+            proxiima_storage_pg::MigrationPhase::Finalize,
+        )
+        .run_direct(None, transaction.as_mut(), false)
+        .await
+        .map_err(|error| source.run_error(error))?;
+    }
+    sidecars
+        .sync_owner_follows(&mut transaction)
+        .await
+        .map_err(MigrationError::SidecarOwnerRls)?;
+    sidecars
+        .apply_search_definitions(&mut transaction)
+        .await
+        .map_err(MigrationError::SearchDefinitions)?;
+    sidecars
+        .ensure_owner_follows(&mut transaction)
+        .await
+        .map_err(MigrationError::SidecarOwnerRls)?;
+    transaction.commit().await.map_err(execute_error)
+}
+
+async fn run_source_range(
+    transaction: &mut Transaction<'_, Postgres>,
+    source: &NamedMigrator,
+    _vectors: VectorStorage,
+    lower_exclusive: i64,
+    upper_inclusive: i64,
+) -> Result<(), MigrationError> {
+    let migrations = proxiima_storage_pg::migrations_for_phase(
+        &source.migrator,
+        proxiima_storage_pg::MigrationPhase::Current,
+    );
+    let selected = migrations
+        .iter()
+        .filter(|migration| {
+            migration.version > lower_exclusive && migration.version <= upper_inclusive
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Ok(());
+    }
+    let filtered = sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(selected),
+        ignore_missing: true,
+        locking: migrations.locking,
+        no_tx: migrations.no_tx,
+        table_name: migrations.table_name.clone(),
+        create_schemas: migrations.create_schemas,
+    };
+    filtered
+        .run_direct(None, transaction.as_mut(), false)
+        .await
+        .map_err(|error| source.run_error(error))
+}
+
+async fn historical_pending(
+    conn: &mut PgConnection,
+    sources: &[NamedMigrator],
+) -> Result<bool, MigrationError> {
+    for source in sources {
+        source.require_transactional()?;
+        let rows = read_ledger(conn, source, &source.ledger(), true).await?;
+        let migrations =
+            unrecorded(&source.lane(), &rows).map_err(|error| source.run_error(error))?;
+        if migrations.into_iter().any(|migration| {
+            proxiima_storage_pg::migration_phase(&source.migrator, migration)
+                != proxiima_storage_pg::MigrationPhase::Current
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Replay historical lanes and restore the current catalog in one transaction.
@@ -1037,18 +1393,7 @@ async fn run_historical_sources(
     sidecars: &PgSidecarRegistryFrozen,
     vectors: VectorStorage,
 ) -> Result<(), MigrationError> {
-    let mut pending = Vec::new();
-    for source in sources {
-        source.require_transactional()?;
-        let rows = read_ledger(conn, source, &source.ledger(), true).await?;
-        let migrations =
-            unrecorded(&source.lane(), &rows).map_err(|error| source.run_error(error))?;
-        pending.extend(migrations.into_iter().filter(|migration| {
-            proxiima_storage_pg::migration_phase(&source.migrator, migration)
-                != proxiima_storage_pg::MigrationPhase::Current
-        }));
-    }
-    if pending.is_empty() {
+    if !historical_pending(conn, sources).await? {
         return Ok(());
     }
     let mut attempt = 1;
@@ -1943,14 +2288,47 @@ mod tests {
     use std::borrow::Cow;
     use std::collections::BTreeSet;
 
+    use proxiima_core::spiice::{
+        EmbeddingRecipe, Provenance, SchemaContract, SchemaEvolution, SchemaRef,
+        SearchProjectionDecl, TransferRule,
+    };
+    use proxiima_core::verbs::schema::PayloadKind;
+    use proxiima_storage_pg::PgSidecarRegistryFrozen;
     use sqlx::SqlSafeStr;
     use sqlx::migrate::{MigrateError, Migration, MigrationType, Migrator};
 
     use super::{
         LedgerConflict, LedgerRow, MigrationError, MissingMigrationPolicy, NamedMigrator,
-        VectorStorage, check_recorded_versions, composed_ledgers, core_source, ledger_conflict,
-        pending_migrations, prepare_sources, spiice_ledger_table, unapplied, unrecorded,
+        PendingMigration, VectorStorage, check_recorded_versions, composed_ledgers, core_source,
+        ledger_conflict, order_pending_operations, pending_migrations, prepare_sources,
+        schema_evolution_schedule, spiice_ledger_table, unapplied, unrecorded,
     };
+
+    const fn evolution_schema(name: &'static str, version: u32) -> SchemaContract {
+        SchemaContract {
+            id: SchemaRef::new("owner", name, version),
+            kind: PayloadKind::Fact,
+            sidecar_table: None,
+            search: SearchProjectionDecl::None {
+                why: "test",
+                tag_column: None,
+            },
+            embedding: EmbeddingRecipe::Never { why: "test" },
+            transfer: TransferRule::StaysOnKey,
+            provenance: Provenance::None,
+            surfaces: &[],
+            natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
+        }
+    }
+
+    const OWNER_V1: SchemaContract = evolution_schema("record", 1);
+    const OWNER_V2: SchemaContract = evolution_schema("record", 2);
+    const OWNER_V3: SchemaContract = evolution_schema("record", 3);
+
+    static OWNER_V1_SOURCES: &[SchemaContract] = &[OWNER_V1];
+    static OWNER_V2_SOURCES: &[SchemaContract] = &[OWNER_V2];
+    static OWNER_V2_TARGETS: &[SchemaContract] = &[OWNER_V2];
+    static OWNER_V3_TARGETS: &[SchemaContract] = &[OWNER_V3];
 
     const TEST_SPIICE_VERSION: i64 = 20_260_612_000_010;
 
@@ -1994,6 +2372,221 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn evolution_schedule_orders_implicit_chain_independent_of_declaration_order() {
+        static SECOND: SchemaEvolution = SchemaEvolution::new(
+            "second",
+            OWNER_V2_SOURCES,
+            OWNER_V3_TARGETS,
+            TEST_SPIICE_VERSION,
+            &[],
+            "test",
+            "test",
+        );
+        static FIRST: SchemaEvolution = SchemaEvolution::new(
+            "first",
+            OWNER_V1_SOURCES,
+            OWNER_V2_TARGETS,
+            TEST_SPIICE_VERSION,
+            &[],
+            "test",
+            "test",
+        );
+        let source = NamedMigrator::spiice("owner", migrator(&[TEST_SPIICE_VERSION]));
+        let sources = [&source];
+        let steps = [SECOND, FIRST];
+        let ordered = schema_evolution_schedule(&sources, &steps)
+            .expect("anchors and implicit edge are valid");
+        assert_eq!(
+            ordered.iter().map(|step| step.id).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+    }
+
+    #[test]
+    fn evolution_schedule_rejects_anchor_on_the_wrong_spiice_lane() {
+        static STEP: SchemaEvolution = SchemaEvolution::new(
+            "wrong-owner",
+            OWNER_V1_SOURCES,
+            OWNER_V2_TARGETS,
+            TEST_SPIICE_VERSION,
+            &[],
+            "test",
+            "test",
+        );
+        let source = NamedMigrator::spiice("other", migrator(&[TEST_SPIICE_VERSION]));
+        assert!(matches!(
+            schema_evolution_schedule(&[&source], &[STEP]),
+            Err(MigrationError::EvolutionAnchorMissing { .. })
+        ));
+    }
+
+    #[test]
+    fn evolution_preview_orders_source_sql_around_steps() {
+        const FIRST_ANCHOR: i64 = TEST_SPIICE_VERSION + 1;
+        const SECOND_ANCHOR: i64 = TEST_SPIICE_VERSION + 2;
+        const TRAILING: i64 = TEST_SPIICE_VERSION + 3;
+        static SECOND: SchemaEvolution = SchemaEvolution::new(
+            "preview-second",
+            OWNER_V2_SOURCES,
+            OWNER_V3_TARGETS,
+            SECOND_ANCHOR,
+            &[],
+            "test",
+            "test",
+        );
+        static FIRST: SchemaEvolution = SchemaEvolution::new(
+            "preview-first",
+            OWNER_V1_SOURCES,
+            OWNER_V2_TARGETS,
+            FIRST_ANCHOR,
+            &[],
+            "test",
+            "test",
+        );
+        let source =
+            NamedMigrator::spiice("owner", migrator(&[FIRST_ANCHOR, SECOND_ANCHOR, TRAILING]));
+        let ledger = source.ledger();
+        let sql = |version| PendingMigration::Sql {
+            ledger: ledger.clone(),
+            version,
+            description: version.to_string(),
+            checksum: Vec::new(),
+        };
+        let plan = order_pending_operations(
+            vec![
+                PendingMigration::SchemaEvolution {
+                    spiice: "owner",
+                    id: SECOND.id,
+                    from: vec!["record@2".to_owned()],
+                    to: vec!["record@3".to_owned()],
+                },
+                sql(FIRST_ANCHOR),
+                PendingMigration::SchemaEvolution {
+                    spiice: "owner",
+                    id: FIRST.id,
+                    from: vec!["record@1".to_owned()],
+                    to: vec!["record@2".to_owned()],
+                },
+                sql(SECOND_ANCHOR),
+                sql(TRAILING),
+            ],
+            &[&source],
+            &[SECOND, FIRST],
+        )
+        .expect("preview schedule");
+        assert_eq!(
+            plan.iter()
+                .map(|operation| match operation {
+                    PendingMigration::Sql { version, .. } => version.to_string(),
+                    PendingMigration::SchemaEvolution { id, .. } => (*id).to_owned(),
+                    PendingMigration::CoreDefinitions { .. } => "definitions".to_owned(),
+                })
+                .collect::<Vec<_>>(),
+            [
+                FIRST_ANCHOR.to_string(),
+                FIRST.id.to_owned(),
+                SECOND_ANCHOR.to_string(),
+                SECOND.id.to_owned(),
+                TRAILING.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn evolution_preview_skips_completed_prerequisite() {
+        const FIRST_ANCHOR: i64 = TEST_SPIICE_VERSION + 4;
+        const SECOND_ANCHOR: i64 = TEST_SPIICE_VERSION + 5;
+        static SECOND: SchemaEvolution = SchemaEvolution::new(
+            "preview-completed-second",
+            OWNER_V2_SOURCES,
+            OWNER_V3_TARGETS,
+            SECOND_ANCHOR,
+            &[],
+            "test",
+            "test",
+        );
+        static FIRST: SchemaEvolution = SchemaEvolution::new(
+            "preview-completed-first",
+            OWNER_V1_SOURCES,
+            OWNER_V2_TARGETS,
+            FIRST_ANCHOR,
+            &[],
+            "test",
+            "test",
+        );
+        let source = NamedMigrator::spiice("owner", migrator(&[FIRST_ANCHOR, SECOND_ANCHOR]));
+        let ledger = source.ledger();
+        let plan = order_pending_operations(
+            vec![
+                PendingMigration::SchemaEvolution {
+                    spiice: "owner",
+                    id: SECOND.id,
+                    from: vec!["record@2".to_owned()],
+                    to: vec!["record@3".to_owned()],
+                },
+                PendingMigration::Sql {
+                    ledger,
+                    version: SECOND_ANCHOR,
+                    description: String::new(),
+                    checksum: Vec::new(),
+                },
+            ],
+            &[&source],
+            &[FIRST, SECOND],
+        )
+        .expect("preview schedule");
+        assert!(plan.iter().all(|operation| !matches!(
+            operation,
+            PendingMigration::SchemaEvolution { id, .. } if *id == FIRST.id
+        )));
+        assert!(matches!(
+            plan.as_slice(),
+            [PendingMigration::Sql { version, .. }, PendingMigration::SchemaEvolution { id, .. }]
+                if *version == SECOND_ANCHOR && *id == SECOND.id
+        ));
+    }
+
+    #[test]
+    fn evolution_schedule_does_not_link_producers_across_payload_kinds() {
+        const FACT: SchemaContract = OWNER_V1;
+        const ABS: SchemaContract = SchemaContract {
+            kind: PayloadKind::Abstraction,
+            ..OWNER_V1
+        };
+        static FACT_SOURCES: &[SchemaContract] = &[FACT];
+        static ABS_SOURCES: &[SchemaContract] = &[ABS];
+        static FACT_STEP: SchemaEvolution = SchemaEvolution::new(
+            "kind-fact",
+            FACT_SOURCES,
+            OWNER_V2_TARGETS,
+            TEST_SPIICE_VERSION,
+            &[],
+            "test",
+            "test",
+        );
+        static ABS_STEP: SchemaEvolution = SchemaEvolution::new(
+            "kind-abstraction",
+            ABS_SOURCES,
+            &[SchemaContract {
+                kind: PayloadKind::Abstraction,
+                ..OWNER_V2
+            }],
+            TEST_SPIICE_VERSION,
+            &[],
+            "test",
+            "test",
+        );
+        let source = NamedMigrator::spiice("owner", migrator(&[TEST_SPIICE_VERSION]));
+        let steps = [ABS_STEP, FACT_STEP];
+        let ordered = schema_evolution_schedule(&[&source], &steps)
+            .expect("different payload kinds are independent");
+        assert_eq!(
+            ordered.iter().map(|step| step.id).collect::<Vec<_>>(),
+            [ABS_STEP.id, FACT_STEP.id]
+        );
     }
 
     #[test]
@@ -2237,9 +2830,14 @@ mod tests {
             .expect("a lazy pool parses its URL and connects later");
         (
             prepare_sources(sources(), VectorStorage::Local).map(drop),
-            pending_migrations(&pool, &sources(), VectorStorage::Local)
-                .await
-                .map(drop),
+            pending_migrations(
+                &pool,
+                &sources(),
+                &PgSidecarRegistryFrozen::default(),
+                VectorStorage::Local,
+            )
+            .await
+            .map(drop),
         )
     }
 
@@ -2533,6 +3131,7 @@ mod tests {
                 NamedMigrator::new("alpha", migrator(&[TEST_SPIICE_VERSION])),
                 NamedMigrator::new("beta", migrator(&[TEST_SPIICE_VERSION])),
             ],
+            &PgSidecarRegistryFrozen::default(),
             VectorStorage::Local,
         )
         .await
@@ -2553,13 +3152,20 @@ mod tests {
                 NamedMigrator::spiice("a-b", migrator(&[TEST_SPIICE_VERSION])),
                 NamedMigrator::spiice("a_b", migrator(&[TEST_SPIICE_VERSION + 1])),
             ],
+            &PgSidecarRegistryFrozen::default(),
             VectorStorage::Local,
         )
         .await
         .expect_err("two spiices on one ledger");
         assert!(matches!(shared, MigrationError::DuplicateLedger { .. }));
 
-        let reachable = pending_migrations(&pool, &[], VectorStorage::Local).await;
+        let reachable = pending_migrations(
+            &pool,
+            &[],
+            &PgSidecarRegistryFrozen::default(),
+            VectorStorage::Local,
+        )
+        .await;
         assert!(
             matches!(reachable, Err(MigrationError::Connection(_))),
             "a valid lineup does reach for the database: {reachable:?}"

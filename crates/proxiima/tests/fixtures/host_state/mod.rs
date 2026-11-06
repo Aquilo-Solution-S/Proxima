@@ -79,6 +79,7 @@ const CONTRACT: SpiiceContract = SpiiceContract {
     },
     bespoke_erase_legs: &[],
     bespoke_transfer_legs: &[],
+    evolutions: &[],
 };
 
 proxiima::spiice::proxiima_spiice! {

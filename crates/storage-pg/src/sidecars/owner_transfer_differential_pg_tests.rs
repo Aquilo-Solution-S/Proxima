@@ -1105,6 +1105,8 @@ async fn transfer_differential() {
             std::fs::write(format!("{dir}/owner_transfer.txt"), &actual)?;
             return Ok(());
         }
+        // The original transfer receipt includes 0065's additional Goal schema
+        // stamp and empty evolution tables; every original column stays pinned.
         let golden = include_str!("../../tests/golden/owner_transfer.txt");
         assert_eq!(
             by_relation(&actual),

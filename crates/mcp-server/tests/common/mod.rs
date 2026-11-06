@@ -157,6 +157,14 @@ pub async fn create_db() -> Result<String, Box<dyn std::error::Error>> {
     proxiima_pg_testkit::create_db(&db_name)
         .await
         .expect("PG required for tests");
+    let (_, platform_url) = split_role_urls(&db_name).await?;
+    let migration = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
+        &platform_url,
+        proxiima_storage_pg::PgPoolConfig::from_env()?,
+        proxiima_storage_pg::PgTuning::from_env()?,
+    )
+    .await?;
+    migration.run_migrations().await?;
     Ok(db_name)
 }
 

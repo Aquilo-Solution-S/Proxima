@@ -10,10 +10,24 @@ use super::{
 
 #[derive(Debug, Clone, Default)]
 pub struct PgSidecarRegistry {
-    entries: HashMap<PgSidecarKey, PgSidecarEntry>,
+    pub(super) entries: HashMap<PgSidecarKey, PgSidecarEntry>,
+    evolutions: HashMap<&'static str, super::PgSchemaEvolution>,
 }
 
 impl PgSidecarRegistry {
+    /// Bind one executable to its core-owned evolution declaration.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the same evolution ID is registered twice.
+    pub fn add_evolution(&mut self, program: super::PgSchemaEvolution) {
+        let id = program.declaration.id;
+        assert!(
+            self.evolutions.insert(id, program).is_none(),
+            "duplicate schema evolution {id}"
+        );
+    }
+
     fn check_natural_key_declaration(
         registry: &proxiima_core::SpiiceRegistryFrozen,
         key: &PgSidecarKey,
@@ -223,7 +237,6 @@ impl PgSidecarRegistry {
                 })
             })
             .collect::<HashMap<_, _>>();
-
         for (key, schema_table) in &schema_keys {
             let Some(entry) = self.entries.get(key) else {
                 return Err(StorageError::ConstraintViolation(format!(
@@ -251,10 +264,6 @@ impl PgSidecarRegistry {
                         && entry.memory_load_batch.is_some()
                 }
                 PayloadKind::Goal => entry.goal_insert.is_some() && entry.goal_copy.is_some(),
-                // Citation schemas, typed or opaque, have no sidecar: core
-                // records no sidecar table for them, so no schema reaches
-                // this loop under this kind and no PG registration can
-                // serve one.
                 PayloadKind::CitedObject => false,
             };
             if !has_inserter {
@@ -266,33 +275,20 @@ impl PgSidecarRegistry {
                 )));
             }
         }
-
         for entry in self.entries.values() {
-            let Some(schema_table) = schema_keys.get(&entry.key) else {
+            if !schema_keys.contains_key(&entry.key) {
                 return Err(StorageError::ConstraintViolation(format!(
                     "PG sidecar registration references unregistered schema {} v{} {:?}",
                     entry.key.schema_id.as_str(),
                     entry.key.schema_version.into_inner(),
                     entry.key.kind,
                 )));
-            };
-            if *schema_table != entry.sidecar_table {
-                return Err(StorageError::ConstraintViolation(format!(
-                    "PG sidecar registration for {} v{} {:?} uses table {}, registry declares {}",
-                    entry.key.schema_id.as_str(),
-                    entry.key.schema_version.into_inner(),
-                    entry.key.kind,
-                    entry.sidecar_table,
-                    schema_table,
-                )));
             }
         }
-
         self.check_owner_pinned_against_contracts(registry)?;
         self.check_keep_is_owner_pinned(registry)?;
         self.check_memory_key_against_contracts(registry)?;
         self.attach_projections(registry)?;
-
         let retired_facts = registry
             .retired_facts()
             .map(super::PgRetiredFactSidecar::from_contract)
@@ -306,8 +302,17 @@ impl PgSidecarRegistry {
             registry.contracts(),
             Arc::clone(&spiice_schema_names),
         )?;
-
+        let (evolutions, evolution_programs) =
+            super::evolution::freeze_evolutions(registry, self.evolutions)?;
         Ok(PgSidecarRegistryFrozen {
+            active_schema_ids: registry
+                .schemas()
+                .iter()
+                .map(|schema| (schema.kind, schema.schema_id.as_str().to_owned()))
+                .collect::<Vec<_>>()
+                .into(),
+            evolutions,
+            evolution_programs,
             retired_facts: retired_facts.into(),
             entries: Arc::new(self.entries),
             spiice_schema_names,
@@ -641,6 +646,7 @@ mod memory_key_agreement_tests {
         };
         PgSidecarRegistry {
             entries: HashMap::from([(key, entry)]),
+            evolutions: HashMap::new(),
         }
     }
 
@@ -798,6 +804,7 @@ mod owner_mode_agreement_tests {
         };
         PgSidecarRegistry {
             entries: HashMap::from([(key, entry)]),
+            evolutions: HashMap::new(),
         }
     }
 
@@ -879,6 +886,7 @@ mod owner_mode_agreement_tests {
             },
             bespoke_erase_legs: &[],
             bespoke_transfer_legs: &[],
+            evolutions: &[],
         };
         let frozen = freeze_contract(&CONTRACT);
         let err = pg_registry_with(SidecarOwnerMode::Follows)
@@ -942,6 +950,7 @@ mod owner_mode_agreement_tests {
             },
             bespoke_erase_legs: &[],
             bespoke_transfer_legs: &[],
+            evolutions: &[],
         };
         let frozen = freeze_contract(&CONTRACT);
         pg_registry_with(SidecarOwnerMode::Follows)
@@ -1007,6 +1016,7 @@ mod owner_mode_agreement_tests {
             },
             bespoke_erase_legs: &[],
             bespoke_transfer_legs: &[],
+            evolutions: &[],
         };
         let frozen = freeze_contract(&CONTRACT);
         let mut reg = pg_registry_with(SidecarOwnerMode::Follows);
@@ -1068,6 +1078,7 @@ mod owner_mode_agreement_tests {
             },
             bespoke_erase_legs: &[],
             bespoke_transfer_legs: &[],
+            evolutions: &[],
         };
         let mut registry = proxiima_core::SpiiceRegistry::new();
         registry.add_fact_schema_or_panic_for_tests::<StampFixture>();
@@ -1126,6 +1137,7 @@ mod owner_mode_agreement_tests {
             },
             bespoke_erase_legs: &[],
             bespoke_transfer_legs: &[],
+            evolutions: &[],
         };
         let frozen = freeze_contract(&CONTRACT);
         let err = pg_registry_with(SidecarOwnerMode::None)

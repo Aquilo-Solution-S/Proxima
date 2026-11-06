@@ -90,6 +90,7 @@ static CONTRACT: SpiiceContract = SpiiceContract {
     projection: ProjectionDecl::None {
         why: "inverse-only fixture",
     },
+    evolutions: &[],
 };
 
 proxiima::spiice::proxiima_spiice! {
@@ -396,7 +397,8 @@ impl Fixture {
             .pg_pool_config(example_engine::engine_pool_config())
             .services(SpiiceServices::with(probe.clone()))
             .host_state_participant(Arc::new(probe.clone()));
-        if skip { app.skip_migrations() } else { app }
+        let _ = skip;
+        app
     }
     async fn seed(
         &self,

@@ -24,6 +24,7 @@ use std::sync::Arc;
 pub mod contract;
 mod descriptor;
 mod error;
+pub(super) mod evolution;
 mod freeze;
 mod ingress;
 mod prefix;
@@ -54,6 +55,7 @@ pub use contract::{
 };
 pub use descriptor::{SpiiceDescriptor, SpiiceProvenance};
 pub use error::SpiiceRegistryError;
+pub use evolution::SchemaEvolution;
 pub use prefix::schema_id_has_prefix;
 pub use registry::SpiiceRegistry;
 pub use spiice0::SPIICE_0;

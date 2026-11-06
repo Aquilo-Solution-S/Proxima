@@ -68,7 +68,6 @@ pub struct RuntimeBuilder {
     epoch_check_interval: Option<Duration>,
     insecure_single_owner: bool,
     rest_enabled: Option<bool>,
-    skip_migrations: Option<bool>,
     missing_migration_policy: Option<MissingMigrationPolicy>,
     pg_pool_config: Option<PgPoolConfig>,
     pg_tuning: Option<PgTuning>,
@@ -136,7 +135,6 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("epoch_check_interval", &self.epoch_check_interval)
             .field("insecure_single_owner", &self.insecure_single_owner)
             .field("rest_enabled", &self.rest_enabled)
-            .field("skip_migrations", &self.skip_migrations)
             .field("missing_migration_policy", &self.missing_migration_policy)
             .field("pg_pool_config", &self.pg_pool_config)
             .field("pg_tuning", &self.pg_tuning)
@@ -204,7 +202,6 @@ impl RuntimeBuilder {
             epoch_check_interval: self.epoch_check_interval.or(base.epoch_check_interval),
             insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
             rest_enabled: self.rest_enabled.or(base.rest_enabled),
-            skip_migrations: self.skip_migrations.or(base.skip_migrations),
             missing_migration_policy: self
                 .missing_migration_policy
                 .or(base.missing_migration_policy),
@@ -266,14 +263,14 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Set the connection boot migrates (or, with [`Self::skip_migrations`],
-    /// runs its preflight) on, when it must differ from
+    /// Set the direct/session-mode connection used for schema validation and
+    /// explicit migrations, when it must differ from
     /// [`Self::platform_database_url`]: the platform URL goes through a
     /// transaction-mode pooler, this one reaches Postgres directly or
     /// through a session-mode pool. Migrations hold a session advisory lock
     /// and session settings for the whole run, which a transaction-mode
     /// pooler cannot carry. Same role and database as the platform URL.
-    /// Unset: boot migrates on the platform URL. Environment equivalent:
+    /// Unset: use the platform URL. Environment equivalent:
     /// `PROXIIMA_MIGRATION_DATABASE_URL`.
     #[must_use]
     pub fn migration_database_url(mut self, url: impl Into<String>) -> Self {
@@ -494,17 +491,6 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn rest_enabled(mut self, rest_enabled: bool) -> Self {
         self.rest_enabled = Some(rest_enabled);
-        self
-    }
-
-    /// Boot without applying migrations (preflight only).
-    ///
-    /// For split-role `GitOps` deploys: migrate out-of-band under a DDL role,
-    /// then boot the app under a DML-only role. Env equivalent:
-    /// `PROXIIMA_SKIP_MIGRATIONS`.
-    #[must_use]
-    pub fn skip_migrations(mut self) -> Self {
-        self.skip_migrations = Some(true);
         self
     }
 
@@ -795,11 +781,6 @@ impl RuntimeBuilder {
         if self.rest_enabled.is_none() {
             self.rest_enabled = lookup("PROXIIMA_REST_ENABLED")
                 .map(|raw| parse_bool_value("PROXIIMA_REST_ENABLED", &raw))
-                .transpose()?;
-        }
-        if self.skip_migrations.is_none() {
-            self.skip_migrations = lookup("PROXIIMA_SKIP_MIGRATIONS")
-                .map(|raw| parse_bool_value("PROXIIMA_SKIP_MIGRATIONS", &raw))
                 .transpose()?;
         }
         if self.missing_migration_policy.is_none() {
@@ -1128,7 +1109,6 @@ impl RuntimeBuilder {
             stream_revalidation,
             insecure_single_owner: self.insecure_single_owner,
             rest_enabled: self.rest_enabled.unwrap_or(false),
-            skip_migrations: self.skip_migrations.unwrap_or(false),
             missing_migration_policy: self.missing_migration_policy.unwrap_or_default(),
             runtime_grants: self.runtime_grants.unwrap_or(false),
             request_headers,
@@ -1171,7 +1151,7 @@ struct ServedPath {
 /// Pure, validated runtime config.
 ///
 /// The booleans are independent deployment gates — expose the network,
-/// serve `/v1`, skip migrations, allow insecure single-owner — not the
+/// serve `/v1`, allow insecure single-owner — not the
 /// states of one machine. Folding them into enums would invent
 /// relationships between them that do not exist, and each already carries
 /// its own env var and its own validation rule.
@@ -1182,7 +1162,7 @@ pub struct RuntimeConfig {
     /// Host-assigned immutable store identity, persisted on first boot.
     pub store_number: u16,
     pub platform_database_url: String,
-    /// The connection boot migrates and runs its preflight on
+    /// The connection boot validates the migrated schema on
     /// (`PROXIIMA_MIGRATION_DATABASE_URL`); `None` uses
     /// [`Self::platform_database_url`]. See [`Self::migrations_url`].
     pub migration_database_url: Option<String>,
@@ -1208,9 +1188,6 @@ pub struct RuntimeConfig {
     /// transport projection is opt-in twice on purpose — compiling it is a
     /// build decision, exposing it is a deployment one.
     pub rest_enabled: bool,
-    /// Boot without applying migrations (preflight only) — schema is migrated
-    /// out-of-band under a DDL role in split-role `GitOps` deploys.
-    pub skip_migrations: bool,
     /// Missing-version handling for normal boot and read-only preflight.
     pub missing_migration_policy: MissingMigrationPolicy,
     /// Grant the runtime role its DML privileges at boot
@@ -1330,7 +1307,6 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("stream_revalidation", &self.stream_revalidation)
             .field("insecure_single_owner", &self.insecure_single_owner)
             .field("rest_enabled", &self.rest_enabled)
-            .field("skip_migrations", &self.skip_migrations)
             .field("missing_migration_policy", &self.missing_migration_policy)
             .field("runtime_grants", &self.runtime_grants)
             .field("request_headers", &self.request_headers)
@@ -1351,7 +1327,7 @@ impl std::fmt::Debug for RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    /// The URL boot migrates and runs its preflight on:
+    /// The URL boot validates the migrated schema on:
     /// [`Self::migration_database_url`] when set, otherwise
     /// [`Self::platform_database_url`].
     #[must_use]
@@ -2248,7 +2224,6 @@ mod tests {
             stream_revalidation: RevalidationConfig::default(),
             insecure_single_owner: false,
             rest_enabled: false,
-            skip_migrations: false,
             missing_migration_policy: MissingMigrationPolicy::default(),
             runtime_grants: false,
             request_headers: RequestHeaderAllowlist::default(),

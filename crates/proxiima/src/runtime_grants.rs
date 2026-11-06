@@ -2,7 +2,7 @@
 //! the platform role grants the runtime role its privileges — the runtime
 //! grant phase described in docs/operate.md.
 //!
-//! Runs once per boot, after migrations (or the `skip_migrations` preflight)
+//! Runs once per boot, after migration validation
 //! and before the runtime pool connects, on the platform (migration) pool, in
 //! one transaction:
 //!

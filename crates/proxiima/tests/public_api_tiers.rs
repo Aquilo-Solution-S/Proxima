@@ -473,6 +473,7 @@ fn spiice_sdk_constructs_contract_goal_and_session_values() {
         tools: &[],
         resources: &[],
         projection: ProjectionDecl::None { why: "fixture" },
+        evolutions: &[],
         bespoke_erase_legs: &[],
         bespoke_transfer_legs: &[],
     };

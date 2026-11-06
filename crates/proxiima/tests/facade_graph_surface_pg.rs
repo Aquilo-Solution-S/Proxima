@@ -871,8 +871,8 @@ struct FacadeSidecarlessFact {
 }
 
 impl FactPayload for FacadeSidecarlessFact {
-    const SCHEMA_ID: &'static str = "facade-test/sidecarless-fact-v3";
-    const SCHEMA_VERSION: u32 = 3;
+    const SCHEMA_ID: &'static str = "facade-test/sidecarless-fact-v1";
+    const SCHEMA_VERSION: u32 = 1;
 
     fn receipt_key(&self) -> Vec<u8> {
         let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
@@ -1040,74 +1040,79 @@ const fn facade_memory_surface(table: &'static str) -> Surface {
     }
 }
 
+const FACADE_SCHEMAS: &[SchemaContract] = &[
+    SchemaContract {
+        id: SchemaRef::new("facade-test", "fact", 2),
+        kind: PayloadKind::Fact,
+        sidecar_table: Some("facade_surface.fact_v1"),
+        search: SearchProjectionDecl::Projected {
+            fields: &[
+                WeightedField {
+                    column: "title",
+                    kind: SearchProjectionColumnKind::Text,
+                    weight: WEIGHT_UNIFORM,
+                },
+                WeightedField {
+                    column: "body",
+                    kind: SearchProjectionColumnKind::Text,
+                    weight: WEIGHT_UNIFORM,
+                },
+            ],
+            tag_column: Some("tags"),
+            language: LanguagePolicy::Pinned("simple"),
+            bands: FACADE_BANDS,
+            substring: SubstringArm::MemoryFirstNestedLoop,
+        },
+        embedding: EmbeddingRecipe::Never {
+            why: "the fixture proves lexical hydration, not embedding",
+        },
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[facade_memory_surface("facade_surface.fact_v1")],
+        natural_key_columns: proxiima::spiice::NaturalKeyDeclaration::of::<FacadeFact>(),
+    },
+    SchemaContract {
+        id: SchemaRef::new("facade-test", "sidecarless-fact", 1),
+        kind: PayloadKind::Fact,
+        sidecar_table: None,
+        search: SearchProjectionDecl::None {
+            why: "a sidecarless Memory has no payload text to project",
+            tag_column: None,
+        },
+        embedding: EmbeddingRecipe::Never {
+            why: "a sidecarless Memory has no payload text to embed",
+        },
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::None,
+        surfaces: &[],
+        natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
+    },
+    SchemaContract {
+        id: SchemaRef::new("facade-test", "abstraction", 1),
+        kind: PayloadKind::Abstraction,
+        sidecar_table: Some("facade_surface.abstraction_v1"),
+        search: SearchProjectionDecl::None {
+            why: "the fixture's search proof belongs to its version-two Fact",
+            tag_column: None,
+        },
+        embedding: EmbeddingRecipe::Never {
+            why: "the fixture proves derivation without an embedding client",
+        },
+        transfer: TransferRule::StaysOnKey,
+        provenance: Provenance::OriginEdges,
+        surfaces: &[facade_memory_surface("facade_surface.abstraction_v1")],
+        natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
+    },
+];
+
+#[path = "fixtures/facade_evolution.rs"]
+mod facade_evolution;
+
 static FACADE_CONTRACT: SpiiceContract = SpiiceContract {
     retired_facts: &[],
     spiice_id: "facade-test",
     ordinal: 7,
-    schemas: &[
-        SchemaContract {
-            id: SchemaRef::new("facade-test", "fact", 2),
-            kind: PayloadKind::Fact,
-            sidecar_table: Some("facade_surface.fact_v1"),
-            search: SearchProjectionDecl::Projected {
-                fields: &[
-                    WeightedField {
-                        column: "title",
-                        kind: SearchProjectionColumnKind::Text,
-                        weight: WEIGHT_UNIFORM,
-                    },
-                    WeightedField {
-                        column: "body",
-                        kind: SearchProjectionColumnKind::Text,
-                        weight: WEIGHT_UNIFORM,
-                    },
-                ],
-                tag_column: Some("tags"),
-                language: LanguagePolicy::Pinned("simple"),
-                bands: FACADE_BANDS,
-                substring: SubstringArm::MemoryFirstNestedLoop,
-            },
-            embedding: EmbeddingRecipe::Never {
-                why: "the fixture proves lexical hydration, not embedding",
-            },
-            transfer: TransferRule::StaysOnKey,
-            provenance: Provenance::None,
-            surfaces: &[facade_memory_surface("facade_surface.fact_v1")],
-            natural_key_columns: proxiima::spiice::NaturalKeyDeclaration::of::<FacadeFact>(),
-        },
-        SchemaContract {
-            id: SchemaRef::new("facade-test", "sidecarless-fact", 3),
-            kind: PayloadKind::Fact,
-            sidecar_table: None,
-            search: SearchProjectionDecl::None {
-                why: "a sidecarless Memory has no payload text to project",
-                tag_column: None,
-            },
-            embedding: EmbeddingRecipe::Never {
-                why: "a sidecarless Memory has no payload text to embed",
-            },
-            transfer: TransferRule::StaysOnKey,
-            provenance: Provenance::None,
-            surfaces: &[],
-            natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
-        },
-        SchemaContract {
-            id: SchemaRef::new("facade-test", "abstraction", 1),
-            kind: PayloadKind::Abstraction,
-            sidecar_table: Some("facade_surface.abstraction_v1"),
-            search: SearchProjectionDecl::None {
-                why: "the fixture's search proof belongs to its version-two Fact",
-                tag_column: None,
-            },
-            embedding: EmbeddingRecipe::Never {
-                why: "the fixture proves derivation without an embedding client",
-            },
-            transfer: TransferRule::StaysOnKey,
-            provenance: Provenance::OriginEdges,
-            surfaces: &[facade_memory_surface("facade_surface.abstraction_v1")],
-            natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
-        },
-    ],
+    schemas: FACADE_SCHEMAS,
     state_surfaces: &[],
     scopes: &[],
     kernel_surfaces: &[],
@@ -1116,6 +1121,7 @@ static FACADE_CONTRACT: SpiiceContract = SpiiceContract {
     bespoke_erase_legs: &[],
     bespoke_transfer_legs: &[],
     projection: ProjectionDecl::Table(FACADE_PROJECTION),
+    evolutions: &[facade_evolution::EVOLUTION],
 };
 
 mod facade_fixture_registry {
@@ -1140,6 +1146,7 @@ impl SpiiceBundle for FacadeSurfaceApp {
     fn register_pg_sidecars(registry: &mut PgSidecarRegistry) {
         registry.add_fact::<FacadeFact>();
         registry.add_abstraction::<FacadeAbstraction>();
+        registry.add_evolution(facade_evolution::program());
     }
 
     fn migrators() -> Vec<proxiima::NamedMigrator> {

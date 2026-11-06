@@ -76,7 +76,7 @@
 {"spiice_id":"core","table_name":"proxiima_core.utterance_v1"}
 {"spiice_id":"core","table_name":"proxiima_core.write_act_v1"}
 ## proxiima_core.goal (1)
-{"assignment_t":null,"by":"<id042>","close_fact_t":null,"dependency_t":[],"evidence_t":[],"handle":"<id045>","owner_id":"<id026>","parent_handle":null,"request_id":"req-1","state":"Active","t":"<id045>","title":"a goal","via":null,"write_act_t":null}
+{"assignment_t":null,"by":"<id042>","close_fact_t":null,"dependency_t":[],"evidence_t":[],"handle":"<id045>","owner_id":"<id026>","parent_handle":null,"request_id":"req-1","schema_id":"core/task-goal-v1","state":"Active","t":"<id045>","title":"a goal","via":null,"write_act_t":null}
 ## proxiima_core.goal_change_v1 (0)
 ## proxiima_core.goal_head (1)
 {"handle":"<id045>","owner_id":"<id026>","schema_id":"core/task-goal-v1","t":"<id045>"}
@@ -131,6 +131,9 @@
 {"captured_at":"<ts072>","envelope":"\\x7b2270726f6265223a22646564757065227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id008>","event_type":"core/test-fact-v1","owner_id":"<id026>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id008>"}
 {"captured_at":"<ts072>","envelope":"\\x7b2270726f6265223a22696e2d706c616365227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id014>","event_type":"core/test-fact-v1","owner_id":"<id026>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id014>"}
 {"captured_at":"<ts072>","envelope":"\\x7b2270726f6265223a226d6f756e74227d","envelope_digest":"\\x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b","event_id":"F:<id022>","event_type":"core/test-fact-v1","owner_id":"<id026>","published_at":null,"published_seq":null,"published_stream":null,"schema_id":"core/test-fact-v1","schema_version":1,"state":"pending","t":"<id022>"}
+## proxiima_core.schema_evolution (0)
+## proxiima_core.schema_evolution_authority (0)
+## proxiima_core.schema_evolution_publication (0)
 ## proxiima_core.sketch (12)
 {"kind":"fact","owner_id":"<id026>","t":"<id016>","text":"fact"}
 {"kind":"fact","owner_id":"<id044>","t":"<id002>","text":"fact"}

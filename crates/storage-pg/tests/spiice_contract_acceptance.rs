@@ -925,13 +925,16 @@ async fn the_connect_default_resolves_surfaces_through_the_registry() {
 async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
     /// Declared keys with no unique index behind them, and why each is
     /// tolerable. Alphabetical.
-    const NOT_UNIQUE: [&str; 7] = [
+    const NOT_UNIQUE: [&str; 9] = [
         // One row per (entity, model, version); the key names the entity.
         "proxiima_core.embedding_heads",
         // One job per (owner, entity, model).
         "proxiima_core.embedding_jobs",
         // One vector per (entity, model, version).
         "proxiima_core.embeddings",
+        // Several request aliases may resolve to one migrated Goal admission.
+        // The (owner_id, request_id) primary key breaks export ties.
+        "proxiima_core.goal_replay_declaration",
         // PK is (owner_id, source_id, ingest_key): one memory may hold
         // several admission receipts. Exported; the PK breaks the ties.
         "proxiima_core.ingest_keys",
@@ -943,6 +946,9 @@ async fn every_declared_key_that_is_unique_is_unique_in_the_catalog() {
         // The declared key is the owner column, and an owner publishes many
         // Facts. ExportRule::DerivedFrom, so no bundle orders by it.
         "proxiima_core.publication_origin",
+        // A split/merge relates captures and targets many-to-many. DerivedFrom
+        // excludes these internal erase links from the exported bundle.
+        "proxiima_core.schema_evolution_publication",
     ];
 
     let db_name = format!("proxiima_test_{}", Uuid::now_v7().simple());

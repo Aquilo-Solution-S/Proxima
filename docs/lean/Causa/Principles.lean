@@ -8,6 +8,7 @@ import Causa.Operators
 import Causa.Provenance
 import Causa.Knowledge
 import Causa.Goals
+import Causa.SchemaEvolution
 
 namespace Causa
 
@@ -158,5 +159,11 @@ theorem principle_situated_self_touches_cue :
     ∀ memories heads o cue m,
       m ∈ situatedSelf memories heads o cue → cueTouches m cue :=
   situated_self_touches_cue
+
+theorem principle_schema_migration_validates_retained_store
+    (migration : SchemaMigrationWitness) :
+    RetainedCommittedStoreValid migration.newMemories migration.newGoals
+      migration.newHeads migration.retainedTargets :=
+  schema_migration_validates_retained_store migration
 
 end Causa

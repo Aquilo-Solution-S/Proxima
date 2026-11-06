@@ -841,10 +841,11 @@ goal_test!(
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
-         VALUES ($1, $2, 1)",
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, owner_id, request_id, declaration, edge_count)
+         VALUES ($1, $2, 'recorded-before', $3, 1)",
         )
         .bind(recorded)
+        .bind(h.owner.into_inner())
         .bind(serde_json::json!({
             "version": 1,
             "verb": "transition",
@@ -923,10 +924,11 @@ goal_test!(
         .execute(pool)
         .await?;
         sqlx::query(
-            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
-         VALUES ($1, $2, 1)",
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, owner_id, request_id, declaration, edge_count)
+         VALUES ($1, $2, 'recorded-pause', $3, 1)",
         )
         .bind(legacy)
+        .bind(h.owner.into_inner())
         .bind(serde_json::json!({
             "version": 1,
             "verb": "transition",

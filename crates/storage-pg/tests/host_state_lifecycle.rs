@@ -139,6 +139,7 @@ static CONTRACT: SpiiceContract = SpiiceContract {
     },
     bespoke_erase_legs: &[],
     bespoke_transfer_legs: &[],
+    evolutions: &[],
 };
 
 const RETIRED_SPIICE: &str = "test-host-retired";

@@ -66,6 +66,7 @@ static CONTRACT: SpiiceContract = SpiiceContract {
     projection: ProjectionDecl::None {
         why: "a retired Fact has no search surface",
     },
+    evolutions: &[],
 };
 
 struct Harness {

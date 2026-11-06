@@ -125,9 +125,8 @@ participant, system authority, and host services are composed, before engine
 startup, listeners, background workers, or returned services can operate. The
 pass inventories owners in bounded pages and commits each owner's bounded
 series pages through `Engine::retired_fact_erase`, including forgotten versions,
-embeddings, and the registered exact-Fact host inverse. It also runs with
-`skip_migrations`: serving uses the validated runtime and platform pools, not a
-migration-role callback.
+embeddings, and the registered exact-Fact host inverse. Serving uses the
+validated runtime and platform pools, not a migration-role callback.
 
 Any inventory, scope, inverse, lock, or storage failure aborts startup through
 `ProxiimaError::Engine`, preserving the concrete error source. Committed pages
@@ -167,7 +166,7 @@ A host that deliberately shares a database between releases can explicitly set
 `RuntimeBuilder::missing_migration_policy(MissingMigrationPolicy::Allow)`.
 The deployable host and its maintenance commands read the same choice from
 `PROXIIMA_MISSING_MIGRATION_POLICY`, as does `tools/dev-migrate`. The same
-policy applies when boot skips migrations. Standalone migration and
+policy applies during serving validation. Standalone migration and
 planning callers use the corresponding `_with_policy` functions; the ordinary
 functions reject missing versions. Allowing missing versions still rejects
 dirty ledgers, changed checksums, and migration lanes that would replay or
@@ -189,7 +188,7 @@ its template identity. These types and migration operations are available
 through `proxiima`; test templates use `proxiima::testkit`.
 
 The runner derives Follows owner RLS from this registry before and after the
-spiice migration lanes, including runs with no pending SQL. Skip-migration
+spiice migration lanes, including runs with no pending SQL. Serving
 preflight checks the generated marks and owner indexes without changing them.
 Normal boot supplies this registry automatically. See
 [sidecar owner modes](build-a-spiice.md#2-persist-the-typed-payload).
@@ -201,11 +200,10 @@ The definitions and their privilege envelope roll back together on failure.
 No new migration is required for a generated function-body update, and
 already released migrations remain unchanged.
 
-Serving boot validates the installed bodies, signatures and security settings
-before any startup schema migrations and again after them; it does not replace
-candidate definitions. Run the composed host's explicit migration command
-before first serving or upgrading its search definitions. Skip-migration
-preflight checks the same live catalog without DDL. `MissingMigrationPolicy::Allow`
+Serving boot validates the installed bodies, signatures and security settings;
+it does not replace candidate definitions. Run the composed host's explicit
+migration command before first serving or upgrading its search definitions. Serving validation
+checks the same live catalog without DDL. `MissingMigrationPolicy::Allow`
 does not waive this match: a binary whose generated definitions differ from
 the installed ones cannot start serving. This startup check does not terminate
 already-running replicas; drain incompatible replicas before switching definitions. A release version does
@@ -219,7 +217,7 @@ memory) whatever class the spiice's SQL gave it, so owner reads stop
 returning rows of forgotten memories. A Follows table without an index
 leading with `owner_id` gets `<table>_owner_follows_idx`, built inside the
 migration transaction with a plain (non-concurrent) `CREATE INDEX`, which
-blocks writes to that table while it builds. Skip-migration boot and
+blocks writes to that table while it builds. Serving boot and
 `preflight_without_migrations` refuse with `MigrationError::SidecarOwnerRls`
 until one migration run with the composition's frozen sidecars has written
 the marks and indexes. Standalone migration jobs must pass that registry,

@@ -512,6 +512,15 @@ async fn the_parent_edge_is_fixed_and_never_self() {
         }
         // A fresh series naming itself as parent.
         let fresh = Uuid::now_v7();
+        let mut self_parent = tree.pg.pool_for_tests().begin().await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal_head(handle,t,owner_id,schema_id)
+             SELECT $2,$2,owner_id,schema_id FROM proxiima_core.goal WHERE t=$1",
+        )
+        .bind(p.into_inner())
+        .bind(fresh)
+        .execute(&mut *self_parent)
+        .await?;
         let err = sqlx::query(
             "INSERT INTO proxiima_core.goal
                 (handle, t, owner_id, title, state, request_id, close_fact_t,
@@ -523,11 +532,12 @@ async fn the_parent_edge_is_fixed_and_never_self() {
         )
         .bind(p.into_inner())
         .bind(fresh)
-        .execute(tree.pg.pool_for_tests())
+        .execute(&mut *self_parent)
         .await
         .expect_err("self parent");
         let db = err.as_database_error().ok_or("database error")?;
         assert_eq!(db.constraint(), Some("goal_parent_not_self_chk"), "{db}");
+        self_parent.rollback().await?;
         Ok(())
     }
     .await;

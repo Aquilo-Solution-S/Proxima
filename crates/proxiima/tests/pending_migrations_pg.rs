@@ -185,7 +185,13 @@ impl Db {
         &self,
         sources: &[NamedMigrator],
     ) -> Result<Vec<PendingMigration>, MigrationError> {
-        pending_migrations(&self.platform, sources, VectorStorage::Local).await
+        pending_migrations(
+            &self.platform,
+            sources,
+            &proxiima::PgSidecarRegistryFrozen::default(),
+            VectorStorage::Local,
+        )
+        .await
     }
 
     async fn ledger_exists(&self, ledger: &str) -> bool {
@@ -747,9 +753,15 @@ async fn a_changed_definitions_record_is_planned_and_reapplied() {
             .definitions_catalog()
             .await
             .expect("drift definitions record");
-        let plan = pending_migrations_with_policy(&db.platform, &[], policy, VectorStorage::Local)
-            .await
-            .expect("checksum drift is listed by the plan");
+        let plan = pending_migrations_with_policy(
+            &db.platform,
+            &[],
+            &proxiima::PgSidecarRegistryFrozen::default(),
+            policy,
+            VectorStorage::Local,
+        )
+        .await
+        .expect("checksum drift is listed by the plan");
         assert!(matches!(
             plan.as_slice(),
             [PendingMigration::CoreDefinitions { checksum, release, .. }]
@@ -793,10 +805,16 @@ async fn a_changed_definitions_record_is_planned_and_reapplied() {
             "definitions changed no ledger rows"
         );
         assert!(
-            pending_migrations_with_policy(&db.platform, &[], policy, VectorStorage::Local)
-                .await
-                .expect("definitions are current after run")
-                .is_empty()
+            pending_migrations_with_policy(
+                &db.platform,
+                &[],
+                &proxiima::PgSidecarRegistryFrozen::default(),
+                policy,
+                VectorStorage::Local
+            )
+            .await
+            .expect("definitions are current after run")
+            .is_empty()
         );
     }
 }
@@ -834,9 +852,14 @@ async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
     .await
     .expect("modified definitions function");
 
-    let planned = pending_migrations(&db.platform, &[], VectorStorage::Local)
-        .await
-        .expect_err("reject policy refuses newer definitions in plan");
+    let planned = pending_migrations(
+        &db.platform,
+        &[],
+        &proxiima::PgSidecarRegistryFrozen::default(),
+        VectorStorage::Local,
+    )
+    .await
+    .expect_err("reject policy refuses newer definitions in plan");
     let preflight = preflight_without_migrations(
         &db.pg,
         Vec::new(),
@@ -860,6 +883,11 @@ async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
     assert_eq!(format!("{planned:?}"), format!("{preflight:?}"));
     assert_eq!(format!("{planned:?}"), format!("{ran:?}"));
 
+    assert_ne!(modified_function, original_function);
+    assert_newer_definitions_allow_policy(&db, &modified_function).await;
+}
+
+async fn assert_newer_definitions_allow_policy(db: &Db, modified_function: &str) {
     let before = db
         .definitions_catalog()
         .await
@@ -867,6 +895,7 @@ async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
     let plan = pending_migrations_with_policy(
         &db.platform,
         &[],
+        &proxiima::PgSidecarRegistryFrozen::default(),
         MissingMigrationPolicy::Allow,
         VectorStorage::Local,
     )
@@ -900,7 +929,6 @@ async fn newer_definitions_record_is_refused_by_plan_preflight_and_run() {
     .fetch_one(&db.admin)
     .await
     .expect("unchanged definitions function");
-    assert_ne!(modified_function, original_function);
     assert_eq!(after_function, modified_function);
 }
 
@@ -1073,7 +1101,13 @@ async fn a_plan_waits_for_a_run_mid_source_and_reports_the_state_after_it() {
 
     let plan_pool = db.platform.clone();
     let mut plan = tokio::spawn(async move {
-        pending_migrations(&plan_pool, &sources(), VectorStorage::Local).await
+        pending_migrations(
+            &plan_pool,
+            &sources(),
+            &proxiima::PgSidecarRegistryFrozen::default(),
+            VectorStorage::Local,
+        )
+        .await
     });
     wait_for_waiters(&mut blocker, MIGRATION_KEY).await;
     assert!(
@@ -1121,6 +1155,7 @@ async fn a_plan_gives_up_on_the_lock_when_a_run_would() {
     let refused = pending_migrations_with_lock_timeout(
         &db.platform,
         &[forge(&[F1])],
+        &proxiima::PgSidecarRegistryFrozen::default(),
         VectorStorage::Local,
         LOCK_WAIT,
     )
@@ -1202,7 +1237,13 @@ async fn a_plan_dropped_while_it_waits_for_the_lock_does_not_strand_the_lock() {
 
     let pool = db.platform.clone();
     let plan = tokio::spawn(async move {
-        pending_migrations(&pool, &[forge(&[F1])], VectorStorage::Local).await
+        pending_migrations(
+            &pool,
+            &[forge(&[F1])],
+            &proxiima::PgSidecarRegistryFrozen::default(),
+            VectorStorage::Local,
+        )
+        .await
     });
     wait_for_waiters(&mut holder, MIGRATION_KEY).await;
     plan.abort();
@@ -1225,9 +1266,14 @@ async fn a_plan_dropped_while_it_waits_for_the_lock_does_not_strand_the_lock() {
     let started = std::time::Instant::now();
     assert_eq!(
         coordinates(
-            &pending_migrations(&other, &[forge(&[F1])], VectorStorage::Local)
-                .await
-                .expect("a plan after the dropped one gets the lock")
+            &pending_migrations(
+                &other,
+                &[forge(&[F1])],
+                &proxiima::PgSidecarRegistryFrozen::default(),
+                VectorStorage::Local
+            )
+            .await
+            .expect("a plan after the dropped one gets the lock")
         ),
         [(FORGE, F1)]
     );
@@ -1331,9 +1377,14 @@ async fn a_plan_under_the_runtime_role_succeeds_and_writes_nothing() {
         ]
     };
 
-    let plan = pending_migrations(&db.runtime, &sources(), VectorStorage::Local)
-        .await
-        .expect("the runtime role can plan");
+    let plan = pending_migrations(
+        &db.runtime,
+        &sources(),
+        &proxiima::PgSidecarRegistryFrozen::default(),
+        VectorStorage::Local,
+    )
+    .await
+    .expect("the runtime role can plan");
     assert_eq!(
         coordinates(&plan),
         [

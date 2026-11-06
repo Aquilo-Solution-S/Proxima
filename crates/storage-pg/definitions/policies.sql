@@ -4,6 +4,14 @@
 -- agent_derivation_v1
 SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class fk_parent', 'proxiima_core', 'agent_derivation_v1', 'fk_parent', NULL);
 
+-- schema_evolution is deployment metadata: only the validated platform lane
+-- writes it, while serving startup reads the completed-source catalog.
+SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'proxiima_core', 'schema_evolution', 'ownerless', NULL);
+
+SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'proxiima_core', 'schema_evolution_authority', 'ownerless', NULL);
+-- Captured-publication erase links belong only to the migration/erase lane.
+SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class ownerless', 'proxiima_core', 'schema_evolution_publication', 'ownerless', NULL);
+
 -- agent_note_v1
 SELECT proxiima_core.owner_rls_apply_class('policies.sql', 'class fk_parent', 'proxiima_core', 'agent_note_v1', 'fk_parent', NULL);
 

@@ -40,6 +40,9 @@ use split_core_db::clone_split_core_db;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const TABLES: &[StateSurfaceName] = &[StateSurfaceName::new(AUXILIARY_TABLE)];
 
@@ -259,6 +262,9 @@ struct Harness {
 impl Harness {
     async fn new() -> TestResult<Self> {
         let db = clone_split_core_db("proxiima_uow_authority").await?;
+        migrated_app::migrate::<HostFixtureApp>(db.platform_url())
+            .await
+            .map_err(|error| error.to_string())?;
         let subject = UserId::new(Uuid::now_v7());
         let built = Proxiima::<HostFixtureApp>::app()
             .database_url(db.runtime_url())

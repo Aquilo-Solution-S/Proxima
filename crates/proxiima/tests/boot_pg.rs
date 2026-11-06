@@ -25,6 +25,9 @@ use sqlx::{Connection, SqlSafeStr};
 use tokio::time::{Duration, Instant};
 use uuid::Uuid;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 struct GoalTestApp;
 
 fn host_context(owner: OwnerId, path: AuthPath) -> AuthzContext {
@@ -300,6 +303,7 @@ async fn facade_run_with_custom_auth_needs_no_separate_owner_access() {
     let db_name = unique_db_name("proxiima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    migrated_app::migrate_app::<GoalTestApp>(&platform_url).await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -365,6 +369,7 @@ async fn facade_owner_drop_proof_gates_personal_erase() {
     let db_name = unique_db_name("proxiima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    migrated_app::migrate_app::<GoalTestApp>(&platform_url).await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let user = UserId::new(Uuid::now_v7());
@@ -450,6 +455,7 @@ async fn facade_boot_exposes_pg_sidecars_and_drains_embedding_jobs_with_no_extra
     let db_name = unique_db_name("proxiima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    migrated_app::migrate_app::<GoalTestApp>(&platform_url).await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());
@@ -517,6 +523,7 @@ async fn boot_rejects_embedding_client_with_unsupported_width() {
     let db_name = unique_db_name("proxiima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let (runtime_url, platform_url) = split_role_urls(&db_name).await.expect("split roles");
+    migrated_app::migrate_app::<GoalTestApp>(&platform_url).await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = company_owner(Uuid::now_v7());

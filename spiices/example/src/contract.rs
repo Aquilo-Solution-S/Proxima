@@ -188,6 +188,7 @@ pub static EXAMPLE_BASELINE_CONTRACT: SpiiceContract = SpiiceContract {
     projection: ProjectionDecl::None {
         why: "a test fixture registers no search surface",
     },
+    evolutions: &[],
 };
 
 /// Full example contract: baseline schemas plus the stamp Fact (`owner: follows`).
@@ -206,4 +207,5 @@ pub static EXAMPLE_CONTRACT: SpiiceContract = SpiiceContract {
     projection: ProjectionDecl::None {
         why: "a test fixture registers no search surface",
     },
+    evolutions: &[],
 };

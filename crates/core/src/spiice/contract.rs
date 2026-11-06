@@ -1708,6 +1708,10 @@ pub struct SpiiceContract {
     pub spiice_id: &'static str,
     pub ordinal: u16,
     pub schemas: &'static [SchemaContract],
+    /// Explicit, spiice-owned representation changes. Source contracts are
+    /// migration inputs; target contracts are the schemas this composition
+    /// serves after activation.
+    pub evolutions: &'static [crate::spiice::SchemaEvolution],
     /// Retired Facts retain only their inverse declaration until erased.
     /// Empty means this spiice declares no retirements.
     pub retired_facts: &'static [RetiredFactContract],

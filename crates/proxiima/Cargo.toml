@@ -114,6 +114,14 @@ name = "pending_migrations_pg"
 required-features = ["testkit"]
 
 [[test]]
+name = "schema_evolution_pg"
+required-features = ["testkit"]
+
+[[test]]
+name = "schema_evolution_goal_pg"
+required-features = ["testkit"]
+
+[[test]]
 name = "publication_boot_pg"
 required-features = ["testkit"]
 

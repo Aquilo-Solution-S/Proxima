@@ -196,7 +196,8 @@ pub(crate) async fn transition_goal_atomic_in_pool(
         crate::write_wake::commit(tx).await?;
         return Ok(replay);
     }
-    let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
+    let prior =
+        load_prior_goal(&mut tx, &req.owner, req.prior_goal_id, req.context.registry).await?;
     let next_state = req.transition.next_state();
     validate_goal_transition(prior.state, next_state)?;
     let draft = draft_from_stored(
@@ -296,7 +297,8 @@ pub(crate) async fn achieve_goal_atomic_in_pool(
         return Ok(replay);
     }
     let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &req.evidence).await?;
-    let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
+    let prior =
+        load_prior_goal(&mut tx, &req.owner, req.prior_goal_id, req.context.registry).await?;
     validate_goal_achievement(prior.state)?;
     let draft = draft_from_stored(
         &req.owner,
@@ -388,7 +390,7 @@ async fn prepare_modified_goal(
         Some(evidence) => validate_evidence_in_owner(tx, &req.owner, evidence).await?,
         None => carried_evidence(tx, &req.owner, req.prior_goal_id, store_number).await?,
     };
-    let prior = load_prior_goal(tx, &req.owner, req.prior_goal_id).await?;
+    let prior = load_prior_goal(tx, &req.owner, req.prior_goal_id, req.context.registry).await?;
     if prior.state != GoalState::Active {
         return Err(StorageError::ConstraintViolation(
             "goal_modify requires an Active prior head".into(),

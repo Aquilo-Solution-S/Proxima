@@ -249,12 +249,6 @@ impl<A: SpiiceApp + 'static> Proxiima<A> {
         self
     }
 
-    #[must_use]
-    pub fn skip_migrations(mut self) -> Self {
-        self.overlay = self.overlay.skip_migrations();
-        self
-    }
-
     /// Grant the runtime role its DML privileges at boot. Env equivalent:
     /// `PROXIIMA_RUNTIME_GRANTS`.
     #[must_use]

@@ -441,7 +441,7 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
 }
 
 /// The `maintain-blobs` runtime: no listener, the platform URL, and the
-/// migration URL when one is set, so its boot migrates where every other
+/// migration URL when one is set, so its explicit migration path matches every other
 /// entry point does.
 fn blob_maintenance_app(
     database_url: String,

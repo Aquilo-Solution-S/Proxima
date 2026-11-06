@@ -20,6 +20,9 @@ use serde_json::{Value, json};
 use tokio::sync::{Notify, Semaphore};
 use uuid::Uuid;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 const TOKEN: &str = "host-token";
@@ -219,6 +222,7 @@ async fn a_tool_call_outlives_the_session_idle_timeout_on_a_heartbeat_or_without
         SplitRoleDb::create("proxiima_session_idle", &[]).await,
     )
     .await?;
+    migrated_app::migrate_app::<HostApp>(db.platform_url()).await;
     let subject = UserId::new(Uuid::now_v7());
     let serve = |idle: Option<Duration>, gate: Arc<GateTools>| {
         Proxiima::<HostApp>::app()

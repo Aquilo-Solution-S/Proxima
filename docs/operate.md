@@ -97,8 +97,8 @@ the storage suites that depend on this through PgBouncer.
   `options` to `ignore_startup_parameters`: the timeout would be dropped
   without an error. `extra_float_digits` needs no entry; Proxiima does not
   send it.
-- Migrations need a direct or session-mode connection. Boot migrates, or
-  with `PROXIIMA_SKIP_MIGRATIONS` runs the migration preflight, under a
+- Migrations need a direct or session-mode connection. Boot validates the
+  schema under a
   session lock and session settings, on `PROXIIMA_MIGRATION_DATABASE_URL` if
   set and on `PROXIIMA_PLATFORM_DATABASE_URL` otherwise. To put the serving
   platform pool behind the transaction pooler too, point
@@ -109,7 +109,7 @@ the storage suites that depend on this through PgBouncer.
   Without `PROXIIMA_MIGRATION_DATABASE_URL`, keep the platform URL direct or
   session-mode. The `maintain-*` commands migrate on the same URL and check
   it the same way. `McpToolHost::from_database_urls` (the lower-level
-  `proxiima-mcp-server` entry point) takes no migration URL: it migrates on
+  `proxiima-mcp-server` entry point) takes no migration URL: it validates on
   its platform URL, which must then be direct or session-mode. An
   out-of-band migration job (`tools/dev-migrate`) also needs a direct or
   session-mode connection.

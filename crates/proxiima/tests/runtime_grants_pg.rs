@@ -18,6 +18,9 @@ use sqlx::{AssertSqlSafe, ConnectOptions, PgPool};
 use std::str::FromStr;
 use uuid::Uuid;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 /// Composed schemas of the example-spiice bundle.
 const SCHEMAS: [&str; 2] = ["proxiima_core", "proxiima_example"];
 /// Migration ledgers of core and the example spiice.
@@ -91,7 +94,7 @@ async fn role_pool(fixture: &Fixture, role: &str) -> PgPool {
 }
 
 /// A fresh database; a platform role that creates (so owns) every object via
-/// boot migrations; a runtime role granted NOTHING.
+/// a dedicated migration; a runtime role granted NOTHING.
 async fn setup() -> Fixture {
     let database = unique_db_name("proxiima_runtime_grants");
     create_db(&database).await.expect("create database");
@@ -132,6 +135,7 @@ async fn setup() -> Fixture {
     provision_goal_reader(&admin, &platform, &runtime)
         .await
         .expect("goal reader fixture role");
+    migrated_app::migrate_app::<ExampleGrantsApp>(&role_url(&database, &platform, &password)).await;
     Fixture {
         runtime_url: role_url(&database, &runtime, &password),
         platform_url: role_url(&database, &platform, &password),
@@ -167,18 +171,14 @@ async fn build(
     fixture: &Fixture,
     owner: OwnerId,
     runtime_grants: bool,
-    skip_migrations: bool,
 ) -> Result<proxiima::BuiltProxiima, ProxiimaError> {
-    let mut app = Proxiima::<ExampleGrantsApp>::app()
+    let app = Proxiima::<ExampleGrantsApp>::app()
         .database_url(fixture.runtime_url.clone())
         .store_number(0)
         .platform_database_url(fixture.platform_url.clone())
         .owner(owner)
         .served_surface(ServedSurface::All)
         .runtime_grants(runtime_grants);
-    if skip_migrations {
-        app = app.skip_migrations();
-    }
     app.build().await
 }
 
@@ -331,9 +331,8 @@ async fn runtime_grants_boot_grants_a_fresh_runtime_role() {
     )
     .await;
 
-    // (1) Without the step the fresh runtime role cannot serve. This first
-    // boot still migrates everything as the platform role.
-    let refused = build(&fixture, owner, false, false)
+    // (1) Without runtime grants, serving cannot open its required objects.
+    let refused = build(&fixture, owner, false)
         .await
         .expect_err("a runtime role holding no grants must not boot");
     // The first read that needs a privilege fails; which one is storage's
@@ -352,24 +351,18 @@ async fn runtime_grants_boot_grants_a_fresh_runtime_role() {
 
     // (2) With it, boot succeeds and the runtime serves an owner-scoped
     // write and read under enforced owner RLS.
-    let booted = build(&fixture, owner, true, false)
+    let booted = build(&fixture, owner, true)
         .await
         .expect("runtime-grants boot");
     assert_runtime_serves(&fixture, &booted, owner).await;
     booted.shutdown().await;
 
-    // (3) Idempotent: again, and together with skip_migrations.
-    build(&fixture, owner, true, false)
+    // (3) Idempotent: run the same boot path again.
+    build(&fixture, owner, true)
         .await
         .expect("second runtime-grants boot")
         .shutdown()
         .await;
-    build(&fixture, owner, true, true)
-        .await
-        .expect("runtime grants with skip_migrations")
-        .shutdown()
-        .await;
-
     // (4) What runtime holds, and what it never holds.
     assert_runtime_privileges(&fixture).await;
     for privilege in ["SELECT", "INSERT"] {
@@ -394,7 +387,7 @@ async fn runtime_grants_boot_grants_a_fresh_runtime_role() {
 async fn boot_refuses_unsafe_runtime_privileges_in_a_composed_spiice_schema() {
     let fixture = setup().await;
     let owner = company_owner(Uuid::now_v7());
-    build(&fixture, owner, true, false)
+    build(&fixture, owner, true)
         .await
         .expect("safe composed boot")
         .shutdown()
@@ -409,7 +402,7 @@ async fn boot_refuses_unsafe_runtime_privileges_in_a_composed_spiice_schema() {
         ),
     )
     .await;
-    let error = build(&fixture, owner, false, true)
+    let error = build(&fixture, owner, false)
         .await
         .expect_err("runtime safety covers linked spiice schemas as well as core");
     let message = error.to_string();

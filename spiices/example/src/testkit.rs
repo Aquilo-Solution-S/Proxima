@@ -67,6 +67,32 @@ pub async fn build_engine(
     platform_url: &str,
     owner: OwnerId,
 ) -> Result<proxiima::BuiltProxiima, proxiima::ProxiimaError> {
+    let mut registry = proxiima::spiice::SpiiceRegistry::new();
+    <crate::ExampleSpiice as proxiima::spiice::SpiiceBundle>::register(&mut registry)
+        .map_err(proxiima::ProxiimaError::from)?;
+    let registry = registry
+        .try_freeze()
+        .map_err(proxiima::ProxiimaError::from)?;
+    let mut sidecars = proxiima::spiice::PgSidecarRegistry::new();
+    proxiima::spiice::register_core_pg_sidecars(&mut sidecars);
+    <crate::ExampleSpiice as proxiima::spiice::SpiiceBundle>::register_pg_sidecars(&mut sidecars);
+    let sidecars = sidecars
+        .freeze_against(&registry)
+        .map_err(|error| proxiima::ProxiimaError::Config(error.to_string()))?;
+    let pg = proxiima::host::PgMigrationStorage::connect_with_config(
+        platform_url,
+        proxiima::host::PgPoolConfig::default(),
+        proxiima::host::PgTuning::default(),
+    )
+    .await
+    .map_err(|error| proxiima::ProxiimaError::Config(error.to_string()))?;
+    proxiima::run_core_and_spiice_migrations(
+        &pg,
+        <crate::ExampleSpiice as proxiima::spiice::SpiiceBundle>::migrators(),
+        &sidecars,
+    )
+    .await
+    .map_err(|error| proxiima::ProxiimaError::Config(error.to_string()))?;
     proxiima::Proxiima::<crate::ExampleSpiice>::app()
         .database_url(runtime_url)
         .store_number(0)

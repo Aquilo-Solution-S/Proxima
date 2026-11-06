@@ -7,8 +7,8 @@ use proxiima::spiice::{
 // spiice does.
 use proxiima::{AppInfo, RuntimeBuilder, SpiiceApp};
 use proxiima_core::spiice::{
-    EmbeddingRecipe, ProjectionDecl, Provenance, SchemaContract, SchemaRef, SearchProjectionDecl,
-    SpiiceContract, TransferRule,
+    EmbeddingRecipe, ProjectionDecl, Provenance, SchemaContract, SchemaEvolution, SchemaRef,
+    SearchProjectionDecl, SpiiceContract, TransferRule,
 };
 use proxiima_core::verbs::schema::PayloadKind;
 
@@ -96,27 +96,29 @@ impl SpiiceApp for HostedConformanceApp {
 
 /// The declaration for the spiice below: freeze refuses a spiice that is
 /// linked and declares nothing.
+const CONFORMANCE_SCHEMA: SchemaContract = SchemaContract {
+    id: SchemaRef::new("proxiima-conformance", "fact", 7),
+    kind: PayloadKind::Fact,
+    sidecar_table: Some("proxiima_conformance.fact_v1"),
+    search: SearchProjectionDecl::None {
+        why: "a conformance fixture, not a search surface",
+        tag_column: None,
+    },
+    embedding: EmbeddingRecipe::Never {
+        why: "a conformance fixture, not a memory",
+    },
+    transfer: TransferRule::StaysOnKey,
+    provenance: Provenance::None,
+    surfaces: &[],
+    natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
+};
+
 static CONFORMANCE_CONTRACT: SpiiceContract = SpiiceContract {
     retired_facts: &[],
     spiice_id: "proxiima-conformance",
     // Non-zero: ordinal 0 is core's and cannot be claimed twice.
     ordinal: 7,
-    schemas: &[SchemaContract {
-        id: SchemaRef::new("proxiima-conformance", "fact", 7),
-        kind: PayloadKind::Fact,
-        sidecar_table: Some("proxiima_conformance.fact_v1"),
-        search: SearchProjectionDecl::None {
-            why: "a conformance fixture, not a search surface",
-            tag_column: None,
-        },
-        embedding: EmbeddingRecipe::Never {
-            why: "a conformance fixture, not a memory",
-        },
-        transfer: TransferRule::StaysOnKey,
-        provenance: Provenance::None,
-        surfaces: &[],
-        natural_key_columns: proxiima_core::NaturalKeyDeclaration::EMPTY,
-    }],
+    schemas: &[CONFORMANCE_SCHEMA],
     state_surfaces: &[],
     scopes: &[],
     kernel_surfaces: &[],
@@ -127,6 +129,18 @@ static CONFORMANCE_CONTRACT: SpiiceContract = SpiiceContract {
     projection: ProjectionDecl::None {
         why: "a conformance fixture registers no search surface",
     },
+    evolutions: &[SchemaEvolution::new(
+        "proxiima-conformance/fact-v7",
+        &[SchemaContract {
+            id: SchemaRef::new("proxiima-conformance", "fact", 1),
+            ..CONFORMANCE_SCHEMA
+        }],
+        &[CONFORMANCE_SCHEMA],
+        7,
+        &[],
+        "Conformance fixture declares its historical schema path.",
+        "Use the version-seven payload.",
+    )],
 };
 
 fn register_conformance_spiice(registry: &mut SpiiceRegistry) -> Result<(), SpiiceRegistryError> {

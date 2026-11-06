@@ -11,6 +11,8 @@
 //! - `PublicationConfig.limits` is the value capture enforces. There is one
 //!   copy: the limits travel with the draft on the authorization witness.
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
 #[path = "fixtures/split_core_db.rs"]
 mod split_core_db;
 
@@ -129,6 +131,7 @@ static PUB_CONTRACT: SpiiceContract = SpiiceContract {
     projection: ProjectionDecl::None {
         why: "a publication fixture registers no search surface",
     },
+    evolutions: &[],
 };
 
 /// The fixture spiice's own baseline, as a real spiice ships one: the
@@ -251,6 +254,7 @@ async fn a_listenable_schema_without_a_bound_source_refuses_the_boot() {
     let split_db = clone_split_core_db("proxiima_pub_boot")
         .await
         .expect("PG required");
+    migrated_app::migrate_app::<ListenableApp>(split_db.platform_url()).await;
     let (db_url, platform_url) = (
         split_db.runtime_url().to_owned(),
         split_db.platform_url().to_owned(),
@@ -298,6 +302,7 @@ async fn the_publication_env_block_is_read_and_validated_by_the_facade() {
     let split_db = clone_split_core_db("proxiima_pub_env")
         .await
         .expect("PG required");
+    migrated_app::migrate_app::<ListenableApp>(split_db.platform_url()).await;
     let (db_url, platform_url) = (
         split_db.runtime_url().to_owned(),
         split_db.platform_url().to_owned(),
@@ -370,6 +375,7 @@ async fn an_unauthorized_listenable_write_captures_nothing() {
     let split_db = clone_split_core_db("proxiima_pub_authz")
         .await
         .expect("PG required");
+    migrated_app::migrate_app::<ListenableApp>(split_db.platform_url()).await;
     let db_name = split_db.name().to_owned();
     let (db_url, platform_url) = (
         split_db.runtime_url().to_owned(),
@@ -475,6 +481,7 @@ async fn the_configured_payload_ceiling_is_the_one_capture_enforces() {
     let split_db = clone_split_core_db("proxiima_pub_limit")
         .await
         .expect("PG required");
+    migrated_app::migrate_app::<ListenableApp>(split_db.platform_url()).await;
     let db_name = split_db.name().to_owned();
     let (db_url, platform_url) = (
         split_db.runtime_url().to_owned(),

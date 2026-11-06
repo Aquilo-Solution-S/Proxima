@@ -10,6 +10,9 @@
 use std::error::Error;
 use std::time::Duration;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 use proxiima::spiice::{NamedMigrator, SpiiceBundle, SpiiceRegistry, SpiiceRegistryError};
 use proxiima::{
     AppInfo, AuthPath, AuthzContext, BuiltProxiima, FactWrite, GroupId, OwnerId, PgPoolConfig,
@@ -62,7 +65,7 @@ struct Urls {
     migration: String,
 }
 
-async fn boot(urls: &Urls, owner: OwnerId, skip_migrations: bool) -> TestResult<BuiltProxiima> {
+async fn boot(urls: &Urls, owner: OwnerId) -> TestResult<BuiltProxiima> {
     let app = Proxiima::<CoreApp>::app()
         .database_url(&urls.runtime)
         .store_number(0)
@@ -70,11 +73,6 @@ async fn boot(urls: &Urls, owner: OwnerId, skip_migrations: bool) -> TestResult<
         .migration_database_url(&urls.migration)
         .owner(owner)
         .served_surface(ServedSurface::All);
-    let app = if skip_migrations {
-        app.skip_migrations()
-    } else {
-        app
-    };
     Ok(app.build().await?)
 }
 
@@ -131,13 +129,14 @@ async fn migrate_direct_serve_pooled(database: &str) -> TestResult<()> {
     }
     let owner = OwnerId::from(GroupId::new(Uuid::now_v7()));
 
-    // First boot migrates on the direct URL, then serves a write.
-    let first = boot(&urls, owner, false).await?;
+    // The dedicated migration uses the direct URL; serving then uses the pooler.
+    migrated_app::migrate_app::<CoreApp>(&urls.migration).await;
+    let first = boot(&urls, owner).await?;
     write_one(&first, owner, "migrated direct").await?;
     stop(first).await;
 
-    // A GitOps-style boot runs only the preflight, on the same URL.
-    let second = boot(&urls, owner, true).await?;
+    // Restart validates the same installed composition without DDL.
+    let second = boot(&urls, owner).await?;
     write_one(&second, owner, "preflight direct").await?;
     stop(second).await;
 

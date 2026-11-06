@@ -53,9 +53,14 @@ async fn the_facade_refuses_a_pre_reset_ledger_everywhere() {
         );
     };
     refused(
-        pending_migrations(&pg.clone_pool_for_backend(), &[], VectorStorage::Local)
-            .await
-            .expect_err("the planner refuses"),
+        pending_migrations(
+            &pg.clone_pool_for_backend(),
+            &[],
+            &proxiima::spiice::PgSidecarRegistryFrozen::default(),
+            VectorStorage::Local,
+        )
+        .await
+        .expect_err("the planner refuses"),
     );
     refused(
         run_core_and_spiice_migrations(&pg, Vec::new(), &sidecars)
@@ -133,9 +138,14 @@ async fn an_unknown_version_on_a_later_ledger_prevents_every_schema_change() {
             source("later", FIRST + 2, false),
         ]
     };
-    let planned = pending_migrations(&admin, &sources(), VectorStorage::Local)
-        .await
-        .expect_err("unknown ledger version must refuse a plan");
+    let planned = pending_migrations(
+        &admin,
+        &sources(),
+        &proxiima::spiice::PgSidecarRegistryFrozen::default(),
+        VectorStorage::Local,
+    )
+    .await
+    .expect_err("unknown ledger version must refuse a plan");
     let ran = run_core_and_spiice_migrations(
         &pg,
         sources(),
@@ -198,10 +208,15 @@ async fn a_shared_ledger_recognizes_every_composed_source() {
     .expect("all shared sources recognized");
     let pool = pg.clone_pool_for_backend();
     assert!(
-        pending_migrations(&pool, &sources(), VectorStorage::Local)
-            .await
-            .expect("current composition")
-            .is_empty()
+        pending_migrations(
+            &pool,
+            &sources(),
+            &proxiima::spiice::PgSidecarRegistryFrozen::default(),
+            VectorStorage::Local
+        )
+        .await
+        .expect("current composition")
+        .is_empty()
     );
     let omitted = run_core_and_spiice_migrations(
         &pg,
@@ -255,7 +270,13 @@ async fn missing_versions_need_an_explicit_policy_for_run_plan_and_preflight() {
         Err(MigrationError::Core(MigrateError::VersionMissing(9000)))
     ));
     assert!(matches!(
-        pending_migrations(&pool, &[], VectorStorage::Local).await,
+        pending_migrations(
+            &pool,
+            &[],
+            &proxiima::spiice::PgSidecarRegistryFrozen::default(),
+            VectorStorage::Local
+        )
+        .await,
         Err(MigrationError::Core(MigrateError::VersionMissing(9000)))
     ));
     run_core_and_spiice_migrations_with_policy(
@@ -278,6 +299,7 @@ async fn missing_versions_need_an_explicit_policy_for_run_plan_and_preflight() {
         pending_migrations_with_policy(
             &pool,
             &[],
+            &proxiima::spiice::PgSidecarRegistryFrozen::default(),
             MissingMigrationPolicy::Allow,
             VectorStorage::Local
         )
@@ -336,6 +358,7 @@ async fn shared_sources_in_the_core_number_range_are_recognized_by_the_union() {
         pending_migrations(
             &pg.clone_pool_for_backend(),
             &sources(),
+            &proxiima::spiice::PgSidecarRegistryFrozen::default(),
             VectorStorage::Local
         )
         .await
@@ -392,12 +415,8 @@ async fn the_runtime_passes_its_explicit_policy_to_migrating_and_read_only_boot(
             .allow_insecure_single_owner()
             .served_surface(ServedSurface::All)
     };
-    for skip in [false, true] {
-        let strict = if skip {
-            host().skip_migrations()
-        } else {
-            host()
-        };
+    for _skip in [false, true] {
+        let strict = host();
         let error = strict
             .build()
             .await
@@ -406,11 +425,6 @@ async fn the_runtime_passes_its_explicit_policy_to_migrating_and_read_only_boot(
         let allowing = host()
             .from_lookup(|key| (key == "PROXIIMA_MISSING_MIGRATION_POLICY").then(|| "allow".into()))
             .expect("host environment policy");
-        let allowing = if skip {
-            allowing.skip_migrations()
-        } else {
-            allowing
-        };
         expect_described(
             "runtime propagates explicit missing-version policy",
             allowing.build().await,

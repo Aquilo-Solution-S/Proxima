@@ -366,6 +366,7 @@ pub(super) static PER_ROW_ON_THE_WRONG_COLUMN: SpiiceContract = SpiiceContract {
             why: "a fixture, not a search surface",
         },
     }),
+    evolutions: &[],
 };
 
 /// A non-core spiice naming a hand-written erase leg. Only storage-pg code

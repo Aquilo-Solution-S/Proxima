@@ -1,4 +1,4 @@
-//! Storage and engine boot: connect, migrate, compose.
+//! Storage and engine boot: connect, validate, compose.
 //!
 //! Internal. Hosts boot through [`crate::Proxiima`] / [`crate::RuntimeBuilder`];
 //! this module turns one resolved [`RuntimeConfig`] plus its [`RuntimeParts`]
@@ -18,7 +18,6 @@ use proxiima_storage_pg::{
 use sqlx::PgPool;
 
 use crate::bundle::SpiiceBundle;
-use crate::migrations::run_serving_migrations;
 use crate::runtime_grants::{self, RuntimeGrants};
 use crate::{
     CitedBlobStore, MigrationError, NamedMigrator, ProxiimaError, RuntimeConfig, RuntimeParts,
@@ -321,27 +320,14 @@ async fn connect_and_migrate(
     .await
     .map_err(storage_error)?
     .with_vector_storage(vectors);
-    if config.skip_migrations {
-        // GitOps split-role deploy: schema is migrated out-of-band under a
-        // DDL role; here we only run the preflight and issue no DDL.
-        preflight_without_migrations_with_policy(
-            &migration_pg,
-            migrators,
-            pg_sidecars,
-            config.missing_migration_policy,
-        )
-        .await
-        .map_err(migration_error)?;
-    } else {
-        run_serving_migrations(
-            &migration_pg,
-            migrators,
-            pg_sidecars,
-            config.missing_migration_policy,
-        )
-        .await
-        .map_err(migration_error)?;
-    }
+    preflight_without_migrations_with_policy(
+        &migration_pg,
+        migrators,
+        pg_sidecars,
+        config.missing_migration_policy,
+    )
+    .await
+    .map_err(migration_error)?;
     migration_pg
         .initialize_store_number(config.store_number)
         .await
@@ -405,8 +391,8 @@ async fn ensure_pg_sidecars(
     // the tables a search reads exist; this asks whether the guard that
     // keeps every registered memory sidecar reachable by forget, erase
     // and export is installed on it. Both read the catalog and issue no
-    // DDL, so both hold under `PROXIIMA_SKIP_MIGRATIONS` in a split-role
-    // deploy, where this process's role cannot create a trigger at all.
+    // DDL, so this remains valid for a split-role deploy, where this
+    // process's role cannot create a trigger at all.
     proxiima_storage_pg::integrity::ensure_declaration_triggers(&pool, pg_sidecars)
         .await
         .map_err(storage_error)?;

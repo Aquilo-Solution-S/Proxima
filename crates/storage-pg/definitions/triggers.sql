@@ -2,6 +2,33 @@
 -- Constraint triggers are dropped immediately before recreation; no drop-all pass is required.
 -- Every trigger is grouped under its owning proxiima_core table.
 
+-- schema evolution source fence.  The trigger takes the shared lock before
+-- checking completion, so an exclusive migration lock serializes the check
+-- with its transform and completion insert.
+CREATE OR REPLACE TRIGGER memory_schema_evolution_source_fence
+    BEFORE INSERT ON proxiima_core.memory
+    FOR EACH ROW
+    EXECUTE FUNCTION proxiima_core.assert_schema_evolution_source_writable();
+
+CREATE OR REPLACE TRIGGER goal_head_schema_evolution_source_fence
+    BEFORE INSERT ON proxiima_core.goal_head
+    FOR EACH ROW
+    EXECUTE FUNCTION proxiima_core.assert_schema_evolution_source_writable();
+
+CREATE OR REPLACE TRIGGER blob_schema_evolution_source_fence
+    BEFORE INSERT ON proxiima_core.blob
+    FOR EACH ROW
+    EXECUTE FUNCTION proxiima_core.assert_schema_evolution_source_writable();
+
+CREATE OR REPLACE TRIGGER schema_evolution_authority_writer
+    BEFORE INSERT OR UPDATE OR DELETE ON proxiima_core.schema_evolution_authority
+    FOR EACH ROW EXECUTE FUNCTION proxiima_core.assert_schema_evolution_authority_writer();
+DROP TRIGGER IF EXISTS schema_evolution_authority_drained ON proxiima_core.schema_evolution_authority;
+CREATE CONSTRAINT TRIGGER schema_evolution_authority_drained
+    AFTER INSERT ON proxiima_core.schema_evolution_authority
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+    EXECUTE FUNCTION proxiima_core.assert_schema_evolution_authority_drained();
+
 -- agent_derivation_v1
 -- Generated declaration family: integrity.rs::declaration_trigger.
 CREATE OR REPLACE TRIGGER agent_derivation_v1_declared_by_memory
@@ -70,14 +97,27 @@ CREATE OR REPLACE TRIGGER erased_pin_target_insert_guard BEFORE INSERT ON proxii
 CREATE OR REPLACE TRIGGER goal_motivation_index_sync
     AFTER INSERT ON proxiima_core.goal
     FOR EACH ROW EXECUTE FUNCTION proxiima_core.sync_goal_motivation_index();
+CREATE OR REPLACE TRIGGER goal_stamp_schema
+    BEFORE INSERT ON proxiima_core.goal
+    FOR EACH ROW EXECUTE FUNCTION proxiima_core.goal_stamp_schema();
 CREATE OR REPLACE TRIGGER goal_motivation_index_sync_update
     AFTER UPDATE OF motivated_by ON proxiima_core.goal
     FOR EACH ROW EXECUTE FUNCTION proxiima_core.sync_goal_motivation_index();
-CREATE OR REPLACE TRIGGER goal_append_only BEFORE UPDATE ON proxiima_core.goal FOR EACH ROW EXECUTE FUNCTION proxiima_core.enforce_row_append_only();
+CREATE OR REPLACE TRIGGER goal_append_only BEFORE UPDATE ON proxiima_core.goal FOR EACH ROW EXECUTE FUNCTION proxiima_core.schema_evolution_goal_guard();
 CREATE OR REPLACE TRIGGER goal_erased_pin_target BEFORE DELETE ON proxiima_core.goal FOR EACH ROW EXECUTE FUNCTION proxiima_core.goal_erase_witness();
 CREATE OR REPLACE TRIGGER goal_no_later_after_terminal BEFORE INSERT ON proxiima_core.goal FOR EACH ROW EXECUTE FUNCTION proxiima_core.goal_no_later_after_terminal();
 CREATE OR REPLACE TRIGGER goal_parent_fixed BEFORE INSERT ON proxiima_core.goal FOR EACH ROW EXECUTE FUNCTION proxiima_core.goal_parent_fixed();
 CREATE OR REPLACE TRIGGER goal_pin_target_checks BEFORE INSERT ON proxiima_core.goal FOR EACH ROW EXECUTE FUNCTION proxiima_core.goal_pin_target_checks();
+DROP TRIGGER IF EXISTS goal_pin_target_checks_on_update ON proxiima_core.goal;
+CREATE CONSTRAINT TRIGGER goal_pin_target_checks_on_update
+    AFTER UPDATE OF dependency_t, evidence_t, motivated_by, assignment_t, close_fact_t, write_act_t
+    ON proxiima_core.goal DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+    EXECUTE FUNCTION proxiima_core.goal_pin_target_checks();
+DROP TRIGGER IF EXISTS goal_schema_head_alignment_on_update ON proxiima_core.goal;
+CREATE CONSTRAINT TRIGGER goal_schema_head_alignment_on_update
+    AFTER UPDATE OF schema_id, handle, owner_id ON proxiima_core.goal
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+    EXECUTE FUNCTION proxiima_core.goal_schema_head_alignment();
 
 
 -- goal_change_v1
@@ -106,7 +146,7 @@ CREATE OR REPLACE TRIGGER goal_head_t_only BEFORE UPDATE ON proxiima_core.goal_h
 
 
 -- goal_replay_declaration
-CREATE OR REPLACE TRIGGER goal_replay_declaration_append_only BEFORE UPDATE ON proxiima_core.goal_replay_declaration FOR EACH ROW EXECUTE FUNCTION proxiima_core.enforce_row_append_only();
+CREATE OR REPLACE TRIGGER goal_replay_declaration_append_only BEFORE UPDATE ON proxiima_core.goal_replay_declaration FOR EACH ROW EXECUTE FUNCTION proxiima_core.schema_evolution_replay_guard();
 
 
 -- group_edges
@@ -132,7 +172,7 @@ CREATE OR REPLACE TRIGGER group_projection_write_guard BEFORE INSERT OR DELETE O
 
 
 -- ingest_keys
-CREATE OR REPLACE TRIGGER ingest_keys_append_only BEFORE UPDATE ON proxiima_core.ingest_keys FOR EACH ROW EXECUTE FUNCTION proxiima_core.enforce_row_append_only();
+CREATE OR REPLACE TRIGGER ingest_keys_append_only BEFORE UPDATE ON proxiima_core.ingest_keys FOR EACH ROW EXECUTE FUNCTION proxiima_core.schema_evolution_ingest_key_guard();
 
 
 -- installation
@@ -206,6 +246,10 @@ CREATE CONSTRAINT TRIGGER memory_declares_proxiima_core_goal_change_v1
     EXECUTE FUNCTION proxiima_core.assert_declared_sidecar_present('proxiima_core.goal_change_v1', 't');
 CREATE OR REPLACE TRIGGER memory_align_head BEFORE INSERT ON proxiima_core.memory FOR EACH ROW EXECUTE FUNCTION proxiima_core.memory_align_head();
 CREATE OR REPLACE TRIGGER memory_append_only BEFORE UPDATE ON proxiima_core.memory FOR EACH ROW EXECUTE FUNCTION proxiima_core.memory_owner_or_append_only();
+
+CREATE OR REPLACE TRIGGER blob_schema_evolution_guard
+    BEFORE UPDATE ON proxiima_core.blob
+    FOR EACH ROW EXECUTE FUNCTION proxiima_core.schema_evolution_blob_guard();
 CREATE OR REPLACE TRIGGER memory_erased_pin_target BEFORE DELETE ON proxiima_core.memory FOR EACH ROW EXECUTE FUNCTION proxiima_core.memory_erase_witness();
 CREATE OR REPLACE TRIGGER memory_forget_grounding BEFORE UPDATE OF forgotten_at ON proxiima_core.memory FOR EACH ROW WHEN (((old.forgotten_at IS NULL) AND (new.forgotten_at IS NOT NULL))) EXECUTE FUNCTION proxiima_core.cooled_forget_grounding();
 CREATE OR REPLACE TRIGGER memory_pin_checks BEFORE INSERT ON proxiima_core.memory FOR EACH ROW EXECUTE FUNCTION proxiima_core.memory_pin_checks();
@@ -214,6 +258,16 @@ CREATE OR REPLACE TRIGGER memory_sidecar_stamp_declared BEFORE INSERT OR UPDATE 
 
 -- memory_head
 CREATE OR REPLACE TRIGGER memory_head_t_only BEFORE UPDATE ON proxiima_core.memory_head FOR EACH ROW EXECUTE FUNCTION proxiima_core.memory_head_t_only();
+DROP TRIGGER IF EXISTS memory_align_head_on_update ON proxiima_core.memory;
+CREATE CONSTRAINT TRIGGER memory_align_head_on_update
+    AFTER UPDATE OF schema_id, handle ON proxiima_core.memory
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+    EXECUTE FUNCTION proxiima_core.memory_align_head();
+DROP TRIGGER IF EXISTS memory_pin_checks_on_update ON proxiima_core.memory;
+CREATE CONSTRAINT TRIGGER memory_pin_checks_on_update
+    AFTER UPDATE OF origins, refs, goal_refs, guided_by, forked_from ON proxiima_core.memory
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+    EXECUTE FUNCTION proxiima_core.memory_pin_checks();
 
 
 -- owners

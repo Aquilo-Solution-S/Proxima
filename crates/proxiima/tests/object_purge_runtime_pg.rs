@@ -21,6 +21,9 @@ use proxiima_core::storage_ports::CitedBlobService;
 use proxiima_pg_testkit::{create_db, db_url, drop_db, split_role_urls, unique_db_name};
 use uuid::Uuid;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 type TestResult<T> = Result<T, Box<dyn Error>>;
 const BODY: &[u8] = b"an erase owes these bytes; the server pays without host code";
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -88,6 +91,7 @@ fn refusing(config: &S3RuntimeConfig) -> S3RuntimeConfig {
 async fn app(database: &str, owner: OwnerId) -> TestResult<Proxiima<CoreApp>> {
     let (runtime_url, platform_url) =
         described("split roles", split_role_urls(database).await).await?;
+    migrated_app::migrate_app::<CoreApp>(&platform_url).await;
     Ok(Proxiima::<CoreApp>::app()
         .database_url(runtime_url)
         .store_number(0)

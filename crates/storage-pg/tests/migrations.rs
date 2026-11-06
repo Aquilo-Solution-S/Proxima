@@ -1,5 +1,6 @@
 //! The fresh CREATE set of the core migration. Requires local PG.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -34,6 +35,209 @@ async fn apply_current_migrations(
     )
     .await?;
     migration.run_migrations().await
+}
+
+/// A real upgrade fixture: install the historical/finalized core and current
+/// migrations through 0064, leaving 0065 to the migration under test.
+async fn apply_core_before_schema_evolution(
+    pg: &proxiima_storage_pg::PgMigrationStorage,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pool = pg.clone_pool_for_backend();
+    let mut connection = pool.acquire().await?;
+    let mut transaction = proxiima_storage_pg::begin_migration_transaction(&mut connection).await?;
+    proxiima_storage_pg::run_core_phase(
+        &mut transaction,
+        proxiima_storage_pg::MissingMigrationPolicy::Reject,
+        proxiima_storage_pg::VectorStorage::Local,
+        proxiima_storage_pg::MigrationPhase::Historical,
+    )
+    .await?;
+    proxiima_storage_pg::run_core_phase(
+        &mut transaction,
+        proxiima_storage_pg::MissingMigrationPolicy::Reject,
+        proxiima_storage_pg::VectorStorage::Local,
+        proxiima_storage_pg::MigrationPhase::Finalize,
+    )
+    .await?;
+    let source = proxiima_storage_pg::core_migrator_for(proxiima_storage_pg::VectorStorage::Local);
+    let current = source
+        .iter()
+        .filter(|migration| {
+            proxiima_storage_pg::migration_phase(&source, migration)
+                == proxiima_storage_pg::MigrationPhase::Current
+                && migration.version < 65
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let current = sqlx::migrate::Migrator {
+        migrations: Cow::Owned(current),
+        ignore_missing: true,
+        locking: source.locking,
+        no_tx: source.no_tx,
+        table_name: source.table_name.clone(),
+        create_schemas: source.create_schemas.clone(),
+    };
+    current
+        .run_direct(None, transaction.as_mut(), false)
+        .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn seed_historical_goal_series(
+    pool: &sqlx::PgPool,
+    owner: Uuid,
+    handle: Uuid,
+    first: Uuid,
+    second: Uuid,
+) -> Result<Vec<(Uuid, String, String)>, sqlx::Error> {
+    let mut seed = pool.begin().await?;
+    sqlx::query("SELECT set_config('app.proxiima_scope', 'platform', false)")
+        .execute(&mut *seed)
+        .await?;
+    sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
+        .bind(owner)
+        .execute(&mut *seed)
+        .await?;
+    sqlx::query(
+        "INSERT INTO proxiima_core.goal_head (handle, schema_id, owner_id, t)
+         VALUES ($1, 'legacy/tasks-v1', $2, $3)",
+    )
+    .bind(handle)
+    .bind(owner)
+    .bind(second)
+    .execute(&mut *seed)
+    .await?;
+    for (t, request_id, title) in [
+        (first, "legacy-create", "first historical version"),
+        (second, "legacy-update", "second historical version"),
+    ] {
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal
+                (handle, t, owner_id, title, state, request_id, text, \"by\", via)
+             VALUES ($1, $2, $3, $4, 'Active', $5, NULL,
+                     '00000000-0000-0000-0000-000000000509'::uuid, NULL)",
+        )
+        .bind(handle)
+        .bind(t)
+        .bind(owner)
+        .bind(title)
+        .bind(request_id)
+        .execute(&mut *seed)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal_replay_declaration
+                (goal_t, declaration, edge_count)
+             VALUES ($1, '{\"kind\":\"create\"}'::jsonb, 0)",
+        )
+        .bind(t)
+        .execute(&mut *seed)
+        .await?;
+    }
+    seed.commit().await?;
+    let mut read = pool.acquire().await?;
+    sqlx::query("SELECT set_config('app.proxiima_scope', 'platform', false)")
+        .execute(&mut *read)
+        .await?;
+    sqlx::query_as(
+        "SELECT g.t, g.request_id, h.schema_id
+           FROM proxiima_core.goal g
+           JOIN proxiima_core.goal_head h ON h.handle = g.handle
+          WHERE g.handle = $1 ORDER BY g.t",
+    )
+    .bind(handle)
+    .fetch_all(&mut *read)
+    .await
+}
+
+async fn run_goal_schema_upgrade(
+    migration: &proxiima_storage_pg::PgMigrationStorage,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pool = migration.clone_pool_for_backend();
+    let mut connection = pool.acquire().await?;
+    let mut transaction = proxiima_storage_pg::begin_migration_transaction(&mut connection).await?;
+    proxiima_storage_pg::run_core_phase(
+        &mut transaction,
+        proxiima_storage_pg::MissingMigrationPolicy::Reject,
+        proxiima_storage_pg::VectorStorage::Local,
+        proxiima_storage_pg::MigrationPhase::Current,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn assert_upgraded_goal_series(
+    pool: &sqlx::PgPool,
+    owner: Uuid,
+    handle: Uuid,
+    before: &[(Uuid, String, String)],
+) -> Result<(), sqlx::Error> {
+    let mut read = pool.acquire().await?;
+    sqlx::query("SELECT set_config('app.proxiima_scope', 'platform', false)")
+        .execute(&mut *read)
+        .await?;
+    let after: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT g.t, g.request_id, g.schema_id
+           FROM proxiima_core.goal g WHERE g.handle = $1 ORDER BY g.t",
+    )
+    .bind(handle)
+    .fetch_all(&mut *read)
+    .await?;
+    assert_eq!(
+        after,
+        before
+            .iter()
+            .map(|(t, request_id, _)| (*t, request_id.clone(), "legacy/tasks-v1".to_owned()))
+            .collect::<Vec<_>>()
+    );
+    let replay: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT d.goal_t, d.owner_id, d.request_id
+           FROM proxiima_core.goal_replay_declaration d
+          WHERE d.owner_id = $1 ORDER BY d.request_id",
+    )
+    .bind(owner)
+    .fetch_all(&mut *read)
+    .await?;
+    assert_eq!(replay.len(), 2);
+    assert!(
+        replay
+            .iter()
+            .all(|(_, replay_owner, _)| *replay_owner == owner)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn schema_evolution_backfills_historical_goal_versions_by_series_handle() {
+    let database = format!("proxiima_goal_upgrade_{}", Uuid::now_v7().simple());
+    create_db(&database)
+        .await
+        .expect("owned PostgreSQL database");
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let (_, platform_url) = proxiima_pg_testkit::split_role_urls(&database).await?;
+        let migration = proxiima_storage_pg::PgMigrationStorage::connect_with_config(
+            &platform_url,
+            proxiima_storage_pg::PgPoolConfig::default(),
+            proxiima_storage_pg::PgTuning::default(),
+        )
+        .await?;
+        apply_core_before_schema_evolution(&migration).await?;
+        let pool = migration.clone_pool_for_backend();
+        let owner = Uuid::now_v7();
+        let handle = Uuid::now_v7();
+        let first = Uuid::now_v7();
+        let second = Uuid::now_v7();
+        let before = seed_historical_goal_series(&pool, owner, handle, first, second).await?;
+        assert_eq!(before.len(), 2);
+        assert!(sqlx::query_scalar::<_, bool>("SELECT NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='proxiima_core' AND table_name='goal' AND column_name='schema_id')").fetch_one(&pool).await?);
+        run_goal_schema_upgrade(&migration).await?;
+        assert_upgraded_goal_series(&pool, owner, handle, &before).await?;
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&database).await;
+    result.expect("historical Goal schema backfill must preserve every version");
 }
 
 async fn table_exists(pg: &impl DatabaseFixture, table_name: &str) -> bool {
@@ -1794,10 +1998,11 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
         .execute(pool)
         .await?;
         let err = sqlx::query(
-            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
-             VALUES ($1, '[]'::jsonb, 0)",
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, owner_id, request_id, declaration, edge_count)
+             VALUES ($1, $2, 'replay-array', '[]'::jsonb, 0)",
         )
         .bind(handle)
+        .bind(owner)
         .execute(pool)
         .await
         .expect_err("object check must refuse arrays");
@@ -1813,10 +2018,11 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
             "{err}"
         );
         let err = sqlx::query(
-            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
-             VALUES ($1, '{}'::jsonb, -1)",
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, owner_id, request_id, declaration, edge_count)
+             VALUES ($1, $2, 'replay-negative', '{}'::jsonb, -1)",
         )
         .bind(handle)
+        .bind(owner)
         .execute(pool)
         .await
         .expect_err("edge count check must refuse negatives");
@@ -1831,20 +2037,30 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
             "{err}"
         );
         sqlx::query(
-            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
-             VALUES ($1, '{}'::jsonb, 0)",
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, owner_id, request_id, declaration, edge_count)
+             VALUES ($1, $2, 'replay-one', '{}'::jsonb, 0)",
         )
         .bind(handle)
+        .bind(owner)
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, owner_id, request_id, declaration, edge_count)
+             VALUES ($1, $2, 'replay-two', '{}'::jsonb, 0)",
+        )
+        .bind(handle)
+        .bind(owner)
         .execute(pool)
         .await?;
         let err = sqlx::query(
-            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
-             VALUES ($1, '{}'::jsonb, 0)",
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, owner_id, request_id, declaration, edge_count)
+             VALUES ($1, $2, 'replay-two', '{}'::jsonb, 0)",
         )
         .bind(handle)
+        .bind(owner)
         .execute(pool)
         .await
-        .expect_err("goal_t is the primary key");
+        .expect_err("owner/request is the primary key");
         assert_eq!(
             err.as_database_error()
                 .and_then(sqlx::error::DatabaseError::code),
@@ -1857,10 +2073,11 @@ async fn goal_replay_declaration_enforces_identity_and_cascade() {
         );
         let missing_goal = Uuid::now_v7();
         let err = sqlx::query(
-            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, declaration, edge_count)
-             VALUES ($1, '{}'::jsonb, 0)",
+            "INSERT INTO proxiima_core.goal_replay_declaration (goal_t, owner_id, request_id, declaration, edge_count)
+             VALUES ($1, $2, 'missing-goal', '{}'::jsonb, 0)",
         )
         .bind(missing_goal)
+        .bind(owner)
         .execute(pool)
         .await
         .expect_err("a replay declaration must reference an existing Goal");

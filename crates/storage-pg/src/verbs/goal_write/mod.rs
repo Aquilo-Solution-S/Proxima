@@ -58,3 +58,4 @@ pub(crate) use commands::{
     modify_goal_atomic, transition_goal_atomic,
 };
 pub(crate) use replay::resolve_goal_command_replay_on;
+pub(crate) use replay::rewrite_goal_replay;

@@ -36,6 +36,7 @@ pub(in crate::spiice::freeze) const fn contract(
         projection: ProjectionDecl::None {
             why: "a fixture registry has no schema that is a search surface",
         },
+        evolutions: &[],
     }
 }
 
@@ -218,6 +219,7 @@ pub(super) const fn transfer_fixture_at(
         projection: ProjectionDecl::None {
             why: "a fixture registry has no schema that is a search surface",
         },
+        evolutions: &[],
     }
 }
 
@@ -249,6 +251,7 @@ pub(super) const fn erase_fixture_at(
         projection: ProjectionDecl::None {
             why: "a fixture registry has no schema that is a search surface",
         },
+        evolutions: &[],
     }
 }
 

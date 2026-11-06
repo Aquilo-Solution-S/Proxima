@@ -31,6 +31,9 @@ use proxiima_pg_testkit::{SplitRoleDb, db_url};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 const MODEL: &str = "feature-control-embed";
 const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -170,6 +173,7 @@ impl World {
             SplitRoleDb::create(prefix, &[]).await,
         )
         .await;
+        migrated_app::migrate_app::<BareApp>(db.platform_url()).await;
         let inspection = expect_described(
             "inspection pool",
             sqlx::PgPool::connect(&db_url(db.name())).await,

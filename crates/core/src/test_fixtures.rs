@@ -375,6 +375,7 @@ pub static PROBE_SPIICE: proxiima_core::spiice::contract::SpiiceContract =
         resources: &[],
         bespoke_erase_legs: &[],
         bespoke_transfer_legs: &[],
+        evolutions: &[],
         projection: proxiima_core::spiice::contract::ProjectionDecl::None {
             why: "the probe spiice declares no search surface",
         },
@@ -395,6 +396,7 @@ pub static SCHEMALESS_PROBE_SPIICE: proxiima_core::spiice::contract::SpiiceContr
         resources: &[],
         bespoke_erase_legs: &[],
         bespoke_transfer_legs: &[],
+        evolutions: &[],
         projection: proxiima_core::spiice::contract::ProjectionDecl::None {
             why: "the probe spiice declares no search surface",
         },

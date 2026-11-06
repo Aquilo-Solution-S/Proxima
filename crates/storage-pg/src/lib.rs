@@ -109,8 +109,8 @@ pub use ports::{
 };
 pub use rls_guard::assert_runtime_rls;
 pub use sidecars::{
-    PgSidecarKey, PgSidecarRegistry, PgSidecarRegistryFrozen, core_pg_sidecars,
-    register_core_pg_sidecars,
+    PgMigrationSchemas, PgSchemaEvolution, PgSidecarKey, PgSidecarRegistry,
+    PgSidecarRegistryFrozen, core_pg_sidecars, register_core_pg_sidecars,
 };
 pub use tuning::{HnswIterativeScan, PgTuning};
 pub use verbs::ingest_receipt::ingest_receipt;

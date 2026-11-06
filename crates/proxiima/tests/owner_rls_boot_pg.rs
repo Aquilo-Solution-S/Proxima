@@ -1,7 +1,9 @@
-//! Boot the embedded facade with automatic owner-RLS activation using split
+//! Boot the embedded facade after explicit owner-RLS migration using split
 //! platform/runtime roles.  This is deliberately a boot test: the lower-level
 //! policy census and role refusal matrix live in storage-pg's RLS tests.
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
 #[path = "fixtures/setup_error.rs"]
 #[allow(dead_code, reason = "each suite uses part of the shared fixture")]
 mod setup_error;
@@ -92,6 +94,7 @@ async fn setup() -> (String, PgPool, String, String, OwnerId, String, String) {
     .await;
     expect_described("core schema", migration.run_migrations().await).await;
     migration.clone_pool_for_backend().close().await;
+    migrated_app::migrate_app::<ExampleApp>(&platform_url).await;
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
     sqlx::query("INSERT INTO proxiima_core.owners (owner_id, kind) VALUES ($1, 'personal')")
         .bind(owner.into_inner())
@@ -207,7 +210,6 @@ async fn boot(
     runtime_url: String,
     platform_url: Option<String>,
     owner: OwnerId,
-    skip_migrations: bool,
 ) -> Result<proxiima::BuiltProxiima, proxiima::ProxiimaError> {
     let mut app = Proxiima::<ExampleApp>::app()
         .store_number(0)
@@ -217,9 +219,6 @@ async fn boot(
         .pg_pool_config(PgPoolConfig::default());
     if let Some(platform_url) = platform_url {
         app = app.platform_database_url(platform_url);
-    }
-    if skip_migrations {
-        app = app.skip_migrations();
     }
     app.build().await
 }
@@ -231,13 +230,7 @@ async fn split_role_boot_accepts_runtime_with_platform_scope() {
         .lock()
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
-    let result = boot(
-        runtime_url.clone(),
-        Some(platform_url.clone()),
-        owner,
-        false,
-    )
-    .await;
+    let result = boot(runtime_url.clone(), Some(platform_url.clone()), owner).await;
     let booted = expect_described("split-role boot", result).await;
     let authz = proxiima_core::authenticate(
         &SyntheticAuthenticator {
@@ -293,8 +286,8 @@ async fn split_role_boot_accepts_runtime_with_platform_scope() {
     verify.close().await;
     booted.shutdown().await;
     let second = expect_described(
-        "second automatic migration is idempotent",
-        boot(runtime_url, Some(platform_url), owner, false).await,
+        "second explicit migration and serving validation are idempotent",
+        boot(runtime_url, Some(platform_url), owner).await,
     )
     .await;
     second.shutdown().await;
@@ -303,22 +296,21 @@ async fn split_role_boot_accepts_runtime_with_platform_scope() {
 }
 
 #[tokio::test]
-async fn fresh_split_role_boot_migrates_core_and_example_automatically() {
+async fn fresh_split_role_boot_serves_after_explicit_core_and_example_migration() {
     let _guard = BOOT_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
     let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
     let owner = OwnerId::from(UserId::new(uuid::Uuid::now_v7()));
+    let error = boot(runtime_url.clone(), Some(platform_url.clone()), owner)
+        .await
+        .expect_err("serving does not install a fresh database");
+    assert!(error.to_string().contains("run migrations before boot"));
+    migrated_app::migrate_app::<ExampleApp>(&platform_url).await;
     let first = expect_described(
-        "fresh core+example automatic migration",
-        boot(
-            runtime_url.clone(),
-            Some(platform_url.clone()),
-            owner,
-            false,
-        )
-        .await,
+        "fresh core+example explicit migration",
+        boot(runtime_url.clone(), Some(platform_url.clone()), owner).await,
     )
     .await;
     first.shutdown().await;
@@ -345,7 +337,7 @@ async fn fresh_split_role_boot_migrates_core_and_example_automatically() {
     .await;
     let second = expect_described(
         "fresh second boot",
-        boot(runtime_url, Some(platform_url), owner, true).await,
+        boot(runtime_url, Some(platform_url), owner).await,
     )
     .await;
     second.shutdown().await;
@@ -358,6 +350,7 @@ async fn assert_insecure_single_owner_roundtrip(owner: OwnerId) {
         .lock()
         .await;
     let (database, admin, runtime_url, platform_url, runtime, platform) = setup_fresh().await;
+    migrated_app::migrate_app::<ExampleApp>(&platform_url).await;
     let built = expect_described(
         "insecure single-owner boot with enforcing split roles",
         Proxiima::<ExampleApp>::app()
@@ -448,7 +441,7 @@ async fn split_role_boot_refuses_missing_platform_scope() {
         .lock()
         .await;
     let (database, admin, runtime_url, _platform_url, owner, runtime, platform) = setup().await;
-    let result = boot(runtime_url, None, owner, false).await;
+    let result = boot(runtime_url, None, owner).await;
     assert!(
         result.is_err(),
         "enforced owner RLS must require a platform database URL"
@@ -464,22 +457,12 @@ async fn split_role_boot_refuses_runtime_table_owner() {
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
     expect_described(
-        "initial automatic migration",
-        boot(
-            runtime_url.clone(),
-            Some(platform_url.clone()),
-            owner,
-            false,
-        )
-        .await,
+        "initial explicit migration",
+        boot(runtime_url.clone(), Some(platform_url.clone()), owner).await,
     )
     .await;
     exec(&admin, format!("DO $$ DECLARE r record; BEGIN FOR r IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'proxiima_core' AND c.relkind IN ('r','p') LOOP EXECUTE format('ALTER TABLE %I.%I OWNER TO {}', r.nspname, r.relname); END LOOP; END $$", quoted_ident(&runtime))).await;
-    assert!(
-        boot(runtime_url, Some(platform_url), owner, true)
-            .await
-            .is_err()
-    );
+    assert!(boot(runtime_url, Some(platform_url), owner).await.is_err());
     cleanup(&database, admin, &runtime, &platform).await;
 }
 
@@ -492,14 +475,8 @@ async fn split_role_boot_refuses_runtime_bypassrls() {
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
     // SQL-POLICY: fixed-fragment — generated role identifier is quoted.
     expect_described(
-        "initial automatic migration",
-        boot(
-            runtime_url.clone(),
-            Some(platform_url.clone()),
-            owner,
-            false,
-        )
-        .await,
+        "initial explicit migration",
+        boot(runtime_url.clone(), Some(platform_url.clone()), owner).await,
     )
     .await;
     // SQL-POLICY: fixed-fragment — the generated fixture role is identifier-quoted.
@@ -508,11 +485,7 @@ async fn split_role_boot_refuses_runtime_bypassrls() {
         format!("ALTER ROLE {} BYPASSRLS", quoted_ident(&runtime)),
     )
     .await;
-    assert!(
-        boot(runtime_url, Some(platform_url), owner, true)
-            .await
-            .is_err()
-    );
+    assert!(boot(runtime_url, Some(platform_url), owner).await.is_err());
     cleanup(&database, admin, &runtime, &platform).await;
 }
 
@@ -524,14 +497,8 @@ async fn split_role_boot_refuses_missing_force_rls() {
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
     expect_described(
-        "initial automatic migration",
-        boot(
-            runtime_url.clone(),
-            Some(platform_url.clone()),
-            owner,
-            false,
-        )
-        .await,
+        "initial explicit migration",
+        boot(runtime_url.clone(), Some(platform_url.clone()), owner).await,
     )
     .await;
     exec(
@@ -539,11 +506,7 @@ async fn split_role_boot_refuses_missing_force_rls() {
         "ALTER TABLE proxiima_core.memory NO FORCE ROW LEVEL SECURITY",
     )
     .await;
-    assert!(
-        boot(runtime_url, Some(platform_url), owner, true)
-            .await
-            .is_err()
-    );
+    assert!(boot(runtime_url, Some(platform_url), owner).await.is_err());
     cleanup(&database, admin, &runtime, &platform).await;
 }
 
@@ -555,22 +518,12 @@ async fn split_role_boot_refuses_unprotected_new_table() {
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
     expect_described(
-        "initial automatic migration",
-        boot(
-            runtime_url.clone(),
-            Some(platform_url.clone()),
-            owner,
-            false,
-        )
-        .await,
+        "initial explicit migration",
+        boot(runtime_url.clone(), Some(platform_url.clone()), owner).await,
     )
     .await;
     exec(&admin, "CREATE TABLE proxiima_core.unprotected_sidecar (id uuid PRIMARY KEY, owner_id uuid NOT NULL)").await;
-    assert!(
-        boot(runtime_url, Some(platform_url), owner, true)
-            .await
-            .is_err()
-    );
+    assert!(boot(runtime_url, Some(platform_url), owner).await.is_err());
     cleanup(&database, admin, &runtime, &platform).await;
 }
 
@@ -582,14 +535,8 @@ async fn split_role_boot_refuses_mismatched_baseline_checksum() {
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
     expect_described(
-        "initial automatic migration",
-        boot(
-            runtime_url.clone(),
-            Some(platform_url.clone()),
-            owner,
-            false,
-        )
-        .await,
+        "initial explicit migration",
+        boot(runtime_url.clone(), Some(platform_url.clone()), owner).await,
     )
     .await;
     sqlx::query(
@@ -605,11 +552,7 @@ async fn split_role_boot_refuses_mismatched_baseline_checksum() {
     .execute(&admin)
     .await
     .expect("corrupt baseline checksum");
-    assert!(
-        boot(runtime_url, Some(platform_url), owner, true)
-            .await
-            .is_err()
-    );
+    assert!(boot(runtime_url, Some(platform_url), owner).await.is_err());
     cleanup(&database, admin, &runtime, &platform).await;
 }
 
@@ -621,23 +564,13 @@ async fn split_role_boot_refuses_unrelated_newer_ledger_version() {
         .await;
     let (database, admin, runtime_url, platform_url, owner, runtime, platform) = setup().await;
     expect_described(
-        "initial automatic migration",
-        boot(
-            runtime_url.clone(),
-            Some(platform_url.clone()),
-            owner,
-            false,
-        )
-        .await,
+        "initial explicit migration",
+        boot(runtime_url.clone(), Some(platform_url.clone()), owner).await,
     )
     .await;
     sqlx::query("INSERT INTO public._sqlx_migrations (version, description, success, checksum, execution_time) VALUES (9000, 'unrelated', true, decode('00', 'hex'), 0)")
         .execute(&admin).await.expect("insert unrelated ledger row");
-    assert!(
-        boot(runtime_url, Some(platform_url), owner, true)
-            .await
-            .is_err()
-    );
+    assert!(boot(runtime_url, Some(platform_url), owner).await.is_err());
     cleanup(&database, admin, &runtime, &platform).await;
 }
 

@@ -1674,6 +1674,7 @@ mod tests {
         },
         bespoke_erase_legs: &[],
         bespoke_transfer_legs: &[],
+        evolutions: &[],
     };
 
     struct EmptyTablesCommand {
@@ -1966,6 +1967,7 @@ mod tests {
             },
             bespoke_erase_legs: &[],
             bespoke_transfer_legs: &[],
+            evolutions: &[],
         };
 
         fn engine(begin_calls: Arc<AtomicUsize>) -> Arc<Engine> {

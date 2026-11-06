@@ -42,6 +42,10 @@ fn validate_tag_sidecar(
 }
 
 impl SpiiceRegistry {
+    pub(super) fn validate_schema_evolutions(&self) -> Result<(), SpiiceRegistryError> {
+        super::super::evolution::validate_evolutions(&self.contracts)
+    }
+
     fn registered_natural_key_declaration(
         &self,
         info: &crate::verbs::schema::SchemaInfo,

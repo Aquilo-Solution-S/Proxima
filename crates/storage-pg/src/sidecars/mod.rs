@@ -22,6 +22,7 @@ use crate::pg_ident::PgIdent;
 mod core_sidecars;
 mod dispatch;
 mod entry;
+pub mod evolution;
 mod frozen;
 mod macros;
 mod owner_mode;
@@ -39,6 +40,7 @@ mod tests;
 
 pub use core_sidecars::{core_pg_sidecars, register_core_pg_sidecars};
 pub use entry::{PgSidecarEntry, PgSidecarKey};
+pub use evolution::{PgMigrationSchemas, PgSchemaEvolution};
 pub use frozen::PgSidecarRegistryFrozen;
 pub use owner_mode::SidecarOwnerMode;
 pub use permit::SidecarInsertPermit;

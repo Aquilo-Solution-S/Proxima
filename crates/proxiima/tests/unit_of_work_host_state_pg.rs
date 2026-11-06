@@ -3,6 +3,8 @@
 
 #[path = "fixtures/host_state/mod.rs"]
 mod host_state_fixture;
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
 #[path = "fixtures/split_core_db.rs"]
 mod split_core_db;
 
@@ -51,6 +53,7 @@ async fn boot_fixture(
     owner: OwnerId,
     participant: Option<Arc<dyn PgHostStateParticipant>>,
 ) -> Result<proxiima::BuiltProxiima, Box<dyn std::error::Error>> {
+    migrated_app::migrate_app::<HostFixtureApp>(platform_url).await;
     let mut app = Proxiima::<HostFixtureApp>::app()
         .database_url(db_url)
         .store_number(0)

@@ -22,6 +22,9 @@ use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use uuid::Uuid;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 /// The example's baseline version (ordinal 11's lane).
 const EXAMPLE_MIGRATION_VERSION: i64 = 20_261_018_000_011;
 
@@ -348,6 +351,9 @@ fn the_trigger_drift_assertion_names_a_missing_trigger() {
 /// Boot `F` as a single owner, register a notebook, write a note into it
 /// through the Engine and read it back.
 async fn write_and_read_a_note<F: SpiiceApp + 'static>(db: &SplitRoleDb, expect: &str) {
+    migrated_app::migrate::<F>(db.platform_url())
+        .await
+        .expect("explicit migration before serving");
     let owner = company_owner(Uuid::now_v7());
     let built = Proxiima::<F>::app()
         .database_url(db.runtime_url())
@@ -458,6 +464,8 @@ async fn a_table_added_without_a_call_refuses_boot() {
     let db = SplitRoleDb::create("proxiima_spiice_kit_forgotten", &[])
         .await
         .expect("PG required");
+    migrated_app::migrate_app::<kit_forgotten_table::KitForgottenTableSpiice>(db.platform_url())
+        .await;
     let refused = Proxiima::<kit_forgotten_table::KitForgottenTableSpiice>::app()
         .database_url(db.runtime_url())
         .store_number(0)
@@ -483,14 +491,10 @@ async fn the_census_refuses_a_migration_that_forgot_a_table() {
     let db = SplitRoleDb::create("proxiima_spiice_kit_census", &[])
         .await
         .expect("PG required");
-    let refused = Proxiima::<kit_forgotten_table_census::KitForgottenTableCensusSpiice>::app()
-        .database_url(db.runtime_url())
-        .store_number(0)
-        .platform_database_url(db.platform_url())
-        .owner(company_owner(Uuid::now_v7()))
-        .allow_insecure_single_owner()
-        .served_surface(ServedSurface::All)
-        .build()
+    let refused =
+        migrated_app::migrate::<kit_forgotten_table_census::KitForgottenTableCensusSpiice>(
+            db.platform_url(),
+        )
         .await
         .expect_err("the census must refuse a table without the policies");
     let message = refused.to_string();
@@ -505,16 +509,9 @@ async fn an_unclassified_table_refuses_the_migration() {
     let db = SplitRoleDb::create("proxiima_spiice_kit_gap", &[])
         .await
         .expect("PG required");
-    let refused = Proxiima::<kit_gap::KitGapSpiice>::app()
-        .database_url(db.runtime_url())
-        .store_number(0)
-        .platform_database_url(db.platform_url())
-        .owner(company_owner(Uuid::now_v7()))
-        .allow_insecure_single_owner()
-        .served_surface(ServedSurface::All)
-        .build()
+    let refused = migrated_app::migrate::<kit_gap::KitGapSpiice>(db.platform_url())
         .await
-        .expect_err("an unclassified table must refuse the boot");
+        .expect_err("an unclassified table must refuse the migration");
     let message = refused.to_string();
     assert!(
         message.contains("owner RLS classification missing for proxiima_example.settings"),
@@ -527,6 +524,7 @@ async fn a_spiice_definer_view_refuses_boot_and_names_the_view() {
     let db = SplitRoleDb::create("proxiima_spiice_definer_view", &[])
         .await
         .expect("PG required");
+    migrated_app::migrate_app::<kit_definer_view::KitDefinerViewSpiice>(db.platform_url()).await;
     let refused = Proxiima::<kit_definer_view::KitDefinerViewSpiice>::app()
         .database_url(db.runtime_url())
         .store_number(0)
@@ -550,6 +548,7 @@ async fn a_spiice_invoker_view_boots_and_hides_other_owners() {
     let db = SplitRoleDb::create("proxiima_spiice_invoker_view", &[])
         .await
         .expect("PG required");
+    migrated_app::migrate_app::<kit_invoker_view::KitInvokerViewSpiice>(db.platform_url()).await;
     let owner = company_owner(Uuid::now_v7());
     let other = company_owner(Uuid::now_v7());
     let built = Proxiima::<kit_invoker_view::KitInvokerViewSpiice>::app()

@@ -1,3 +1,5 @@
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
 #[path = "fixtures/split_core_db.rs"]
 mod split_core_db;
 
@@ -119,6 +121,7 @@ static HEALTH_CONTRACT: SpiiceContract = SpiiceContract {
     projection: ProjectionDecl::None {
         why: "a publisher supervision fixture has no projection",
     },
+    evolutions: &[],
 };
 
 fn probe_migrator() -> Migrator {
@@ -243,6 +246,7 @@ async fn publisher_health_sidecar_fixture_captures_against_real_pg() {
     let split_db = clone_split_core_db("publisher_health_fixture")
         .await
         .expect("PG fixture database");
+    migrated_app::migrate_app::<PublisherApp>(split_db.platform_url()).await;
     let (runtime_url, platform_url) = (
         split_db.runtime_url().to_owned(),
         split_db.platform_url().to_owned(),

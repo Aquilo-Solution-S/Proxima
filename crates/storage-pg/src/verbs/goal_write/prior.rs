@@ -1,8 +1,8 @@
 use super::{
     ChildGoalDraft, EvidenceTarget, GoalAuthorship, GoalDraft, GoalId, GoalPayloadWrite, GoalState,
-    MemoryId, OwnerId, Postgres, SchemaId, SchemaVersion, StorageError, StoredGoal, Transaction,
-    map_err,
+    MemoryId, OwnerId, Postgres, SchemaId, StorageError, StoredGoal, Transaction, map_err,
 };
+use proxiima_core::verbs::schema::PayloadKind;
 
 type PriorRow = (
     String,
@@ -17,6 +17,7 @@ pub(super) async fn load_prior_goal(
     tx: &mut Transaction<'_, Postgres>,
     owner: &OwnerId,
     goal_id: GoalId,
+    registry: &proxiima_core::SpiiceRegistryFrozen,
 ) -> Result<StoredGoal, StorageError> {
     let owner_id = owner.into_inner();
     let row: Option<PriorRow> = sqlx::query_as(
@@ -33,9 +34,26 @@ pub(super) async fn load_prior_goal(
     let Some((schema_id, title, text, state, dependency_t, motivated_by)) = row else {
         return Err(StorageError::NotFound);
     };
+    let schema_id = SchemaId::new(schema_id);
+    let mut schemas = registry
+        .schemas()
+        .iter()
+        .filter(|schema| schema.kind == PayloadKind::Goal && schema.schema_id == schema_id);
+    let schema = schemas.next().ok_or_else(|| {
+        StorageError::ConstraintViolation(format!(
+            "stored Goal schema {} is not registered",
+            schema_id.as_str()
+        ))
+    })?;
+    if schemas.next().is_some() {
+        return Err(StorageError::ConstraintViolation(format!(
+            "stored Goal schema {} is registered more than once",
+            schema_id.as_str()
+        )));
+    }
     Ok(StoredGoal {
-        schema_id: SchemaId::new(schema_id),
-        schema_version: SchemaVersion::new(1),
+        schema_id,
+        schema_version: schema.schema_version,
         title,
         text,
         payload: Vec::new(),
@@ -50,13 +68,25 @@ pub(super) async fn validate_active_head(
     owner: &OwnerId,
     goal_id: GoalId,
 ) -> Result<(), StorageError> {
-    let prior = load_prior_goal(tx, owner, goal_id).await?;
-    if prior.state != GoalState::Active {
+    let owner_id = owner.into_inner();
+    let state: Option<GoalState> = sqlx::query_scalar(
+        "SELECT g.state
+           FROM proxiima_core.goal g
+          WHERE g.t = $1 AND g.owner_id = $2",
+    )
+    .bind(goal_id.into_inner())
+    .bind(owner_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    if state != Some(GoalState::Active) {
+        if state.is_none() {
+            return Err(StorageError::NotFound);
+        }
         return Err(StorageError::ConstraintViolation(
             "parent_goal must be Active".into(),
         ));
     }
-    let owner_id = owner.into_inner();
     let is_head: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1

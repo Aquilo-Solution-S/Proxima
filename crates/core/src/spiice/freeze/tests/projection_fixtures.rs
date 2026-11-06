@@ -205,6 +205,7 @@ pub(super) const fn uniformity_contract(schemas: &'static [SchemaContract]) -> S
             band_comparability: crate::spiice::contract::BandComparability::CoreBands,
             rank_source: crate::spiice::contract::RankSource::Projection,
         }),
+        evolutions: &[],
     }
 }
 
@@ -283,6 +284,7 @@ pub(super) const fn divergent_contract(schemas: &'static [SchemaContract]) -> Sp
             },
             rank_source: crate::spiice::contract::RankSource::Projection,
         }),
+        evolutions: &[],
     }
 }
 
@@ -360,6 +362,7 @@ pub(super) const fn embedding_contract(schemas: &'static [SchemaContract]) -> Sp
         projection: ProjectionDecl::None {
             why: "the fixture embeds; it does not search",
         },
+        evolutions: &[],
     }
 }
 

@@ -44,6 +44,9 @@ use split_core_db::clone_split_core_db;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 const KID: &str = "spiice-host-key";
@@ -329,6 +332,9 @@ impl Stack {
         let database = clone_split_core_db("proxiima_spiice_host")
             .await
             .expect("PG required for tests");
+        migrated_app::migrate::<(SpiiceHost,)>(database.platform_url())
+            .await
+            .expect("explicit migration before serving");
         let idp = Idp::start().await.expect("loopback identity provider");
         Self {
             database,
@@ -1201,6 +1207,10 @@ async fn retention_erase(
 #[tokio::test]
 async fn the_host_route_erases_only_the_vouched_owners_aged_series() {
     let stack = Stack::new().await;
+    migrated_app::migrate_app::<(SpiiceHost, proxiima_example::ExampleSpiice)>(
+        stack.database.platform_url(),
+    )
+    .await;
     let result: TestResult = async {
         let (running, base) = stack
             .boot_app::<(SpiiceHost, proxiima_example::ExampleSpiice)>(&[])

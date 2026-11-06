@@ -750,6 +750,7 @@ mod tests {
             projection: crate::spiice::contract::ProjectionDecl::None {
                 why: "the tag probe has no search projection",
             },
+            evolutions: &[],
         };
 
     fn tag_probe_engine() -> Engine {

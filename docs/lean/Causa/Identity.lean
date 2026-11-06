@@ -82,7 +82,9 @@ opaque OperatorId : Type := String
 opaque InputContract : Type := String
 
 /-- The opaque schema tag. Stored once on `memory_head` / `goal_head` / `blob`,
-    never on every version row. New shape → new `SchemaRef` → new handle.
+    never on every version row. Ordinary admission with a new shape uses a new
+    schema and handle; the dedicated spiice migration operation may explicitly
+    replace admission IDs while mapping the old series into the target shape.
     No `schema_version`. -/
 opaque SchemaRef : Type := String
 

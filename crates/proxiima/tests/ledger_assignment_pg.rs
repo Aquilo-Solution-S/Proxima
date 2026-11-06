@@ -106,59 +106,78 @@ async fn changing_a_baselines_ledger_is_refused_before_any_replay_under_both_pol
             .await
             .expect("legacy copied baseline row");
         }
-        for policy in [
-            MissingMigrationPolicy::Reject,
-            MissingMigrationPolicy::Allow,
-        ] {
-            let planned = pending_migrations_with_policy(
-                &admin,
-                &[source(false)],
-                policy,
-                VectorStorage::Local,
-            )
-            .await
-            .expect_err("a plan refuses the changed ledger assignment");
-            let preflight = preflight_without_migrations_with_policy(
-                &pg,
-                vec![source(false)],
-                &proxiima::PgSidecarRegistryFrozen::default(),
-                policy,
-            )
-            .await
-            .expect_err("read-only boot refuses the changed ledger assignment");
-            let ran = run_core_and_spiice_migrations_with_policy(
-                &pg,
-                vec![source(false)],
-                &proxiima::PgSidecarRegistryFrozen::default(),
-                policy,
-            )
-            .await
-            .expect_err("a run refuses the changed ledger assignment");
-            assert_assignment_refusal(&planned);
-            assert_assignment_refusal(&preflight);
-            assert_assignment_refusal(&ran);
-            assert_eq!(format!("{planned:?}"), format!("{preflight:?}"));
-            assert_eq!(format!("{planned:?}"), format!("{ran:?}"));
-
-            let ids: Vec<i32> =
-                sqlx::query_scalar("SELECT id FROM public.assignment_fixture ORDER BY id")
-                    .fetch_all(&admin)
-                    .await
-                    .expect("preserved data");
-            assert_eq!(ids, [7], "the refused baseline destroyed data");
-            let after: Vec<i64> =
-                sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
-                    .fetch_all(&admin)
-                    .await
-                    .expect("shared ledger after refusal");
-            assert_eq!(after, before, "the refused run changed ledger rows");
-            let created: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
-                .bind(PRIVATE_LEDGER)
-                .fetch_one(&admin)
-                .await
-                .expect("private ledger probe");
-            assert_eq!(created, copied, "the refused run changed ledger existence");
-        }
+        assert_refusal_modes(db.platform_url(), &admin, &before, copied).await;
     }
     admin.close().await;
+}
+
+async fn assert_refusal_modes(platform_url: &str, admin: &PgPool, before: &[i64], copied: bool) {
+    for policy in [
+        MissingMigrationPolicy::Reject,
+        MissingMigrationPolicy::Allow,
+    ] {
+        let pg = PgMigrationStorage::connect_with_config(
+            platform_url,
+            PgPoolConfig::default(),
+            PgTuning::default(),
+        )
+        .await
+        .expect("migration storage");
+        let pg_run = PgMigrationStorage::connect_with_config(
+            platform_url,
+            PgPoolConfig::default(),
+            PgTuning::default(),
+        )
+        .await
+        .expect("migration storage");
+        let planned = pending_migrations_with_policy(
+            admin,
+            &[source(false)],
+            &proxiima::spiice::PgSidecarRegistryFrozen::default(),
+            policy,
+            VectorStorage::Local,
+        )
+        .await
+        .expect_err("a plan refuses the changed ledger assignment");
+        let preflight = preflight_without_migrations_with_policy(
+            &pg,
+            vec![source(false)],
+            &proxiima::PgSidecarRegistryFrozen::default(),
+            policy,
+        )
+        .await
+        .expect_err("read-only boot refuses the changed ledger assignment");
+        let ran = run_core_and_spiice_migrations_with_policy(
+            &pg_run,
+            vec![source(false)],
+            &proxiima::PgSidecarRegistryFrozen::default(),
+            policy,
+        )
+        .await
+        .expect_err("a run refuses the changed ledger assignment");
+        assert_assignment_refusal(&planned);
+        assert_assignment_refusal(&preflight);
+        assert_assignment_refusal(&ran);
+        assert_eq!(format!("{planned:?}"), format!("{preflight:?}"));
+        assert_eq!(format!("{planned:?}"), format!("{ran:?}"));
+
+        let ids: Vec<i32> =
+            sqlx::query_scalar("SELECT id FROM public.assignment_fixture ORDER BY id")
+                .fetch_all(admin)
+                .await
+                .expect("preserved data");
+        assert_eq!(ids, [7], "the refused baseline destroyed data");
+        let after: Vec<i64> =
+            sqlx::query_scalar("SELECT version FROM public._sqlx_migrations ORDER BY version")
+                .fetch_all(admin)
+                .await
+                .expect("shared ledger after refusal");
+        assert_eq!(after, before, "the refused run changed ledger rows");
+        let created: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind(PRIVATE_LEDGER)
+            .fetch_one(admin)
+            .await
+            .expect("private ledger probe");
+        assert_eq!(created, copied, "the refused run changed ledger existence");
+    }
 }

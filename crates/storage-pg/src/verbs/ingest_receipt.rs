@@ -41,7 +41,7 @@ pub async fn ingest_receipt(
             AND k.source_id = $2
             AND k.ingest_key = $3
             AND m.source_id = $2
-            AND m.ingest_key = $3
+            AND m.kind = 'fact'
             FOR SHARE OF m",
     )
     .bind(owner.into_inner())

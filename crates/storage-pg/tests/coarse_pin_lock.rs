@@ -207,12 +207,13 @@ async fn insert_derived(
     Ok(t)
 }
 
-/// The mode this transaction bound and the advisory locks it holds.
+/// The mode this transaction bound and its exclusive pin-target locks.
 async fn pin_lock_state(conn: &mut PgConnection) -> Result<(Option<String>, i64), sqlx::Error> {
     sqlx::query_as(
         "SELECT current_setting('proxiima_core.pin_lock_mode', true),
                 (SELECT count(*) FROM pg_locks
-                  WHERE pid = pg_backend_pid() AND locktype = 'advisory')",
+                  WHERE pid = pg_backend_pid() AND locktype = 'advisory'
+                    AND mode = 'ExclusiveLock')",
     )
     .fetch_one(conn)
     .await

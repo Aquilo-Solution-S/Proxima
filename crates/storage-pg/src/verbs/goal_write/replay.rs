@@ -7,7 +7,8 @@ use super::{
 };
 use proxiima_core::verbs::goal_write::GoalTransitionKind;
 use proxiima_core::verbs::idempotency::{IdempotencyKey, KeyVerdict, judge};
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
+use serde_json::Value;
 
 fn authorship_declaration(authorship: &GoalAuthorship) -> &'static str {
     // Replay identity records only the logical author category. The operator
@@ -224,6 +225,263 @@ pub(super) struct ReplayDeclaration {
     command: ReplayCommand,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct StoredReplayDeclaration {
+    version: u8,
+    #[serde(flatten)]
+    command: StoredReplayCommand,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "verb", deny_unknown_fields)]
+enum StoredReplayCommand {
+    #[serde(rename = "create")]
+    Create(StoredCreateBody),
+    #[serde(rename = "transition")]
+    Transition(StoredTransitionBody),
+    #[serde(rename = "achieve")]
+    Achieve(StoredPriorAuthorshipBody),
+    #[serde(rename = "modify")]
+    Modify(StoredModifyBody),
+    #[serde(rename = "decompose_child")]
+    DecomposeChild(StoredDecomposeChildBody),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredCreateBody {
+    draft: StoredDraft,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredDraft {
+    schema_id: String,
+    schema_version: u32,
+    title: String,
+    text: String,
+    payload: Vec<u8>,
+    sidecar: Option<StoredSidecar>,
+    state: StoredGoalState,
+    topology: StoredTopology,
+    supersedes_goal_id: Option<uuid::Uuid>,
+    authorship: StoredAuthorship,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredPayload {
+    schema_id: String,
+    schema_version: u32,
+    title: String,
+    text: String,
+    payload: Vec<u8>,
+    sidecar: Option<StoredSidecar>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredSidecar {
+    kind: StoredPayloadKind,
+    schema_id: String,
+    schema_version: u32,
+    payload: Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "PascalCase")]
+enum StoredPayloadKind {
+    Fact,
+    Abstraction,
+    Perspective,
+    Goal,
+    CitedObject,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "PascalCase")]
+enum StoredGoalState {
+    Active,
+    Paused,
+    Achieved,
+    Abandoned,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredAuthorship {
+    User,
+    SystemOperator,
+    SystemTool,
+    External,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum StoredPendingWork {
+    Keep,
+    Discard,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredTransitionBody {
+    prior_goal_id: uuid::Uuid,
+    next_state: StoredGoalState,
+    authorship: StoredAuthorship,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending: Option<StoredPendingWork>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredPriorAuthorshipBody {
+    prior_goal_id: uuid::Uuid,
+    authorship: StoredAuthorship,
+    evidence: Option<Vec<StoredEvidenceRef>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredModifyBody {
+    prior_goal_id: uuid::Uuid,
+    replacement: StoredPayload,
+    authorship: StoredAuthorship,
+    evidence: Option<Vec<StoredEvidenceRef>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredDecomposeChildBody {
+    parent_goal_id: uuid::Uuid,
+    authorship: StoredAuthorship,
+    topology: StoredTopology,
+    child_index: usize,
+    payload: StoredPayload,
+    evidence: Vec<StoredEvidenceRef>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredTopology {
+    motivated_by: Vec<StoredMotivationRef>,
+    dependencies: Vec<StoredDependencyRef>,
+    evidence: Vec<StoredEvidenceRef>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredMotivationRef {
+    perspective_id: uuid::Uuid,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredDependencyRef {
+    goal_id: uuid::Uuid,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredEvidenceRef {
+    memory_id: uuid::Uuid,
+}
+
+fn rewrite_stored_topology(
+    topology: &mut StoredTopology,
+    map_memory: &dyn Fn(uuid::Uuid) -> Result<uuid::Uuid, StorageError>,
+    map_goal: &dyn Fn(uuid::Uuid) -> Result<uuid::Uuid, StorageError>,
+) -> Result<(), StorageError> {
+    for reference in &mut topology.motivated_by {
+        reference.perspective_id = map_memory(reference.perspective_id)?;
+    }
+    for reference in &mut topology.dependencies {
+        reference.goal_id = map_goal(reference.goal_id)?;
+    }
+    for reference in &mut topology.evidence {
+        reference.memory_id = map_memory(reference.memory_id)?;
+    }
+    Ok(())
+}
+
+fn rewrite_stored_evidence(
+    evidence: &mut [StoredEvidenceRef],
+    map_memory: &dyn Fn(uuid::Uuid) -> Result<uuid::Uuid, StorageError>,
+) -> Result<(), StorageError> {
+    for reference in evidence {
+        reference.memory_id = map_memory(reference.memory_id)?;
+    }
+    Ok(())
+}
+
+fn replacement_payload_value(
+    replacement: &GoalPayloadWrite,
+) -> Result<StoredPayload, StorageError> {
+    let value = serde_json::to_value(payload_declaration(replacement)?)
+        .map_err(|error| internal(format!("serialize replacement Goal payload: {error}")))?;
+    serde_json::from_value(value)
+        .map_err(|error| internal(format!("encode replacement Goal payload: {error}")))
+}
+
+/// Rewrite one persisted v1 declaration at the database boundary. The stored
+/// sidecar remains opaque JSON; only typed replay structure and IDs are parsed.
+pub(crate) fn rewrite_goal_replay(
+    raw: Value,
+    replacement: &GoalPayloadWrite,
+    map_memory: &dyn Fn(uuid::Uuid) -> Result<uuid::Uuid, StorageError>,
+    map_goal: &dyn Fn(uuid::Uuid) -> Result<uuid::Uuid, StorageError>,
+) -> Result<Value, StorageError> {
+    let mut declaration: StoredReplayDeclaration = serde_json::from_value(raw)
+        .map_err(|error| internal(format!("invalid Goal replay declaration: {error}")))?;
+    if declaration.version != 1 {
+        return Err(internal(format!(
+            "unsupported Goal replay declaration version {}",
+            declaration.version
+        )));
+    }
+    let replacement = replacement_payload_value(replacement)?;
+    match &mut declaration.command {
+        StoredReplayCommand::Create(body) => {
+            body.draft.payload.clone_from(&replacement.payload);
+            body.draft.schema_id.clone_from(&replacement.schema_id);
+            body.draft.schema_version = replacement.schema_version;
+            body.draft.title.clone_from(&replacement.title);
+            body.draft.text.clone_from(&replacement.text);
+            body.draft.sidecar.clone_from(&replacement.sidecar);
+            body.draft.supersedes_goal_id =
+                body.draft.supersedes_goal_id.map(map_goal).transpose()?;
+            rewrite_stored_topology(&mut body.draft.topology, map_memory, map_goal)?;
+        }
+        StoredReplayCommand::Transition(body) => {
+            body.prior_goal_id = map_goal(body.prior_goal_id)?;
+        }
+        StoredReplayCommand::Achieve(body) => {
+            body.prior_goal_id = map_goal(body.prior_goal_id)?;
+            if let Some(evidence) = &mut body.evidence {
+                rewrite_stored_evidence(evidence, map_memory)?;
+            }
+        }
+        StoredReplayCommand::Modify(body) => {
+            body.prior_goal_id = map_goal(body.prior_goal_id)?;
+            body.replacement.clone_from(&replacement);
+            if let Some(evidence) = &mut body.evidence {
+                rewrite_stored_evidence(evidence, map_memory)?;
+            }
+        }
+        StoredReplayCommand::DecomposeChild(body) => {
+            body.parent_goal_id = map_goal(body.parent_goal_id)?;
+            body.payload.clone_from(&replacement);
+            rewrite_stored_topology(&mut body.topology, map_memory, map_goal)?;
+            rewrite_stored_evidence(&mut body.evidence, map_memory)?;
+        }
+    }
+    serde_json::to_value(declaration).map_err(|error| {
+        internal(format!(
+            "serialize rewritten Goal replay declaration: {error}"
+        ))
+    })
+}
+
 fn replay_declaration(command: ReplayCommand) -> ReplayDeclaration {
     ReplayDeclaration {
         version: 1,
@@ -383,10 +641,12 @@ pub(super) async fn resolve_decompose_replay_set(
                 d.declaration = r.declaration::jsonb
            FROM unnest($2::text[], $3::text[]) WITH ORDINALITY
                   AS r(request_id, declaration, ordinality)
-           LEFT JOIN proxiima_core.goal g
-             ON g.owner_id = $1 AND g.request_id = r.request_id
            LEFT JOIN proxiima_core.goal_replay_declaration d
-             ON d.goal_t = g.t
+             ON d.owner_id = $1 AND d.request_id = r.request_id
+           LEFT JOIN proxiima_core.goal admitted
+             ON admitted.owner_id = $1 AND admitted.request_id = r.request_id
+           LEFT JOIN proxiima_core.goal g
+             ON g.t = COALESCE(d.goal_t, admitted.t)
           ORDER BY r.ordinality",
     )
     .bind(req.owner.into_inner())
@@ -493,10 +753,12 @@ pub(super) async fn resolve_goal_replay(
 ) -> Result<Option<GoalWriteOutcome>, StorageError> {
     let row: Option<(uuid::Uuid, uuid::Uuid, Option<i32>, Option<bool>)> = sqlx::query_as(
         "SELECT g.t, g.handle, d.edge_count, d.declaration = $3::jsonb
-           FROM proxiima_core.goal g
+           FROM (VALUES ($1::uuid, $2::text)) request(owner_id, request_id)
            LEFT JOIN proxiima_core.goal_replay_declaration d
-             ON d.goal_t = g.t
-          WHERE g.owner_id = $1 AND g.request_id = $2",
+             ON d.owner_id = request.owner_id AND d.request_id = request.request_id
+           LEFT JOIN proxiima_core.goal admitted
+             ON admitted.owner_id = request.owner_id AND admitted.request_id = request.request_id
+           JOIN proxiima_core.goal g ON g.t = COALESCE(d.goal_t, admitted.t)",
     )
     .bind(owner.into_inner())
     .bind(request_id)
@@ -548,13 +810,21 @@ pub(super) async fn record_goal_replay_declaration(
     declaration: &ReplayDeclaration,
     outcome: &GoalWriteOutcome,
 ) -> Result<(), StorageError> {
+    let (owner_id, request_id): (uuid::Uuid, String) =
+        sqlx::query_as("SELECT owner_id, request_id FROM proxiima_core.goal WHERE t = $1")
+            .bind(outcome.goal_id.into_inner())
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(map_err)?;
     let edge_count = i32::try_from(outcome.edge_count)
         .map_err(|_| internal("Goal replay edge_count exceeds PostgreSQL integer"))?;
     sqlx::query(
         "INSERT INTO proxiima_core.goal_replay_declaration
-             (goal_t, declaration, edge_count)
-         VALUES ($1, $2, $3)",
+             (owner_id, request_id, goal_t, declaration, edge_count)
+         VALUES ($1, $2, $3, $4, $5)",
     )
+    .bind(owner_id)
+    .bind(request_id)
     .bind(outcome.goal_id.into_inner())
     .bind(sqlx::types::Json(declaration))
     .bind(edge_count)
@@ -597,6 +867,163 @@ mod tests {
 
     fn serialized<T: Serialize>(value: &T) -> Value {
         serde_json::to_value(value).expect("replay declaration serializes")
+    }
+
+    fn replacement() -> GoalPayloadWrite {
+        GoalPayloadWrite::from_payload(
+            "replacement title",
+            "replacement text",
+            proxiima_core::TaskGoalV1 {
+                due_at: Some(time::OffsetDateTime::UNIX_EPOCH),
+                priority: Some(proxiima_core::TaskPriority::High),
+            },
+        )
+        .expect("replacement payload")
+    }
+
+    fn rewrite_identity(raw: Value) -> Value {
+        rewrite_goal_replay(raw, &replacement(), &|id| Ok(id), &|id| Ok(id)).expect("rewrite")
+    }
+
+    #[test]
+    fn rewrite_roundtrips_all_goal_replay_verbs_and_replaces_payload_slots() {
+        let id = uuid::Uuid::from_u128(1);
+        let declarations = [
+            serialized(&ReplayDeclaration {
+                version: 1,
+                command: ReplayCommand::Create(CreateBody {
+                    draft: ReplayDraft {
+                        schema_id: "old/schema".into(),
+                        schema_version: 1,
+                        title: "old".into(),
+                        text: "old".into(),
+                        payload: vec![0],
+                        sidecar: None,
+                        state: ReplayGoalState(GoalState::Active),
+                        topology: ReplayTopology {
+                            motivated_by: vec![ReplayMotivationRef { perspective_id: id }],
+                            dependencies: vec![ReplayDependencyRef { goal_id: id }],
+                            evidence: vec![ReplayEvidenceRef { memory_id: id }],
+                        },
+                        supersedes_goal_id: Some(id),
+                        authorship: "user",
+                    },
+                }),
+            }),
+            serialized(&ReplayDeclaration {
+                version: 1,
+                command: ReplayCommand::Transition(TransitionBody {
+                    prior_goal_id: id,
+                    next_state: ReplayGoalState(GoalState::Paused),
+                    authorship: "user",
+                    pending: Some(ReplayPendingWork(proxiima_core::PendingWork::Keep)),
+                }),
+            }),
+            serialized(&ReplayDeclaration {
+                version: 1,
+                command: ReplayCommand::Achieve(PriorAuthorshipBody {
+                    prior_goal_id: id,
+                    authorship: "user",
+                    evidence: Some(vec![ReplayEvidenceRef { memory_id: id }]),
+                }),
+            }),
+            serialized(&ReplayDeclaration {
+                version: 1,
+                command: ReplayCommand::Modify(ModifyBody {
+                    prior_goal_id: id,
+                    replacement: payload(),
+                    authorship: "user",
+                    evidence: Some(vec![ReplayEvidenceRef { memory_id: id }]),
+                }),
+            }),
+            serialized(&ReplayDeclaration {
+                version: 1,
+                command: ReplayCommand::DecomposeChild(DecomposeChildBody {
+                    parent_goal_id: id,
+                    authorship: "user",
+                    topology: (&topology()).into(),
+                    child_index: 0,
+                    payload: payload(),
+                    evidence: vec![ReplayEvidenceRef { memory_id: id }],
+                }),
+            }),
+        ];
+        for raw in declarations {
+            let rewritten = rewrite_identity(raw.clone());
+            let reparsed: StoredReplayDeclaration =
+                serde_json::from_value(rewritten.clone()).expect("rewritten v1 declaration");
+            assert_eq!(reparsed.version, 1);
+            assert_eq!(rewritten["version"], raw["version"]);
+            assert_eq!(rewritten["verb"], raw["verb"]);
+            if raw["verb"] == "transition" || raw["verb"] == "achieve" {
+                assert_eq!(rewritten, raw);
+            }
+        }
+    }
+
+    #[test]
+    fn rewrite_refuses_unknown_version_and_closed_values() {
+        let base = json!({
+            "version": 1,
+            "verb": "transition",
+            "prior_goal_id": uuid::Uuid::from_u128(1),
+            "next_state": "Active",
+            "authorship": "user"
+        });
+        for (field, value) in [
+            ("version", json!(2)),
+            ("next_state", json!("Unknown")),
+            ("authorship", json!("robot")),
+            ("pending", json!("later")),
+            ("unexpected", json!(true)),
+        ] {
+            let mut raw = base.clone();
+            raw[field] = value;
+            assert!(
+                rewrite_goal_replay(raw, &replacement(), &|id| Ok(id), &|id| Ok(id)).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn rewrite_refuses_unknown_sidecar_kind() {
+        let raw = json!({
+            "version": 1,
+            "verb": "modify",
+            "prior_goal_id": uuid::Uuid::from_u128(1),
+            "replacement": {
+                "schema_id": "old/schema", "schema_version": 1,
+                "title": "old", "text": "old", "payload": [0],
+                "sidecar": {
+                    "kind": "Unknown", "schema_id": "old/schema",
+                    "schema_version": 1, "payload": {}
+                }
+            },
+            "authorship": "user", "evidence": null
+        });
+        assert!(rewrite_goal_replay(raw, &replacement(), &|id| Ok(id), &|id| Ok(id)).is_err());
+    }
+
+    #[test]
+    fn rewrite_propagates_mapping_refusal() {
+        let id = uuid::Uuid::from_u128(1);
+        let raw = serialized(&ReplayDeclaration {
+            version: 1,
+            command: ReplayCommand::Transition(TransitionBody {
+                prior_goal_id: id,
+                next_state: ReplayGoalState(GoalState::Active),
+                authorship: "user",
+                pending: None,
+            }),
+        });
+        let result = rewrite_goal_replay(
+            raw,
+            &replacement(),
+            &|_| Err(internal("memory map refused")),
+            &|_| Err(internal("goal map refused")),
+        );
+        assert!(result.is_err());
     }
 
     #[test]

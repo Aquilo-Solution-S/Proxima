@@ -169,8 +169,8 @@ impl McpToolHost {
     /// Connect a runtime role and a separately authorized migration/platform
     /// role. A single DSN cannot serve both purposes once owner RLS is active.
     ///
-    /// Migrates on `platform_url`, under a session advisory lock and session
-    /// settings, before it opens the platform pool on the same URL. So
+    /// Validates the already-migrated core schema on `platform_url` before it
+    /// opens the platform pool on the same URL. So
     /// `platform_url` must reach Postgres directly or through a session-mode
     /// pool, never a transaction-mode pooler; `runtime_url` may go through
     /// one. This constructor does not read `PROXIIMA_MIGRATION_DATABASE_URL`:
@@ -195,7 +195,12 @@ impl McpToolHost {
             tuning,
         )
         .await?;
-        migration.run_migrations().await?;
+        proxiima_storage_pg::ensure_core_schema_current(
+            &migration.clone_pool_for_backend(),
+            proxiima_storage_pg::MissingMigrationPolicy::Reject,
+            migration.vector_storage(),
+        )
+        .await?;
         migration.initialize_store_number(store_number).await?;
         let frozen = registry.try_freeze()?;
         let schema_names = composed_schema_names(&frozen);

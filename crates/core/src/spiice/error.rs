@@ -4,6 +4,56 @@ use crate::ScopeKeyError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SpiiceRegistryError {
+    #[error("spiice {spiice_id} evolution {evolution_id:?} is invalid: {reason}")]
+    InvalidSchemaEvolution {
+        spiice_id: &'static str,
+        evolution_id: &'static str,
+        reason: &'static str,
+    },
+    #[error("duplicate schema evolution id {evolution_id:?}")]
+    DuplicateSchemaEvolution { evolution_id: &'static str },
+    #[error("spiice {spiice_id} evolution {evolution_id:?} names foreign schema {schema_id}")]
+    SchemaEvolutionForeignSchema {
+        spiice_id: &'static str,
+        evolution_id: &'static str,
+        schema_id: SchemaId,
+    },
+    #[error(
+        "schema evolution {evolution_id:?} names the same schema in its source and target sets: {schema_id}"
+    )]
+    SchemaEvolutionDuplicateSchema {
+        evolution_id: &'static str,
+        schema_id: SchemaId,
+    },
+    #[error("schema evolution {evolution_id:?} target {schema_id} is not an active contract")]
+    SchemaEvolutionTargetNotRegistered {
+        evolution_id: &'static str,
+        schema_id: SchemaId,
+    },
+    #[error("schema evolution {evolution_id:?} consumes schema {schema_id} more than once")]
+    SchemaEvolutionSourceReused {
+        evolution_id: &'static str,
+        schema_id: SchemaId,
+    },
+    #[error("schema evolution {evolution_id:?} produces schema {schema_id} more than once")]
+    SchemaEvolutionTargetReused {
+        evolution_id: &'static str,
+        schema_id: SchemaId,
+    },
+    #[error("schema evolution {evolution_id:?} requires missing evolution {required:?}")]
+    SchemaEvolutionMissingDependency {
+        evolution_id: &'static str,
+        required: &'static str,
+    },
+    #[error("schema evolution dependency graph contains a cycle at {evolution_id:?}")]
+    SchemaEvolutionCycle { evolution_id: &'static str },
+    #[error(
+        "spiice {spiice_id} registered schema {schema_id} without a complete evolution path from version 1"
+    )]
+    SchemaEvolutionMissingPath {
+        spiice_id: &'static str,
+        schema_id: SchemaId,
+    },
     #[error("duplicate retired Fact declaration: {schema_id}")]
     DuplicateRetiredFact { schema_id: SchemaId },
     #[error("retired Fact {schema_id} also has an active schema or surface declaration")]

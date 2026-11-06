@@ -51,6 +51,16 @@ pub const STORE_WIDE_TABLES: &[(&str, &str)] = &[
          to give those tables the follows owner RLS.",
     ),
     (
+        "proxiima_core.schema_evolution",
+        "Completed schema-evolution declarations: platform-owned deployment metadata that \
+         fences completed source schemas and is not owner data or a spiice surface.",
+    ),
+    (
+        "proxiima_core.schema_evolution_authority",
+        "Transaction-scoped schema-evolution permits: platform migration metadata that is \
+         drained before commit and is not owner data or a spiice surface.",
+    ),
+    (
         "proxiima_core.lexical_languages",
         "The FK domain of permitted regconfig values. Schema metadata written by migrations, \
          identical for every owner.",

@@ -211,7 +211,7 @@ fn code_of(error: &sqlx::Error) -> Option<String> {
         .map(Cow::into_owned)
 }
 
-async fn boot(db: &SplitRoleDb, owner: OwnerId, skip_migrations: bool) -> BuiltProxiima {
+async fn boot(db: &SplitRoleDb, owner: OwnerId) -> BuiltProxiima {
     let builder = Proxiima::<HostApp>::app()
         .database_url(db.runtime_url())
         .store_number(0)
@@ -219,11 +219,6 @@ async fn boot(db: &SplitRoleDb, owner: OwnerId, skip_migrations: bool) -> BuiltP
         .owner(owner)
         .served_surface(ServedSurface::All)
         .pg_pool_config(PgPoolConfig::default());
-    let builder = if skip_migrations {
-        builder.skip_migrations()
-    } else {
-        builder
-    };
     builder.build().await.expect("split-role boot")
 }
 
@@ -245,12 +240,12 @@ async fn a_clone_holds_every_migration_and_a_boot_applies_none() {
     assert_eq!(seeded, "seeded by the host migration");
 
     let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
-    // Validate the fresh clone before an ordinary boot could reconcile it.
-    let skipped = boot(&db, owner, true).await;
-    skipped.shutdown().await;
+    // Serving validates the clone and leaves its migration ledger unchanged.
+    let first = boot(&db, owner).await;
+    first.shutdown().await;
     assert_eq!(ledger_rows(&admin).await, before);
 
-    let booted = boot(&db, owner, false).await;
+    let booted = boot(&db, owner).await;
     booted.shutdown().await;
     assert_eq!(
         ledger_rows(&admin).await,

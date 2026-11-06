@@ -13,6 +13,9 @@ use proxiima_core::{AgentNoteV1, AuthPath, AuthzContext, OwnerId, ToolCtx, ToolS
 use proxiima_pg_testkit::SplitRoleDb;
 use proxiima_storage_pg::PgPoolConfig;
 
+#[path = "fixtures/migrated_app.rs"]
+mod migrated_app;
+
 struct ExampleApp;
 
 impl SpiiceBundle for ExampleApp {
@@ -40,6 +43,7 @@ impl SpiiceApp for ExampleApp {
 }
 
 async fn boot(db: &SplitRoleDb, owner: OwnerId) -> BuiltProxiima {
+    migrated_app::migrate_app::<ExampleApp>(db.platform_url()).await;
     Proxiima::<ExampleApp>::app()
         .database_url(db.runtime_url())
         .store_number(0)

@@ -125,7 +125,7 @@ pub(crate) enum GoalWritePreparation {
     New(Box<PreparedGoalWrite>),
 }
 
-/// Existing Goal row for `(owner, request_id)`, if any.
+/// Existing canonical replay target for `(owner, request_id)`, if any.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GoalRequestRow {
     pub handle: Uuid,
@@ -144,8 +144,13 @@ pub(crate) async fn load_goal_by_request_id(
     request_id: &str,
 ) -> Result<Option<GoalRequestRow>, StorageError> {
     let row = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>)>(
-        "SELECT handle, t, write_act_t FROM proxiima_core.goal
-          WHERE owner_id = $1 AND request_id = $2",
+        "SELECT g.handle, g.t, g.write_act_t
+           FROM (VALUES ($1::uuid, $2::text)) request(owner_id, request_id)
+           LEFT JOIN proxiima_core.goal_replay_declaration d
+             ON d.owner_id = request.owner_id AND d.request_id = request.request_id
+           LEFT JOIN proxiima_core.goal admitted
+             ON admitted.owner_id = request.owner_id AND admitted.request_id = request.request_id
+           JOIN proxiima_core.goal g ON g.t = COALESCE(d.goal_t, admitted.t)",
     )
     .bind(owner.into_inner())
     .bind(request_id)

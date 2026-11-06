@@ -26,6 +26,462 @@ $retire_legacy_vector_candidates$;
 
 -- Assertion functions
 
+-- Schema evolution fence.  The schema id is already the complete SchemaRef
+-- identity (including its version where applicable), so no second version
+-- column or registry is involved.  The namespace keeps these locks separate
+-- from memory-series and natural-key locks while remaining reproducible by
+-- the migration executor.
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_lock_key(schema_id text)
+ RETURNS bigint
+ LANGUAGE sql
+ IMMUTABLE
+ STRICT
+ SET search_path TO 'pg_catalog'
+AS $function$
+    SELECT hashtextextended('proxiima-schema-evolution:' || schema_id, 0)
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.lock_schema_evolution_shared(schema_id text)
+ RETURNS void
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
+AS $function$
+BEGIN
+    IF schema_id IS NULL OR btrim(schema_id) = '' THEN
+        RAISE EXCEPTION 'schema evolution lock requires a nonblank schema id'
+            USING ERRCODE = '22023';
+    END IF;
+    PERFORM pg_advisory_xact_lock_shared(
+        proxiima_core.schema_evolution_lock_key(schema_id)
+    );
+END
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.lock_schema_evolution_exclusive(schema_id text)
+ RETURNS void
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
+AS $function$
+DECLARE
+    relation_owner name;
+BEGIN
+    IF schema_id IS NULL OR btrim(schema_id) = '' THEN
+        RAISE EXCEPTION 'schema evolution lock requires a nonblank schema id'
+            USING ERRCODE = '22023';
+    END IF;
+    IF current_setting('app.proxiima_scope', true) IS DISTINCT FROM 'platform'
+       OR EXISTS (
+           SELECT 1
+             FROM pg_roles
+            WHERE rolname = current_user
+              AND (rolsuper OR rolbypassrls)
+       )
+    THEN
+        RAISE EXCEPTION 'schema evolution exclusive lock requires the validated platform migration lane'
+            USING ERRCODE = '42501';
+    END IF;
+    SELECT pg_get_userbyid(relowner)
+      INTO relation_owner
+      FROM pg_class
+     WHERE oid = 'proxiima_core.schema_evolution'::regclass;
+    IF relation_owner IS NULL OR NOT pg_has_role(current_user, relation_owner, 'USAGE') THEN
+        RAISE EXCEPTION 'schema evolution exclusive lock requires schema metadata ownership'
+            USING ERRCODE = '42501';
+    END IF;
+    PERFORM pg_advisory_xact_lock(
+        proxiima_core.schema_evolution_lock_key(schema_id)
+    );
+END
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.assert_schema_evolution_source_writable()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
+AS $function$
+DECLARE
+    incoming_schema_id text;
+    incoming_kind text;
+    previous_scope text := current_setting('app.proxiima_scope', true);
+BEGIN
+    incoming_schema_id := NEW.schema_id;
+    IF TG_TABLE_NAME = 'memory' THEN
+        incoming_kind := NEW.kind::text;
+    ELSIF TG_TABLE_NAME = 'goal_head' THEN
+        incoming_kind := 'goal';
+    ELSIF TG_TABLE_NAME = 'blob' THEN
+        incoming_kind := 'cited_object';
+    ELSE
+        RAISE EXCEPTION 'unsupported schema evolution fence relation' USING ERRCODE = '55000';
+    END IF;
+    PERFORM set_config('app.proxiima_scope', 'platform', true);
+    PERFORM proxiima_core.lock_schema_evolution_shared(incoming_schema_id);
+    IF EXISTS (
+        SELECT 1
+          FROM proxiima_core.schema_evolution evolution
+         WHERE evolution.source_kind = incoming_kind
+           AND evolution.source_schema_id = incoming_schema_id
+    ) THEN
+        RAISE EXCEPTION
+            'schema % (%) has completed evolution; run the declared migration before writing it',
+            incoming_schema_id, incoming_kind
+            USING ERRCODE = '55000',
+                  HINT = 'write one of the declared target schemas with the migration-aware binary';
+    END IF;
+    PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
+    RETURN NEW;
+END
+$function$;
+REVOKE ALL ON FUNCTION proxiima_core.lock_schema_evolution_exclusive(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION proxiima_core.assert_schema_evolution_source_writable() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_permits(
+    requested_kind text, source_id uuid, target_id uuid
+) RETURNS boolean
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'pg_catalog', 'proxiima_core'
+AS $function$
+    SELECT current_setting('app.proxiima_scope', true) = 'platform'
+       AND NOT EXISTS (
+           SELECT 1 FROM pg_roles
+            WHERE rolname = current_user AND (rolsuper OR rolbypassrls)
+       )
+       AND pg_has_role(current_user,
+           (SELECT relowner FROM pg_class
+             WHERE oid = 'proxiima_core.schema_evolution_authority'::regclass), 'USAGE')
+       AND EXISTS (
+           SELECT 1
+             FROM proxiima_core.schema_evolution_authority authority
+            WHERE authority.xact = pg_current_xact_id()
+              AND authority.record_kind = requested_kind
+              AND authority.source_id = schema_evolution_permits.source_id
+              AND authority.target_id = schema_evolution_permits.target_id
+       )
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_head_permits(
+    requested_kind text, source_id uuid, target_id uuid,
+    source_handle uuid, target_handle uuid
+) RETURNS boolean
+ LANGUAGE sql STABLE
+ SET search_path TO 'pg_catalog', 'proxiima_core'
+AS $function$
+    SELECT proxiima_core.schema_evolution_permits(requested_kind, source_id, target_id)
+       AND EXISTS (
+           SELECT 1 FROM proxiima_core.schema_evolution_authority authority
+            WHERE authority.xact = pg_current_xact_id()
+              AND authority.record_kind = requested_kind
+              AND authority.source_id = schema_evolution_head_permits.source_id
+              AND authority.target_id = schema_evolution_head_permits.target_id
+              AND authority.source_handle IS NOT DISTINCT FROM schema_evolution_head_permits.source_handle
+              AND authority.target_handle IS NOT DISTINCT FROM schema_evolution_head_permits.target_handle
+       )
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_mapping_matches(
+    requested_kind text, source_id uuid, target_id uuid,
+    source_schema text, target_schema text, record_owner uuid
+) RETURNS boolean
+ LANGUAGE sql STABLE
+ SET search_path TO 'pg_catalog', 'proxiima_core'
+AS $function$
+    SELECT proxiima_core.schema_evolution_permits(requested_kind, source_id, target_id)
+       AND EXISTS (
+           SELECT 1 FROM proxiima_core.schema_evolution_authority authority
+            WHERE authority.xact = pg_current_xact_id()
+              AND authority.record_kind = requested_kind
+              AND authority.source_id = schema_evolution_mapping_matches.source_id
+              AND authority.target_id = schema_evolution_mapping_matches.target_id
+              AND authority.source_schema = schema_evolution_mapping_matches.source_schema
+              AND authority.target_schema = schema_evolution_mapping_matches.target_schema
+              AND authority.record_owner = schema_evolution_mapping_matches.record_owner
+       )
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_target_matches(
+    requested_kind text, source_id uuid, target_id uuid,
+    target_schema text, record_owner uuid
+) RETURNS boolean
+ LANGUAGE sql STABLE
+ SET search_path TO 'pg_catalog', 'proxiima_core'
+AS $function$
+    SELECT proxiima_core.schema_evolution_permits(requested_kind, source_id, target_id)
+       AND EXISTS (
+           SELECT 1 FROM proxiima_core.schema_evolution_authority authority
+            WHERE authority.xact = pg_current_xact_id()
+              AND authority.record_kind = requested_kind
+              AND authority.source_id = schema_evolution_target_matches.source_id
+              AND authority.target_id = schema_evolution_target_matches.target_id
+              AND authority.target_schema = schema_evolution_target_matches.target_schema
+              AND authority.record_owner = schema_evolution_target_matches.record_owner
+       )
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_intermediate_memory_image_permits(
+    memory_t uuid, image_schema text, final_schema text, memory_handle uuid,
+    memory_kind proxiima_core.memory_kind, memory_owner uuid
+) RETURNS boolean
+ LANGUAGE sql STABLE
+ SET search_path TO 'pg_catalog', 'proxiima_core'
+AS $function$
+    SELECT image_schema IS DISTINCT FROM final_schema
+       AND proxiima_core.schema_evolution_mapping_matches(
+           'memory', memory_t, memory_t, image_schema, final_schema, memory_owner
+       )
+       AND EXISTS (
+           SELECT 1
+             FROM proxiima_core.memory_head head
+            WHERE head.handle = memory_handle
+              AND head.kind = memory_kind
+              AND head.owner_id = memory_owner
+              AND head.schema_id = final_schema
+       )
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_intermediate_memory_schema_permits(
+    memory_t uuid, image_schema text
+) RETURNS boolean
+ LANGUAGE sql STABLE
+ SET search_path TO 'pg_catalog', 'proxiima_core'
+AS $function$
+    SELECT proxiima_core.schema_evolution_permits('memory', memory_t, memory_t)
+       AND EXISTS (
+           SELECT 1
+             FROM proxiima_core.schema_evolution_authority authority
+            WHERE authority.xact = pg_current_xact_id()
+              AND authority.record_kind = 'memory'
+              AND authority.source_id = memory_t
+              AND authority.target_id = memory_t
+              AND authority.source_schema = image_schema
+              AND authority.target_schema IS DISTINCT FROM image_schema
+              AND authority.source_handle IS NOT DISTINCT FROM authority.target_handle
+       )
+$function$;
+
+-- A historical witness may survive only when the exact source row being
+-- migrated already carried that pin.  This is deliberately narrower than a
+-- migration-wide waiver: an ordinary insert has no authority row, and a
+-- target cannot invent a reference to an erased identity.
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_existing_pin_permits(
+    requested_kind text, target_id uuid, pin uuid
+) RETURNS boolean
+ LANGUAGE sql STABLE SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
+AS $function$
+    SELECT EXISTS (
+        SELECT 1
+          FROM proxiima_core.schema_evolution_authority a
+         WHERE requested_kind = 'memory'
+           AND a.xact = pg_current_xact_id()
+           AND a.record_kind = 'memory'
+           AND a.target_id = schema_evolution_existing_pin_permits.target_id
+           AND pin = ANY (a.source_pins)
+        UNION ALL
+        SELECT 1
+          FROM proxiima_core.schema_evolution_authority a
+         WHERE requested_kind = 'goal'
+           AND a.xact = pg_current_xact_id()
+           AND a.record_kind = 'goal'
+           AND a.target_id = schema_evolution_existing_pin_permits.target_id
+           AND pin = ANY (a.source_pins)
+    )
+$function$;
+REVOKE ALL ON FUNCTION proxiima_core.schema_evolution_existing_pin_permits(text, uuid, uuid) FROM PUBLIC;
+
+-- FORGET-POLICY: includes-forgotten (snapshot original pins before representation migration) applies to every read in this function
+CREATE OR REPLACE FUNCTION proxiima_core.assert_schema_evolution_authority_writer()
+ RETURNS trigger LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
+AS $function$
+BEGIN
+    IF current_setting('app.proxiima_scope', true) IS DISTINCT FROM 'platform'
+       OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_user AND (rolsuper OR rolbypassrls))
+       OR NOT pg_has_role(current_user,
+           (SELECT relowner FROM pg_class WHERE oid = 'proxiima_core.schema_evolution_authority'::regclass), 'USAGE')
+    THEN
+        RAISE EXCEPTION 'schema evolution authority is writable only by the validated migration lane'
+            USING ERRCODE = '42501';
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    IF TG_OP = 'UPDATE' THEN
+        IF NEW.record_kind IS DISTINCT FROM OLD.record_kind
+           OR NEW.source_id IS DISTINCT FROM OLD.source_id
+           OR NEW.target_id IS DISTINCT FROM OLD.target_id
+           OR NEW.source_schema IS DISTINCT FROM OLD.source_schema
+           OR NEW.target_schema IS DISTINCT FROM OLD.target_schema
+           OR NEW.source_handle IS DISTINCT FROM OLD.source_handle
+           OR NEW.target_handle IS DISTINCT FROM OLD.target_handle
+           OR NEW.record_owner IS DISTINCT FROM OLD.record_owner
+           OR NEW.primary_target IS DISTINCT FROM OLD.primary_target
+           OR NEW.source_pins IS DISTINCT FROM OLD.source_pins THEN
+            RAISE EXCEPTION 'schema evolution authority is immutable' USING ERRCODE = '25006';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF NEW.record_kind = 'memory' THEN
+        SELECT source.origins || source.refs || source.goal_refs || source.guided_by
+               || CASE WHEN source.forked_from IS NULL THEN '{}'::uuid[] ELSE ARRAY[source.forked_from] END
+          INTO NEW.source_pins
+          FROM proxiima_core.memory source
+         WHERE source.t = NEW.source_id
+           AND source.schema_id = NEW.source_schema
+           AND source.owner_id = NEW.record_owner;
+    ELSIF NEW.record_kind = 'goal' THEN
+        SELECT array_remove(ARRAY[source.close_fact_t, source.assignment_t, source.write_act_t], NULL)
+               || source.dependency_t || source.evidence_t || source.motivated_by
+          INTO NEW.source_pins
+          FROM proxiima_core.goal source
+         WHERE source.t = NEW.source_id
+           AND source.schema_id = NEW.source_schema
+           AND source.owner_id = NEW.record_owner;
+    ELSIF NEW.record_kind = 'blob' THEN
+        NEW.source_pins := '{}';
+    END IF;
+    IF NEW.record_kind IN ('memory', 'goal') AND NEW.source_pins IS NULL THEN
+        RAISE EXCEPTION 'schema evolution authority source does not match its declared schema and owner'
+            USING ERRCODE = '23503';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.assert_schema_evolution_authority_drained()
+ RETURNS trigger LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog', 'proxiima_core', 'pg_temp'
+AS $function$
+BEGIN
+    IF EXISTS (SELECT 1 FROM proxiima_core.schema_evolution_authority
+                WHERE xact = pg_current_xact_id()) THEN
+        RAISE EXCEPTION 'schema evolution authority permits must be cleared before commit'
+            USING ERRCODE = '55000';
+    END IF;
+    RETURN NULL;
+END
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_blob_guard()
+ RETURNS trigger LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF NOT proxiima_core.schema_evolution_mapping_matches('blob', OLD.blob_id, NEW.blob_id, OLD.schema_id, NEW.schema_id, OLD.owner_id) THEN
+        IF NEW.blob_id IS DISTINCT FROM OLD.blob_id
+           OR NEW.schema_id IS DISTINCT FROM OLD.schema_id OR NEW.content_hash IS DISTINCT FROM OLD.content_hash
+        THEN
+            RAISE EXCEPTION 'append-only: blob identity cannot be updated' USING ERRCODE = '25006';
+        END IF;
+    ELSIF NEW.blob_id IS DISTINCT FROM OLD.blob_id OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
+       OR NEW.content_hash IS DISTINCT FROM OLD.content_hash
+    THEN
+        RAISE EXCEPTION 'schema evolution may only change blob schema identity' USING ERRCODE = '25006';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_goal_guard()
+ RETURNS trigger LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF NOT proxiima_core.schema_evolution_mapping_matches(
+        'goal', OLD.t, NEW.t,
+        OLD.schema_id, NEW.schema_id,
+        OLD.owner_id
+    ) THEN
+        RAISE EXCEPTION 'append-only: goal does not accept UPDATE' USING ERRCODE = '25006';
+    END IF;
+    IF NEW.owner_id IS DISTINCT FROM OLD.owner_id OR NEW."by" IS DISTINCT FROM OLD."by"
+       OR NEW.via IS DISTINCT FROM OLD.via OR NEW.state IS DISTINCT FROM OLD.state
+    THEN
+        RAISE EXCEPTION 'schema evolution may not alter Goal owner, writer, or state'
+            USING ERRCODE = '25006';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.goal_stamp_schema()
+ RETURNS trigger LANGUAGE plpgsql
+AS $function$
+DECLARE
+    head_schema text;
+BEGIN
+    SELECT schema_id INTO head_schema
+      FROM proxiima_core.goal_head
+     WHERE handle = NEW.handle AND owner_id = NEW.owner_id;
+    IF head_schema IS NULL THEN
+        -- The owner/head FK owns this refusal; do not replace its diagnostic
+        -- when RLS hides a foreign series. Schema nullability still applies.
+        RETURN NEW;
+    END IF;
+    IF NEW.schema_id IS NULL THEN
+        NEW.schema_id := head_schema;
+    ELSIF NEW.schema_id IS DISTINCT FROM head_schema THEN
+        RAISE EXCEPTION 'goal schema must equal goal_head.schema_id'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.goal_schema_head_alignment()
+ RETURNS trigger LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM proxiima_core.goal_head head
+          WHERE head.handle = NEW.handle
+           AND head.owner_id = NEW.owner_id AND head.schema_id = NEW.schema_id
+    ) THEN
+        RAISE EXCEPTION 'goal schema, handle, and owner must equal goal_head'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_replay_guard()
+ RETURNS trigger LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF NOT proxiima_core.schema_evolution_target_matches(
+        'goal', OLD.goal_t, NEW.goal_t,
+        (SELECT schema_id FROM proxiima_core.goal WHERE t = NEW.goal_t),
+        OLD.owner_id
+    )
+       OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
+       OR NEW.request_id IS DISTINCT FROM OLD.request_id
+    THEN
+        RAISE EXCEPTION 'append-only: goal replay identity does not accept UPDATE'
+            USING ERRCODE = '25006';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_ingest_key_guard()
+ RETURNS trigger LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF NOT proxiima_core.schema_evolution_target_matches(
+        'memory', OLD.t, NEW.t,
+        (SELECT schema_id FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (migration keeps historical receipt aliases) */ WHERE t = NEW.t),
+        OLD.owner_id
+    )
+       OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
+       OR NEW.source_id IS DISTINCT FROM OLD.source_id
+       OR NEW.ingest_key IS DISTINCT FROM OLD.ingest_key
+    THEN
+        RAISE EXCEPTION 'append-only: ingest identity does not accept UPDATE'
+            USING ERRCODE = '25006';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
 -- FORGET-POLICY: includes-forgotten (DROP must preserve every stored admission) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxiima_core.assert_fact_schema_drained(
     retired_schema_id text, retiring_tables text[]
@@ -88,15 +544,32 @@ END;
 $function$;
 REVOKE ALL ON FUNCTION proxiima_core.assert_fact_schema_drained(text, text[]) FROM PUBLIC;
 
+-- FORGET-POLICY: includes-forgotten (sidecar integrity applies to historical representations) applies to every read in this function
 CREATE OR REPLACE FUNCTION proxiima_core.assert_declared_sidecar_present() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
     surface text := TG_ARGV[0];
     present boolean;
+    persisted_sidecars text[];
 BEGIN
     IF NOT (surface = ANY (NEW.sidecar_tables)) THEN
         RETURN NULL;
+    END IF;
+    SELECT m.sidecar_tables
+      INTO persisted_sidecars
+      FROM proxiima_core.memory m
+     WHERE m.t = NEW.t;
+    IF NOT (surface = ANY (COALESCE(persisted_sidecars, '{}'::text[]))) THEN
+        IF proxiima_core.schema_evolution_intermediate_memory_schema_permits(
+            NEW.t, NEW.schema_id
+        ) THEN
+            RETURN NULL;
+        END IF;
+        RAISE EXCEPTION
+            'memory % declares % in memory.sidecar_tables with no row in that table',
+            NEW.t, surface
+            USING ERRCODE = '23503';
     END IF;
     EXECUTE format('SELECT EXISTS (SELECT 1 FROM %s WHERE %I = $1)', surface, TG_ARGV[1])
        INTO present
@@ -218,7 +691,21 @@ CREATE OR REPLACE FUNCTION proxiima_core.assert_row_not_still_declared() RETURNS
 DECLARE
     surface text := TG_ARGV[0];
     memory_t uuid := (to_jsonb(OLD) ->> TG_ARGV[1])::uuid;
+    replaced boolean;
 BEGIN
+    EXECUTE format('SELECT EXISTS (SELECT 1 FROM %s WHERE %I = $1)', surface, TG_ARGV[1])
+       INTO replaced USING memory_t;
+    IF replaced AND EXISTS (
+        SELECT 1
+          FROM proxiima_core.schema_evolution_authority authority
+         WHERE authority.xact = pg_current_xact_id()
+           AND authority.record_kind = 'memory'
+           AND authority.source_id = memory_t
+           AND authority.target_id = memory_t
+           AND authority.primary_target
+    ) THEN
+        RETURN NULL;
+    END IF;
     IF EXISTS (
         SELECT 1
           FROM proxiima_core.memory m
@@ -471,6 +958,17 @@ DECLARE
     previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
     PERFORM set_config('app.proxiima_scope', 'platform', true);
+    IF EXISTS (
+        SELECT 1
+          FROM proxiima_core.goal target
+         WHERE target.owner_id = OLD.owner_id
+           AND proxiima_core.schema_evolution_mapping_matches(
+               'goal', OLD.t, target.t,
+               OLD.schema_id, target.schema_id, OLD.owner_id)
+    ) THEN
+        PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
+        RETURN OLD;
+    END IF;
     PERFORM proxiima_core.lock_pin_targets(ARRAY[OLD.t]);
     PERFORM proxiima_core.record_erased_pin_target(OLD.t, 'goal');
     PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
@@ -484,6 +982,16 @@ CREATE OR REPLACE FUNCTION proxiima_core.goal_head_t_only()
  LANGUAGE plpgsql
 AS $function$
 BEGIN
+    IF proxiima_core.schema_evolution_mapping_matches('goal', OLD.t, NEW.t, OLD.schema_id, NEW.schema_id, OLD.owner_id)
+       AND proxiima_core.schema_evolution_head_permits('goal', OLD.t, NEW.t, OLD.handle, NEW.handle) THEN
+        IF NEW.handle IS DISTINCT FROM OLD.handle OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
+           OR NEW.authority_generation < OLD.authority_generation
+        THEN
+            RAISE EXCEPTION 'schema evolution may not alter Goal handle, owner, or authority generation'
+                USING ERRCODE = '25006';
+        END IF;
+        RETURN NEW;
+    END IF;
     IF NEW.handle IS DISTINCT FROM OLD.handle
        OR NEW.schema_id IS DISTINCT FROM OLD.schema_id
        OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
@@ -500,6 +1008,15 @@ CREATE OR REPLACE FUNCTION proxiima_core.goal_no_later_after_terminal()
  LANGUAGE plpgsql
 AS $function$
 BEGIN
+    IF EXISTS (
+        SELECT 1 FROM proxiima_core.goal source
+         WHERE source.handle = NEW.handle AND source.owner_id = NEW.owner_id
+           AND source.state = NEW.state
+           AND proxiima_core.schema_evolution_mapping_matches(
+               'goal', source.t, NEW.t, source.schema_id, NEW.schema_id, source.owner_id)
+    ) THEN
+        RETURN NEW;
+    END IF;
     IF EXISTS (
         SELECT 1 FROM proxiima_core.goal g
          WHERE g.handle = NEW.handle
@@ -518,6 +1035,16 @@ CREATE OR REPLACE FUNCTION proxiima_core.goal_parent_fixed()
 AS $function$
 BEGIN
     -- #514: a series keeps the parent it was decomposed under.
+    IF EXISTS (
+        SELECT 1
+          FROM proxiima_core.goal prior
+          JOIN proxiima_core.goal_head target_head ON target_head.handle = NEW.handle
+         WHERE prior.handle = NEW.handle
+           AND proxiima_core.schema_evolution_mapping_matches(
+               'goal', prior.t, NEW.t, prior.schema_id, target_head.schema_id, prior.owner_id)
+    ) THEN
+        RETURN NEW;
+    END IF;
     IF EXISTS (
         SELECT 1 FROM proxiima_core.goal g
          WHERE g.handle = NEW.handle
@@ -554,6 +1081,7 @@ BEGIN
              ARRAY[NEW.close_fact_t, NEW.assignment_t, NEW.write_act_t], NULL
          ) || NEW.dependency_t || NEW.evidence_t || NEW.motivated_by
      )
+       AND NOT proxiima_core.schema_evolution_existing_pin_permits('goal', NEW.t, e.t)
      LIMIT 1;
     IF FOUND THEN
         RAISE EXCEPTION 'goal declaration names erased target %', pin
@@ -569,7 +1097,12 @@ BEGIN
         SELECT 1
           FROM unnest(NEW.motivated_by) AS p(id)
           LEFT JOIN proxiima_core.memory m ON m.t = p.id
-         WHERE m.t IS NULL OR m.kind <> 'perspective'::proxiima_core.memory_kind
+         WHERE (m.t IS NULL OR m.kind <> 'perspective'::proxiima_core.memory_kind)
+           AND NOT (m.t IS NULL AND EXISTS (
+               SELECT 1 FROM proxiima_core.erased_pin_target e
+                WHERE e.t=p.id AND e.kind='perspective'
+                  AND proxiima_core.schema_evolution_existing_pin_permits('goal', NEW.t, p.id)
+           ))
     ) THEN
         RAISE EXCEPTION 'goal motivation targets must be Perspective versions'
             USING ERRCODE = '23514';
@@ -1582,6 +2115,11 @@ BEGIN
     IF head_kind IS DISTINCT FROM NEW.kind
        OR head_owner IS DISTINCT FROM NEW.owner_id
        OR head_schema IS DISTINCT FROM NEW.schema_id THEN
+        IF proxiima_core.schema_evolution_intermediate_memory_image_permits(
+            NEW.t, NEW.schema_id, head_schema, NEW.handle, NEW.kind, NEW.owner_id
+        ) THEN
+            RETURN NEW;
+        END IF;
         RAISE EXCEPTION 'memory kind/owner/schema must equal memory_head'
             USING ERRCODE = '23514';
     END IF;
@@ -1599,6 +2137,22 @@ DECLARE
     previous_scope text := current_setting('app.proxiima_scope', true);
 BEGIN
     PERFORM set_config('app.proxiima_scope', 'platform', true);
+    IF EXISTS (
+        SELECT 1
+          FROM proxiima_core.memory target /* FORGET-POLICY: includes-forgotten (a forgotten replacement remains a migration target) */
+         WHERE target.owner_id = OLD.owner_id
+           AND proxiima_core.schema_evolution_mapping_matches(
+               'memory', OLD.t, target.t, OLD.schema_id, target.schema_id, OLD.owner_id)
+    ) THEN
+        PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
+        RETURN OLD;
+    END IF;
+    DELETE FROM proxiima_core.publication_outbox outbox
+     USING proxiima_core.schema_evolution_publication link
+    WHERE link.memory_t = OLD.t AND outbox.t = link.publication_t;
+    DELETE FROM proxiima_core.publication_origin origin
+     USING proxiima_core.schema_evolution_publication link
+    WHERE link.memory_t = OLD.t AND origin.t = link.publication_t;
     PERFORM proxiima_core.lock_pin_targets(ARRAY[OLD.t]);
     -- Forget keeps the row (#488), so deleting a memory row is always an
     -- erase and always leaves a witness.
@@ -1616,6 +2170,18 @@ CREATE OR REPLACE FUNCTION proxiima_core.memory_head_t_only()
  LANGUAGE plpgsql
 AS $function$
 BEGIN
+    IF proxiima_core.schema_evolution_mapping_matches('memory', OLD.t, NEW.t, OLD.schema_id, NEW.schema_id, OLD.owner_id)
+       AND proxiima_core.schema_evolution_head_permits('memory', OLD.t, NEW.t, OLD.handle, NEW.handle) THEN
+        IF NEW.handle IS DISTINCT FROM OLD.handle OR NEW.kind IS DISTINCT FROM OLD.kind
+           OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
+           OR NEW.authority_generation < OLD.authority_generation
+           OR NEW.publication_sequence < OLD.publication_sequence
+        THEN
+            RAISE EXCEPTION 'schema evolution may not alter memory head identity or reduce generations'
+                USING ERRCODE = '25006';
+        END IF;
+        RETURN NEW;
+    END IF;
     IF NEW.owner_id IS DISTINCT FROM OLD.owner_id THEN
         NEW.authority_generation := OLD.authority_generation + 1;
     END IF;
@@ -1640,6 +2206,17 @@ CREATE OR REPLACE FUNCTION proxiima_core.memory_owner_or_append_only()
  LANGUAGE plpgsql
 AS $function$
 BEGIN
+    IF proxiima_core.schema_evolution_mapping_matches('memory', OLD.t, NEW.t, OLD.schema_id, NEW.schema_id, OLD.owner_id)
+       AND proxiima_core.schema_evolution_head_permits('memory', OLD.t, NEW.t, OLD.handle, NEW.handle) THEN
+        IF NEW.t IS DISTINCT FROM OLD.t OR NEW.kind IS DISTINCT FROM OLD.kind
+           OR NEW.owner_id IS DISTINCT FROM OLD.owner_id OR NEW."by" IS DISTINCT FROM OLD."by"
+           OR NEW.via IS DISTINCT FROM OLD.via OR NEW.occurred_at IS DISTINCT FROM OLD.occurred_at
+        THEN
+            RAISE EXCEPTION 'schema evolution may not alter memory identity, ownership, writer, or occurrence'
+                USING ERRCODE = '25006';
+        END IF;
+        RETURN NEW;
+    END IF;
     IF NEW.handle IS DISTINCT FROM OLD.handle
        OR NEW.t IS DISTINCT FROM OLD.t
        OR NEW.kind IS DISTINCT FROM OLD.kind
@@ -1773,6 +2350,11 @@ BEGIN
        AND NOT proxiima_core.pins_have_grounding_support(
              NEW.origins || NEW.refs, NULL, NULL
            )
+       AND NOT EXISTS (
+           SELECT 1 FROM unnest(NEW.origins || NEW.refs) p(id)
+           JOIN proxiima_core.erased_pin_target e ON e.t=p.id AND e.kind<>'goal'
+           WHERE proxiima_core.schema_evolution_existing_pin_permits('memory', NEW.t, p.id)
+       )
     THEN
         RAISE EXCEPTION 'non-fact must pin a memory'
             USING ERRCODE = '23514';
@@ -1784,11 +2366,13 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    -- Origins are always Memory targets; a witness never satisfies them.
+    -- Ordinary admissions need live origins. Migration may retain a captured
+    -- historical origin, whose witness kind is checked below.
     SELECT p.id INTO pin
       FROM unnest(NEW.origins) AS p(id)
       LEFT JOIN proxiima_core.memory m ON m.t = p.id
      WHERE m.t IS NULL
+       AND NOT proxiima_core.schema_evolution_existing_pin_permits('memory', NEW.t, p.id)
      LIMIT 1;
     IF FOUND THEN
         RAISE EXCEPTION 'origin pin % does not exist as a Memory', pin
@@ -1800,6 +2384,7 @@ BEGIN
       FROM unnest(NEW.refs) AS p(id)
       LEFT JOIN proxiima_core.memory m ON m.t = p.id
      WHERE m.t IS NULL
+       AND NOT proxiima_core.schema_evolution_existing_pin_permits('memory', NEW.t, p.id)
      LIMIT 1;
     IF FOUND THEN
         RAISE EXCEPTION 'reference pin % does not exist as a Memory', pin
@@ -1811,6 +2396,7 @@ BEGIN
       FROM unnest(NEW.goal_refs) AS p(id)
       LEFT JOIN proxiima_core.goal g ON g.t = p.id
      WHERE g.t IS NULL
+       AND NOT proxiima_core.schema_evolution_existing_pin_permits('memory', NEW.t, p.id)
      LIMIT 1;
     IF FOUND THEN
         RAISE EXCEPTION 'goal reference pin % does not exist as a Goal', pin
@@ -1821,6 +2407,7 @@ BEGIN
       FROM unnest(NEW.guided_by) AS p(id)
       LEFT JOIN proxiima_core.goal g ON g.t = p.id
      WHERE g.t IS NULL
+       AND NOT proxiima_core.schema_evolution_existing_pin_permits('memory', NEW.t, p.id)
      LIMIT 1;
     IF FOUND THEN
         RAISE EXCEPTION 'guided_by pin % does not exist as a Goal', pin
@@ -1844,6 +2431,7 @@ BEGIN
       FROM proxiima_core.memory m
       JOIN proxiima_core.closed_handle c ON c.handle = m.handle
      WHERE m.t = ANY (NEW.origins || NEW.refs)
+       AND NOT proxiima_core.schema_evolution_existing_pin_permits('memory', NEW.t, m.t)
      LIMIT 1;
     IF FOUND THEN
         RAISE EXCEPTION 'closed_handle: no new pin to %', pin_handle
@@ -1857,6 +2445,10 @@ BEGIN
              WHERE NOT EXISTS (
                        SELECT 1 FROM proxiima_core.memory m
                         WHERE m.t = o.id AND m.kind IN ('fact', 'abstraction')
+                       UNION ALL
+                       SELECT 1 FROM proxiima_core.erased_pin_target e
+                        WHERE e.t=o.id AND e.kind IN ('fact','abstraction')
+                          AND proxiima_core.schema_evolution_existing_pin_permits('memory', NEW.t, o.id)
                    )
         ) THEN
             RAISE EXCEPTION 'abstraction origins must be fact or abstraction t'
@@ -1869,6 +2461,10 @@ BEGIN
              WHERE NOT EXISTS (
                        SELECT 1 FROM proxiima_core.memory m
                         WHERE m.t = o.id AND m.kind = 'abstraction'
+                       UNION ALL
+                       SELECT 1 FROM proxiima_core.erased_pin_target e
+                        WHERE e.t=o.id AND e.kind='abstraction'
+                          AND proxiima_core.schema_evolution_existing_pin_permits('memory', NEW.t, o.id)
                    )
         ) THEN
             RAISE EXCEPTION 'perspective origins must be abstraction t'

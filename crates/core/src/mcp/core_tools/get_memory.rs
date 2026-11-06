@@ -163,7 +163,7 @@ pub(super) fn project_remote_memory(
         via: memory.writer.via,
         kind: memory.kind,
         schema_id: memory.schema_id,
-        schema_version: 1,
+        schema_version: memory.schema_version.into_inner(),
         occurred_at: memory.occurred_at,
         text: Some(memory.body.clone()),
         payload: memory.payload,
@@ -297,6 +297,14 @@ mod tests {
                 assert_eq!(wire.get("via"), Some(&serde_json::json!(writer.via)));
             }
         }
+    }
+
+    #[test]
+    fn remote_memory_output_forwards_schema_version() {
+        let mut remote_memory = RemoteMemory::fixture(crate::new_memory_uuid(1));
+        remote_memory.schema_version = SchemaVersion::new(3);
+
+        assert_eq!(project_remote_memory(remote_memory).schema_version, 3);
     }
 
     #[test]
