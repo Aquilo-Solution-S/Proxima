@@ -44,6 +44,9 @@ async fn built(family: &TemplateFamily, hash: u64) -> String {
         .expect("ensure_template_in");
     let name = lease.name().to_owned();
     lease.release().await.expect("release");
+    wait_until_database_idle(&name)
+        .await
+        .expect("built template becomes idle");
     name
 }
 
@@ -171,6 +174,9 @@ async fn a_leased_template_survives_collection_until_the_lease_is_released() {
     let after_gc = exists(&name).await;
 
     leased.release().await.expect("A is done cloning");
+    wait_until_database_idle(&name)
+        .await
+        .expect("released template becomes idle");
     let collected = drop_stale_templates_in(&family, 2).await.expect("gc");
     let after_release = exists(&name).await;
     drop_db(&other).await.expect("clean up");
@@ -202,6 +208,9 @@ async fn leases_of_one_template_are_shared() {
     let _ = built(&family, 2).await;
     let still_leased = exists(&name).await;
     second.release().await.expect("release");
+    wait_until_database_idle(&name)
+        .await
+        .expect("released shared template becomes idle");
     let dropped = drop_stale_templates_in(&family, 2).await.expect("gc");
     drop_db(&family.template_name(2)).await.expect("clean up");
 
