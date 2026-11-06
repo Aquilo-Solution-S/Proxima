@@ -235,6 +235,8 @@ mod tests {
     fn content_identity_keeps_v1_bytes_when_protocol_fields_are_renamed() {
         let payload = SidecarPayload::fact(AliasedFact { body: "x".into() });
         assert_eq!(payload.to_protocol_json().unwrap()["wire_body"], "x");
+        let durable = payload.durable().expect("durable");
+        assert_eq!(durable.canonical_bytes(), br#"{"body":"x"}"#);
 
         // The pre-rename persisted v1 frame: canonical {"body":"x"}.
         let bytes = br#"{"body":"x"}"#;

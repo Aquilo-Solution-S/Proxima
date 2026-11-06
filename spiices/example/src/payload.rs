@@ -82,15 +82,20 @@ impl PayloadProjection for NoteV1 {
         }
     }
     fn durable(&self) -> Result<proxiima::spiice::DurablePayload, String> {
+        let Self {
+            notebook_id,
+            key,
+            body,
+            written_at,
+        } = self;
         let mut fields = DurablePayloadBuilder::new();
         fields
-            .field("notebook_id", &self.notebook_id)?
-            .field("key", &self.key)?
-            .field("body", &self.body)?
+            .field("notebook_id", notebook_id)?
+            .field("key", key)?
+            .field("body", body)?
             .field(
                 "written_at",
-                &self
-                    .written_at
+                &written_at
                     .format(&time::format_description::well_known::Rfc3339)
                     .map_err(|error| error.to_string())?,
             )?;
@@ -284,7 +289,7 @@ mod projection_tests {
     use super::*;
 
     #[test]
-    fn durable_examples_match_current_wire_encoding() {
+    fn durable_examples_match_explicit_contracts() {
         let note = NoteV1 {
             notebook_id: Uuid::nil(),
             key: "key".into(),
@@ -301,25 +306,39 @@ mod projection_tests {
         let sealed = SealedStampV1 {
             mark: "sealed".into(),
         };
-        for (durable, wire) in [
+        let expected = [
             (
                 note.durable().expect("note durable"),
-                serde_json::to_value(&note).expect("note wire"),
+                serde_json::json!({
+                    "body": "body", "key": "key", "notebook_id": Uuid::nil(),
+                    "written_at": "1970-01-01T00:00:00Z",
+                }),
             ),
             (
                 digest.durable().expect("digest durable"),
-                serde_json::to_value(&digest).expect("digest wire"),
+                serde_json::json!({
+                    "notebook_id": Uuid::nil(), "summary": "summary",
+                }),
             ),
             (
                 stamp.durable().expect("stamp durable"),
-                serde_json::to_value(&stamp).expect("stamp wire"),
+                serde_json::json!({
+                    "mark": "mark",
+                }),
             ),
             (
                 sealed.durable().expect("sealed durable"),
-                serde_json::to_value(&sealed).expect("sealed wire"),
+                serde_json::json!({
+                    "mark": "sealed",
+                }),
             ),
-        ] {
-            assert_eq!(serde_json::to_value(&durable).expect("durable json"), wire);
+        ];
+        for (durable, expected) in expected {
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&durable.canonical_bytes())
+                    .expect("durable json"),
+                expected
+            );
         }
     }
 }

@@ -49,13 +49,20 @@ impl PayloadProjection for AgentNoteV1 {
     }
 
     fn durable(&self) -> Result<crate::DurablePayload, String> {
+        let Self {
+            note_id,
+            title,
+            body,
+            tags,
+            idempotency_key,
+        } = self;
         let mut fields = DurablePayloadBuilder::new();
         fields
-            .field("note_id", &self.note_id)?
-            .field("title", &self.title)?
-            .field("body", &self.body)?
-            .field("tags", &self.tags)?
-            .field("idempotency_key", &self.idempotency_key)?;
+            .field("note_id", note_id)?
+            .field("title", title)?
+            .field("body", body)?
+            .field("tags", tags)?
+            .field("idempotency_key", idempotency_key)?;
         Ok(fields.finish())
     }
 }
@@ -65,7 +72,7 @@ mod projection_tests {
     use super::*;
 
     #[test]
-    fn durable_matches_current_wire_encoding() {
+    fn durable_matches_the_explicit_contract() {
         let value = AgentNoteV1 {
             note_id: uuid::Uuid::nil(),
             title: "title".into(),
@@ -73,8 +80,16 @@ mod projection_tests {
             tags: vec!["tag".into()],
             idempotency_key: Some("request".into()),
         };
-        let durable = value.durable().expect("durable").canonical_bytes();
-        let wire = serde_json::to_value(&value).expect("wire");
-        assert_eq!(durable, crate::canonical_json_bytes(&wire));
+        let expected = serde_json::json!({
+            "body": "body",
+            "idempotency_key": "request",
+            "note_id": uuid::Uuid::nil(),
+            "tags": ["tag"],
+            "title": "title",
+        });
+        assert_eq!(
+            value.durable().expect("durable").canonical_bytes(),
+            crate::canonical_json_bytes(&expected)
+        );
     }
 }

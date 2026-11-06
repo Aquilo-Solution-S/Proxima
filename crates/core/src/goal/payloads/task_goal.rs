@@ -51,17 +51,17 @@ impl PayloadProjection for TaskGoalV1 {
         PayloadDisplay::default()
     }
     fn durable(&self) -> Result<crate::DurablePayload, String> {
+        let Self { due_at, priority } = self;
         let mut fields = DurablePayloadBuilder::new();
         fields
             .field(
                 "due_at",
-                &self
-                    .due_at
+                &due_at
                     .map(|value| value.format(&time::format_description::well_known::Rfc3339))
                     .transpose()
                     .map_err(|error| error.to_string())?,
             )?
-            .field("priority", &self.priority.map(TaskPriority::as_str))?;
+            .field("priority", &priority.map(TaskPriority::as_str))?;
         Ok(fields.finish())
     }
 }
@@ -71,16 +71,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn durable_matches_the_rfc3339_wire_shape() {
+    fn durable_matches_the_explicit_contract() {
         let value = TaskGoalV1 {
             due_at: Some(time::OffsetDateTime::UNIX_EPOCH),
             priority: Some(TaskPriority::High),
         };
-        let durable = value.durable().expect("durable").canonical_bytes();
-        let wire = serde_json::to_vec(&value).expect("wire");
+        let expected = serde_json::json!({
+            "due_at": "1970-01-01T00:00:00Z",
+            "priority": "High",
+        });
         assert_eq!(
-            durable,
-            crate::canonical_json_bytes(&serde_json::from_slice(&wire).expect("json"))
+            value.durable().expect("durable").canonical_bytes(),
+            crate::canonical_json_bytes(&expected)
+        );
+
+        let no_values = TaskGoalV1 {
+            due_at: None,
+            priority: None,
+        };
+        assert_eq!(
+            no_values.durable().expect("durable").canonical_bytes(),
+            crate::canonical_json_bytes(&serde_json::json!({
+                "due_at": null,
+                "priority": null,
+            }))
         );
     }
 }
