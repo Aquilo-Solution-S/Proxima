@@ -45,11 +45,18 @@ impl FactPayload for NoteV1 {
     const SCOPE_KIND: Option<ScopeKind> = Some(NOTEBOOK_SCOPE);
 
     fn receipt_key(&self) -> Vec<u8> {
-        let mut key = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
-        key.field_uuid("notebook_id", self.notebook_id);
-        key.field_str("key", &self.key);
-        key.field_str("body", &self.body);
-        key.finish()
+        let Self {
+            notebook_id,
+            key,
+            body,
+            written_at,
+        } = self;
+        let mut receipt = PayloadKeyBuilder::new(Self::SCHEMA_ID, Self::SCHEMA_VERSION);
+        receipt.field_uuid("notebook_id", *notebook_id);
+        receipt.field_str("key", key);
+        receipt.field_str("body", body);
+        receipt.field_time("written_at", *written_at);
+        receipt.finish()
     }
 
     fn render(&self) -> String {
@@ -376,5 +383,15 @@ mod tests {
             note("a", "b\0x").receipt_key()
         );
         assert_eq!(note("a", "x").receipt_key(), note("a", "x").receipt_key());
+    }
+
+    #[test]
+    fn notes_with_different_written_at_values_have_different_receipt_keys() {
+        let first = note("same-key", "same-body");
+        let second = NoteV1 {
+            written_at: first.written_at + time::Duration::days(1),
+            ..first.clone()
+        };
+        assert_ne!(first.receipt_key(), second.receipt_key());
     }
 }
