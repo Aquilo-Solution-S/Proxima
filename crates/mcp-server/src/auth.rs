@@ -35,6 +35,11 @@ pub(crate) struct ResolvedAuth {
 }
 
 impl ResolvedAuth {
+    /// The authenticated principal that owns transport-session continuity.
+    pub(crate) fn principal(&self) -> OwnerId {
+        self.authz.principal()
+    }
+
     /// The owner the host named for a request that selects none.
     pub(crate) const fn default_owner(&self) -> Option<OwnerId> {
         self.authz.default_owner()

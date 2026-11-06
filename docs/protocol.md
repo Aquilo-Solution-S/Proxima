@@ -29,8 +29,8 @@ authority. Reads use the resolved readable owner set. A write selects one owner
 and checks its required role at the command boundary. Kind restrictions remain
 part of the effective scope.
 
-MCP sessions bind the default owner at initialization. Subsequent requests
-recheck access and retain the credential's effective owner roles. Selecting a
+MCP sessions bind the default owner and authenticated principal at initialization.
+Subsequent requests require the same principal, recheck access, and retain the credential's effective owner roles. Selecting a
 default does not confine reads or per-call space selection; credentials that
 are explicitly confined remain confined. Server-issued memory-space keys are
 selectors resolved through the same context. Missing and unreadable entity
@@ -55,7 +55,9 @@ remain owner-authorized; Goal guests contribute through derive/interpret.
 Session retention is scoped to the authenticated principal, independently of
 the selected owner. Opening more sessions can evict only that principal's own
 oldest binding; a full global binding store refuses a new principal instead
-of evicting another principal's sessions.
+of evicting another principal's sessions. A valid bearer presenting another
+principal's session id receives the same opaque 404 as an unknown or expired
+session, and does not refresh or reach that session's protocol state.
 
 A configured forwarder carries its selected owner in the verified token's
 `owner` UUID claim and writer claims `by` (principal UUID) and `via`

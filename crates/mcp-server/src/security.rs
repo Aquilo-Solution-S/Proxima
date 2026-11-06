@@ -628,6 +628,7 @@ async fn mcp_auth(
     let (selected_owner, bind_new_session, via_session) = match selected_owner(
         &state.sessions,
         request.headers(),
+        resolved.principal(),
         resolved.default_owner(),
         resolved.verified_forwarded_owner(),
     )
@@ -707,6 +708,7 @@ enum OwnerSelection {
 async fn selected_owner(
     sessions: &McpSessionBindings,
     headers: &HeaderMap,
+    principal: OwnerId,
     default: Option<OwnerId>,
     forwarded: Option<OwnerId>,
 ) -> OwnerSelection {
@@ -717,7 +719,7 @@ async fn selected_owner(
         let Ok(session_id) = raw_session_id.to_str() else {
             return OwnerSelection::UnknownSession;
         };
-        let Some(owner) = sessions.owner_for(session_id).await else {
+        let Some(owner) = sessions.owner_for(session_id, principal).await else {
             return OwnerSelection::UnknownSession;
         };
         if forwarded.is_some_and(|claimed| claimed != owner) {
@@ -993,6 +995,28 @@ mod tests {
         }
     }
 
+    struct SharedOwnerTokenAuth {
+        owner: OwnerId,
+        first: UserId,
+        second: UserId,
+    }
+
+    #[async_trait]
+    impl Authenticator for SharedOwnerTokenAuth {
+        async fn authenticate(&self, creds: &Credentials) -> Result<AuthzContext, AuthError> {
+            let subject = match creds {
+                Credentials::Bearer(token) if token == "first-token" => self.first,
+                Credentials::Bearer(token) if token == "second-token" => self.second,
+                Credentials::Bearer(_) => return Err(AuthError::InvalidCredentials),
+            };
+            Ok(AuthzContext::for_subject_with_role(
+                subject,
+                [(self.owner, Role::viewer())],
+                AuthPath::HostBearer,
+            ))
+        }
+    }
+
     struct CountingTokenAuth {
         owner: OwnerId,
         calls: Arc<AtomicU64>,
@@ -1254,7 +1278,10 @@ mod tests {
                     (StatusCode::OK, Bytes::from(owner_key(owner)))
                 );
             }
-            assert_eq!(sessions.owner_for("sess-forwarded").await, Some(owner));
+            assert_eq!(
+                sessions.owner_for("sess-forwarded", subject.into()).await,
+                Some(owner)
+            );
             assert_eq!(probes.load(Ordering::SeqCst), 2);
         }
     }
@@ -1324,7 +1351,41 @@ mod tests {
             );
         }
         assert_eq!(probes.load(Ordering::SeqCst), 1);
-        assert_eq!(sessions.owner_for("live-session").await, Some(owner));
+        assert_eq!(
+            sessions.owner_for("live-session", subject.into()).await,
+            Some(owner)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_shared_owner_does_not_allow_cross_principal_session_reuse() {
+        let owner = group_owner();
+        let first = UserId::new(uuid::Uuid::now_v7());
+        let second = UserId::new(uuid::Uuid::now_v7());
+        let sessions = McpSessionBindings::new();
+        sessions.bind("first-session", owner, first.into()).await;
+        let app = auth_app_with_auth(
+            Arc::new(SharedOwnerTokenAuth {
+                owner,
+                first,
+                second,
+            }),
+            sessions.clone(),
+        );
+
+        let request = mcp_request("Bearer second-token")
+            .header("Mcp-Session-Id", "first-session")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            status_of(app, request).await,
+            StatusCode::NOT_FOUND,
+            "principal mismatch is indistinguishable from an unknown session"
+        );
+        assert_eq!(
+            sessions.owner_for("first-session", first.into()).await,
+            Some(owner)
+        );
     }
 
     #[tokio::test]
@@ -1439,7 +1500,7 @@ mod tests {
         let bound = group_owner();
         let other = group_owner();
         let sessions = McpSessionBindings::new();
-        sessions.bind("sess-1", bound, bound).await;
+        sessions.bind("sess-1", bound, subject.into()).await;
         let app = group_access_app(
             Arc::new(GroupMemberAuth { subject }),
             Arc::new(PerOwnerAccess::new(
@@ -1629,7 +1690,10 @@ mod tests {
             (StatusCode::OK, Bytes::from(expected)),
             "the default owner does not erase the credential's personal role"
         );
-        assert_eq!(sessions.owner_for("sess-new").await, Some(tenant));
+        assert_eq!(
+            sessions.owner_for("sess-new", subject.into()).await,
+            Some(tenant)
+        );
     }
 
     // An explicit header still wins over the default.
@@ -1661,7 +1725,10 @@ mod tests {
             effective_owners_response(app, request).await,
             (StatusCode::OK, Bytes::from(expected))
         );
-        assert_eq!(sessions.owner_for("sess-new").await, Some(personal));
+        assert_eq!(
+            sessions.owner_for("sess-new", subject.into()).await,
+            Some(personal)
+        );
     }
 
     // No default, no selection: the 403 this edge always gave. A malformed

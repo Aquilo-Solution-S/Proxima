@@ -224,16 +224,23 @@ fn payload_too_large() -> Response {
 mod tests {
     use std::sync::Arc;
 
+    use async_trait::async_trait;
     use axum::Router;
     use axum::body::{Body, Bytes};
     use axum::http::{Request, StatusCode};
     use axum::routing::any;
-    use proxiima_core::RevalidationConfig;
+    use proxiima_core::{
+        AuthError, AuthPath, Authenticator, AuthzContext, Credentials, GroupId, OwnerId,
+        RevalidationConfig, Role, UserId,
+    };
     use tower::ServiceExt;
 
     use super::{MAX_REQUEST_BODY_BYTES, enforce_body_limit, guard_listener};
     use crate::auth::McpEdgeAuth;
-    use crate::security::{HostAllowlist, default_allowlist, mcp_auth_layer_with_config};
+    use crate::security::{
+        HostAllowlist, default_allowlist, mcp_auth_layer_with_config, mcp_auth_layer_with_sessions,
+    };
+    use crate::session::McpSessionBindings;
 
     /// The production stack over an OK `/mcp` stub. Auth is headless (rejects
     /// every bearer), so any request that reaches auth returns 401 — letting
@@ -250,6 +257,62 @@ mod tests {
             HostAllowlist::default(),
             MAX_REQUEST_BODY_BYTES,
         )
+    }
+
+    struct TransportPrincipalAuth {
+        owner: OwnerId,
+        first: UserId,
+        second: UserId,
+        outsider: UserId,
+    }
+
+    #[async_trait]
+    impl Authenticator for TransportPrincipalAuth {
+        async fn authenticate(&self, credentials: &Credentials) -> Result<AuthzContext, AuthError> {
+            let (subject, has_access) = match credentials {
+                Credentials::Bearer(token) if token == "first-token" => (self.first, true),
+                Credentials::Bearer(token) if token == "second-token" => (self.second, true),
+                Credentials::Bearer(token) if token == "outsider-token" => (self.outsider, false),
+                Credentials::Bearer(_) => return Err(AuthError::InvalidCredentials),
+            };
+            if !has_access {
+                return Ok(AuthzContext::for_subject(subject, AuthPath::HostBearer));
+            }
+            Ok(AuthzContext::for_subject_with_role(
+                subject,
+                [(self.owner, Role::viewer())],
+                AuthPath::HostBearer,
+            ))
+        }
+    }
+
+    fn shared_transport_app(owner: OwnerId) -> (Router, OwnerId, OwnerId) {
+        let first = UserId::new(uuid::Uuid::now_v7());
+        let second = UserId::new(uuid::Uuid::now_v7());
+        let outsider = UserId::new(uuid::Uuid::now_v7());
+        let auth = McpEdgeAuth::headless().with_host(Arc::new(TransportPrincipalAuth {
+            owner,
+            first,
+            second,
+            outsider,
+        }));
+        let router = Router::new()
+            .nest_service(
+                "/mcp",
+                super::streamable_http_service(
+                    stub_host(),
+                    &default_allowlist(),
+                    &HostAllowlist::default(),
+                    &tokio_util::sync::CancellationToken::new(),
+                ),
+            )
+            .layer(mcp_auth_layer_with_sessions(
+                Arc::new(auth),
+                McpSessionBindings::new(),
+                RevalidationConfig::default(),
+                None,
+            ));
+        (router, first.into(), second.into())
     }
 
     // An over-cap declared Content-Length is 413'd before auth.
@@ -339,6 +402,186 @@ mod tests {
 
     fn mcp_service() -> super::McpStreamableService {
         mcp_service_for(stub_host())
+    }
+
+    fn transport_session_request(
+        bearer: &str,
+        owner: OwnerId,
+        session: Option<&http::HeaderValue>,
+        body: &serde_json::Value,
+    ) -> Request<Body> {
+        let mut request = rpc_request("2025-11-25", body);
+        request
+            .headers_mut()
+            .insert("Authorization", format!("Bearer {bearer}").parse().unwrap());
+        request
+            .headers_mut()
+            .insert("X-Proxiima-Owner", owner.to_string().parse().unwrap());
+        if let Some(session) = session {
+            request
+                .headers_mut()
+                .insert("mcp-session-id", session.clone());
+        }
+        request
+    }
+
+    async fn open_authenticated_session(
+        app: &Router,
+        bearer: &str,
+        owner: OwnerId,
+        client_name: &str,
+    ) -> http::HeaderValue {
+        let initialize = transport_session_request(
+            bearer,
+            owner,
+            None,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": { "name": client_name, "version": "0" },
+                },
+            }),
+        );
+        let response = app.clone().oneshot(initialize).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let session = response.headers()["mcp-session-id"].clone();
+        let _ = Messages::from_response(response).next().await;
+
+        let initialized = transport_session_request(
+            bearer,
+            owner,
+            Some(&session),
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+            }),
+        );
+        assert_eq!(
+            app.clone().oneshot(initialized).await.unwrap().status(),
+            StatusCode::ACCEPTED
+        );
+        session
+    }
+
+    #[tokio::test]
+    async fn streamable_transport_rejects_cross_principal_session_reuse() {
+        let owner = OwnerId::from(GroupId::new(uuid::Uuid::now_v7()));
+        let (app, first, second) = shared_transport_app(owner);
+        let session = open_authenticated_session(&app, "first-token", owner, "first").await;
+        let cross_principal = transport_session_request(
+            "second-token",
+            owner,
+            Some(&session),
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {},
+            }),
+        );
+        let cross_response = app.clone().oneshot(cross_principal).await.unwrap();
+        let cross_headers = cross_response.headers().clone();
+        let cross_body = axum::body::to_bytes(cross_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(cross_headers.get("mcp-session-id"), None);
+
+        let unknown_session = transport_session_request(
+            "second-token",
+            owner,
+            Some(&http::HeaderValue::from_static("unknown-session")),
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/list",
+                "params": {},
+            }),
+        );
+        let unknown_response = app.clone().oneshot(unknown_session).await.unwrap();
+        let unknown_headers = unknown_response.headers().clone();
+        let unknown_body = axum::body::to_bytes(unknown_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(cross_body, unknown_body);
+        assert_eq!(
+            cross_headers.get("content-type"),
+            unknown_headers.get("content-type")
+        );
+
+        let cross_delete = Request::builder()
+            .method("DELETE")
+            .uri("http://localhost/mcp")
+            .header("Host", "localhost")
+            .header("Authorization", "Bearer second-token")
+            .header("X-Proxiima-Owner", owner.to_string())
+            .header("mcp-session-id", session.clone())
+            .body(Body::empty())
+            .unwrap();
+        let delete_response = app.clone().oneshot(cross_delete).await.unwrap();
+        assert_eq!(delete_response.status(), StatusCode::NOT_FOUND);
+
+        let first_still_works = transport_session_request(
+            "first-token",
+            owner,
+            Some(&session),
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/list",
+                "params": {},
+            }),
+        );
+        let message = first_router_message(app.clone(), first_still_works).await;
+        assert!(message.get("result").is_some(), "{message}");
+
+        let second_session =
+            open_authenticated_session(&app, "second-token", owner, "second").await;
+        let second_still_works = transport_session_request(
+            "second-token",
+            owner,
+            Some(&second_session),
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/list",
+                "params": {},
+            }),
+        );
+        assert!(
+            first_router_message(app.clone(), second_still_works)
+                .await
+                .get("result")
+                .is_some()
+        );
+
+        let no_owner_access = transport_session_request(
+            "outsider-token",
+            owner,
+            None,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/list",
+                "params": {},
+            }),
+        );
+        assert_eq!(
+            app.oneshot(no_owner_access).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        // Keep the principals in the test's type-visible setup so a future
+        // fixture change cannot silently collapse the two identities.
+        assert_ne!(first, second);
+    }
+
+    async fn first_router_message(app: Router, request: Request<Body>) -> serde_json::Value {
+        let response = app.oneshot(request).await.unwrap();
+        Messages::from_response(response).next().await
     }
 
     /// What `mcp_auth_layer` binds for a verified personal owner.

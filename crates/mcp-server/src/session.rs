@@ -120,15 +120,25 @@ impl McpSessionBindings {
         true
     }
 
-    pub async fn owner_for(&self, session_id: &str) -> Option<OwnerId> {
-        self.owner_for_at(session_id, Instant::now()).await
+    /// Resolve a live session belonging to the authenticated principal.
+    pub async fn owner_for(&self, session_id: &str, principal: OwnerId) -> Option<OwnerId> {
+        self.owner_for_at(session_id, principal, Instant::now())
+            .await
     }
 
-    async fn owner_for_at(&self, session_id: &str, now: Instant) -> Option<OwnerId> {
+    async fn owner_for_at(
+        &self,
+        session_id: &str,
+        principal: OwnerId,
+        now: Instant,
+    ) -> Option<OwnerId> {
         let now = self.timestamp_at(now);
         {
             let guard = self.inner.read().await;
             let binding = guard.get(session_id)?;
+            if binding.principal != principal {
+                return None;
+            }
             let last_seen = binding.last_seen.load(Ordering::Relaxed);
             if !self.is_expired(last_seen, now) {
                 // Refresh so the TTL is idle-based, not creation-based:
@@ -231,8 +241,31 @@ mod tests {
         let bindings = McpSessionBindings::new();
         let owner = user_owner();
         bindings.bind("s1", owner, owner).await;
-        assert_eq!(bindings.owner_for("s1").await, Some(owner));
-        assert_eq!(bindings.owner_for("unknown").await, None);
+        assert_eq!(bindings.owner_for("s1", owner).await, Some(owner));
+        assert_eq!(bindings.owner_for("unknown", owner).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_different_principal_cannot_read_or_refresh_a_binding() {
+        let bindings = McpSessionBindings::new();
+        let owner = user_owner();
+        let other = user_owner();
+        let base = Instant::now();
+        bindings.bind_at("s".into(), owner, owner, base).await;
+
+        assert_eq!(
+            bindings
+                .owner_for_at("s", other, base + Duration::from_secs(1))
+                .await,
+            None
+        );
+        assert_eq!(
+            bindings
+                .owner_for_at("s", owner, base + SESSION_IDLE_TTL)
+                .await,
+            None,
+            "a rejected principal must not refresh the victim session"
+        );
     }
 
     #[tokio::test]
@@ -244,8 +277,8 @@ mod tests {
         // Binding a fresh session past the idle TTL prunes the aged one.
         let aged = base + SESSION_IDLE_TTL + Duration::from_secs(1);
         bindings.bind_at("new".into(), owner, owner, aged).await;
-        assert_eq!(bindings.owner_for_at("old", aged).await, None);
-        assert_eq!(bindings.owner_for_at("new", aged).await, Some(owner));
+        assert_eq!(bindings.owner_for_at("old", owner, aged).await, None);
+        assert_eq!(bindings.owner_for_at("new", owner, aged).await, Some(owner));
     }
 
     #[tokio::test]
@@ -257,13 +290,13 @@ mod tests {
         // Within the TTL the binding resolves and refreshes.
         assert_eq!(
             bindings
-                .owner_for_at("s", base + Duration::from_secs(1))
+                .owner_for_at("s", owner, base + Duration::from_secs(1))
                 .await,
             Some(owner)
         );
         // Past the TTL the binding is treated as unknown and dropped.
         let aged = base + SESSION_IDLE_TTL + Duration::from_secs(2);
-        assert_eq!(bindings.owner_for_at("s", aged).await, None);
+        assert_eq!(bindings.owner_for_at("s", owner, aged).await, None);
     }
 
     #[tokio::test]
@@ -278,7 +311,7 @@ mod tests {
         // Touch s1 so s2 becomes the least-recently-seen entry.
         assert_eq!(
             bindings
-                .owner_for_at("s1", base + Duration::from_secs(2))
+                .owner_for_at("s1", owner, base + Duration::from_secs(2))
                 .await,
             Some(owner)
         );
@@ -287,9 +320,9 @@ mod tests {
             .bind_at("s3".into(), owner, owner, base + Duration::from_secs(3))
             .await;
         let later = base + Duration::from_secs(4);
-        assert_eq!(bindings.owner_for_at("s2", later).await, None);
-        assert_eq!(bindings.owner_for_at("s1", later).await, Some(owner));
-        assert_eq!(bindings.owner_for_at("s3", later).await, Some(owner));
+        assert_eq!(bindings.owner_for_at("s2", owner, later).await, None);
+        assert_eq!(bindings.owner_for_at("s1", owner, later).await, Some(owner));
+        assert_eq!(bindings.owner_for_at("s3", owner, later).await, Some(owner));
     }
 
     #[tokio::test]
@@ -323,18 +356,18 @@ mod tests {
             .await;
 
         assert_eq!(
-            bindings.owner_for_at("other", base).await,
+            bindings.owner_for_at("other", other_principal, base).await,
             Some(other_principal)
         );
         assert_eq!(
             bindings
-                .owner_for_at("principal-0", base + Duration::from_secs(101))
+                .owner_for_at("principal-0", principal, base + Duration::from_secs(101))
                 .await,
             None
         );
         assert_eq!(
             bindings
-                .owner_for_at("principal-new", base + Duration::from_secs(101))
+                .owner_for_at("principal-new", principal, base + Duration::from_secs(101))
                 .await,
             Some(selected_owner)
         );
@@ -343,6 +376,7 @@ mod tests {
                 bindings
                     .owner_for_at(
                         &format!("principal-{index}"),
+                        principal,
                         base + Duration::from_secs(101),
                     )
                     .await,
@@ -386,16 +420,19 @@ mod tests {
                 )
                 .await
         );
-        assert_eq!(bindings.owner_for_at("first", base).await, Some(first));
+        assert_eq!(
+            bindings.owner_for_at("first", first, base).await,
+            Some(first)
+        );
         assert_eq!(
             bindings
-                .owner_for_at("second", base + Duration::from_secs(2))
+                .owner_for_at("second", second, base + Duration::from_secs(2))
                 .await,
             Some(second)
         );
         assert_eq!(
             bindings
-                .owner_for_at("newcomer", base + Duration::from_secs(2))
+                .owner_for_at("newcomer", newcomer, base + Duration::from_secs(2))
                 .await,
             None
         );
