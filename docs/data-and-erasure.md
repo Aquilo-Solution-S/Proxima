@@ -192,9 +192,15 @@ cutoff later than the stock host's clock.
 
 Receipts identify the operation and scope, counts derived from declared
 surfaces, and outstanding external purge debt. Core does not persist an erase
-journal. A host that needs evidence stores the receipt under its own policy.
-An interrupted response may have followed a successful commit; use the
-operation's retry contract and inspect outstanding debt.
+journal. A host that needs evidence stores the request record and returned
+receipt under its own policy. A response lost after commit is an
+`unknown_after_commit` observation: it does not imply rollback, and the host
+must not claim to reconstruct deleted-row counts from `operation_id`. Recover
+evidence by inspecting owner visibility and the durable purge queue, then keep
+response observation (`received`, `unknown_after_commit`, or `known_rollback`)
+separate from external purge completion (`pending` or `discharged`). Retry only
+at the host's existing idempotency boundary; a retry is a new operation, not a
+lookup or replay of the lost receipt.
 
 Owner export returns a deterministic bundle of declared exportable rows. A
 count is derived from the exported rows, not a separately maintained total.

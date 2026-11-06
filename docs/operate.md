@@ -288,8 +288,11 @@ object is never an orphan. A canonical object that only an aborted or expired
 upload implies was put after that upload ended. The command owes it as purge
 debt and counts it as `newly-owed`, and the drain removes it. Objects with purge
 debt are reported as `owed` (the drain removes them), and transfer keys under
-`pending/` that no in-flight upload claims as `stale-transfers`. Restore missing objects from the backup before serving affected reads.
-Embeddings can be rebuilt from retained content; lost content cannot.
+`pending/` that no in-flight upload claims as `stale-transfers`. Restore
+missing objects from the backup, rerun reconciliation, and keep the restored
+database closed to customer traffic until no referenced object is missing.
+Report-only reconciliation is not a readiness receipt. Embeddings can be
+rebuilt from retained content; lost content cannot.
 
 ## External deletion and publication
 

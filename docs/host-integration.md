@@ -680,8 +680,15 @@ read path under the caller's authorization; it does not grant erase authority.
 
 An erase commits core inverse work and the participant callback atomically. A
 connection loss after commit may leave the caller's observed result unknown;
-retry using the operation's idempotency boundary. For hard deletion rules see
-[data and erasure](data-and-erasure.md).
+this is an `unknown_after_commit` observation, not evidence of rollback. The
+host records the request context before calling core, then records either the
+returned outcome, a known rollback, or recovered evidence after inspecting the
+owner state and outstanding purge debt. Core does not retain a receipt lookup
+journal, so a lost response cannot be reconstructed by `operation_id`; that id
+identifies the attempted operation in the response. Retry only at the host's
+existing idempotency boundary, and describe a retry as a new attempt rather
+than replaying the lost receipt. For hard deletion rules see [data and
+erasure](data-and-erasure.md).
 
 ## Verify an embedded host
 
