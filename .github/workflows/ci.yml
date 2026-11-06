@@ -117,6 +117,8 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps --all-features --locked
+      - name: doctest
+        run: cargo test --doc --workspace --all-features --locked
 
   docs:
     name: docs links + status + lean

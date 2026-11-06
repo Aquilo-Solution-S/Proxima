@@ -106,6 +106,7 @@ cargo clippy --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --locked
 cargo nextest run --workspace --all-targets --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --locked
+cargo test --doc --workspace --all-features --locked
 cd docs/lean && lake build
 cd ../..
 python3 scripts/check-migrations.py --self-test
