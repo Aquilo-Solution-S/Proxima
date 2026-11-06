@@ -139,8 +139,11 @@ async fn debt_reaches_the_index_in_bounded_calls() {
             _: &proxiima_core::storage_ports::VectorCandidateFilter,
             _: &SpaceVector,
             _: u32,
-        ) -> Result<Vec<proxiima_core::storage_ports::VectorCandidate>, StorageError> {
-            Ok(Vec::new())
+        ) -> Result<proxiima_core::storage_ports::VectorCandidatePage, StorageError> {
+            Ok(proxiima_core::storage_ports::VectorCandidatePage::new(
+                Vec::new(),
+                proxiima_core::storage_ports::CandidateBound::Complete,
+            ))
         }
         async fn entries(
             &self,

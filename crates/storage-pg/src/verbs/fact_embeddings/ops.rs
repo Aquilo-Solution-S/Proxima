@@ -1,12 +1,16 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use proxiima_core::{
     EmbeddingAnnObservability, EmbeddingJobBacklog, EmbeddingOrphanCounts,
-    EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, StorageError,
+    EmbeddingOrphanSweepOutcome, EmbeddingRecallCanary, EmbeddingRecallStratum, StorageError,
 };
 use sqlx::{Connection, PgConnection, PgPool};
 
 use crate::error::map_err;
+
+/// Bound the exact/ANN comparisons performed by one operator observation.
+const RECALL_CANARY_SAMPLE_CAP: u16 = 32;
+const RECALL_CANARY_NEIGHBORS: u16 = 10;
 /// Session settings for the ANN leg of the recall canary: the HNSW search
 /// settings plus a seqscan ban, so the canary measures the index rather than
 /// the planner's opinion of it. One statement, one round trip.
@@ -16,7 +20,7 @@ const ANN_CANARY_SESSION_SQL: &str = concat!(
     "SET LOCAL hnsw.iterative_scan = relaxed_order"
 );
 
-use super::{ratio_count, usize_count};
+use super::usize_count;
 use crate::sidecars::int_to_u64;
 
 #[derive(sqlx::FromRow)]
@@ -42,6 +46,7 @@ struct RecallSampleRow {
     model_id: String,
     dim: i16,
     vec: pgvector::Vector,
+    available_strata: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -167,7 +172,7 @@ async fn embedding_ann_observability_on_connection(
 
     // A host-index store keeps no vectors here, so there is nothing to sample.
     let canary = match vectors {
-        crate::VectorStorage::Local => embedding_recall_canary(&mut *pool, 10).await?,
+        crate::VectorStorage::Local => embedding_recall_canary(&mut *pool).await?,
         crate::VectorStorage::HostIndex => None,
     };
     observability_from_row(&row, canary)
@@ -207,30 +212,52 @@ fn observability_from_row(
 
 async fn embedding_recall_canary(
     pool: &mut PgConnection,
-    k: i64,
 ) -> Result<Option<EmbeddingRecallCanary>, StorageError> {
-    let Some(sample) = sqlx::query_as::<_, RecallSampleRow>(
-        "SELECT emb.owner_id, emb.model_id, emb.dim, emb.vec
-           FROM proxiima_core.embeddings emb
-           JOIN proxiima_core.embedding_heads head
-             ON head.entity_id = emb.entity_id
-            AND head.model_id = emb.model_id
-            AND head.dim = emb.dim
-            AND head.embedding_version = emb.embedding_version
-          ORDER BY emb.entity_id DESC
-          LIMIT 1",
+    let samples = sqlx::query_as::<_, RecallSampleRow>(
+        "WITH ranked AS (
+             SELECT emb.owner_id, emb.model_id, emb.dim, emb.vec,
+                    row_number() OVER (
+                        PARTITION BY emb.owner_id, emb.model_id, emb.dim
+                        ORDER BY emb.entity_id DESC, emb.chunk_ordinal
+                    ) AS sample_rank
+               FROM proxiima_core.embeddings emb
+               JOIN proxiima_core.embedding_heads head
+                 ON head.entity_id = emb.entity_id
+                AND head.model_id = emb.model_id
+                AND head.dim = emb.dim
+                AND head.embedding_version = emb.embedding_version
+          )
+          SELECT owner_id, model_id, dim, vec,
+                 count(*) OVER () AS available_strata
+            FROM ranked
+           WHERE sample_rank = 1
+           ORDER BY owner_id, model_id, dim
+           LIMIT $1",
     )
-    .fetch_optional(&mut *pool)
+    .bind(i64::from(RECALL_CANARY_SAMPLE_CAP))
+    .fetch_all(&mut *pool)
     .await
-    .map_err(map_err)?
-    else {
+    .map_err(map_err)?;
+    let Some(first) = samples.first() else {
         return Ok(None);
     };
+    let available_strata = int_to_u64(first.available_strata, "recall canary strata")?;
+    let mut measurements = Vec::with_capacity(samples.len());
+    for sample in samples {
+        measurements.push(measure_recall_sample(pool, sample).await?);
+    }
+    Ok(summarize_recalls(available_strata, measurements))
+}
+
+async fn measure_recall_sample(
+    pool: &mut PgConnection,
+    sample: RecallSampleRow,
+) -> Result<EmbeddingRecallStratum, StorageError> {
     let lane = crate::pgvector::Lane::from_stored(sample.dim)?;
     let query = lane.query_vector(sample.vec.as_slice());
-
+    let k = i64::from(RECALL_CANARY_NEIGHBORS);
     let exact_ids = current_embedding_ids_by_distance(
-        &mut *pool,
+        pool,
         sample.owner_id,
         &sample.model_id,
         lane,
@@ -240,7 +267,7 @@ async fn embedding_recall_canary(
     )
     .await?;
     let ann_ids = current_embedding_ids_by_distance(
-        &mut *pool,
+        pool,
         sample.owner_id,
         &sample.model_id,
         lane,
@@ -250,29 +277,79 @@ async fn embedding_recall_canary(
     )
     .await?;
     let exact_set: HashSet<_> = exact_ids.iter().copied().collect();
-    let overlap_count = ann_ids
-        .iter()
-        .filter(|entity_id| exact_set.contains(entity_id))
-        .count();
+    let overlap = ann_ids.iter().filter(|id| exact_set.contains(id)).count();
     let exact_count = usize_count(exact_ids.len(), "exact recall")?;
     let ann_count = usize_count(ann_ids.len(), "ANN recall")?;
-    let overlap_count = usize_count(overlap_count, "recall overlap")?;
-    let recall_at_k = if exact_count == 0 {
-        1.0
-    } else {
-        f64::from(ratio_count(overlap_count, "recall overlap")?)
-            / f64::from(ratio_count(exact_count, "exact recall")?)
-    };
-
-    Ok(Some(EmbeddingRecallCanary {
+    let overlap_count = usize_count(overlap, "recall overlap")?;
+    let recall_at_k = recall_ratio(overlap_count, exact_count);
+    Ok(EmbeddingRecallStratum {
         model_id: sample.model_id,
         dim: crate::pgvector::stored_dim(sample.dim)?.width(),
-        k: int_to_u64(k, "recall canary k")?,
+        sample_count: 1,
         exact_count,
         ann_count,
         overlap_count,
         recall_at_k,
-    }))
+        minimum_recall_at_k: recall_at_k,
+    })
+}
+
+// At most u16::MAX samples of u16::MAX neighbors: each total fits u32.
+fn recall_ratio(overlap: u64, exact: u64) -> f64 {
+    if exact == 0 {
+        return 0.0;
+    }
+    let overlap = u32::try_from(overlap).expect("bounded recall overlap fits u32");
+    let exact = u32::try_from(exact).expect("bounded recall population fits u32");
+    f64::from(overlap) / f64::from(exact)
+}
+
+fn summarize_recalls(
+    available_strata: u64,
+    samples: Vec<EmbeddingRecallStratum>,
+) -> Option<EmbeddingRecallCanary> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut strata_by_space = BTreeMap::<(String, usize), EmbeddingRecallStratum>::new();
+    let mut summary = EmbeddingRecallCanary {
+        available_strata,
+        sample_count: 0,
+        k: u64::from(RECALL_CANARY_NEIGHBORS),
+        exact_count: 0,
+        ann_count: 0,
+        overlap_count: 0,
+        recall_at_k: 0.0,
+        minimum_recall_at_k: 1.0,
+        strata: Vec::new(),
+    };
+    for sample in samples {
+        summary.sample_count += sample.sample_count;
+        summary.exact_count += sample.exact_count;
+        summary.ann_count += sample.ann_count;
+        summary.overlap_count += sample.overlap_count;
+        summary.minimum_recall_at_k = summary.minimum_recall_at_k.min(sample.minimum_recall_at_k);
+        let key = (sample.model_id.clone(), sample.dim);
+        if let Some(stratum) = strata_by_space.get_mut(&key) {
+            stratum.sample_count += sample.sample_count;
+            stratum.exact_count += sample.exact_count;
+            stratum.ann_count += sample.ann_count;
+            stratum.overlap_count += sample.overlap_count;
+            stratum.minimum_recall_at_k =
+                stratum.minimum_recall_at_k.min(sample.minimum_recall_at_k);
+        } else {
+            strata_by_space.insert(key, sample);
+        }
+    }
+    summary.recall_at_k = recall_ratio(summary.overlap_count, summary.exact_count);
+    summary.strata = strata_by_space
+        .into_values()
+        .map(|mut stratum| {
+            stratum.recall_at_k = recall_ratio(stratum.overlap_count, stratum.exact_count);
+            stratum
+        })
+        .collect();
+    Some(summary)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,4 +493,51 @@ pub(crate) async fn sweep_orphan_embedding_rows(
         heads_deleted: int_to_u64(row.heads, "deleted embedding heads")?,
         jobs_deleted: int_to_u64(row.jobs, "deleted embedding jobs")?,
     })
+}
+
+#[cfg(test)]
+mod recall_tests {
+    use super::{EmbeddingRecallStratum, summarize_recalls};
+
+    fn sample(model: &str, exact: u64, overlap: u64, recall: f64) -> EmbeddingRecallStratum {
+        EmbeddingRecallStratum {
+            model_id: model.into(),
+            dim: 384,
+            sample_count: 1,
+            exact_count: exact,
+            ann_count: overlap,
+            overlap_count: overlap,
+            recall_at_k: recall,
+            minimum_recall_at_k: recall,
+        }
+    }
+
+    #[test]
+    fn degraded_owner_remains_visible_inside_a_space_and_across_spaces() {
+        let summary = summarize_recalls(
+            8,
+            vec![
+                sample("a", 10, 10, 1.0),
+                sample("a", 10, 2, 0.2),
+                sample("b", 10, 10, 1.0),
+            ],
+        )
+        .expect("nonempty samples");
+        assert_eq!((summary.sample_count, summary.available_strata), (3, 8));
+        assert_eq!((summary.exact_count, summary.overlap_count), (30, 22));
+        assert!((summary.recall_at_k - 22.0 / 30.0).abs() < f64::EPSILON);
+        assert!((summary.minimum_recall_at_k - 0.2).abs() < f64::EPSILON);
+        assert_eq!(summary.strata[0].sample_count, 2);
+        assert!((summary.strata[0].recall_at_k - 0.6).abs() < f64::EPSILON);
+        assert!((summary.strata[0].minimum_recall_at_k - 0.2).abs() < f64::EPSILON);
+        assert_eq!(summary.strata[1].sample_count, 1);
+    }
+
+    #[test]
+    fn missing_samples_are_absent_and_an_empty_comparison_is_not_perfect() {
+        assert!(summarize_recalls(0, vec![]).is_none());
+        let summary = summarize_recalls(1, vec![sample("empty", 0, 0, 0.0)]).unwrap();
+        assert!(summary.recall_at_k.abs() < f64::EPSILON);
+        assert!(summary.minimum_recall_at_k.abs() < f64::EPSILON);
+    }
 }

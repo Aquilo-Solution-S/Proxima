@@ -565,6 +565,20 @@ let builder = RuntimeBuilder::default().vector_index(std::sync::Arc::new(index))
 the stores it names, under the host's own authentication. Its rustdoc lists the
 wire. The client speaks plaintext only to loopback or a named plaintext host.
 
+`nearest` returns a `VectorCandidatePage` with an explicit `CandidateBound`.
+Keep the source's claim through local admission; fewer authorized results do
+not prove that the source was exhausted. The existing HTTP wire carries only
+candidates, so `VectorIndexClient` reports `Unknown` even for a short answer.
+The local chunk-limited fallback can also return a short memory page without
+proving exhaustion.
+
+Rust callers receive this metadata as `MemorySearchPage::candidate_bound` and
+`SearchReadResponse::candidate_bound`. A known candidate budget takes
+precedence when combined with an unknown source; it makes no exhaustion claim
+about the other source. `has_more` still describes continuation inside the
+ranking horizon. The metadata is omitted from page serialization and from
+MCP/REST responses; deserializing a page yields `Unknown`.
+
 The store keeps each entity's head, its current version per space, and calls
 the index in this order:
 

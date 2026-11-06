@@ -227,6 +227,10 @@ async fn hybrid_cursor_pages_end_at_fixed_window_in_both_orders() -> TestResult 
                 )
                 .await?;
             assert!(!page.results.is_empty());
+            assert_eq!(
+                page.candidate_bound,
+                proxiima_core::storage_ports::CandidateBound::Bounded
+            );
             for hit in &page.results {
                 let t = hit.memory_id.into_inner();
                 assert!(seen.insert(t), "cursor pages must be disjoint");
@@ -266,6 +270,11 @@ async fn hybrid_cursor_pages_end_at_fixed_window_in_both_orders() -> TestResult 
             .await?;
         assert!(exhausted.results.is_empty());
         assert!(!exhausted.has_more);
+        assert_eq!(
+            exhausted.candidate_bound,
+            proxiima_core::storage_ports::CandidateBound::Bounded,
+            "ending the ranking horizon does not prove corpus exhaustion"
+        );
     }
     Ok(())
 }

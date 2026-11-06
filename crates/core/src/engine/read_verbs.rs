@@ -32,6 +32,7 @@ pub struct SearchReadResponse {
     /// At least one further match exists past the last returned row;
     /// see [`crate::verbs::query::MemorySearchPage`].
     pub has_more: bool,
+    pub candidate_bound: crate::storage_ports::CandidateBound,
     pub payloads: Vec<MemoryGraphPayloadRow>,
     pub neighbor_edges: Vec<Edge>,
 }
@@ -580,6 +581,7 @@ pub(in crate::engine) async fn search_authorized(
     Ok(SearchReadResponse {
         memories,
         has_more: page.has_more,
+        candidate_bound: page.candidate_bound,
         payloads,
         neighbor_edges,
     })

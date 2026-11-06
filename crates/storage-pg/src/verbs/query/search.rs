@@ -47,6 +47,7 @@ use crate::pgvector::set_hnsw_search_sql;
 use crate::projection::{projection_key_ident, sidecar_text_sql};
 use crate::tuning::PgTuning;
 use proxiima_core::spiice::{BandComparability, LanguagePolicy, SubstringArm};
+use proxiima_core::storage_ports::{CandidateBound, VectorCandidatePage};
 use proxiima_core::verbs::query::{
     EntityKind, MAX_SEARCH_PAGE_LIMIT, MemorySearchPage, MemorySearchRequest, MemorySearchResult,
     SearchCursor, SearchMode, SearchOrder, SupersessionStatus, TagMatch, like_pattern,
@@ -126,6 +127,11 @@ pub(crate) async fn search_memories_on_connection(
         return Ok(MemorySearchPage {
             results: Vec::new(),
             has_more: false,
+            candidate_bound: if matches!(req.kind, Some(EntityKind::Goal)) {
+                CandidateBound::Complete
+            } else {
+                CandidateBound::Bounded
+            },
         });
     }
     if let Some(after) = req.after
@@ -137,7 +143,10 @@ pub(crate) async fn search_memories_on_connection(
     }
     let limit = req.limit.min(MAX_SEARCH_PAGE_LIMIT);
     let spiices = core_search_spiices(req, projections);
-    let mut hits = BTreeMap::<uuid::Uuid, Hit>::new();
+    let mut hits = SearchHits {
+        rows: BTreeMap::new(),
+        bound: CandidateBound::Complete,
+    };
     match req.mode {
         SearchMode::Lexical => merge_hits(
             &mut hits,
@@ -183,11 +192,13 @@ pub(crate) async fn search_memories_on_connection(
             }
         }
     }
-    let mut admitted = admit_hits_on_connection(connection.as_mut(), req, &hits).await?;
+    let mut admitted = admit_hits_on_connection(connection.as_mut(), req, &hits.rows).await?;
     if uses_hybrid_fusion(req) {
-        apply_hybrid_fusion(req, &mut admitted, &hits);
+        hits.bound = hits
+            .bound
+            .combine(apply_hybrid_fusion(req, &mut admitted, &hits.rows));
     }
-    let mut page = page_hits(req, limit, admitted);
+    let mut page = page_hits(req, limit, admitted, hits.bound);
     hydrate_snippets_on_connection(connection.as_mut(), projections, &mut page.results).await?;
     Ok(page)
 }
@@ -339,9 +350,35 @@ fn payload_kind_matches(requested: Option<EntityKind>, kind: PayloadKind) -> boo
     )
 }
 
-fn merge_hits(into: &mut BTreeMap<uuid::Uuid, Hit>, rows: Vec<Hit>) {
-    for hit in rows {
-        into.entry(hit.t)
+struct HitBatch {
+    rows: Vec<Hit>,
+    bound: CandidateBound,
+}
+
+impl HitBatch {
+    fn empty() -> Self {
+        Self {
+            rows: Vec::new(),
+            bound: CandidateBound::Complete,
+        }
+    }
+
+    fn extend(&mut self, other: Self) {
+        self.bound = self.bound.combine(other.bound);
+        self.rows.extend(other.rows);
+    }
+}
+
+struct SearchHits {
+    rows: BTreeMap<uuid::Uuid, Hit>,
+    bound: CandidateBound,
+}
+
+fn merge_hits(into: &mut SearchHits, batch: HitBatch) {
+    into.bound = into.bound.combine(batch.bound);
+    for hit in batch.rows {
+        into.rows
+            .entry(hit.t)
             .and_modify(|existing| {
                 existing.lexical_score = maximum_present(existing.lexical_score, hit.lexical_score);
                 existing.similarity_score =
@@ -358,6 +395,16 @@ fn maximum_present(left: Option<f32>, right: Option<f32>) -> Option<f32> {
     }
 }
 
+// Exact lexical statements have no hidden chunk cap: underfill exhausts
+// their predicate. This is measured before any later local admission.
+fn statement_bound(fetched: usize, budget: u32) -> CandidateBound {
+    if fetched >= usize::try_from(budget).unwrap_or(usize::MAX) {
+        CandidateBound::Bounded
+    } else {
+        CandidateBound::Complete
+    }
+}
+
 /// One job per participating SPIICE, not one per schema.
 ///
 /// A spiice's ranked arm is one statement against its own shard, plus at
@@ -370,8 +417,8 @@ async fn scan_spiices_on_connection(
     spiices: &[SpiiceScan<'_>],
     limit: u32,
     rescue: bool,
-) -> Result<Vec<Hit>, StorageError> {
-    let mut hits = Vec::new();
+) -> Result<HitBatch, StorageError> {
+    let mut hits = HitBatch::empty();
     for spiice in spiices {
         hits.extend(scan_one_spiice_on_connection(connection, req, spiice, limit, rescue).await?);
     }
@@ -384,7 +431,7 @@ async fn scan_one_spiice_on_connection(
     spiice: &SpiiceScan<'_>,
     limit: u32,
     rescue: bool,
-) -> Result<Vec<Hit>, StorageError> {
+) -> Result<HitBatch, StorageError> {
     let recency_t = match req.after {
         Some(SearchCursor::Recency { memory_id, .. }) if !uses_hybrid_fusion(req) => {
             Some(memory_id.into_inner())
@@ -424,6 +471,7 @@ async fn scan_one_spiice_on_connection(
         .fetch_all(&mut *connection)
         .await
         .map_err(map_err)?;
+    let mut bound = statement_bound(rows.len(), budget);
     let present: BTreeSet<&str> = rows.iter().map(|row| row.schema_id.as_str()).collect();
     let mut hits: Vec<Hit> = rows
         .iter()
@@ -463,6 +511,7 @@ async fn scan_one_spiice_on_connection(
             .fetch_all(&mut *connection)
             .await
             .map_err(map_err)?;
+        bound = bound.combine(statement_bound(rows.len(), budget));
         hits.extend(rows.into_iter().map(|row| Hit {
             t: row.t,
             lexical_score: Some(row.lexical_score.max(0.0)),
@@ -477,9 +526,10 @@ async fn scan_one_spiice_on_connection(
                 .total_cmp(&a.lexical_score.unwrap_or_default())
                 .then_with(|| b.t.cmp(&a.t))
         });
+        bound = bound.combine(statement_bound(hits.len(), budget));
         hits.truncate(usize::try_from(budget).unwrap_or(usize::MAX));
     }
-    Ok(hits)
+    Ok(HitBatch { rows: hits, bound })
 }
 
 /// One leg of the substring arm: a sidecar table and every schema stored in
@@ -1380,10 +1430,11 @@ async fn remote_nearest(
     filter: &proxiima_core::storage_ports::VectorCandidateFilter,
     query: &proxiima_core::SpaceVector,
     window: u32,
-) -> Result<Vec<proxiima_core::storage_ports::VectorCandidate>, StorageError> {
+) -> Result<VectorCandidatePage, StorageError> {
     use proxiima_core::storage_ports::{VectorCandidate, VectorCandidateFilter};
 
     let mut candidates = BTreeMap::<uuid::Uuid, VectorCandidate>::new();
+    let mut bound = CandidateBound::Complete;
     for route in [
         VectorCandidateFilter {
             owners: filter.owners.clone(),
@@ -1397,7 +1448,9 @@ async fn remote_nearest(
         if route.owners.is_empty() && route.memories.is_empty() {
             continue;
         }
-        for candidate in index.nearest(&route, query, window).await? {
+        let page = index.nearest(&route, query, window).await?;
+        bound = bound.combine(page.bound);
+        for candidate in page.candidates {
             candidates
                 .entry(candidate.memory_id.into_inner())
                 .and_modify(|prior| {
@@ -1406,7 +1459,10 @@ async fn remote_nearest(
                 .or_insert(candidate);
         }
     }
-    Ok(candidates.into_values().collect())
+    Ok(VectorCandidatePage::new(
+        candidates.into_values().collect(),
+        bound,
+    ))
 }
 
 async fn scan_embeddings_on_connection(
@@ -1416,14 +1472,14 @@ async fn scan_embeddings_on_connection(
     tuning: &PgTuning,
     overfetch: u32,
     vectors: &crate::vector_index::StoreVectors,
-) -> Result<Vec<Hit>, StorageError> {
+) -> Result<HitBatch, StorageError> {
     let Some(semantic) = req.semantic.as_ref() else {
         return Err(StorageError::ConstraintViolation(
             "semantic search requires a query embedding".into(),
         ));
     };
     if spiices.is_empty() {
-        return Ok(Vec::new());
+        return Ok(HitBatch::empty());
     }
     let owner_ids: Vec<uuid::Uuid> = req
         .read_owners
@@ -1449,7 +1505,7 @@ async fn scan_embeddings_on_connection(
     };
     let mut window = overfetch;
     let mut admitted = BTreeMap::new();
-    loop {
+    let bound = loop {
         let candidates = match &candidates {
             SemanticCandidates::Local => {
                 crate::vector_index::local_nearest(
@@ -1465,6 +1521,8 @@ async fn scan_embeddings_on_connection(
                 remote_nearest(*index, filter, semantic, window).await?
             }
         };
+        let bound = candidates.bound;
+        let candidates = candidates.candidates;
         let fetched = candidates.len();
         let candidate_ids: Vec<_> = candidates
             .iter()
@@ -1503,11 +1561,14 @@ async fn scan_embeddings_on_connection(
             }
         }
         let Some(next) = next_candidate_window(window, fetched, admitted.len(), overfetch) else {
-            break;
+            break bound;
         };
         window = next;
-    }
-    Ok(admitted.into_values().collect())
+    };
+    Ok(HitBatch {
+        rows: admitted.into_values().collect(),
+        bound,
+    })
 }
 
 async fn admit_hits_on_connection(
@@ -1571,6 +1632,7 @@ fn page_hits(
     req: &MemorySearchRequest,
     limit: u32,
     mut results: Vec<MemorySearchResult>,
+    candidate_bound: CandidateBound,
 ) -> MemorySearchPage {
     if !uses_hybrid_fusion(req)
         && let Some(floor) = req.min_score
@@ -1595,7 +1657,11 @@ fn page_hits(
     let page_len = usize::try_from(limit).unwrap_or(usize::MAX);
     let has_more = results.len() > page_len;
     results.truncate(page_len);
-    MemorySearchPage { results, has_more }
+    MemorySearchPage {
+        results,
+        has_more,
+        candidate_bound,
+    }
 }
 
 fn ranks_after_cursor(result: &MemorySearchResult, after: SearchCursor) -> bool {

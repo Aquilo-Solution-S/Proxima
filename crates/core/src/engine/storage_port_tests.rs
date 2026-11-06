@@ -55,6 +55,7 @@ impl crate::MemoryReadPort for ReadOnlyFake {
         Ok(crate::verbs::query::MemorySearchPage {
             results: Vec::new(),
             has_more: false,
+            candidate_bound: crate::storage_ports::CandidateBound::Unknown,
         })
     }
 

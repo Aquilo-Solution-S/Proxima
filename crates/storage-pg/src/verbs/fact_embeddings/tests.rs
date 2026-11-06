@@ -376,6 +376,9 @@ mod pg_tests {
                 (canary.exact_count, canary.ann_count, canary.overlap_count),
                 (3, 3, 3)
             );
+            assert_eq!(canary.sample_count, 1);
+            assert_eq!(canary.strata.len(), 1);
+            assert_eq!(canary.strata[0].sample_count, 1);
             Ok(())
         }
         .await;

@@ -251,13 +251,29 @@ owner between models.
 | Pending/failed jobs persist | Inspect provider reachability, route refusal, and job errors |
 | Stale processing claims persist | Inspect worker/storage health; expired claims are reclaimed, looked for at most once every third of the stale-claim timeout |
 | Orphan embedding rows | Run authorized embedding maintenance |
-| Poor exact-versus-ANN recall | Inspect canary results and HNSW tuning/index health |
+| Poor minimum sampled recall | Inspect the affected model/dimension and HNSW tuning/index health; an aggregate can conceal a degraded owner |
 
 `proxiima-mcp maintain-embeddings` performs one maintenance pass. The host's
 operator-only observability APIs expose backlog, coverage, orphan counts, and
 recall checks. Their authorization is distinct from ordinary owner retrieval.
 Vacuum and index rebuild scheduling depend on measured tuples, bytes, latency,
 and recall; they are database operations.
+
+The local canary samples nonempty owner/model/dimension strata deterministically
+and bounds the number of exact/index comparisons. `sample_count` against
+`available_strata` shows whether that observation covers every stratum.
+Per-space counts and minimum sampled recall expose degradation within an
+aggregate. No embeddings produces no canary; it is not perfect recall.
+Inspect the actual query plan before treating an index comparison as evidence
+about HNSW: a small fixture can choose another index path.
+
+Neighbor overlap measures the sampled vector index, not usefulness for an
+agent's question. The offline fixture command
+`cargo test -p proxiima-storage-pg --test retrieval_quality --all-features --locked -- --nocapture`
+with the test database configured reports judged Recall@5, MRR, nDCG, coverage
+and latency by owner, encoder, search mode and tag selectivity. Its authored
+text and fixed feature-hash encoders establish a reproducible fixture baseline;
+they do not establish production embedding quality or a deployment threshold.
 
 A store with a [host vector index](host-integration.md#vector-index) keeps no
 local vectors: the recall canary and HNSW tuning apply to the host's index, not

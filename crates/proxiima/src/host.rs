@@ -138,6 +138,10 @@ pub use proxiima_core::storage_ports::other_stores::{
     RemoteOriginRead, RemoteRead, RemoteSearch, RemoteSearchResult, StoreCaller, StoreInfo,
     StoreInventory,
 };
+pub use proxiima_core::storage_ports::{
+    CandidateBound, VectorCandidate, VectorCandidateFilter, VectorCandidatePage, VectorEntry,
+    VectorIndex, VectorKey,
+};
 /// Cited-blob verified-read and reconciliation surfaces.
 ///
 /// Global [`CitedBlobStore::reconcile_all`] requires the booted runtime's
@@ -155,9 +159,6 @@ pub use proxiima_core::storage_ports::{
     HostStateParticipantDescriptor, HostStateParticipantId, HostStateReply, HostStateReplyKind,
     HostStateRequest, HostStateWriteOrigin, HostStateWritePermit, MAX_RECONCILE_SAMPLE,
     StateSurfaceName, VerifiedCitedBlob,
-};
-pub use proxiima_core::storage_ports::{
-    VectorCandidate, VectorCandidateFilter, VectorEntry, VectorIndex, VectorKey,
 };
 pub use proxiima_core::verbs::fact_ingest::{
     CitationSpec, FactIngestOutcome, FactReceiptDraft, FactWriteCommand, IngestReceipt,

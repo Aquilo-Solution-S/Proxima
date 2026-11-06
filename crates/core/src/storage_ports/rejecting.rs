@@ -242,6 +242,7 @@ impl MemoryReadPort for RejectingStorage {
         Ok(crate::verbs::query::MemorySearchPage {
             results: Vec::new(),
             has_more: false,
+            candidate_bound: crate::storage_ports::CandidateBound::Complete,
         })
     }
 

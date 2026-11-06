@@ -253,6 +253,30 @@ pub struct MemorySearchResult {
 pub struct MemorySearchPage {
     pub results: Vec<MemorySearchResult>,
     pub has_more: bool,
+    #[serde(skip)]
+    pub candidate_bound: crate::storage_ports::CandidateBound,
+}
+
+#[cfg(test)]
+mod candidate_bound_serialization_tests {
+    use super::MemorySearchPage;
+    use crate::storage_ports::CandidateBound;
+
+    #[test]
+    fn candidate_bound_stays_internal_to_the_rust_search_page() {
+        let page = MemorySearchPage {
+            results: Vec::new(),
+            has_more: false,
+            candidate_bound: CandidateBound::Bounded,
+        };
+        let json = serde_json::to_value(&page).expect("search page serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({ "results": [], "has_more": false })
+        );
+        let restored: MemorySearchPage = serde_json::from_value(json).expect("legacy page decodes");
+        assert_eq!(restored.candidate_bound, CandidateBound::Unknown);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

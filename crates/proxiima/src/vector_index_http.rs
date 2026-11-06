@@ -30,7 +30,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use proxiima_core::storage_ports::{
-    VectorCandidate, VectorCandidateFilter, VectorEntry, VectorIndex, VectorKey,
+    CandidateBound, VectorCandidate, VectorCandidateFilter, VectorCandidatePage, VectorEntry,
+    VectorIndex, VectorKey,
 };
 use proxiima_core::{
     EmbeddableEntityRef, EmbeddingDim, EmbeddingSpace, EndpointUrlPolicy, EntityKind, GoalId,
@@ -341,7 +342,7 @@ impl VectorIndex for VectorIndexClient {
         filter: &VectorCandidateFilter,
         query: &SpaceVector,
         window: u32,
-    ) -> Result<Vec<VectorCandidate>, StorageError> {
+    ) -> Result<VectorCandidatePage, StorageError> {
         let body = NearestBody {
             owners: filter
                 .owners
@@ -365,7 +366,7 @@ impl VectorIndex for VectorIndexClient {
                 "vector index nearest answered past its window".into(),
             ));
         }
-        answer
+        let candidates = answer
             .candidates
             .into_iter()
             .map(|candidate| {
@@ -379,7 +380,11 @@ impl VectorIndex for VectorIndexClient {
                     similarity_score: candidate.score,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(VectorCandidatePage::new(
+            candidates,
+            CandidateBound::Unknown,
+        ))
     }
 
     async fn entries(
@@ -551,7 +556,10 @@ async fn nearest(State(indexes): State<Indexes>, Path(store): Path<u16>, body: B
                 owners: body.owners.into_iter().map(OwnerId::new).collect(),
                 memories: body.memories.into_iter().map(MemoryId::new).collect(),
             };
-            let candidates = index.nearest(&filter, &query, body.window).await?;
+            let candidates = index
+                .nearest(&filter, &query, body.window)
+                .await?
+                .candidates;
             Ok(NearestAnswer {
                 candidates: candidates
                     .into_iter()

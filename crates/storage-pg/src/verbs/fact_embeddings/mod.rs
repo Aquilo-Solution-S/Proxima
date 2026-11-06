@@ -56,7 +56,3 @@ fn ensure_nonnegative_limit(limit: i64) -> Result<i64, StorageError> {
 fn usize_count(value: usize, name: &str) -> Result<u64, StorageError> {
     u64::try_from(value).map_err(|_| StorageError::Internal(format!("{name} count too large")))
 }
-
-fn ratio_count(value: u64, name: &str) -> Result<u32, StorageError> {
-    u32::try_from(value).map_err(|_| StorageError::Internal(format!("{name} count too large")))
-}

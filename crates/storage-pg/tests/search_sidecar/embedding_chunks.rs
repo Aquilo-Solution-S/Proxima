@@ -234,5 +234,10 @@ async fn chunk_scan_stops_at_existing_cap_when_one_memory_dominates() -> TestRes
     assert_eq!(page.results.len(), 1);
     assert_eq!(page.results[0].memory_id.into_inner(), first);
     assert!(!page.has_more);
+    assert_eq!(
+        page.candidate_bound,
+        proxiima_core::storage_ports::CandidateBound::Unknown,
+        "a short memory page can still have exhausted the underlying chunk cap"
+    );
     Ok(())
 }

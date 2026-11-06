@@ -409,15 +409,26 @@ async fn run_maintain(config: MaintainConfig) -> Result<(), CliError> {
             health.orphan_rows.embeddings, health.orphan_rows.heads, health.orphan_rows.jobs
         );
         match health.recall_canary {
-            Some(canary) => println!(
-                "recall-canary: model={} recall@{}={:.3} (ann={} exact={} overlap={})",
-                canary.model_id,
-                canary.k,
-                canary.recall_at_k,
-                canary.ann_count,
-                canary.exact_count,
-                canary.overlap_count
-            ),
+            Some(canary) => {
+                println!(
+                    "recall-canary: samples={}/{} recall@{}={:.3} minimum={:.3}",
+                    canary.sample_count,
+                    canary.available_strata,
+                    canary.k,
+                    canary.recall_at_k,
+                    canary.minimum_recall_at_k
+                );
+                for stratum in canary.strata {
+                    println!(
+                        "  model={} dim={} samples={} recall={:.3} minimum={:.3}",
+                        stratum.model_id,
+                        stratum.dim,
+                        stratum.sample_count,
+                        stratum.recall_at_k,
+                        stratum.minimum_recall_at_k
+                    );
+                }
+            }
             None => println!("recall-canary: none (no embeddings yet)"),
         }
         Ok(())

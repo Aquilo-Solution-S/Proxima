@@ -59,10 +59,10 @@ pub use embeddings::{
     EmbeddingJobDiagnostic, EmbeddingJobPort, EmbeddingJobState, EmbeddingJobStateParseError,
     EmbeddingJobStatusCounts, EmbeddingMaintenancePort, EmbeddingOrphanCounts,
     EmbeddingOrphanSweepOutcome, EmbeddingPurgeOutcome, EmbeddingRecallCanary,
-    EmbeddingReconcileOptions, EmbeddingReconcileOutcome, EmbeddingReconcileScope,
-    EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole, EmbeddingTextPort,
-    EmbeddingWrite, EmbeddingWriteOutcome, EmbeddingWritePort, EmbeddingWriteProof,
-    MAX_EMBEDDING_DIAGNOSTIC_UNITS, check_diagnostic_unit_count,
+    EmbeddingRecallStratum, EmbeddingReconcileOptions, EmbeddingReconcileOutcome,
+    EmbeddingReconcileScope, EmbeddingSpaceCounts, EmbeddingSpaceCoverage, EmbeddingSpaceRole,
+    EmbeddingTextPort, EmbeddingWrite, EmbeddingWriteOutcome, EmbeddingWritePort,
+    EmbeddingWriteProof, MAX_EMBEDDING_DIAGNOSTIC_UNITS, check_diagnostic_unit_count,
 };
 pub use fact::FactIngestPort;
 pub use goals::{GoalReadPort, GoalWritePort};
@@ -97,8 +97,8 @@ pub use publication::{
 };
 pub use retention::RetentionPort;
 pub use vector_index::{
-    InMemoryVectorIndex, VectorCandidate, VectorCandidateFilter, VectorEntry, VectorIndex,
-    VectorKey,
+    CandidateBound, InMemoryVectorIndex, VectorCandidate, VectorCandidateFilter,
+    VectorCandidatePage, VectorEntry, VectorIndex, VectorKey,
 };
 pub use write_session::{
     SIDECAR_SESSION_READ_MAX_ROWS, SidecarSessionRead, WriteSession, WriteSessionFactory,

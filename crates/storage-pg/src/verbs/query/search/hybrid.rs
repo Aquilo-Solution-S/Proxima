@@ -1,5 +1,6 @@
 //! Hybrid's fixed candidate windows and weighted reciprocal rank fusion.
 
+use proxiima_core::storage_ports::CandidateBound;
 use std::collections::BTreeMap;
 
 use proxiima_core::verbs::query::{
@@ -26,12 +27,13 @@ pub(super) fn apply_hybrid_fusion(
     req: &MemorySearchRequest,
     results: &mut Vec<MemorySearchResult>,
     hits: &BTreeMap<uuid::Uuid, Hit>,
-) {
+) -> CandidateBound {
     let weight = req
         .semantic_weight
         .unwrap_or(DEFAULT_HYBRID_SEMANTIC_WEIGHT)
         .clamp(0.0, 1.0);
     let mut fused = BTreeMap::<uuid::Uuid, f32>::new();
+    let mut bound = CandidateBound::Complete;
     for (semantic, leg_weight) in [(true, weight), (false, 1.0 - weight)] {
         let mut leg: Vec<(uuid::Uuid, f32)> = results
             .iter()
@@ -51,7 +53,11 @@ pub(super) fn apply_hybrid_fusion(
         leg.sort_by(|(a_t, a_score), (b_t, b_score)| {
             b_score.total_cmp(a_score).then_with(|| b_t.cmp(a_t))
         });
-        leg.truncate(usize::try_from(HYBRID_CANDIDATE_WINDOW).unwrap_or(usize::MAX));
+        let window = usize::try_from(HYBRID_CANDIDATE_WINDOW).unwrap_or(usize::MAX);
+        if leg.len() > window {
+            bound = CandidateBound::Bounded;
+        }
+        leg.truncate(window);
         for (index, (t, _)) in leg.into_iter().enumerate() {
             let rank = u16::try_from(index + 1).expect("fixed hybrid window fits u16");
             *fused.entry(t).or_default() += leg_weight / (RRF_K + f32::from(rank));
@@ -65,6 +71,7 @@ pub(super) fn apply_hybrid_fusion(
             false
         }
     });
+    bound
 }
 
 #[cfg(test)]
@@ -235,8 +242,8 @@ mod tests {
                 assert_eq!(super::super::candidate_overfetch(&req, limit, 5_000), 1_000);
                 assert_eq!(super::super::candidate_order(&req), SearchOrder::Relevance);
                 let mut fused = results.clone();
-                apply_hybrid_fusion(&req, &mut fused, &hits);
-                let page = super::super::page_hits(&req, limit, fused);
+                let bound = apply_hybrid_fusion(&req, &mut fused, &hits);
+                let page = super::super::page_hits(&req, limit, fused, bound);
                 seen.extend(page.results.iter().map(|row| row.memory_id));
                 if !page.has_more {
                     break;

@@ -109,8 +109,15 @@ async fn the_wire_carries_every_call_to_its_stores_index() {
         memories: vec![],
     };
     let wire = remote.nearest(&filter, &query, 10).await.unwrap();
-    assert_eq!(wire, mine.nearest(&filter, &query, 10).await.unwrap());
-    assert_eq!(wire.len(), 2, "a goal is no candidate");
+    assert_eq!(
+        wire.bound,
+        proxiima_core::storage_ports::CandidateBound::Unknown
+    );
+    assert_eq!(
+        wire.candidates,
+        mine.nearest(&filter, &query, 10).await.unwrap().candidates
+    );
+    assert_eq!(wire.candidates.len(), 2, "a goal is no candidate");
     remote
         .put(memory(4), you, 1, &[vector([1.0, 0.0])])
         .await
@@ -123,7 +130,7 @@ async fn the_wire_carries_every_call_to_its_stores_index() {
         owners: vec![],
         memories: vec![MemoryId::new(Uuid::from_u128(5))],
     };
-    let exact_ranked = remote.nearest(&exact, &query, 1).await.unwrap();
+    let exact_ranked = remote.nearest(&exact, &query, 1).await.unwrap().candidates;
     assert_eq!(exact_ranked.len(), 1);
     assert_eq!(exact_ranked[0].memory_id, MemoryId::new(Uuid::from_u128(5)));
     remote.delete(&[key(4), key(5)]).await.unwrap();
@@ -142,6 +149,7 @@ async fn the_wire_carries_every_call_to_its_stores_index() {
             .nearest(&filter, &query, 10)
             .await
             .unwrap()
+            .candidates
             .is_empty()
     );
     let moved = remote
@@ -154,7 +162,8 @@ async fn the_wire_carries_every_call_to_its_stores_index() {
             10,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .candidates;
     assert_eq!(moved.len(), 1);
     assert_eq!(moved[0].memory_id, MemoryId::new(Uuid::from_u128(2)));
     let left: Vec<VectorEntry> = mine.entries(None, 10).await.unwrap();
@@ -192,7 +201,8 @@ async fn the_wire_filters_private_nearer_vectors_before_the_window() {
             1,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .candidates;
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].memory_id, target);
 }
@@ -295,8 +305,11 @@ impl VectorIndex for Lying {
         _: &VectorCandidateFilter,
         _: &SpaceVector,
         _: u32,
-    ) -> Result<Vec<VectorCandidate>, StorageError> {
-        Ok(self.candidates.clone())
+    ) -> Result<proxiima_core::storage_ports::VectorCandidatePage, StorageError> {
+        Ok(proxiima_core::storage_ports::VectorCandidatePage::new(
+            self.candidates.clone(),
+            proxiima_core::storage_ports::CandidateBound::Bounded,
+        ))
     }
 
     async fn entries(

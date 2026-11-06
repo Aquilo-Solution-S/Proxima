@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use proxiima_core::storage_ports::{VectorCandidate, VectorIndex};
+use proxiima_core::storage_ports::{
+    CandidateBound, VectorCandidate, VectorCandidatePage, VectorIndex,
+};
 use proxiima_core::{EmbeddingDim, MemoryId, OwnerId, SpaceVector, StorageError};
 use sqlx::{Postgres, Transaction};
 
@@ -43,9 +45,14 @@ pub(crate) async fn local_nearest(
     query: &SpaceVector,
     window: u32,
     supersession: proxiima_core::verbs::query::SupersessionStatus,
-) -> Result<Vec<VectorCandidate>, StorageError> {
+) -> Result<VectorCandidatePage, StorageError> {
     if owners.is_empty() || window == 0 {
-        return Ok(Vec::new());
+        let bound = if owners.is_empty() {
+            CandidateBound::Complete
+        } else {
+            CandidateBound::Bounded
+        };
+        return Ok(VectorCandidatePage::new(Vec::new(), bound));
     }
     let lane = Lane::of(query.space().dim());
     let owner_ids: Vec<_> = owners.iter().copied().map(OwnerId::into_inner).collect();
@@ -68,13 +75,24 @@ pub(crate) async fn local_nearest(
         .fetch_all(context.as_mut())
         .await
         .map_err(map_err)?;
-    Ok(rows
-        .into_iter()
-        .map(|(memory_id, similarity_score)| VectorCandidate {
-            memory_id: MemoryId::new(memory_id),
-            similarity_score,
-        })
-        .collect())
+    // The exact fallback still caps CHUNKS before grouping memories. A short
+    // nonempty page therefore cannot prove exhaustion of distinct memories.
+    let bound = if rows.is_empty() {
+        CandidateBound::Complete
+    } else if rows.len() >= usize::try_from(window.min(SEMANTIC_SCAN_CAP)).unwrap_or(usize::MAX) {
+        CandidateBound::Bounded
+    } else {
+        CandidateBound::Unknown
+    };
+    Ok(VectorCandidatePage::new(
+        rows.into_iter()
+            .map(|(memory_id, similarity_score)| VectorCandidate {
+                memory_id: MemoryId::new(memory_id),
+                similarity_score,
+            })
+            .collect(),
+        bound,
+    ))
 }
 
 /// Candidate functions for every supported width, with their inverses.

@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use proxiima_core::storage_ports::{
-    InMemoryVectorIndex, MemoryReadPort, VectorCandidate, VectorEntry, VectorIndex, VectorKey,
+    CandidateBound, InMemoryVectorIndex, MemoryReadPort, VectorEntry, VectorIndex, VectorKey,
 };
 use proxiima_core::test_fixtures::owner_scope_for_tests;
 use proxiima_core::verbs::query::{
@@ -24,6 +24,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 struct RecordingIndex {
     inner: InMemoryVectorIndex,
     windows: Mutex<Vec<u32>>,
+    reported_bound: Option<CandidateBound>,
 }
 
 #[async_trait::async_trait]
@@ -51,9 +52,13 @@ impl VectorIndex for RecordingIndex {
         filter: &proxiima_core::storage_ports::VectorCandidateFilter,
         query: &SpaceVector,
         window: u32,
-    ) -> Result<Vec<VectorCandidate>, StorageError> {
+    ) -> Result<proxiima_core::storage_ports::VectorCandidatePage, StorageError> {
         self.windows.lock().unwrap().push(window);
-        self.inner.nearest(filter, query, window).await
+        let mut page = self.inner.nearest(filter, query, window).await?;
+        if let Some(bound) = self.reported_bound {
+            page.bound = bound;
+        }
+        Ok(page)
     }
 
     async fn entries(
@@ -682,5 +687,45 @@ async fn an_owner_erase_takes_its_entries_out_of_the_index() -> TestResult {
             .await?;
     assert_eq!(heads, [kept]);
     assert_eq!(debt_rows(&pool).await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn short_remote_bound_survives_local_tag_admission() -> TestResult {
+    for reported in [CandidateBound::Bounded, CandidateBound::Unknown] {
+        let index = Arc::new(RecordingIndex {
+            reported_bound: Some(reported),
+            ..RecordingIndex::default()
+        });
+        let (pg, _database) = fresh_pg_host_index("semantic_bound_admission", index.clone()).await;
+        let owner = OwnerId::from(UserId::new(Uuid::now_v7()));
+        let wrong_tag = seed(pg.pool_for_tests(), owner, "core/agent-note-v1", "other").await?;
+        index
+            .put(
+                EmbeddableEntityRef::Memory {
+                    kind: EntityKind::Fact,
+                    memory_id: MemoryId::new(wrong_tag),
+                },
+                owner,
+                1,
+                &[vector(1.0)],
+            )
+            .await?;
+        let registry = proxiima_core::SpiiceRegistry::new().freeze_or_panic_for_tests();
+        let page = pg
+            .search_memories(
+                Some(&owner_scope_for_tests(&[owner])),
+                &request(owner),
+                registry.search_projections(),
+            )
+            .await?;
+        assert!(page.results.is_empty());
+        assert!(!page.has_more);
+        assert_eq!(
+            page.candidate_bound, reported,
+            "admission must not invent source exhaustion"
+        );
+        assert_eq!(*index.windows.lock().unwrap(), vec![20]);
+    }
     Ok(())
 }

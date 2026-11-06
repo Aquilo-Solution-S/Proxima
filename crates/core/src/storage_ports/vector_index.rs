@@ -31,6 +31,84 @@ pub struct VectorCandidate {
     pub similarity_score: f32,
 }
 
+/// A source's completeness claim for this scan, not proof of index freshness
+/// or all-corpus retrieval quality.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CandidateBound {
+    /// The source exhausted the supplied candidate predicate.
+    Complete,
+    /// At least one source reached a known window or hard cap. Other sources
+    /// may also be incomplete; this makes no exhaustion claim about them.
+    Bounded,
+    /// The source cannot state whether its result is complete.
+    #[default]
+    Unknown,
+}
+
+impl CandidateBound {
+    /// Combine bounds from independent candidate legs without losing a known cap.
+    #[must_use]
+    pub fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Bounded, Self::Complete | Self::Bounded | Self::Unknown)
+            | (Self::Complete | Self::Unknown, Self::Bounded) => Self::Bounded,
+            (Self::Unknown, Self::Complete | Self::Unknown) | (Self::Complete, Self::Unknown) => {
+                Self::Unknown
+            }
+            (Self::Complete, Self::Complete) => Self::Complete,
+        }
+    }
+}
+
+#[cfg(test)]
+mod candidate_bound_tests {
+    use super::CandidateBound;
+
+    #[test]
+    fn bounds_combine_without_losing_a_known_cap() {
+        assert_eq!(
+            CandidateBound::Complete.combine(CandidateBound::Complete),
+            CandidateBound::Complete
+        );
+        assert_eq!(
+            CandidateBound::Complete.combine(CandidateBound::Unknown),
+            CandidateBound::Unknown
+        );
+        assert_eq!(
+            CandidateBound::Unknown.combine(CandidateBound::Bounded),
+            CandidateBound::Bounded
+        );
+        assert_eq!(
+            CandidateBound::Bounded.combine(CandidateBound::Complete),
+            CandidateBound::Bounded
+        );
+    }
+}
+
+/// Candidates and the source's completeness claim.
+///
+/// Providers must supply that claim explicitly:
+/// ```
+/// use proxiima_core::storage_ports::{CandidateBound, VectorCandidatePage};
+/// let _ = VectorCandidatePage::new(Vec::new(), CandidateBound::Unknown);
+/// ```
+/// ```compile_fail
+/// use proxiima_core::storage_ports::VectorCandidatePage;
+/// let _ = VectorCandidatePage::new(Vec::new());
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorCandidatePage {
+    pub candidates: Vec<VectorCandidate>,
+    pub bound: CandidateBound,
+}
+
+impl VectorCandidatePage {
+    #[must_use]
+    pub fn new(candidates: Vec<VectorCandidate>, bound: CandidateBound) -> Self {
+        Self { candidates, bound }
+    }
+}
+
 /// The candidates an external index may rank before the store authorizes each
 /// result through its own row-level policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -100,7 +178,7 @@ pub trait VectorIndex: Send + Sync {
         filter: &VectorCandidateFilter,
         query: &SpaceVector,
         window: u32,
-    ) -> Result<Vec<VectorCandidate>, StorageError>;
+    ) -> Result<VectorCandidatePage, StorageError>;
 
     /// Up to `limit` entries after `after`, in [`VectorKey::order`]: what
     /// the orphan sweep compares with the store's heads.
@@ -218,7 +296,7 @@ impl VectorIndex for InMemoryVectorIndex {
         filter: &VectorCandidateFilter,
         query: &SpaceVector,
         window: u32,
-    ) -> Result<Vec<VectorCandidate>, StorageError> {
+    ) -> Result<VectorCandidatePage, StorageError> {
         let mut found: Vec<VectorCandidate> = self
             .stored()
             .iter()
@@ -242,8 +320,14 @@ impl VectorIndex for InMemoryVectorIndex {
                 .total_cmp(&a.similarity_score)
                 .then(b.memory_id.cmp(&a.memory_id))
         });
+        let bound =
+            if !found.is_empty() && found.len() >= usize::try_from(window).unwrap_or(usize::MAX) {
+                CandidateBound::Bounded
+            } else {
+                CandidateBound::Complete
+            };
         found.truncate(usize::try_from(window).unwrap_or(usize::MAX));
-        Ok(found)
+        Ok(VectorCandidatePage::new(found, bound))
     }
 
     async fn entries(
@@ -323,30 +407,35 @@ mod tests {
             memories: vec![],
         };
         let ranked = index.nearest(&filter, &query, 10).await.unwrap();
+        assert_eq!(ranked.bound, CandidateBound::Complete);
         let ids: Vec<u128> = ranked
+            .candidates
             .iter()
             .map(|c| c.memory_id.into_inner().as_u128())
             .collect();
         assert_eq!(ids, [1, 2]);
-        assert!((ranked[0].similarity_score - 1.0).abs() < 1e-6);
+        assert!((ranked.candidates[0].similarity_score - 1.0).abs() < 1e-6);
         assert!(
             index
                 .nearest(&VectorCandidateFilter::default(), &query, 10)
                 .await
                 .unwrap()
+                .candidates
                 .is_empty()
         );
-        assert_eq!(index.nearest(&filter, &query, 1).await.unwrap().len(), 1);
+        let limited = index.nearest(&filter, &query, 1).await.unwrap();
+        assert_eq!(limited.candidates.len(), 1);
+        assert_eq!(limited.bound, CandidateBound::Bounded);
         let exact = VectorCandidateFilter {
             owners: vec![],
             memories: vec![MemoryId::new(Uuid::from_u128(6))],
         };
-        let exact_ranked = index.nearest(&exact, &query, 1).await.unwrap();
+        let exact_ranked = index.nearest(&exact, &query, 1).await.unwrap().candidates;
         assert_eq!(exact_ranked.len(), 1);
         assert_eq!(exact_ranked[0].memory_id, MemoryId::new(Uuid::from_u128(6)));
 
         put(memory(1), owner, vec![vector(&space, [0.0, 1.0])]).await;
-        let ranked = index.nearest(&filter, &query, 10).await.unwrap();
+        let ranked = index.nearest(&filter, &query, 10).await.unwrap().candidates;
         assert_eq!(
             ranked[0].memory_id.into_inner().as_u128(),
             2,
@@ -368,7 +457,14 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert!(index.nearest(&filter, &query, 10).await.unwrap().is_empty());
+        assert!(
+            index
+                .nearest(&filter, &query, 10)
+                .await
+                .unwrap()
+                .candidates
+                .is_empty()
+        );
         let page = index.entries(None, 2).await.unwrap();
         assert_eq!(page.len(), 2);
         let rest = index.entries(Some(&page[1].key), 10).await.unwrap();

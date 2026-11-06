@@ -2229,7 +2229,7 @@ impl VectorIndex for RendezvousIndex {
         filter: &proxiima_core::storage_ports::VectorCandidateFilter,
         query: &proxiima_core::SpaceVector,
         window: u32,
-    ) -> Result<Vec<proxiima_core::storage_ports::VectorCandidate>, proxiima_core::StorageError>
+    ) -> Result<proxiima_core::storage_ports::VectorCandidatePage, proxiima_core::StorageError>
     {
         if self.armed.load(std::sync::atomic::Ordering::SeqCst) {
             tokio::time::timeout(std::time::Duration::from_secs(5), self.meeting.wait())

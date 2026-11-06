@@ -142,17 +142,39 @@ pub struct EmbeddingOrphanSweepOutcome {
     pub jobs_deleted: u64,
 }
 
-/// Recall over chunk vector rows in the sampled space.
+/// Recall over chunk vector rows in one sampled model and dimension stratum.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct EmbeddingRecallCanary {
+pub struct EmbeddingRecallStratum {
     pub model_id: String,
     /// Width of the sampled space; the canary measures that width's index.
     pub dim: usize,
+    pub sample_count: u64,
+    pub exact_count: u64,
+    pub ann_count: u64,
+    pub overlap_count: u64,
+    pub recall_at_k: f64,
+    /// Lowest recall among the sampled owners in this space.
+    pub minimum_recall_at_k: f64,
+}
+
+/// Recall over chunk vector rows in the sampled spaces.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingRecallCanary {
+    /// Nonempty owner/model/dimension strata available at sampling time.
+    pub available_strata: u64,
+    /// The number of owner/model/dimension samples measured.
+    pub sample_count: u64,
     pub k: u64,
     pub exact_count: u64,
     pub ann_count: u64,
     pub overlap_count: u64,
     pub recall_at_k: f64,
+    /// Lowest per-sample recall, so one degraded owner cannot disappear in
+    /// the aggregate average.
+    pub minimum_recall_at_k: f64,
+    /// Per-model/dimension measurements of the sampled owners. Sampling is
+    /// partial when `sample_count < available_strata`.
+    pub strata: Vec<EmbeddingRecallStratum>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
