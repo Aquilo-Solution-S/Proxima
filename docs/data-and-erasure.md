@@ -162,11 +162,12 @@ owns selection fields, caps, and receipt types.
 Retention is one `retention` row per owner and schema: `keep_days`, `1..=36500`
 (`KeepDays`). No row keeps for good, and nothing inherits: a group's row is its
 own. `core_set_retention` sets or, without days, removes a row, and
-`core_retention` lists the rows of every owner the caller administers. Both
-take the owner-admin gate `erase_own_series` takes: a person for their own
-rows, a group's admin for the group's; an editor, viewer or ingest member is
-refused. Owner export carries the rows, owner erase takes them, and transfer
-leaves them with their owner.
+`core_retention` lists the rows of every owner the caller may read, subject to
+the host's read vetoes. Only `core_set_retention` takes the owner-admin gate
+`erase_own_series` takes: a person for their own rows, a group's admin for the
+group's; an editor, viewer or ingest member cannot set the group's rows.
+Owner export carries the rows, owner erase takes them, and transfer leaves
+them with their owner.
 
 The host runs the clock. `RunningProxiima::retention` reads every row under
 its system authority; for each, the host erases that owner's series of that

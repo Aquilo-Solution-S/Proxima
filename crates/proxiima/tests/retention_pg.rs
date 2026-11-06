@@ -1,6 +1,6 @@
 //! The `retention` rows through the Engine: set by whoever may erase that
-//! owner's memory by hand, read back for exactly the owners the caller
-//! administers, and read whole under the host's system authority.
+//! owner's memory by hand, read back for exactly the owners the caller may
+//! read, and read whole under the host's system authority.
 
 #[path = "fixtures/example_engine.rs"]
 #[allow(dead_code, reason = "each suite uses part of the shared fixture")]
@@ -31,10 +31,15 @@ async fn person(
 ) -> Result<(OwnerId, AuthzContext), sqlx::Error> {
     let user = UserId::new(Uuid::now_v7());
     register(h, OwnerId::from(user), "personal").await?;
-    let authz = proxiima_core::test_fixtures::authenticated_context(
-        AuthzContext::for_subject_with_role(user, roles.iter().copied(), AuthPath::HostBearer),
-    );
-    Ok((OwnerId::from(user), authz))
+    Ok((OwnerId::from(user), context(user, roles)))
+}
+
+fn context(user: UserId, roles: &[(OwnerId, Role)]) -> AuthzContext {
+    proxiima_core::test_fixtures::authenticated_context(AuthzContext::for_subject_with_role(
+        user,
+        roles.iter().copied(),
+        AuthPath::HostBearer,
+    ))
 }
 
 async fn register(h: &ExampleEngine, owner: OwnerId, kind: &str) -> Result<(), sqlx::Error> {
@@ -71,50 +76,61 @@ async fn a_row_is_set_by_whoever_may_erase_that_owners_memory() {
         register(&h, group, "group").await?;
         let (admin, admin_authz) = person(&h, &[(group, Role::admin())]).await?;
         let (editor, editor_authz) = person(&h, &[(group, Role::editor())]).await?;
-        let (_viewer, viewer_authz) = person(&h, &[(group, Role::viewer())]).await?;
-        let (_ingest, ingest_authz) = person(&h, &[(group, Role::ingest())]).await?;
+        let (viewer, viewer_authz) = person(&h, &[(group, Role::viewer())]).await?;
+        let (ingest, ingest_authz) = person(&h, &[(group, Role::ingest())]).await?;
         let (outsider, outsider_authz) = person(&h, &[]).await?;
 
-        h.engine
-            .set_retention(&admin_authz, &group, &schema(MAIL), Some(days(30)))
-            .await?;
+        for (authz, entry) in [
+            (&admin_authz, row(group, MAIL, 30)),
+            (&admin_authz, row(group, PAGE, 14)),
+            (&admin_authz, row(admin, PAGE, 7)),
+            (&editor_authz, row(editor, MAIL, 90)),
+            (&viewer_authz, row(viewer, PAGE, 14)),
+            (&ingest_authz, row(ingest, MAIL, 180)),
+            (&outsider_authz, row(outsider, PAGE, 365)),
+        ] {
+            h.engine
+                .set_retention(authz, &entry.owner, &entry.schema, Some(entry.keep_days))
+                .await?;
+        }
         for (who, authz) in [
             ("editor", &editor_authz),
             ("viewer", &viewer_authz),
             ("ingest", &ingest_authz),
             ("outsider", &outsider_authz),
         ] {
-            let refused = h
-                .engine
-                .set_retention(authz, &group, &schema(MAIL), Some(days(1)))
-                .await
-                .expect_err("only the group's admin sets its row");
-            assert_eq!(refused.code, ErrorCode::Forbidden, "{who}");
+            for keep in [Some(days(1)), None] {
+                let refused = h
+                    .engine
+                    .set_retention(authz, &group, &schema(MAIL), keep)
+                    .await
+                    .expect_err("only the group's admin sets or removes its row");
+                assert_eq!(refused.code, ErrorCode::Forbidden, "{who}");
+            }
         }
-        h.engine
-            .set_retention(&admin_authz, &admin, &schema(PAGE), Some(days(7)))
-            .await?;
-        h.engine
-            .set_retention(&editor_authz, &editor, &schema(MAIL), Some(days(90)))
-            .await?;
-        h.engine
-            .set_retention(&outsider_authz, &outsider, &schema(PAGE), Some(days(365)))
-            .await?;
-
+        // #5114, "Who reads it": every relation uses the owner's read set.
+        for (who, authz, own) in [
+            ("admin", &admin_authz, row(admin, PAGE, 7)),
+            ("editor", &editor_authz, row(editor, MAIL, 90)),
+            ("viewer", &viewer_authz, row(viewer, PAGE, 14)),
+            ("ingest", &ingest_authz, row(ingest, MAIL, 180)),
+        ] {
+            assert_eq!(
+                h.engine.read_retention(authz).await?,
+                sorted(vec![row(group, MAIL, 30), row(group, PAGE, 14), own]),
+                "{who} reads its own rows and exactly its group's rows"
+            );
+        }
         assert_eq!(
-            h.engine.read_retention(&admin_authz).await?,
-            sorted(vec![row(group, MAIL, 30), row(admin, PAGE, 7)]),
-            "the admin reads its own rows and its group's"
+            h.engine.read_retention(&outsider_authz).await?,
+            vec![row(outsider, PAGE, 365)],
+            "an outsider reads only its own rows"
         );
+        let removed_authz = context(UserId::new(editor.into_inner()), &[]);
         assert_eq!(
-            h.engine.read_retention(&editor_authz).await?,
+            h.engine.read_retention(&removed_authz).await?,
             vec![row(editor, MAIL, 90)],
-            "an editor reads its own rows, not the group's"
-        );
-        assert_eq!(
-            h.engine.read_retention(&viewer_authz).await?,
-            Vec::new(),
-            "a viewer with no rows of its own reads none"
+            "a removed member's refreshed context reads only its own rows"
         );
 
         h.engine
@@ -125,7 +141,7 @@ async fn a_row_is_set_by_whoever_may_erase_that_owners_memory() {
             .await?;
         assert_eq!(
             h.engine.read_retention(&admin_authz).await?,
-            vec![row(group, MAIL, 60)],
+            sorted(vec![row(group, MAIL, 60), row(group, PAGE, 14)]),
             "a set replaces the row, and a set with no days removes it"
         );
 
@@ -134,7 +150,10 @@ async fn a_row_is_set_by_whoever_may_erase_that_owners_memory() {
             engine.all_retention(&system).await?,
             sorted(vec![
                 row(group, MAIL, 60),
+                row(group, PAGE, 14),
                 row(editor, MAIL, 90),
+                row(viewer, PAGE, 14),
+                row(ingest, MAIL, 180),
                 row(outsider, PAGE, 365),
             ]),
             "the host's clock reads every owner's rows"

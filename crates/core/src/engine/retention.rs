@@ -1,9 +1,8 @@
 //! The `retention` rows (docs/data-and-erasure.md): set by whoever may erase
-//! that owner's memory by hand, read by the caller for the owners it
-//! administers, and read whole by the host's clock.
+//! that owner's memory by hand, read for every owner the caller may read,
+//! and read whole by the host's clock.
 
 use super::Engine;
-use crate::access::AccessKind;
 use crate::authz::{AuthzContext, SystemAuthority};
 use crate::error::ProtocolError;
 use crate::{KeepDays, OwnerId, Retention, SchemaId};
@@ -35,21 +34,17 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(format!("set_retention: {e}")))
     }
 
-    /// The rows of every owner the caller administers: its own, and each
-    /// group whose admin it is.
+    /// The rows of every owner the caller may read: its own, and each group
+    /// it belongs to, subject to the host's read vetoes.
     ///
     /// # Errors
-    /// `Internal` for storage faults.
+    /// `Forbidden` when the context authorizes no reads; `Internal` for
+    /// storage faults.
     pub async fn read_retention(
         &self,
         authz: &AuthzContext,
     ) -> Result<Vec<Retention>, ProtocolError> {
-        let mut owners = Vec::new();
-        for owner in authz.writable_owners(AccessKind::Goal) {
-            if self.authorize_owner_admin(authz, &owner).await.is_ok() {
-                owners.push(owner);
-            }
-        }
+        let owners = self.authorize_read(authz).await?;
         if owners.is_empty() {
             return Ok(Vec::new());
         }

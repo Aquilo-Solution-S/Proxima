@@ -1,5 +1,5 @@
 //! `core_retention` and `core_set_retention`: an owner's retention per
-//! schema (docs/data-and-erasure.md), under the owner-admin gate.
+//! schema (docs/data-and-erasure.md): members read, owner admins set.
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
@@ -25,7 +25,7 @@ pub struct RetentionRow {
     pub keep_days: u16,
 }
 
-/// The read: the rows of every owner the caller administers.
+/// The read: the rows of every owner the caller may read.
 #[derive(Debug)]
 pub struct RetentionTool;
 
@@ -33,7 +33,7 @@ impl McpTool for RetentionTool {
     const NAME: &'static str = protocol_tool::CORE_RETENTION;
     const TITLE: &'static str = "Retention";
     const DESCRIPTION: &'static str =
-        "Days each schema's memory is kept in the spaces you administer; unlisted keeps for good.";
+        "Days each schema's memory is kept in spaces you belong to; unlisted keeps for good.";
     const EFFECT: Option<ToolEffect> = Some(ToolEffect::ReadOnly);
     const AUDIENCE: McpToolAudience = McpToolAudience::Owner;
     type Args = RetentionArgs;
