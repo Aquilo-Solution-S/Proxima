@@ -359,7 +359,7 @@ enum DistancePlan {
 }
 
 async fn current_embedding_ids_by_distance(
-    pool: &mut PgConnection,
+    connection: &mut PgConnection,
     owner_id: uuid::Uuid,
     model_id: &str,
     lane: crate::pgvector::Lane,
@@ -367,7 +367,7 @@ async fn current_embedding_ids_by_distance(
     k: i64,
     plan: DistancePlan,
 ) -> Result<Vec<(uuid::Uuid, i32, i32)>, StorageError> {
-    let mut tx = pool
+    let mut tx = connection
         .begin()
         .await
         .map_err(|err| StorageError::Internal(format!("begin recall canary tx: {err}")))?;
@@ -423,7 +423,10 @@ async fn current_embedding_ids_by_distance(
         .fetch_all(tx.as_mut())
         .await
         .map_err(map_err)?;
-    tx.commit().await.map_err(map_err)?;
+    // This transaction is a savepoint inside the platform transaction. Roll
+    // it back explicitly so SET LOCAL planner flags cannot leak into the
+    // following ANN leg or the caller's enclosing transaction.
+    tx.rollback().await.map_err(map_err)?;
     Ok(rows)
 }
 
@@ -539,5 +542,49 @@ mod recall_tests {
         let summary = summarize_recalls(1, vec![sample("empty", 0, 0, 0.0)]).unwrap();
         assert!(summary.recall_at_k.abs() < f64::EPSILON);
         assert!(summary.minimum_recall_at_k.abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn canary_leg_settings_do_not_escape_the_outer_platform_transaction() {
+        async fn planner_settings(connection: &mut sqlx::PgConnection) -> (bool, bool) {
+            sqlx::query_as(
+                "SELECT current_setting('enable_indexscan')::bool,
+                        current_setting('enable_seqscan')::bool",
+            )
+            .fetch_one(connection)
+            .await
+            .expect("outer transaction still usable")
+        }
+
+        let (pg, _guard) = crate::test_fixtures::fresh_pg("recall_canary_settings").await;
+        let mut outer = pg
+            .platform_scope_for_host()
+            .begin()
+            .await
+            .expect("platform transaction");
+        let before = planner_settings(outer.as_mut()).await;
+        let dim = proxiima_core::EmbeddingDim::D384;
+        let lane = crate::pgvector::Lane::of(dim);
+        let query = lane.query_vector(&vec![1.0; dim.width()]);
+        let owner = uuid::Uuid::now_v7();
+        for plan in [super::DistancePlan::Exact, super::DistancePlan::Ann] {
+            super::current_embedding_ids_by_distance(
+                outer.as_mut(),
+                owner,
+                "missing-canary-space",
+                lane,
+                &query,
+                10,
+                plan,
+            )
+            .await
+            .expect("read-only canary leg");
+            let after = planner_settings(outer.as_mut()).await;
+            assert_eq!(
+                after, before,
+                "{plan:?} planner settings must stay inside its savepoint"
+            );
+        }
+        outer.rollback().await.expect("outer rollback");
     }
 }
