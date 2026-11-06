@@ -35,7 +35,8 @@ pub(crate) use memories::query_memories_on_connection;
 pub use memories::{memory_page_sql_for_tests, memory_page_sql_for_tests_with_schemas};
 pub(crate) use search::search_memories_on_connection;
 pub(crate) use search::{
-    SubstringCandidates, projection_candidate_statements, projection_substring_candidates,
+    RankedCandidates, SubstringCandidates, projection_ranked_candidates,
+    projection_substring_candidates,
 };
 #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 pub use search::{

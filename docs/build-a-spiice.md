@@ -220,10 +220,20 @@ through `proxiima::spiice::projection_artifacts(contract)`. Reuse
 `BAND_EXACT`, `BAND_RESCUE`, and `BAND_SUBSTRING` from the SDK when declaring
 core-comparable bands; `LEXICAL_LANGUAGE_DEPLOYMENT_DEFAULT` explicitly selects
 the deployment's lexical configuration on a memory write.
-Carry the output of `proxiima::spiice::search_candidate_artifacts(contract)` in
-the projection's migration, alongside its owner/text and owner/tag GIN indexes.
-These generated functions return only candidates authorized by memory RLS;
-their declared schema sets and score bands come from the same contract.
+Keep the projection table and its owner/text and owner/tag GIN indexes in
+versioned migrations. The explicit host migration run installs current search
+candidate functions from the same frozen composition after those migrations.
+Their schema sets, score bands, and authorization SQL come from the contract;
+a consumer does not copy their bodies into a new migration when Proxiima changes.
+Keep any already released function migrations unchanged: the final definitions
+pass replaces their bodies with the current generated definitions.
+
+Serving startup validates these definitions and refuses a mismatch; it never
+replaces them. Run the host's migration command with the new binary and frozen
+sidecars before starting a searchable composed host, including its first boot.
+`proxiima::spiice::search_candidate_artifacts(contract)` remains available for
+inspection. Test the effective catalog after migration replay instead of
+asserting that generated text occurs somewhere in migration history.
 
 Automatic Fact writes bind natural keys by the registered sidecar's SQL column
 types. UUID-shaped text remains text; UUID columns bind UUIDs. Selection runs

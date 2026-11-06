@@ -297,15 +297,21 @@ impl PgSidecarRegistry {
             .retired_facts()
             .map(super::PgRetiredFactSidecar::from_contract)
             .collect::<Result<Vec<_>, _>>()?;
+        let spiice_schema_names: Arc<[String]> = proxiima_core::composed_schema_names(registry)
+            .into_iter()
+            .filter(|schema| schema != "proxiima_core")
+            .collect::<Vec<_>>()
+            .into();
+        let search_definitions = super::SearchDefinitions::from_contracts(
+            registry.contracts(),
+            Arc::clone(&spiice_schema_names),
+        )?;
 
         Ok(PgSidecarRegistryFrozen {
             retired_facts: retired_facts.into(),
             entries: Arc::new(self.entries),
-            spiice_schema_names: proxiima_core::composed_schema_names(registry)
-                .into_iter()
-                .filter(|schema| schema != "proxiima_core")
-                .collect::<Vec<_>>()
-                .into(),
+            spiice_schema_names,
+            search_definitions,
         })
     }
 

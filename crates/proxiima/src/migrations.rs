@@ -191,6 +191,10 @@ pub enum MigrationError {
     CorePreflight(#[source] StorageError),
     #[error("sidecar owner RLS deployment failed: {0}")]
     SidecarOwnerRls(#[source] StorageError),
+    #[error(
+        "composed search definitions are not current; run the host migration command before serving: {0}"
+    )]
+    SearchDefinitions(#[source] StorageError),
     #[error("core migrations failed: {0}")]
     Core(#[source] MigrateError),
     #[error("spiice migrations failed for {source}: {err}")]
@@ -275,6 +279,8 @@ pub enum LedgerConflict {
 /// `sidecars` is frozen against the same composition being migrated. The
 /// runner derives Follows owner RLS from it before and after the spiice lanes,
 /// under the migration lock; an empty SQL plan still reconciles that state.
+/// The explicit run also installs generated spiice search definitions in its
+/// final transaction. Serving startup validates those definitions instead.
 ///
 /// # Errors
 ///
@@ -317,7 +323,39 @@ pub async fn run_core_and_spiice_migrations_with_policy<P: MigrationStorage>(
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
 ) -> Result<MigrationRunReport, MigrationError> {
-    run_lineup_with_policy(pg, &lineup(spiices, pg.vector_storage()), sidecars, policy).await
+    run_lineup_with_policy(
+        pg,
+        &lineup(spiices, pg.vector_storage()),
+        sidecars,
+        policy,
+        SearchDefinitions::Apply,
+    )
+    .await
+}
+
+/// Startup can run schema migrations, but cannot replace the search program
+/// installed by the host's explicit migration run. Check before any DDL and
+/// again after the lanes, under their existing whole-run lock.
+pub(crate) async fn run_serving_migrations<P: MigrationStorage>(
+    pg: &P,
+    spiices: impl IntoIterator<Item = NamedMigrator>,
+    sidecars: &PgSidecarRegistryFrozen,
+    policy: MissingMigrationPolicy,
+) -> Result<MigrationRunReport, MigrationError> {
+    run_lineup_with_policy(
+        pg,
+        &lineup(spiices, pg.vector_storage()),
+        sidecars,
+        policy,
+        SearchDefinitions::Validate,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum SearchDefinitions {
+    Apply,
+    Validate,
 }
 
 /// [`run_core_and_spiice_migrations`] over a [`lineup`] the caller keeps: the
@@ -329,7 +367,14 @@ pub(crate) async fn run_lineup<P: MigrationStorage>(
     sources: &[NamedMigrator],
     sidecars: &PgSidecarRegistryFrozen,
 ) -> Result<MigrationRunReport, MigrationError> {
-    run_lineup_with_policy(pg, sources, sidecars, MissingMigrationPolicy::Reject).await
+    run_lineup_with_policy(
+        pg,
+        sources,
+        sidecars,
+        MissingMigrationPolicy::Reject,
+        SearchDefinitions::Apply,
+    )
+    .await
 }
 
 async fn run_lineup_with_policy<P: MigrationStorage>(
@@ -337,6 +382,7 @@ async fn run_lineup_with_policy<P: MigrationStorage>(
     sources: &[NamedMigrator],
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
+    search_definitions: SearchDefinitions,
 ) -> Result<MigrationRunReport, MigrationError> {
     check_lineup(sources)?;
     run_lineup_with_pool(
@@ -345,6 +391,7 @@ async fn run_lineup_with_policy<P: MigrationStorage>(
         sidecars,
         policy,
         pg.vector_storage(),
+        search_definitions,
     )
     .await
 }
@@ -355,6 +402,7 @@ async fn run_lineup_with_pool(
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
     vectors: VectorStorage,
+    search_definitions: SearchDefinitions,
 ) -> Result<MigrationRunReport, MigrationError> {
     let report = MigrationRunReport::from_sources(sources);
 
@@ -364,7 +412,15 @@ async fn run_lineup_with_pool(
         .await
         .map_err(MigrationError::PinSearchPath)?;
 
-    let migration_result = run_locked_sources(&mut conn, sources, sidecars, policy, vectors).await;
+    let migration_result = run_locked_sources(
+        &mut conn,
+        sources,
+        sidecars,
+        policy,
+        vectors,
+        search_definitions,
+    )
+    .await;
     let reset_result = reset_migration_search_path(&mut conn).await;
 
     match (migration_result, reset_result) {
@@ -387,6 +443,7 @@ async fn run_locked_sources(
     sidecars: &PgSidecarRegistryFrozen,
     policy: MissingMigrationPolicy,
     vectors: VectorStorage,
+    search_definitions: SearchDefinitions,
 ) -> Result<(), MigrationError> {
     let lock = SessionLock::acquire(conn).await.map_err(execute_error)?;
     let result = async {
@@ -397,7 +454,13 @@ async fn run_locked_sources(
             vectors,
         )
         .await?;
-        run_sources_on_connection(lock.conn, sources, sidecars, vectors).await
+        if let SearchDefinitions::Validate = search_definitions {
+            sidecars
+                .ensure_search_definitions(lock.conn)
+                .await
+                .map_err(MigrationError::SearchDefinitions)?;
+        }
+        run_sources_on_connection(lock.conn, sources, sidecars, vectors, search_definitions).await
     }
     .await;
     let released = lock.release().await;
@@ -505,7 +568,11 @@ pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
         sidecars
             .ensure_owner_follows(&mut snapshot)
             .await
-            .map_err(MigrationError::SidecarOwnerRls)
+            .map_err(MigrationError::SidecarOwnerRls)?;
+        sidecars
+            .ensure_search_definitions(&mut snapshot)
+            .await
+            .map_err(MigrationError::SearchDefinitions)
     }
     .await;
     let ended = snapshot.rollback().await;
@@ -563,7 +630,9 @@ pub enum PendingMigration {
 /// - Down migrations are not listed.
 ///
 /// Registry-derived Follows marks, policies and indexes are reconciled on
-/// every run, including when this list is empty. Use
+/// every run, including when this list is empty. Composed search definitions
+/// are installed by an explicit migration run even when no versioned SQL is
+/// pending. This list does not describe that registry-derived work. Use
 /// [`preflight_without_migrations`] with the frozen sidecar registry to
 /// validate that generated deployment state.
 ///
@@ -916,6 +985,7 @@ async fn run_sources_on_connection(
     sources: &[NamedMigrator],
     sidecars: &PgSidecarRegistryFrozen,
     vectors: VectorStorage,
+    search_definitions: SearchDefinitions,
 ) -> Result<(), MigrationError> {
     run_historical_sources(conn, sources, sidecars, vectors).await?;
     for source in sources {
@@ -948,6 +1018,11 @@ async fn run_sources_on_connection(
         .await?;
     }
     let mut transaction = sync_owner_follows(conn, sidecars).await?;
+    match search_definitions {
+        SearchDefinitions::Apply => sidecars.apply_search_definitions(&mut transaction).await,
+        SearchDefinitions::Validate => sidecars.ensure_search_definitions(&mut transaction).await,
+    }
+    .map_err(MigrationError::SearchDefinitions)?;
     sidecars
         .ensure_owner_follows(&mut transaction)
         .await

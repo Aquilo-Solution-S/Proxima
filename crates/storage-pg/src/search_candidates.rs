@@ -4,17 +4,46 @@
 //! relation name. Its private execution role can scan the derived projection;
 //! ordinary memory RLS authorizes every id before the function returns it.
 
-use proxiima_core::StorageError;
 use proxiima_core::spiice::SpiiceContract;
+use proxiima_core::{StorageError, verbs::query::SearchOrder};
 
 use crate::pg_ident::PgIdent;
 use crate::projection::Artifact;
+use crate::verbs::query::RankedCandidates;
 use crate::verbs::query::SubstringCandidates;
 
 /// The fixed `PostgreSQL` identity arguments of both candidate functions.
 pub const ARGUMENT_TYPES: &str = "text, bigint, text[], timestamp with time zone, timestamp with time zone, uuid, uuid[], text[], boolean, boolean, boolean, text, boolean";
 
 const PARAMETERS: &str = "query_text text, candidate_limit bigint, requested_tags text[], since_time timestamptz, until_time timestamptz, before_id uuid, requested_owners uuid[], requested_schemas text[], rescue boolean, recency boolean, heads_only boolean, requested_kind text, tag_all boolean";
+
+/// One generated function and the exact SQL body installed for it.
+///
+/// The body is produced alongside the installation artifact so catalog
+/// validation does not need to parse generated SQL or maintain a second
+/// definition source.
+#[derive(Debug, Clone)]
+pub(crate) struct CandidateDefinition {
+    pub(crate) signature: String,
+    pub(crate) body: String,
+    pub(crate) kind: CandidateKind,
+    pub(crate) artifact: Artifact,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CandidateKind {
+    Lexical,
+    Substring,
+}
+
+impl CandidateKind {
+    pub(crate) fn result_columns(self) -> &'static str {
+        match self {
+            Self::Lexical => "t uuid, schema_id text, lexical_score real",
+            Self::Substring => "t uuid, lexical_score real",
+        }
+    }
+}
 
 /// Qualified function name derived from a projection's schema.
 ///
@@ -69,6 +98,18 @@ pub fn candidate_artifacts(
     candidate_artifacts_for_projection(spec.table, spec.overfetch_k, &projections)
 }
 
+/// Generate current candidate definitions for catalog application and checks.
+pub(crate) fn candidate_definitions(
+    contract: &'static SpiiceContract,
+) -> Result<Vec<CandidateDefinition>, StorageError> {
+    let Some(spec) = contract.projection.spec() else {
+        return Ok(Vec::new());
+    };
+    let projections = proxiima_core::verbs::schema::contract_search_projections(&[contract])
+        .map_err(|error| StorageError::Internal(error.to_string()))?;
+    candidate_definitions_for_projection(spec.table, spec.overfetch_k, &projections)
+}
+
 /// Candidate artifacts for one synthetic projection used by database fixtures.
 ///
 /// # Errors
@@ -89,73 +130,69 @@ fn candidate_artifacts_for_projection(
     cap: u32,
     projections: &[proxiima_core::verbs::schema::MemorySearchProjection],
 ) -> Result<Vec<Artifact>, StorageError> {
-    let mut artifacts = Vec::new();
+    Ok(
+        candidate_definitions_for_projection(table, cap, projections)?
+            .into_iter()
+            .map(|definition| definition.artifact)
+            .collect(),
+    )
+}
+
+fn candidate_definitions_for_projection(
+    table: &str,
+    cap: u32,
+    projections: &[proxiima_core::verbs::schema::MemorySearchProjection],
+) -> Result<Vec<CandidateDefinition>, StorageError> {
+    let mut definitions = Vec::new();
     for substring in [false, true] {
-        let (relevance, recency, candidate_tables) = if substring {
-            let Some(relevance) =
-                crate::verbs::query::projection_substring_candidates(projections, false)?
+        let (template, candidate_tables) = if substring {
+            let Some(template) = crate::verbs::query::projection_substring_candidates(projections)?
             else {
                 continue;
             };
-            let recency = crate::verbs::query::projection_substring_candidates(projections, true)?
-                .ok_or_else(missing_recency)?;
             // The candidate role reads the core sidecars through their
             // trigram indexes, which row security would otherwise keep out of
             // reach. A spiice's sidecar has no such index (see `SubstringArm`)
             // and stays under owner row security.
             let mut tables = vec![table.to_owned()];
             tables.extend(
-                relevance
+                template
                     .legs
                     .iter()
                     .filter(|leg| leg.table.starts_with("proxiima_core."))
                     .map(|leg| leg.table.clone()),
             );
-            (
-                substring_execution(&relevance),
-                substring_execution(&recency),
-                tables,
-            )
+            (substring_execution(&template), tables)
         } else {
-            let Some(relevance) =
-                crate::verbs::query::projection_candidate_statements(projections, false, false)?
+            let Some(template) = crate::verbs::query::projection_ranked_candidates(projections)?
             else {
                 continue;
             };
-            let recency =
-                crate::verbs::query::projection_candidate_statements(projections, false, true)?
-                    .ok_or_else(missing_recency)?;
-            (
-                execution(&relevance),
-                execution(&recency),
-                vec![table.to_owned()],
-            )
+            (execution(&template), vec![table.to_owned()])
         };
         let name = function_name(table, substring)?;
-        let returns = if substring {
-            "t uuid, lexical_score real"
+        let kind = if substring {
+            CandidateKind::Substring
         } else {
-            "t uuid, schema_id text, lexical_score real"
+            CandidateKind::Lexical
         };
+        let returns = kind.result_columns();
         // SQL-POLICY: PgIdent — name and all body identifiers are checked by the renderer.
-        let forward = format!(
-            "CREATE OR REPLACE FUNCTION {name}({PARAMETERS})\n\
-             RETURNS TABLE({returns})\n\
-             LANGUAGE plpgsql SECURITY DEFINER\n\
-             SET search_path TO pg_catalog, pg_temp\n\
-             AS $candidate_function$\n\
-             BEGIN\n\
+        let body = format!(
+            "\nBEGIN\n\
                  PERFORM proxiima_core.assert_search_scope(requested_owners);\n\
                  IF candidate_limit IS NULL OR candidate_limit < 1 OR candidate_limit > {cap} THEN\n\
                      RAISE EXCEPTION 'candidate limit must be between 1 and {cap}' USING ERRCODE = '22023';\n\
                  END IF;\n\
-                 IF recency THEN\n\
-                     {recency}\n\
-                 ELSE\n\
-                     {relevance}\n\
-                 END IF;\n\
-             END\n\
-             $candidate_function$;",
+                 {template}\n\
+             END\n",
+        );
+        let function_ddl = format!(
+            "CREATE OR REPLACE FUNCTION {name}({PARAMETERS})\n\
+             RETURNS TABLE({returns})\n\
+             LANGUAGE plpgsql SECURITY DEFINER\n\
+             SET search_path TO pg_catalog, pg_temp\n\
+             AS $candidate_function${body}$candidate_function$;",
         );
         let signature = format!("{name}({ARGUMENT_TYPES})");
         let mut read_tables = vec![
@@ -176,9 +213,9 @@ fn candidate_artifacts_for_projection(
             .split_once('.')
             .ok_or_else(|| StorageError::Internal("unqualified projection".into()))?
             .0;
-        let forward = installation_sql(
+        let installed = installation_sql(
             schema,
-            &forward,
+            &function_ddl,
             &signature,
             &read_tables,
             &candidate_tables
@@ -186,17 +223,19 @@ fn candidate_artifacts_for_projection(
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
         )?;
-        artifacts.push(Artifact {
-            forward,
-            // SQL-POLICY: PgIdent — the inverse uses the same checked function name.
+        let artifact = Artifact {
+            forward: installed,
+            // SQL-POLICY: PgIdent — the inverse uses the generated checked function name.
             inverse: format!("DROP FUNCTION IF EXISTS {name}({ARGUMENT_TYPES});"),
+        };
+        definitions.push(CandidateDefinition {
+            signature,
+            body,
+            kind,
+            artifact,
         });
     }
-    Ok(artifacts)
-}
-
-fn missing_recency() -> StorageError {
-    StorageError::Internal("candidate arm has no recency statement".into())
+    Ok(definitions)
 }
 
 const USING_ARGUMENTS: &str = "USING query_text, candidate_limit, requested_tags, since_time, \
@@ -209,8 +248,13 @@ fn quoted(sql: &str) -> String {
 
 /// EXECUTE plans each search using its actual values. A generic plan cannot
 /// hide the tag/text condition behind optional-filter switches.
-fn execution(sql: &str) -> String {
-    format!("RETURN QUERY EXECUTE '{}' {USING_ARGUMENTS}", quoted(sql))
+fn execution(query: &RankedCandidates) -> String {
+    format!(
+        "RETURN QUERY EXECUTE '{}' || CASE WHEN recency THEN ' ORDER BY {recency}' ELSE ' ORDER BY {relevance}' END || ' LIMIT $2' {USING_ARGUMENTS}",
+        quoted(&query.body),
+        recency = RankedCandidates::order_sql(SearchOrder::Recency),
+        relevance = RankedCandidates::order_sql(SearchOrder::Relevance),
+    )
 }
 
 /// The substring arm plans one statement per request over only the legs whose
@@ -218,7 +262,7 @@ fn execution(sql: &str) -> String {
 /// `= ANY(<its own schemas>)`, so a leg the request does not name matches no
 /// row, and planning it (about 2 ms of row-security expansion) buys nothing.
 fn substring_execution(candidates: &SubstringCandidates) -> String {
-    let (open, between, close) = candidates.frame();
+    let (open, between, close) = SubstringCandidates::frame();
     let legs = candidates
         .legs
         .iter()
@@ -241,11 +285,13 @@ fn substring_execution(candidates: &SubstringCandidates) -> String {
         "DECLARE legs text[] := ARRAY[]::text[];\n\
          BEGIN\n{legs}\n\
          IF cardinality(legs) = 0 THEN RETURN; END IF;\n\
-         RETURN QUERY EXECUTE '{}' || array_to_string(legs, '{}') || '{}' {USING_ARGUMENTS}\n\
+         RETURN QUERY EXECUTE '{}' || array_to_string(legs, '{}') || '{}' || CASE WHEN recency THEN ' ORDER BY {recency}' ELSE ' ORDER BY {relevance}' END || ' LIMIT $2' {USING_ARGUMENTS}\n\
          END;",
         quoted(open),
         quoted(between),
-        quoted(&close),
+        quoted(close),
+        recency = SubstringCandidates::order_sql(SearchOrder::Recency),
+        relevance = SubstringCandidates::order_sql(SearchOrder::Relevance),
     )
 }
 

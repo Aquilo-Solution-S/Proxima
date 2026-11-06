@@ -231,6 +231,7 @@ fn fingerprint_hash(
         &proxiima_storage_pg::definitions::checksum_bytes(vectors),
     );
     hash = feed(hash, proxiima_core::RELEASE_VERSION.as_bytes());
+    hash = feed(hash, &sidecars.search_definitions_fingerprint());
     for source in sources {
         hash = feed(hash, source.source().as_bytes());
         hash = feed(hash, source.ledger().as_bytes());

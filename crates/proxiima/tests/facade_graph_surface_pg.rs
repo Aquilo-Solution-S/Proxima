@@ -71,6 +71,7 @@ async fn typed_derivation_separates_conclusions_revisions_and_row_identity() {
     let split_db = clone_split_core_db("sdk_derived_identity")
         .await
         .expect("PG required");
+    migrate_facade(&split_db).await;
     let (db_url, platform_url) = (
         split_db.runtime_url().to_owned(),
         split_db.platform_url().to_owned(),
@@ -228,6 +229,7 @@ async fn typed_derivation_uow_resolves_uncommitted_kinds_and_keeps_refs() {
     let split_db = clone_split_core_db("sdk_derived_session")
         .await
         .expect("PG required");
+    migrate_facade(&split_db).await;
     let (db_url, platform_url) = (
         split_db.runtime_url().to_owned(),
         split_db.platform_url().to_owned(),
@@ -354,6 +356,7 @@ async fn typed_derivation_authorizes_foreign_origins_and_rejects_invalid_inputs(
     let split_db = clone_split_core_db("sdk_derived_access")
         .await
         .expect("PG required");
+    migrate_facade(&split_db).await;
     let (db_url, platform_url) = (
         split_db.runtime_url().to_owned(),
         split_db.platform_url().to_owned(),
@@ -541,6 +544,7 @@ async fn typed_facts_select_destination_and_reuse_uncommitted_natural_keys() {
     let split_db = clone_split_core_db("sdk_fact_series")
         .await
         .expect("PG required");
+    migrate_facade(&split_db).await;
     let (db_url, platform_url) = (
         split_db.runtime_url().to_owned(),
         split_db.platform_url().to_owned(),
@@ -649,6 +653,7 @@ async fn natural_key_selection_uses_the_authorized_payload() {
     let split_db = clone_split_core_db("sdk_nk_binding")
         .await
         .expect("PG required");
+    migrate_facade(&split_db).await;
     let (db_url, platform_url) = (
         split_db.runtime_url().to_owned(),
         split_db.platform_url().to_owned(),
@@ -1202,6 +1207,7 @@ async fn facade_query_checks_primary_sidecar_integrity_without_projecting_payloa
     let split_db = clone_split_core_db("proxiima_facade_sidecar_integrity")
         .await
         .expect("PG required for tests");
+    migrate_facade(&split_db).await;
     let db_name = split_db.name().to_owned();
     let (db_url, platform_url) = (
         split_db.runtime_url().to_owned(),
@@ -1502,12 +1508,10 @@ fn facade_migrator() -> sqlx::migrate::Migrator {
             .into_iter()
             .map(|artifact| artifact.forward),
     );
-    statements.extend(
-        proxiima::spiice::search_candidate_artifacts(&FACADE_CONTRACT)
-            .expect("the facade test spiice's search candidates")
-            .into_iter()
-            .map(|artifact| artifact.forward),
-    );
+    // Search candidate functions are installed by Proxiima's composed
+    // definitions phase. A consumer migration owns tables, projections,
+    // triggers and policies; it does not carry a second copy of generated
+    // authorization SQL.
 
     sqlx::migrate::Migrator {
         migrations: std::borrow::Cow::Owned(vec![sqlx::migrate::Migration::new(
@@ -1529,6 +1533,265 @@ async fn admin_pool(database: &str) -> Result<sqlx::PgPool, sqlx::Error> {
     sqlx::PgPool::connect(&proxiima_pg_testkit::db_url(database)).await
 }
 
+fn facade_sidecars() -> proxiima::PgSidecarRegistryFrozen {
+    let mut registry = SpiiceRegistry::new();
+    FacadeSurfaceApp::register(&mut registry).expect("the facade test spiice registers");
+    let registry = registry
+        .try_freeze()
+        .expect("the facade test contract freezes");
+    let mut sidecars = PgSidecarRegistry::new();
+    proxiima_storage_pg::register_core_pg_sidecars(&mut sidecars);
+    FacadeSurfaceApp::register_pg_sidecars(&mut sidecars);
+    sidecars
+        .freeze_against(&registry)
+        .expect("the facade test PG registrations match its contract")
+}
+
+async fn migrate_facade(db: &proxiima_pg_testkit::SplitRoleDb) {
+    let sidecars = facade_sidecars();
+    let pg = proxiima::PgMigrationStorage::connect_with_config(
+        db.platform_url(),
+        proxiima::PgPoolConfig::default(),
+        proxiima::PgTuning::default(),
+    )
+    .await
+    .expect("facade migration connection");
+    proxiima::run_core_and_spiice_migrations(
+        &pg,
+        vec![proxiima::NamedMigrator::new(
+            "facade-test",
+            facade_migrator(),
+        )],
+        &sidecars,
+    )
+    .await
+    .expect("facade migration and composed search definitions");
+    pg.clone_pool_for_backend().close().await;
+}
+
+const FACADE_LEXICAL_SIGNATURE: &str = "facade_surface.search_lexical_candidates(text,bigint,text[],timestamp with time zone,timestamp with time zone,uuid,uuid[],text[],boolean,boolean,boolean,text,boolean)";
+
+async fn lexical_body(pool: &sqlx::PgPool) -> String {
+    sqlx::query_scalar(
+        "SELECT p.prosrc
+           FROM pg_proc p
+          WHERE p.oid = to_regprocedure($1)",
+    )
+    .bind(FACADE_LEXICAL_SIGNATURE)
+    .fetch_one(pool)
+    .await
+    .expect("facade lexical candidate body")
+}
+
+async fn corrupt_lexical_body(pool: &sqlx::PgPool) {
+    let mut transaction = pool.begin().await.expect("platform transaction");
+    sqlx::query("GRANT USAGE, CREATE ON SCHEMA facade_surface TO proxiima_search")
+        .execute(&mut *transaction)
+        .await
+        .expect("temporary candidate schema grant");
+    sqlx::query("SET LOCAL ROLE proxiima_search")
+        .execute(&mut *transaction)
+        .await
+        .expect("candidate role");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(
+        r"CREATE OR REPLACE FUNCTION facade_surface.search_lexical_candidates(
+                    query_text text, candidate_limit bigint, requested_tags text[],
+                    since_time timestamptz, until_time timestamptz, before_id uuid,
+                    requested_owners uuid[], requested_schemas text[], rescue boolean,
+                    recency boolean, heads_only boolean, requested_kind text, tag_all boolean)
+                RETURNS TABLE(t uuid, schema_id text, lexical_score real)
+                LANGUAGE plpgsql SECURITY DEFINER
+                SET search_path TO pg_catalog, pg_temp
+                AS $stale$
+                BEGIN
+                    RETURN;
+                END
+                $stale$;",
+    ))
+    .execute(&mut *transaction)
+    .await
+    .expect("overwrite generated definition");
+    sqlx::query("RESET ROLE")
+        .execute(&mut *transaction)
+        .await
+        .expect("restore platform role");
+    sqlx::query("REVOKE CREATE ON SCHEMA facade_surface FROM proxiima_search")
+        .execute(&mut *transaction)
+        .await
+        .expect("restore candidate schema privilege");
+    transaction.commit().await.expect("commit stale body");
+}
+
+async fn facade_preflight(
+    db: &proxiima_pg_testkit::SplitRoleDb,
+) -> Result<(), proxiima::MigrationError> {
+    let pg = proxiima::PgMigrationStorage::connect_with_config(
+        db.platform_url(),
+        proxiima::PgPoolConfig::default(),
+        proxiima::PgTuning::default(),
+    )
+    .await
+    .expect("facade preflight connection");
+    let result = proxiima::preflight_without_migrations(
+        &pg,
+        vec![proxiima::NamedMigrator::new(
+            "facade-test",
+            facade_migrator(),
+        )],
+        &facade_sidecars(),
+    )
+    .await
+    .map(|_| ());
+    pg.clone_pool_for_backend().close().await;
+    result
+}
+
+#[tokio::test]
+async fn serving_boot_refuses_stale_search_definitions_until_explicit_migration() {
+    let split_db = clone_split_core_db("facade_search_definition_lifecycle")
+        .await
+        .expect("PG required");
+    migrate_facade(&split_db).await;
+
+    let platform = sqlx::PgPool::connect(split_db.platform_url())
+        .await
+        .expect("platform connection");
+    let original = lexical_body(&platform).await;
+    corrupt_lexical_body(&platform).await;
+    let stale = lexical_body(&platform).await;
+    assert_ne!(stale, original);
+    platform.close().await;
+
+    let preflight = facade_preflight(&split_db).await;
+    assert!(
+        matches!(
+            preflight,
+            Err(proxiima::MigrationError::SearchDefinitions(_))
+        ),
+        "stale generated body must fail read-only preflight: {preflight:?}"
+    );
+
+    let owner = company_owner(Uuid::now_v7());
+    let stale_boot = Proxiima::<FacadeSurfaceApp>::app()
+        .database_url(split_db.runtime_url().to_owned())
+        .store_number(0)
+        .platform_database_url(split_db.platform_url().to_owned())
+        .owner(owner)
+        .served_surface(ServedSurface::All)
+        .build()
+        .await;
+    assert!(
+        stale_boot.is_err(),
+        "serving boot must validate generated definitions rather than repair them"
+    );
+
+    migrate_facade(&split_db).await;
+    let repaired_platform = sqlx::PgPool::connect(split_db.platform_url())
+        .await
+        .expect("repaired platform connection");
+    assert_eq!(lexical_body(&repaired_platform).await, original);
+    repaired_platform.close().await;
+    let repaired = Proxiima::<FacadeSurfaceApp>::app()
+        .database_url(split_db.runtime_url().to_owned())
+        .store_number(0)
+        .platform_database_url(split_db.platform_url().to_owned())
+        .owner(owner)
+        .served_surface(ServedSurface::All)
+        .build()
+        .await
+        .expect("explicit migration repairs generated definitions");
+    repaired.shutdown().await;
+}
+
+#[tokio::test]
+async fn composed_search_migration_refuses_unexpected_candidate_overload() {
+    let split_db = clone_split_core_db("facade_search_definition_overload")
+        .await
+        .expect("PG required");
+    migrate_facade(&split_db).await;
+
+    let platform = sqlx::PgPool::connect(split_db.platform_url())
+        .await
+        .expect("platform connection");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(
+        "CREATE FUNCTION facade_surface.search_lexical_candidates(text) RETURNS uuid LANGUAGE sql AS $$ SELECT NULL::uuid $$",
+    ))
+    .execute(&platform)
+    .await
+    .expect("create unexpected candidate overload");
+    platform.close().await;
+
+    let preflight = facade_preflight(&split_db).await;
+    assert!(
+        matches!(
+            preflight,
+            Err(proxiima::MigrationError::SearchDefinitions(_))
+        ),
+        "unexpected candidate overload must fail preflight: {preflight:?}"
+    );
+
+    let migration = {
+        let pg = proxiima::PgMigrationStorage::connect_with_config(
+            split_db.platform_url(),
+            proxiima::PgPoolConfig::default(),
+            proxiima::PgTuning::default(),
+        )
+        .await
+        .expect("migration connection");
+        let result = proxiima::run_core_and_spiice_migrations(
+            &pg,
+            vec![proxiima::NamedMigrator::new(
+                "facade-test",
+                facade_migrator(),
+            )],
+            &facade_sidecars(),
+        )
+        .await;
+        pg.clone_pool_for_backend().close().await;
+        result
+    };
+    assert!(
+        matches!(
+            migration,
+            Err(proxiima::MigrationError::SearchDefinitions(_))
+        ),
+        "explicit migration must refuse the overload: {migration:?}"
+    );
+}
+
+#[tokio::test]
+async fn composed_search_definition_application_rolls_back_with_transaction() {
+    let split_db = clone_split_core_db("facade_search_definition_rollback")
+        .await
+        .expect("PG required");
+    migrate_facade(&split_db).await;
+
+    let platform = sqlx::PgPool::connect(split_db.platform_url())
+        .await
+        .expect("platform connection");
+    let original = lexical_body(&platform).await;
+    corrupt_lexical_body(&platform).await;
+    let stale = lexical_body(&platform).await;
+    assert_ne!(stale, original);
+
+    let mut transaction = platform.begin().await.expect("definition transaction");
+    facade_sidecars()
+        .apply_search_definitions(&mut transaction)
+        .await
+        .expect("apply definitions in transaction");
+    let repaired_in_transaction: String =
+        sqlx::query_scalar("SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure($1)")
+            .bind(FACADE_LEXICAL_SIGNATURE)
+            .fetch_one(&mut *transaction)
+            .await
+            .expect("repaired body in transaction");
+    assert_ne!(repaired_in_transaction, stale);
+    transaction.rollback().await.expect("rollback definitions");
+
+    assert_eq!(lexical_body(&platform).await, stale);
+    platform.close().await;
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
@@ -1536,6 +1799,7 @@ async fn readable_query_and_typed_candidates_use_only_authenticated_owners() {
     let split_db = clone_split_core_db("sdk_read_scope")
         .await
         .expect("PG required");
+    migrate_facade(&split_db).await;
     let (db_url, platform_url) = (
         split_db.runtime_url().to_owned(),
         split_db.platform_url().to_owned(),

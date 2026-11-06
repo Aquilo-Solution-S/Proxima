@@ -2682,7 +2682,6 @@ PERFORM proxiima_core.assert_search_scope(requested_owners);
 IF candidate_limit IS NULL OR candidate_limit < 1 OR candidate_limit > 1000 THEN
 RAISE EXCEPTION 'candidate limit must be between 1 and 1000' USING ERRCODE = '22023';
 END IF;
-IF recency THEN
 RETURN QUERY EXECUTE 'WITH analyzed_query AS MATERIALIZED (
              SELECT proxiima_core.lexical_scrub($1) AS scrubbed,
                     proxiima_core.lexical_query_text(proxiima_core.lexical_config(),
@@ -2733,64 +2732,7 @@ RETURN QUERY EXECUTE 'WITH analyzed_query AS MATERIALIZED (
                  OR proxiima_core.memory_created_at(p.memory_id) >= $4)
             AND ($5::timestamptz IS NULL
                  OR proxiima_core.memory_created_at(p.memory_id) <= $5)
-            AND ($6::uuid IS NULL OR p.memory_id < $6)
-          ORDER BY p.memory_id DESC
-          LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
-ELSE
-RETURN QUERY EXECUTE 'WITH analyzed_query AS MATERIALIZED (
-             SELECT proxiima_core.lexical_scrub($1) AS scrubbed,
-                    proxiima_core.lexical_query_text(proxiima_core.lexical_config(),
-                        proxiima_core.lexical_scrub($1)) AS analyzed
-         ), q AS MATERIALIZED (
-             SELECT s.scrubbed, s.analyzed,
-                    COALESCE(
-                        (SELECT proxiima_core.tsquery_or_agg(
-                                    websearch_to_tsquery(l.config, s.analyzed)
-                                    ORDER BY l.config)
-                           FROM proxiima_core.lexical_languages l),
-                        websearch_to_tsquery(proxiima_core.lexical_config(), s.analyzed)
-                    ) AS tsq,
-                    COALESCE(
-                        (SELECT proxiima_core.tsquery_or_agg(
-                                    NULLIF(
-                                        replace(
-                                            plainto_tsquery(l.config, s.analyzed)::text,
-                                            '' & '', '' | ''),
-                                        '''')::tsquery
-                                    ORDER BY l.config)
-                           FROM proxiima_core.lexical_languages l),
-                        NULLIF(
-                            replace(
-                                plainto_tsquery(proxiima_core.lexical_config(), s.analyzed)::text,
-                                '' & '', '' | ''),
-                            '''')::tsquery
-                    ) AS any_tsq
-               FROM analyzed_query s
-         )
-         SELECT p.memory_id AS t,
-                p.schema_id,
-                GREATEST(
-                    CASE WHEN p.search_tsv @@ q.tsq
-                         THEN 0.50 + LEAST(COALESCE(ts_rank_cd(p.search_tsv, websearch_to_tsquery(p.lexical_language, q.analyzed), 32), 0.0), 1.0) * 0.50
-                         ELSE 0.0 END, CASE WHEN $9::boolean AND q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq
-                    THEN 0.25 + LEAST(COALESCE(ts_rank(p.search_tsv, q.any_tsq, 33), 0.0) * 100.0, 1.0) * 0.20
-                    ELSE 0.0 END,
-                    0.0
-                )::real AS lexical_score
-           FROM proxiima_core.projection p, q
-          WHERE p.owner_id = ANY($7::uuid[])
-            AND p.schema_id = ANY($8::text[])
-            AND (p.search_tsv @@ q.tsq OR ($9::boolean AND q.any_tsq IS NOT NULL AND p.search_tsv @@ q.any_tsq))
-             AND (p.owner_id = ANY(proxiima_core.search_owner_ids())
-                   OR p.memory_id IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($7::uuid[]))) AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN p.tag @> $3::text[] ELSE p.tag && $3::text[] END) AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = p.memory_id AND (authorized_memory.owner_id = ANY($7::uuid[]) OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($7::uuid[]))) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads()) OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t)))
-            AND ($4::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(p.memory_id) >= $4)
-            AND ($5::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(p.memory_id) <= $5)
-            AND ($6::uuid IS NULL OR p.memory_id < $6)
-          ORDER BY lexical_score DESC, p.memory_id DESC
-          LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
-END IF;
+            AND ($6::uuid IS NULL OR p.memory_id < $6)' || CASE WHEN recency THEN ' ORDER BY p.memory_id DESC' ELSE ' ORDER BY lexical_score DESC, p.memory_id DESC' END || ' LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
 END
 $candidate_function$;$generated_function$;
 REVOKE ALL ON FUNCTION proxiima_core.search_lexical_candidates(text, bigint, text[], timestamp with time zone, timestamp with time zone, uuid, uuid[], text[], boolean, boolean, boolean, text, boolean) FROM PUBLIC;
@@ -2825,7 +2767,6 @@ PERFORM proxiima_core.assert_search_scope(requested_owners);
 IF candidate_limit IS NULL OR candidate_limit < 1 OR candidate_limit > 1000 THEN
 RAISE EXCEPTION 'candidate limit must be between 1 and 1000' USING ERRCODE = '22023';
 END IF;
-IF recency THEN
 DECLARE legs text[] := ARRAY[]::text[];
 BEGIN
 IF requested_schemas && ARRAY['core/agent-derivation-v1']::text[] THEN legs := legs || '(SELECT * FROM (
@@ -2921,107 +2862,8 @@ IF requested_schemas && ARRAY['core/utterance-v1']::text[] THEN legs := legs || 
             AND ($6::uuid IS NULL OR m.t < $6)
          ) leg)'::text; END IF;
 IF cardinality(legs) = 0 THEN RETURN; END IF;
-RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (' || array_to_string(legs, ' UNION ALL ') || ') s ORDER BY s.t DESC LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
+RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (' || array_to_string(legs, ' UNION ALL ') || ') s' || CASE WHEN recency THEN ' ORDER BY s.t DESC' ELSE ' ORDER BY s.lexical_score DESC, s.t DESC' END || ' LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
 END;
-ELSE
-DECLARE legs text[] := ARRAY[]::text[];
-BEGIN
-IF requested_schemas && ARRAY['core/agent-derivation-v1']::text[] THEN legs := legs || '(SELECT * FROM (
-         WITH eligible_memory AS MATERIALIZED (
-             SELECT source.t, source.handle, source.kind, source.owner_id, source.schema_id
-               FROM proxiima_core.memory source /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
-              WHERE source.owner_id = ANY($7::uuid[])
-                AND source.schema_id = ANY($8::text[])
-                AND source.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[])
-         )
-         SELECT m.t AS t,
-                0.25::real AS lexical_score
-           FROM eligible_memory m
-           JOIN proxiima_core.agent_derivation_v1 c
-             ON c.t = m.t
-            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxiima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
-             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END)
-          WHERE EXISTS (SELECT 1 FROM eligible_memory)
-             AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND (authorized_memory.owner_id = ANY($7::uuid[]) OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($7::uuid[]))) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads()) OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-derivation-v1'']::text[]))))
-            AND ($4::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(m.t) >= $4)
-            AND ($5::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(m.t) <= $5)
-            AND ($6::uuid IS NULL OR m.t < $6)
-         ) leg)'::text; END IF;
-IF requested_schemas && ARRAY['core/agent-note-v1']::text[] THEN legs := legs || '(SELECT * FROM (
-         WITH eligible_memory AS MATERIALIZED (
-             SELECT source.t, source.handle, source.kind, source.owner_id, source.schema_id
-               FROM proxiima_core.memory source /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
-              WHERE source.owner_id = ANY($7::uuid[])
-                AND source.schema_id = ANY($8::text[])
-                AND source.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[])
-         )
-         SELECT m.t AS t,
-                0.25::real AS lexical_score
-           FROM eligible_memory m
-           JOIN proxiima_core.agent_note_v1 c
-             ON c.t = m.t
-            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.title, ''''), NULLIF(c.body, ''''), proxiima_core.lexical_text_array(c.tags)])) LIKE $1 ESCAPE ''\'')
-             AND ($3::text[] IS NULL OR CASE WHEN $12::boolean THEN c.tags @> $3::text[] ELSE c.tags && $3::text[] END)
-          WHERE EXISTS (SELECT 1 FROM eligible_memory)
-             AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND (authorized_memory.owner_id = ANY($7::uuid[]) OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($7::uuid[]))) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads()) OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/agent-note-v1'']::text[]))))
-            AND ($4::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(m.t) >= $4)
-            AND ($5::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(m.t) <= $5)
-            AND ($6::uuid IS NULL OR m.t < $6)
-         ) leg)'::text; END IF;
-IF requested_schemas && ARRAY['core/interpretation-v1']::text[] THEN legs := legs || '(SELECT * FROM (
-         WITH eligible_memory AS MATERIALIZED (
-             SELECT source.t, source.handle, source.kind, source.owner_id, source.schema_id
-               FROM proxiima_core.memory source /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
-              WHERE source.owner_id = ANY($7::uuid[])
-                AND source.schema_id = ANY($8::text[])
-                AND source.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[])
-         )
-         SELECT m.t AS t,
-                0.25::real AS lexical_score
-           FROM eligible_memory m
-           JOIN proxiima_core.interpretation_v1 c
-             ON c.t = m.t
-            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.claim, '''')])) LIKE $1 ESCAPE ''\'')
-             AND $3::text[] IS NULL
-          WHERE EXISTS (SELECT 1 FROM eligible_memory)
-             AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND (authorized_memory.owner_id = ANY($7::uuid[]) OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($7::uuid[]))) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads()) OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/interpretation-v1'']::text[]))))
-            AND ($4::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(m.t) >= $4)
-            AND ($5::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(m.t) <= $5)
-            AND ($6::uuid IS NULL OR m.t < $6)
-         ) leg)'::text; END IF;
-IF requested_schemas && ARRAY['core/utterance-v1']::text[] THEN legs := legs || '(SELECT * FROM (
-         WITH eligible_memory AS MATERIALIZED (
-             SELECT source.t, source.handle, source.kind, source.owner_id, source.schema_id
-               FROM proxiima_core.memory source /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */
-              WHERE source.owner_id = ANY($7::uuid[])
-                AND source.schema_id = ANY($8::text[])
-                AND source.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[])
-         )
-         SELECT m.t AS t,
-                0.25::real AS lexical_score
-           FROM eligible_memory m
-           JOIN proxiima_core.utterance_v1 c
-             ON c.t = m.t
-            AND (lower(proxiima_core.lexical_join(VARIADIC ARRAY[NULLIF(c.text, '''')])) LIKE $1 ESCAPE ''\'')
-             AND $3::text[] IS NULL
-          WHERE EXISTS (SELECT 1 FROM eligible_memory)
-             AND EXISTS (SELECT 1 FROM proxiima_core.memory authorized_memory /* FORGET-POLICY: live-only (candidate authorization under owner RLS) */ WHERE authorized_memory.t = m.t AND (authorized_memory.owner_id = ANY($7::uuid[]) OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_ids() WHERE owner_id=ANY($7::uuid[]))) AND authorized_memory.forgotten_at IS NULL AND ($11::text IS NULL OR authorized_memory.kind::text = $11) AND (NOT $10::boolean OR authorized_memory.t IN (SELECT memory_t FROM proxiima_core.goal_visible_memory_heads()) OR EXISTS (SELECT 1 FROM proxiima_core.memory_head authorized_head WHERE authorized_head.handle = authorized_memory.handle AND authorized_head.t = authorized_memory.t AND authorized_head.schema_id = ANY(ARRAY[''core/utterance-v1'']::text[]))))
-            AND ($4::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(m.t) >= $4)
-            AND ($5::timestamptz IS NULL
-                 OR proxiima_core.memory_created_at(m.t) <= $5)
-            AND ($6::uuid IS NULL OR m.t < $6)
-         ) leg)'::text; END IF;
-IF cardinality(legs) = 0 THEN RETURN; END IF;
-RETURN QUERY EXECUTE 'SELECT s.t, s.lexical_score FROM (' || array_to_string(legs, ' UNION ALL ') || ') s ORDER BY s.lexical_score DESC, s.t DESC LIMIT $2' USING query_text, candidate_limit, requested_tags, since_time, until_time, before_id, requested_owners, requested_schemas, rescue, heads_only, requested_kind, tag_all;
-END;
-END IF;
 END
 $candidate_function$;$generated_function$;
 REVOKE ALL ON FUNCTION proxiima_core.search_substring_candidates(text, bigint, text[], timestamp with time zone, timestamp with time zone, uuid, uuid[], text[], boolean, boolean, boolean, text, boolean) FROM PUBLIC;

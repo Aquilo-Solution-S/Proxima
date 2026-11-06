@@ -4,7 +4,7 @@ use proxiima_core::verbs::fact_ingest::FactWriteCommand;
 
 use super::{
     Arc, GoalId, HashMap, HashSet, MemoryId, PgSidecarEntry, PgSidecarKey, PgSidecarReadCtx,
-    Postgres, SchemaInfo, SidecarPayload, StorageError, Transaction,
+    Postgres, SchemaInfo, SearchDefinitions, SidecarPayload, StorageError, Transaction,
 };
 use sqlx::PgConnection;
 
@@ -35,6 +35,7 @@ pub struct PgSidecarRegistryFrozen {
     pub(super) entries: Arc<HashMap<PgSidecarKey, PgSidecarEntry>>,
     pub(super) retired_facts: Arc<[super::PgRetiredFactSidecar]>,
     pub(super) spiice_schema_names: Arc<[String]>,
+    pub(super) search_definitions: SearchDefinitions,
 }
 
 impl PgSidecarRegistryFrozen {
@@ -313,6 +314,7 @@ impl PgSidecarRegistryFrozen {
             entries: Arc::new(entries),
             retired_facts: self.retired_facts.clone(),
             spiice_schema_names: self.spiice_schema_names.clone(),
+            search_definitions: self.search_definitions.clone(),
         }
     }
 

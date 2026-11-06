@@ -18,10 +18,11 @@ use proxiima_storage_pg::{
 use sqlx::PgPool;
 
 use crate::bundle::SpiiceBundle;
+use crate::migrations::run_serving_migrations;
 use crate::runtime_grants::{self, RuntimeGrants};
 use crate::{
     CitedBlobStore, MigrationError, NamedMigrator, ProxiimaError, RuntimeConfig, RuntimeParts,
-    preflight_without_migrations_with_policy, run_core_and_spiice_migrations_with_policy,
+    preflight_without_migrations_with_policy,
 };
 
 /// A composed engine, ready for host services and retirement before startup.
@@ -332,7 +333,7 @@ async fn connect_and_migrate(
         .await
         .map_err(migration_error)?;
     } else {
-        run_core_and_spiice_migrations_with_policy(
+        run_serving_migrations(
             &migration_pg,
             migrators,
             pg_sidecars,

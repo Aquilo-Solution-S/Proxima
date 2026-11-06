@@ -721,9 +721,32 @@ fn ranked_projection_sql(
         rescue,
         &tag_pred,
         &admit_side_restriction(req, RANKED_MEMORY_ID),
-        candidate_order(req),
         None,
     )
+    .map(|query| query.statement(candidate_order(req)))
+}
+
+/// One ranked query body, before its closed ordering and limit.
+pub(crate) struct RankedCandidates {
+    pub(crate) body: String,
+}
+
+impl RankedCandidates {
+    pub(crate) fn order_sql(order: SearchOrder) -> &'static str {
+        match order {
+            SearchOrder::Relevance => "lexical_score DESC, p.memory_id DESC",
+            SearchOrder::Recency => "p.memory_id DESC",
+        }
+    }
+
+    #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+    fn statement(&self, order: SearchOrder) -> String {
+        let order = Self::order_sql(order);
+        format!(
+            "{}\n          ORDER BY {order}\n          LIMIT $2",
+            self.body
+        )
+    }
 }
 
 fn ranked_projection_sql_parts(
@@ -731,9 +754,8 @@ fn ranked_projection_sql_parts(
     rescue: bool,
     tag_pred: &str,
     admit_pred: &str,
-    order: SearchOrder,
     rescue_switch: Option<&str>,
-) -> Result<String, StorageError> {
+) -> Result<RankedCandidates, StorageError> {
     let head = spiice.head();
     let table = PgIdent::table(&head.projection_table)?;
     let tsv = "p.search_tsv";
@@ -774,13 +796,10 @@ fn ranked_projection_sql_parts(
                     0.0
                 )::real"
     );
-    let order_by = match order {
-        SearchOrder::Relevance => "lexical_score DESC, p.memory_id DESC",
-        SearchOrder::Recency => "p.memory_id DESC",
-    };
     // SQL-POLICY: PgIdent
-    Ok(format!(
-        "{q_cte}
+    Ok(RankedCandidates {
+        body: format!(
+            "{q_cte}
          SELECT p.memory_id AS t,
                 p.schema_id,
                 {score_expr} AS lexical_score
@@ -793,12 +812,11 @@ fn ranked_projection_sql_parts(
                  OR proxiima_core.memory_created_at(p.memory_id) >= $4)
             AND ($5::timestamptz IS NULL
                  OR proxiima_core.memory_created_at(p.memory_id) <= $5)
-            AND ($6::uuid IS NULL OR p.memory_id < $6)
-          ORDER BY {order_by}
-          LIMIT $2",
-        q_cte = query_side_cte(multilingual),
-        table = table.as_str(),
-    ))
+            AND ($6::uuid IS NULL OR p.memory_id < $6)",
+            q_cte = query_side_cte(multilingual),
+            table = table.as_str(),
+        ),
+    })
 }
 
 /// The candidate-side spelling of "this row's memory" in the ranked arm.
@@ -810,15 +828,26 @@ const SUBSTRING_MEMORY_ID: &str = "m.t";
 
 /// Fixed candidate statements emitted into a projection's migration.
 /// Request switches are values; table names and scoring remain contract-owned.
-pub(crate) fn projection_candidate_statements(
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+fn projection_candidate_statements(
     projections: &[MemorySearchProjection],
     substring: bool,
     recency: bool,
 ) -> Result<Option<String>, StorageError> {
     if substring {
-        return Ok(projection_substring_candidates(projections, recency)?
-            .map(|candidates| candidates.statement(candidates.legs.iter())));
+        return Ok(
+            projection_substring_candidates(projections)?.map(|candidates| {
+                SubstringCandidates::statement(candidates.legs.iter(), candidate_order_of(recency))
+            }),
+        );
     }
+    projection_ranked_candidates(projections)
+        .map(|query| query.map(|query| query.statement(candidate_order_of(recency))))
+}
+
+pub(crate) fn projection_ranked_candidates(
+    projections: &[MemorySearchProjection],
+) -> Result<Option<RankedCandidates>, StorageError> {
     let Some(spiice) = core_band_scan(projections) else {
         return Ok(None);
     };
@@ -832,7 +861,6 @@ pub(crate) fn projection_candidate_statements(
             candidate_tags("p.tag")
         ),
         &admit,
-        candidate_order_of(recency),
         Some("$9::boolean"),
     )
     .map(Some)
@@ -852,6 +880,7 @@ fn core_band_scan(projections: &[MemorySearchProjection]) -> Option<SpiiceScan<'
     )
 }
 
+#[cfg(any(test, feature = "test-fixtures", debug_assertions))]
 const fn candidate_order_of(recency: bool) -> SearchOrder {
     if recency {
         SearchOrder::Recency
@@ -874,7 +903,6 @@ pub(crate) struct CandidateLeg {
 /// and the per-request statement the migrated function assembles.
 pub(crate) struct SubstringCandidates {
     pub(crate) legs: Vec<CandidateLeg>,
-    order_by: &'static str,
 }
 
 impl SubstringCandidates {
@@ -882,34 +910,40 @@ impl SubstringCandidates {
     /// before the legs, between them and after them. The whole statement the
     /// plan guards read and the one the migrated function assembles per
     /// request are both this frame around their legs.
-    pub(crate) fn frame(&self) -> (&'static str, &'static str, String) {
-        (
-            "SELECT s.t, s.lexical_score FROM (",
-            " UNION ALL ",
-            format!(") s ORDER BY {} LIMIT $2", self.order_by),
-        )
+    pub(crate) fn frame() -> (&'static str, &'static str, &'static str) {
+        ("SELECT s.t, s.lexical_score FROM (", " UNION ALL ", ") s")
     }
 
-    fn statement<'a>(&self, legs: impl Iterator<Item = &'a CandidateLeg>) -> String {
-        let (open, between, close) = self.frame();
+    pub(crate) fn order_sql(order: SearchOrder) -> &'static str {
+        match order {
+            SearchOrder::Relevance => "s.lexical_score DESC, s.t DESC",
+            SearchOrder::Recency => "s.t DESC",
+        }
+    }
+
+    #[cfg(any(test, feature = "test-fixtures", debug_assertions))]
+    fn statement<'a>(legs: impl Iterator<Item = &'a CandidateLeg>, order: SearchOrder) -> String {
+        let (open, between, close) = Self::frame();
         let legs = legs.map(|leg| leg.sql.as_str()).collect::<Vec<_>>();
-        format!("{open}{}{close}", legs.join(between))
+        format!(
+            "{open}{}{close} ORDER BY {} LIMIT $2",
+            legs.join(between),
+            Self::order_sql(order)
+        )
     }
 }
 
 pub(crate) fn projection_substring_candidates(
     projections: &[MemorySearchProjection],
-    recency: bool,
 ) -> Result<Option<SubstringCandidates>, StorageError> {
     let Some(spiice) = core_band_scan(projections) else {
         return Ok(None);
     };
-    substring_candidate_legs(&spiice, candidate_order_of(recency))
+    substring_candidate_legs(&spiice)
 }
 
 fn substring_candidate_legs(
     spiice: &SpiiceScan<'_>,
-    order: SearchOrder,
 ) -> Result<Option<SubstringCandidates>, StorageError> {
     let legs = sidecar_legs(
         spiice
@@ -954,11 +988,7 @@ fn substring_candidate_legs(
     if legs.is_empty() {
         return Ok(None);
     }
-    let order_by = match order {
-        SearchOrder::Relevance => "s.lexical_score DESC, s.t DESC",
-        SearchOrder::Recency => "s.t DESC",
-    };
-    Ok(Some(SubstringCandidates { legs, order_by }))
+    Ok(Some(SubstringCandidates { legs }))
 }
 
 fn candidate_tags(column: &str) -> String {

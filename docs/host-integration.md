@@ -194,6 +194,25 @@ preflight checks the generated marks and owner indexes without changing them.
 Normal boot supplies this registry automatically. See
 [sidecar owner modes](build-a-spiice.md#2-persist-the-typed-payload).
 
+For searchable spiices, the same frozen registry also carries the generated
+candidate definitions. `run_core_and_spiice_migrations` installs them after
+the spiice lanes, in the final migration transaction under the whole-run lock.
+The definitions and their privilege envelope roll back together on failure.
+No new migration is required for a generated function-body update, and
+already released migrations remain unchanged.
+
+Serving boot validates the installed bodies, signatures and security settings
+before any startup schema migrations and again after them; it does not replace
+candidate definitions. Run the composed host's explicit migration command
+before first serving or upgrading its search definitions. Skip-migration
+preflight checks the same live catalog without DDL. `MissingMigrationPolicy::Allow`
+does not waive this match: a binary whose generated definitions differ from
+the installed ones cannot start serving. This startup check does not terminate
+already-running replicas; drain incompatible replicas before switching definitions. A release version does
+not order nightly definitions. Run one intended migration binary for the
+deployment, then start servers built with its composition; rolling back requires
+an explicit migration run with the intended definitions too.
+
 When a host first runs this runner on an existing database, three
 things change. A Follows table gets the host rule (its `owner_id` AND its
 memory) whatever class the spiice's SQL gave it, so owner reads stop

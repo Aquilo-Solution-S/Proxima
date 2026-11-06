@@ -30,6 +30,7 @@ mod permit;
 mod read_ctx;
 mod registry;
 mod retired;
+mod search_definitions;
 mod sql;
 mod traits;
 
@@ -47,6 +48,7 @@ pub(crate) use read_ctx::read_own_sidecar;
 pub(crate) use read_ctx::validate_sidecar_read_sql;
 pub use registry::PgSidecarRegistry;
 pub use retired::PgRetiredFactSidecar;
+use search_definitions::SearchDefinitions;
 pub use sql::{
     bytes32, int_to_u32, int_to_u64, memory_insert_sql, memory_select_batch_owner_pinned_sql,
     memory_select_batch_sql,
