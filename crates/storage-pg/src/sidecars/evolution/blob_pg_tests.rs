@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 const SOURCE_SCHEMA: &str = "example/cited-object-v1";
 const TARGET_SCHEMA: &str = "example/cited-object-v2";
+const TARGET_CHAIN_SCHEMA: &str = "example/cited-object-v3";
 
 static SOURCE: SchemaContract = SchemaContract {
     id: SchemaRef::new("example", "cited-object", 1),
@@ -38,6 +39,10 @@ static SECONDARY: SchemaContract = SchemaContract {
     id: SchemaRef::new("example", "cited-object-copy", 2),
     ..SOURCE
 };
+static TARGET_CHAIN: SchemaContract = SchemaContract {
+    id: SchemaRef::new("example", "cited-object", 3),
+    ..SOURCE
+};
 static EVOLUTION: SchemaEvolution = SchemaEvolution::new(
     "example/cited-object-v1-v2",
     &[SOURCE],
@@ -45,6 +50,15 @@ static EVOLUTION: SchemaEvolution = SchemaEvolution::new(
     2_026_110_600_010,
     &[],
     "replace cited-object identity while preserving bytes",
+    "run the dedicated migration before serving",
+);
+static EVOLUTION_CHAIN: SchemaEvolution = SchemaEvolution::new(
+    "example/cited-object-v2-v3",
+    &[TARGET],
+    &[TARGET_CHAIN],
+    2_026_110_600_011,
+    &[],
+    "replace cited-object identity a second time",
     "run the dedicated migration before serving",
 );
 
@@ -69,6 +83,40 @@ fn frozen_registry() -> super::PgSidecarRegistryFrozen {
         ]),
         evolutions: Arc::from([EVOLUTION]),
         evolution_programs: Arc::new(HashMap::from([(EVOLUTION.id, program)])),
+        ..Default::default()
+    }
+}
+
+fn frozen_chain_registry() -> super::PgSidecarRegistryFrozen {
+    let first = PgSchemaEvolution::new(&EVOLUTION, PgMigrationSchemas::new(), |input, plan| {
+        for source in input.blobs() {
+            let target = plan.blob(source, TARGET.id, super::MigrationAdmission::New);
+            let secondary = plan.blob(source, SECONDARY.id, super::MigrationAdmission::New);
+            plan.map_blob(source, target, &[secondary])?;
+        }
+        Ok(())
+    });
+    let second = PgSchemaEvolution::new(
+        &EVOLUTION_CHAIN,
+        PgMigrationSchemas::new(),
+        |input, plan| {
+            for source in input.blobs() {
+                let target = plan.blob(source, TARGET_CHAIN.id, super::MigrationAdmission::New);
+                plan.map_blob(source, target, &[])?;
+            }
+            Ok(())
+        },
+    );
+    super::PgSidecarRegistryFrozen {
+        active_schema_ids: Arc::from([
+            (PayloadKind::CitedObject, TARGET_CHAIN_SCHEMA.to_owned()),
+            (PayloadKind::CitedObject, SECONDARY.id.render()),
+        ]),
+        evolutions: Arc::from([EVOLUTION, EVOLUTION_CHAIN]),
+        evolution_programs: Arc::new(HashMap::from([
+            (EVOLUTION.id, first),
+            (EVOLUTION_CHAIN.id, second),
+        ])),
         ..Default::default()
     }
 }
@@ -183,4 +231,64 @@ async fn cited_object_replacement_preserves_bytes_and_moves_only_primary_upload(
     .await;
     drop_db(&database).await.expect("drop test database");
     result.expect("cited-object replacement acceptance");
+}
+
+#[tokio::test]
+async fn cited_object_chain_moves_upload_to_terminal_primary() {
+    let database = format!("proxiima_test_{}", Uuid::now_v7().simple());
+    create_core_db(&database)
+        .await
+        .expect("PG required for test");
+    let result = async {
+        let (_, platform_url) = split_role_urls(&database).await?;
+        let platform = PgPool::connect(&platform_url).await?;
+        let owner = owner(&platform).await?;
+        let source = Uuid::now_v7();
+        let upload = Uuid::now_v7();
+        let hash = vec![0x6b_u8; 32];
+        let mut tx = platform.begin().await?;
+        sqlx::query("SELECT set_config('app.proxiima_scope','platform',true)")
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO proxiima_core.store_identity(singleton,store_number) VALUES(true,0) ON CONFLICT (singleton) DO NOTHING")
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO proxiima_core.blob(blob_id,owner_id,schema_id,content_hash) VALUES($1,$2,$3,$4)")
+            .bind(source).bind(owner).bind(SOURCE_SCHEMA).bind(&hash)
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO proxiima_core.blob_uploads(upload_id,owner_id,bucket,object_key,filename,mime,expected_byte_len,blob_id,content_hash,object_store,expires_at) VALUES($1,$2,'test','objects/chain','chain.bin','application/octet-stream',32,$3,$4,'s3:test/bucket',now()+interval '1 day')")
+            .bind(upload).bind(owner).bind(source).bind(&hash)
+            .execute(&mut *tx).await?;
+        let metadata: serde_json::Value = sqlx::query_scalar("SELECT to_jsonb(upload)-'blob_id' FROM proxiima_core.blob_uploads upload WHERE upload_id=$1")
+            .bind(upload).fetch_one(&mut *tx).await?;
+        let registry = frozen_chain_registry();
+        registry.run_schema_evolution(&mut tx, &EVOLUTION).await
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        let intermediate: Uuid = sqlx::query_scalar("SELECT blob_id FROM proxiima_core.blob WHERE owner_id=$1 AND schema_id=$2")
+            .bind(owner).bind(TARGET_SCHEMA).fetch_one(&mut *tx).await?;
+        registry.run_schema_evolution(&mut tx, &EVOLUTION_CHAIN).await
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        registry.finish_schema_evolutions(&mut tx).await
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        let terminal: Uuid = sqlx::query_scalar("SELECT blob_id FROM proxiima_core.blob WHERE owner_id=$1 AND schema_id=$2")
+            .bind(owner).bind(TARGET_CHAIN_SCHEMA).fetch_one(&mut *tx).await?;
+        let moved: Uuid = sqlx::query_scalar("SELECT blob_id FROM proxiima_core.blob_uploads WHERE upload_id=$1")
+            .bind(upload).fetch_one(&mut *tx).await?;
+        assert_eq!(moved, terminal);
+        let source_count: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.blob WHERE blob_id=ANY($1::uuid[])")
+            .bind(vec![source, intermediate]).fetch_one(&mut *tx).await?;
+        assert_eq!(source_count, 0);
+        let secondary_count: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.blob WHERE owner_id=$1 AND schema_id=$2")
+            .bind(owner).bind(SECONDARY.id.render()).fetch_one(&mut *tx).await?;
+        assert_eq!(secondary_count, 1);
+        let bytes: Vec<u8> = sqlx::query_scalar("SELECT content_hash FROM proxiima_core.blob WHERE blob_id=$1")
+            .bind(terminal).fetch_one(&mut *tx).await?;
+        assert_eq!(bytes, hash);
+        assert_ne!(terminal, intermediate);
+        let after: serde_json::Value = sqlx::query_scalar("SELECT to_jsonb(upload)-'blob_id' FROM proxiima_core.blob_uploads upload WHERE upload_id=$1")
+            .bind(upload).fetch_one(&mut *tx).await?;
+        assert_eq!(after, metadata, "the entire upload receipt stays exact");
+        tx.commit().await?;
+        Ok::<(), sqlx::Error>(())
+    }.await;
+    drop_db(&database).await.expect("drop test database");
+    result.expect("cited-object chained replacement acceptance");
 }

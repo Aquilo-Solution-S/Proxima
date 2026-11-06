@@ -219,6 +219,45 @@ AS $function$
        )
 $function$;
 
+-- Resolve the same terminal identities for reference migration and source
+-- retirement. Schema labels distinguish retained admissions between steps.
+CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_terminal_mappings(
+    requested_owner uuid, referenced_ids uuid[]
+) RETURNS TABLE (
+    record_kind text, source_id uuid, source_schema text, source_handle uuid,
+    target_id uuid, target_schema text, target_handle uuid, record_owner uuid, primary_target boolean
+)
+ LANGUAGE sql STABLE
+ SET search_path TO 'pg_catalog', 'proxiima_core'
+AS $function$
+    WITH RECURSIVE mappings AS (
+        SELECT a.record_kind, a.source_id, a.source_schema, a.source_handle,
+               a.target_id, a.target_schema, a.target_handle, a.record_owner, a.primary_target
+          FROM proxiima_core.schema_evolution_authority a
+         WHERE a.xact = pg_current_xact_id()
+           AND (a.record_owner = requested_owner OR a.source_id = ANY(referenced_ids))
+           AND proxiima_core.schema_evolution_permits(a.record_kind, a.source_id, a.target_id)
+        UNION
+        SELECT p.record_kind, p.source_id, p.source_schema, p.source_handle,
+               n.target_id, n.target_schema, n.target_handle, p.record_owner, p.primary_target AND n.primary_target
+          FROM mappings p
+          JOIN proxiima_core.schema_evolution_authority n
+            ON n.xact = pg_current_xact_id()
+           AND n.record_kind = p.record_kind AND n.record_owner = p.record_owner
+           AND n.source_id = p.target_id AND n.source_schema = p.target_schema
+    )
+    SELECT DISTINCT p.record_kind, p.source_id, p.source_schema, p.source_handle,
+                    p.target_id, p.target_schema, p.target_handle, p.record_owner, p.primary_target
+      FROM mappings p
+     WHERE NOT EXISTS (
+         SELECT 1 FROM proxiima_core.schema_evolution_authority n
+          WHERE n.xact = pg_current_xact_id()
+            AND n.record_kind = p.record_kind AND n.record_owner = p.record_owner
+            AND n.source_id = p.target_id AND n.source_schema = p.target_schema
+     )
+$function$;
+REVOKE ALL ON FUNCTION proxiima_core.schema_evolution_terminal_mappings(uuid, uuid[]) FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION proxiima_core.schema_evolution_intermediate_memory_image_permits(
     memory_t uuid, image_schema text, final_schema text, memory_handle uuid,
     memory_kind proxiima_core.memory_kind, memory_owner uuid
@@ -960,11 +999,12 @@ BEGIN
     PERFORM set_config('app.proxiima_scope', 'platform', true);
     IF EXISTS (
         SELECT 1
-          FROM proxiima_core.goal target
-         WHERE target.owner_id = OLD.owner_id
-           AND proxiima_core.schema_evolution_mapping_matches(
-               'goal', OLD.t, target.t,
-               OLD.schema_id, target.schema_id, OLD.owner_id)
+          FROM proxiima_core.schema_evolution_terminal_mappings(NULL, ARRAY[OLD.t]) mapping
+          JOIN proxiima_core.goal target
+            ON target.t = mapping.target_id AND target.schema_id = mapping.target_schema
+           AND target.owner_id = mapping.record_owner
+         WHERE mapping.record_kind = 'goal' AND mapping.record_owner = OLD.owner_id
+           AND mapping.source_id = OLD.t AND mapping.source_schema = OLD.schema_id
     ) THEN
         PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
         RETURN OLD;
@@ -2139,10 +2179,12 @@ BEGIN
     PERFORM set_config('app.proxiima_scope', 'platform', true);
     IF EXISTS (
         SELECT 1
-          FROM proxiima_core.memory target /* FORGET-POLICY: includes-forgotten (a forgotten replacement remains a migration target) */
-         WHERE target.owner_id = OLD.owner_id
-           AND proxiima_core.schema_evolution_mapping_matches(
-               'memory', OLD.t, target.t, OLD.schema_id, target.schema_id, OLD.owner_id)
+          FROM proxiima_core.schema_evolution_terminal_mappings(NULL, ARRAY[OLD.t]) mapping
+          JOIN proxiima_core.memory target /* FORGET-POLICY: includes-forgotten (a forgotten replacement remains a migration target) */
+            ON target.t = mapping.target_id AND target.schema_id = mapping.target_schema
+           AND target.owner_id = mapping.record_owner
+         WHERE mapping.record_kind = 'memory' AND mapping.record_owner = OLD.owner_id
+           AND mapping.source_id = OLD.t AND mapping.source_schema = OLD.schema_id
     ) THEN
         PERFORM set_config('app.proxiima_scope', COALESCE(previous_scope, ''), true);
         RETURN OLD;

@@ -126,18 +126,25 @@ struct MappedRow {
 pub(super) async fn preserve(tx: &mut Transaction<'_, Postgres>) -> Result<(), StorageError> {
     sqlx::query("LOCK TABLE proxiima_core.goal_access_grant,proxiima_core.goal_memory_publication,proxiima_core.goal_work_binding IN SHARE ROW EXCLUSIVE MODE")
         .execute(&mut **tx).await.map_err(map_err)?;
-    let rows: Vec<MappedRow> = sqlx::query_as("WITH RECURSIVE mappings AS (
-        SELECT a.record_kind,a.source_id,a.source_handle,a.target_id,a.target_handle,a.target_schema
-          FROM proxiima_core.schema_evolution_authority a WHERE a.xact=pg_current_xact_id()
-           AND NOT EXISTS (SELECT 1 FROM proxiima_core.schema_evolution_authority prior
-               WHERE prior.xact=a.xact AND prior.record_kind=a.record_kind AND prior.target_id=a.source_id AND prior.target_schema=a.source_schema)
-        UNION SELECT p.record_kind,p.source_id,p.source_handle,n.target_id,n.target_handle,n.target_schema
-          FROM mappings p JOIN proxiima_core.schema_evolution_authority n ON n.xact=pg_current_xact_id()
-           AND n.record_kind=p.record_kind AND n.source_id=p.target_id AND n.source_schema=p.target_schema
-    ) SELECT DISTINCT record_kind,source_id,source_handle,target_id,target_handle FROM mappings p
-      WHERE NOT EXISTS (SELECT 1 FROM proxiima_core.schema_evolution_authority n WHERE n.xact=pg_current_xact_id()
-        AND n.record_kind=p.record_kind AND n.source_id=p.target_id AND n.source_schema=p.target_schema)")
-        .fetch_all(&mut **tx).await.map_err(map_err)?;
+    let rows: Vec<MappedRow> = sqlx::query_as(
+        "SELECT DISTINCT mapping.record_kind, mapping.source_id, mapping.source_handle,
+                         mapping.target_id, mapping.target_handle
+           FROM proxiima_core.schema_evolution_terminal_mappings(NULL, ARRAY(
+               SELECT source_id FROM proxiima_core.schema_evolution_authority
+                WHERE xact=pg_current_xact_id()
+           )) mapping
+          WHERE NOT EXISTS (
+              SELECT 1 FROM proxiima_core.schema_evolution_authority prior
+               WHERE prior.xact=pg_current_xact_id()
+                 AND prior.record_kind=mapping.record_kind
+                 AND prior.record_owner=mapping.record_owner
+                 AND prior.target_id=mapping.source_id
+                 AND prior.target_schema=mapping.source_schema
+          )",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
     let mut memory_ids = Mapping::default();
     let mut memory_series = Mapping::default();
     let mut goal_series = Mapping::default();

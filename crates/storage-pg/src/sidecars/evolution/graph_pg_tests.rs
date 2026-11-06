@@ -452,3 +452,58 @@ async fn graph_rejects_migrated_fact_goal_reference_to_fact() {
     drop_db(&database).await.expect("drop test database");
     result.expect("wrong-role graph validation");
 }
+
+#[tokio::test]
+async fn goal_erase_follows_a_two_step_migration_chain() {
+    let database = format!("proxiima_test_{}", Uuid::now_v7().simple());
+    create_core_db(&database)
+        .await
+        .expect("PG required for test");
+    let result = async {
+        let (_, platform_url) = split_role_urls(&database).await?;
+        let pool = PgPool::connect(&platform_url).await?;
+        let owner = owner_id(&pool).await?;
+        let a_handle = Uuid::now_v7();
+        let a_t = Uuid::now_v7();
+        let b_handle = Uuid::now_v7();
+        let b_t = Uuid::now_v7();
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('app.proxiima_scope','platform',true)")
+            .execute(&mut *tx)
+            .await?;
+        for (handle, t, schema, request) in [
+            (a_handle, a_t, "test/goal-v1", "chain-a"),
+            (b_handle, b_t, "test/goal-v2", "chain-b"),
+        ] {
+            sqlx::query("INSERT INTO proxiima_core.goal_head(handle,schema_id,owner_id,t) VALUES($1,$2,$3,$4)")
+                .bind(handle).bind(schema).bind(owner).bind(t)
+                .execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO proxiima_core.goal(handle,t,owner_id,schema_id,title,state,request_id,\"by\") VALUES($1,$2,$3,$4,'chain','Active',$5,$3)")
+                .bind(handle).bind(t).bind(owner).bind(schema).bind(request)
+                .execute(&mut *tx).await?;
+        }
+        sqlx::query("INSERT INTO proxiima_core.schema_evolution_authority(record_kind,source_id,target_id,source_schema,target_schema,source_handle,target_handle,record_owner,primary_target) VALUES ('goal',$1,$2,'test/goal-v1','test/goal-v2',$3,$4,$5,true),('goal',$2,$2,'test/goal-v2','test/goal-v3',$4,$4,$5,true)")
+            .bind(a_t).bind(b_t).bind(a_handle).bind(b_handle).bind(owner)
+            .execute(&mut *tx).await?;
+        sqlx::query("UPDATE proxiima_core.goal_head SET schema_id='test/goal-v3' WHERE handle=$1")
+            .bind(b_handle).execute(&mut *tx).await?;
+        sqlx::query("UPDATE proxiima_core.goal SET schema_id='test/goal-v3' WHERE t=$1")
+            .bind(b_t).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM proxiima_core.goal WHERE t=$1")
+            .bind(a_t).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM proxiima_core.goal_head WHERE handle=$1")
+            .bind(a_handle).execute(&mut *tx).await?;
+        let witness: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.erased_pin_target WHERE t=$1")
+            .bind(a_t).fetch_one(&mut *tx).await?;
+        assert_eq!(witness, 0, "a source erased through a chained mapping has no witness");
+        let current: String = sqlx::query_scalar("SELECT schema_id FROM proxiima_core.goal WHERE t=$1")
+            .bind(b_t).fetch_one(&mut *tx).await?;
+        assert_eq!(current, "test/goal-v3");
+        sqlx::query("DELETE FROM proxiima_core.schema_evolution_authority WHERE xact=pg_current_xact_id()")
+            .execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok::<(), sqlx::Error>(())
+    }.await;
+    drop_db(&database).await.expect("drop test database");
+    result.expect("Goal migration chain erase");
+}

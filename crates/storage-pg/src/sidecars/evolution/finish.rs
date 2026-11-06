@@ -185,11 +185,16 @@ async fn incoming_pins(
 
 async fn remap_uploads(tx: &mut Transaction<'_, Postgres>) -> Result<(), StorageError> {
     sqlx::query(
-        "UPDATE proxiima_core.blob_uploads upload SET blob_id=a.target_id
-        FROM proxiima_core.schema_evolution_authority a
-        JOIN proxiima_core.blob target ON target.blob_id=a.target_id
-        WHERE a.xact=pg_current_xact_id() AND a.record_kind='blob' AND a.primary_target
-          AND upload.blob_id=a.source_id AND upload.owner_id=target.owner_id
+        "UPDATE proxiima_core.blob_uploads upload SET blob_id=mapping.target_id
+        FROM proxiima_core.schema_evolution_terminal_mappings(NULL, ARRAY(
+            SELECT source_id FROM proxiima_core.schema_evolution_authority
+             WHERE xact=pg_current_xact_id() AND record_kind='blob'
+        )) mapping
+        JOIN proxiima_core.blob target
+          ON target.blob_id=mapping.target_id AND target.schema_id=mapping.target_schema
+         AND target.owner_id=mapping.record_owner
+        WHERE mapping.record_kind='blob' AND mapping.primary_target
+          AND upload.blob_id=mapping.source_id AND upload.owner_id=mapping.record_owner
           AND upload.content_hash=target.content_hash",
     )
     .execute(&mut **tx)

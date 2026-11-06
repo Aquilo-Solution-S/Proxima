@@ -21,21 +21,14 @@ pub(super) async fn previous_mappings(
     referenced: &[Uuid],
 ) -> Result<PreviousMappings, StorageError> {
     let rows: Vec<(Uuid, Option<Uuid>, Uuid, Option<Uuid>)> = sqlx::query_as(
-        "WITH RECURSIVE mappings AS (
-        SELECT source_id,source_handle,source_schema,target_id,target_handle,target_schema,record_kind,record_owner
-          FROM proxiima_core.schema_evolution_authority
-         WHERE xact=pg_current_xact_id() AND (record_owner=$1 OR source_id=ANY($2::uuid[]))
-        UNION
-        SELECT p.source_id,p.source_handle,p.source_schema,n.target_id,n.target_handle,n.target_schema,p.record_kind,p.record_owner
-          FROM mappings p JOIN proxiima_core.schema_evolution_authority n
-            ON n.xact=pg_current_xact_id() AND n.record_owner=p.record_owner AND n.record_kind=p.record_kind
-           AND n.source_id=p.target_id AND n.source_schema=p.target_schema
-    ) SELECT DISTINCT source_id,source_handle,target_id,target_handle FROM mappings p
-       WHERE NOT EXISTS (SELECT 1 FROM proxiima_core.schema_evolution_authority n
-          WHERE n.xact=pg_current_xact_id() AND n.record_kind=p.record_kind
-            AND n.source_id=p.target_id AND n.source_schema=p.target_schema)",
+        "SELECT source_id, source_handle, target_id, target_handle
+           FROM proxiima_core.schema_evolution_terminal_mappings($1, $2::uuid[])",
     )
-    .bind(owner.into_inner()).bind(referenced).fetch_all(&mut **tx).await.map_err(map_err)?;
+    .bind(owner.into_inner())
+    .bind(referenced)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
     let mut admissions = HashMap::<Uuid, Vec<Uuid>>::new();
     let mut series = HashMap::<Uuid, Vec<Uuid>>::new();
     for (source, source_series, target, target_series) in rows {

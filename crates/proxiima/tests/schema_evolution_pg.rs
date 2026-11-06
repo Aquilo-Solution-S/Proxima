@@ -541,20 +541,26 @@ fn sidecars_v2_with(transform: proxiima::spiice::SchemaMigrationFn) -> PgSidecar
     s
 }
 fn sidecars_v3() -> PgSidecarRegistry {
+    sidecars_v3_with(evolve_retain, evolve_v2_to_v3)
+}
+fn sidecars_v3_with(
+    first_transform: proxiima::spiice::SchemaMigrationFn,
+    second_transform: proxiima::spiice::SchemaMigrationFn,
+) -> PgSidecarRegistry {
     let mut s = PgSidecarRegistry::new();
     register_core_pg_sidecars(&mut s);
     AppV3::register_pg_sidecars(&mut s);
     let mut first = PgMigrationSchemas::new();
     first.add_fact::<FactV1>();
     first.add_fact::<FactV2>();
-    s.add_evolution(PgSchemaEvolution::new(&EVOLUTION, first, evolve_retain));
+    s.add_evolution(PgSchemaEvolution::new(&EVOLUTION, first, first_transform));
     let mut second = PgMigrationSchemas::new();
     second.add_fact::<FactV2>();
     second.add_fact::<FactV3>();
     s.add_evolution(PgSchemaEvolution::new(
         &EVOLUTION_V2_TO_V3,
         second,
-        evolve_v2_to_v3,
+        second_transform,
     ));
     s
 }
@@ -1488,6 +1494,180 @@ async fn fact_schema_evolution_runs_v1_to_v3_chain_with_only_v3_active() {
     .await
     .unwrap();
     assert_eq!(new_receipt, old_receipt, "publication bytes stay immutable");
+}
+
+fn evolve_new_v1_to_v2(
+    input: &proxiima::spiice::MigrationInput,
+    plan: &mut proxiima::spiice::MigrationPlan,
+) -> Result<(), proxiima_core::StorageError> {
+    for source in input.memories() {
+        if let Some(old) = source.payload::<FactV1>() {
+            let target = plan.fact(
+                source,
+                FactV2 {
+                    task_id: old.task_id,
+                    ended_at: old.ended_at,
+                    text: old.text.clone(),
+                },
+                MigrationPlacement::NEW,
+                source.pins(),
+            )?;
+            plan.map_memory(source, target, &[])?;
+        }
+    }
+    Ok(())
+}
+
+fn evolve_new_v2_to_v3(
+    input: &proxiima::spiice::MigrationInput,
+    plan: &mut proxiima::spiice::MigrationPlan,
+) -> Result<(), proxiima_core::StorageError> {
+    for source in input.memories() {
+        if let Some(old) = source.payload::<FactV2>() {
+            let target = plan.fact(
+                source,
+                FactV3 {
+                    task_id: old.task_id,
+                    ended_at: old.ended_at,
+                    text: old.text.clone(),
+                },
+                MigrationPlacement::NEW,
+                source.pins(),
+            )?;
+            plan.map_memory(source, target, &[])?;
+        }
+    }
+    Ok(())
+}
+
+async fn run_replacement_chain(second_transform: proxiima::spiice::SchemaMigrationFn) {
+    let source = FactV1 {
+        task_id: Uuid::now_v7(),
+        ended_at: 19,
+        text: "replacement-chain".into(),
+    };
+    let seeded = seed_v1_facts(vec![source.clone()]).await;
+    let admin = sqlx::PgPool::connect(&seeded.db.admin_url()).await.unwrap();
+    let receipt_before: (Vec<u8>, Vec<u8>) = sqlx::query_as(
+        "SELECT envelope, envelope_digest FROM proxiima_core.publication_outbox WHERE t=$1",
+    )
+    .bind(seeded.ids[0])
+    .fetch_one(&admin)
+    .await
+    .unwrap();
+    let pg = PgMigrationStorage::connect_with_config(
+        seeded.db.platform_url(),
+        PgPoolConfig::default(),
+        PgTuning::default(),
+    )
+    .await
+    .unwrap();
+    let mut registry = SpiiceRegistry::new();
+    register_v3(&mut registry).unwrap();
+    let registry = registry.try_freeze().unwrap();
+    let sidecars = sidecars_v3_with(evolve_new_v1_to_v2, second_transform);
+    let frozen = sidecars.clone().freeze_against(&registry).unwrap();
+    proxiima::run_core_and_spiice_migrations(&pg, AppV3::migrators(), &frozen)
+        .await
+        .unwrap();
+    let final_id = assert_terminal_chain(&admin, &seeded, receipt_before).await;
+    let active = storage(
+        seeded.db.runtime_url(),
+        seeded.db.platform_url(),
+        &registry,
+        sidecars,
+    )
+    .await;
+    let engine = proxiima_core::Engine::new(registry)
+        .try_with_publication_config(PublicationConfig::new(
+            PublicationSource::new("urn:proxiima:evolution").unwrap(),
+        ))
+        .unwrap()
+        .with_storage_ports(Arc::new(active).storage_ports());
+    let authz = authenticated_context(AuthzContext::for_subject_with_role(
+        UserId::new(Uuid::now_v7()),
+        [(seeded.owner, Role::admin())],
+        AuthPath::HostBearer,
+    ));
+    let replay = engine
+        .ingest_fact(
+            &authz,
+            FactWrite::new(
+                seeded.owner,
+                SOURCE_FEED,
+                &FactV3 {
+                    task_id: source.task_id,
+                    ended_at: source.ended_at,
+                    text: source.text,
+                },
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.memory_id.into_inner(), final_id);
+}
+
+async fn assert_terminal_chain(
+    admin: &sqlx::PgPool,
+    seeded: &SeededFacts,
+    receipt_before: (Vec<u8>, Vec<u8>),
+) -> Uuid {
+    let final_id: Uuid = sqlx::query_scalar(
+        "SELECT t FROM proxiima_core.memory WHERE owner_id=$1 AND kind='fact' AND schema_id=$2",
+    )
+    .bind(seeded.owner.into_inner())
+    .bind(FactV3::SCHEMA_ID)
+    .fetch_one(admin)
+    .await
+    .unwrap();
+    assert_ne!(final_id, seeded.ids[0]);
+    let witness_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.erased_pin_target")
+            .fetch_one(admin)
+            .await
+            .unwrap();
+    assert_eq!(
+        witness_count, 0,
+        "transitive replacement must not leave erased witnesses"
+    );
+    let receipt_after: (Vec<u8>, Vec<u8>) = sqlx::query_as(
+        "SELECT envelope, envelope_digest FROM proxiima_core.publication_outbox WHERE t=$1",
+    )
+    .bind(seeded.ids[0])
+    .fetch_one(admin)
+    .await
+    .unwrap();
+    assert_eq!(receipt_after, receipt_before);
+    let authority_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxiima_core.schema_evolution_authority")
+            .fetch_one(admin)
+            .await
+            .unwrap();
+    assert_eq!(authority_count, 0);
+    let replayed_by_old_key: Uuid = sqlx::query_scalar(
+        "SELECT t FROM proxiima_core.ingest_keys WHERE owner_id=$1 AND source_id=$2 AND ingest_key=$3",
+    )
+    .bind(seeded.owner.into_inner())
+    .bind(SOURCE_FEED)
+    .bind(&seeded.ingest_keys[0])
+    .fetch_one(admin)
+    .await
+    .unwrap();
+    assert_eq!(
+        replayed_by_old_key, final_id,
+        "the original admission key follows the replacement chain"
+    );
+    final_id
+}
+
+#[tokio::test]
+async fn fact_schema_evolution_new_then_retain_preserves_publication_capture() {
+    run_replacement_chain(evolve_v2_to_v3).await;
+}
+
+#[tokio::test]
+async fn fact_schema_evolution_new_then_new_preserves_publication_capture() {
+    run_replacement_chain(evolve_new_v2_to_v3).await;
 }
 
 #[tokio::test]
