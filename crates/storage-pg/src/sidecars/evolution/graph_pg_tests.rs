@@ -337,6 +337,76 @@ async fn seed_graph_memory(
 }
 
 #[tokio::test]
+async fn content_cleanup_is_scoped_and_keeps_referenced_history() {
+    let database = format!("proxiima_test_{}", Uuid::now_v7().simple());
+    create_core_db(&database)
+        .await
+        .expect("PG required for test");
+    let result = async {
+        let (_, platform_url) = split_role_urls(&database).await?;
+        let platform = PgPool::connect(&platform_url).await?;
+        let owner = owner_id(&platform).await?;
+        let ids = GraphSeedIds {
+            fact_handle: Uuid::now_v7(),
+            fact_t: Uuid::now_v7(),
+            support_fact_handle: Uuid::now_v7(),
+            support_fact_t: Uuid::now_v7(),
+            old_abstraction_handle: Uuid::now_v7(),
+            old_abstraction_t: Uuid::now_v7(),
+        };
+        let referenced = seed_graph_memory(&platform, owner, &ids).await?;
+        let scoped_orphan = Uuid::now_v7();
+        let unrelated_orphan = Uuid::now_v7();
+        let other_owner = owner_id(&platform).await?;
+        let mut tx = platform.begin().await?;
+        sqlx::query("SELECT set_config('app.proxiima_scope', 'platform', true)")
+            .execute(&mut *tx)
+            .await?;
+        let forgotten =
+            sqlx::query("UPDATE proxiima_core.memory SET forgotten_at=now() WHERE t=$1")
+                .bind(ids.old_abstraction_t)
+                .execute(&mut *tx)
+                .await?;
+        assert_eq!(forgotten.rows_affected(), 1);
+        for (content_id, content_owner, byte) in [
+            (scoped_orphan, owner, 0x11_u8),
+            (unrelated_orphan, other_owner, 0x22_u8),
+        ] {
+            sqlx::query(
+                "INSERT INTO proxiima_core.content (content_id, owner_id, schema_id, content_hash)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(content_id)
+            .bind(content_owner)
+            .bind(ABSTRACTION_SOURCE_SCHEMA)
+            .bind(vec![byte; 32])
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        super::finish::remove_unused_content(&mut tx, &[scoped_orphan, referenced])
+            .await
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+
+        let remaining: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT content_id FROM proxiima_core.content
+             WHERE content_id=ANY($1::uuid[]) ORDER BY content_id",
+        )
+        .bind(vec![scoped_orphan, referenced, unrelated_orphan])
+        .fetch_all(&mut *tx)
+        .await?;
+        assert!(!remaining.contains(&scoped_orphan));
+        assert!(remaining.contains(&referenced));
+        assert!(remaining.contains(&unrelated_orphan));
+        tx.commit().await?;
+        Ok::<(), sqlx::Error>(())
+    }
+    .await;
+    drop_db(&database).await.expect("drop test database");
+    result.expect("scoped content cleanup");
+}
+
+#[tokio::test]
 async fn graph_accepts_migrated_fact_goal_reference() {
     let database = format!("proxiima_test_{}", Uuid::now_v7().simple());
     create_core_db(&database)

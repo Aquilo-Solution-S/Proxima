@@ -137,6 +137,12 @@ pub(super) async fn plan(
     goal_replay(tx, input, plan).await?;
     publications(tx, input, plan).await?;
     super::derived::rebuild(tx, input, plan, program).await?;
+    let source_content: Vec<_> = input
+        .memories
+        .iter()
+        .filter_map(|source| source.row.content_id)
+        .collect();
+    finish::remove_unused_content(tx, &source_content).await?;
     Ok(())
 }
 

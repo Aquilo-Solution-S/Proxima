@@ -100,6 +100,7 @@ async fn cited_object_replacement_preserves_bytes_and_moves_only_primary_upload(
         let unrelated_owner = self::owner(&platform).await?;
         let source = Uuid::now_v7();
         let upload = Uuid::now_v7();
+        let unrelated_content = Uuid::now_v7();
         let hash = vec![0x5a_u8; 32];
 
         let mut tx = platform.begin().await?;
@@ -117,6 +118,12 @@ async fn cited_object_replacement_preserves_bytes_and_moves_only_primary_upload(
             .bind(owner)
             .bind(source)
             .bind(&hash)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO proxiima_core.content(content_id,owner_id,schema_id,content_hash) VALUES ($1,$2,$3,decode(repeat('04',32),'hex'))")
+            .bind(unrelated_content)
+            .bind(unrelated_owner)
+            .bind(SOURCE_SCHEMA)
             .execute(&mut *tx)
             .await?;
         let unrelated_handle = Uuid::now_v7();
@@ -159,6 +166,13 @@ async fn cited_object_replacement_preserves_bytes_and_moves_only_primary_upload(
         let after: serde_json::Value = sqlx::query_scalar("SELECT to_jsonb(upload)-'blob_id' FROM proxiima_core.blob_uploads upload WHERE upload_id=$1")
             .bind(upload).fetch_one(&mut *tx).await?;
         assert_eq!(metadata, after, "byte identity and all upload metadata stay exact");
+        let content_survives: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM proxiima_core.content WHERE content_id=$1)",
+        )
+        .bind(unrelated_content)
+        .fetch_one(&mut *tx)
+        .await?;
+        assert!(content_survives, "unrelated content sharing the source schema survives");
         let remaining_permits: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.schema_evolution_authority WHERE xact=pg_current_xact_id()")
             .fetch_one(&mut *tx)
             .await?;

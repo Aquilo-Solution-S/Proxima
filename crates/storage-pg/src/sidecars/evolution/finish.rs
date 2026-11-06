@@ -36,8 +36,8 @@ pub(super) async fn finish(
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxiima_core.memory WHERE t=ANY($1::uuid[]) /* FORGET-POLICY: includes-forgotten (explicit mapped representation removal) */")
-        .bind(&memory_ids).execute(&mut **tx).await.map_err(map_err)?;
+    let source_content: Vec<Option<Uuid>> = sqlx::query_scalar("DELETE FROM proxiima_core.memory WHERE t=ANY($1::uuid[]) /* FORGET-POLICY: includes-forgotten (explicit mapped representation removal) */ RETURNING content_id")
+        .bind(&memory_ids).fetch_all(&mut **tx).await.map_err(map_err)?;
     sqlx::query("DELETE FROM proxiima_core.goal WHERE t=ANY($1::uuid[])")
         .bind(&goal_ids)
         .execute(&mut **tx)
@@ -48,9 +48,11 @@ pub(super) async fn finish(
         .execute(&mut **tx)
         .await
         .map_err(map_err)?;
-    sqlx::query("DELETE FROM proxiima_core.content c WHERE EXISTS (SELECT 1 FROM proxiima_core.schema_evolution e WHERE e.source_schema_id=c.schema_id)
-        AND NOT EXISTS (SELECT 1 FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (historical content remains reachable) */ WHERE m.content_id=c.content_id)")
-        .execute(&mut **tx).await.map_err(map_err)?;
+    remove_unused_content(
+        tx,
+        &source_content.into_iter().flatten().collect::<Vec<_>>(),
+    )
+    .await?;
     sqlx::query("DELETE FROM proxiima_core.memory_head h WHERE EXISTS (SELECT 1 FROM proxiima_core.schema_evolution_authority a
         WHERE a.xact=pg_current_xact_id() AND a.record_kind='memory' AND a.source_handle=h.handle)
         AND NOT EXISTS (SELECT 1 FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (historical series stays while any version survives) */ WHERE m.handle=h.handle)")
@@ -78,6 +80,19 @@ pub(super) async fn finish(
                 "final migration constraints after permit removal: {err}"
             ))
         })?;
+    Ok(())
+}
+
+/// Reclaim only content consumed by this plan or by its retired source rows.
+/// Retained admissions may already point to new content; replacement admissions
+/// keep the old content reachable until the source rows are removed at finish.
+pub(super) async fn remove_unused_content(
+    tx: &mut Transaction<'_, Postgres>,
+    content_ids: &[Uuid],
+) -> Result<(), StorageError> {
+    sqlx::query("DELETE FROM proxiima_core.content c WHERE c.content_id=ANY($1::uuid[])
+        AND NOT EXISTS (SELECT 1 FROM proxiima_core.memory m /* FORGET-POLICY: includes-forgotten (historical content remains reachable) */ WHERE m.content_id=c.content_id)")
+        .bind(content_ids).execute(&mut **tx).await.map_err(map_err)?;
     Ok(())
 }
 
