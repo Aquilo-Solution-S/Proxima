@@ -495,6 +495,12 @@ group stay separate entries instead of folding into a role (`group_role` gives
 that). It takes no lock, so it never waits for another connection's membership
 edit, and it sees the caller's own uncommitted rows.
 
+`group_parent(&mut *tx, group).await` reads the direct parent edge as
+`Option<DirectGroupMembership>` under the same scope and snapshot, without a
+tree fence. `None` means no parent edge is visible, including an unattached or
+absent group. Use these facts for display snapshots; committing operations
+retain the authority session and its fences.
+
 Inside an authenticated Proxiima write callback, use
 `PgHostStateSession::authority_memberships` for the current subject's effective
 memberships instead. That session derives its subject from the sealed write

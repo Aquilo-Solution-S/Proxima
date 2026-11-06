@@ -331,12 +331,15 @@ pub use proxiima_storage_pg::{
     MembershipAddOutcome, add_group_member, bootstrap_group_admin, register_group,
     remove_group_member, remove_group_member_relation, replace_group_member_relation,
 };
-/// Role probes on a host's own transaction (see
+/// Membership and role probes on a host's own transaction (see
 /// [`proxiima_storage_pg::roles_for_subject`]): the answers
 /// [`PgOwnerAccessResolver`] gives, with no transaction of their own.
 /// [`direct_group_relations`] is the relations written on the person's own
 /// membership rows, neither inherited nor folded into one role.
-pub use proxiima_storage_pg::{direct_group_relations, group_role, roles_for_subject};
+/// [`group_parent`] reads a group's direct parent edge without a tree fence.
+pub use proxiima_storage_pg::{
+    direct_group_relations, group_parent, group_role, roles_for_subject,
+};
 /// The `rmcp` crate Proxiima's MCP handler is built on, at the version and
 /// feature set the workspace pins (`server`, `transport-streamable-http-server`).
 /// A host that implements [`rmcp::ServerHandler`] around [`DynamicHandler`]

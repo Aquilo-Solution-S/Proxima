@@ -96,9 +96,9 @@ pub use access::{
     AuthorityTargets, DirectGroupMembership, DirectUserMembership, GroupContainment,
     PgAuthorityGroup, PgAuthorityPerson, PgAuthoritySession, RegisteredOwner,
 };
-/// Role probes on a caller's connection (see [`access::roles_for_subject`]):
+/// Membership and role probes on a caller's connection (see [`access::roles_for_subject`]):
 /// what the resolver answers, for a host that already holds a transaction.
-pub use access::{direct_group_relations, group_role, roles_for_subject};
+pub use access::{direct_group_relations, group_parent, group_role, roles_for_subject};
 pub use delegated_authority::PgDelegationStore;
 pub use owner_scope::begin_owner_transaction;
 pub use platform_scope::{PgPlatformScope, begin_migration_transaction};

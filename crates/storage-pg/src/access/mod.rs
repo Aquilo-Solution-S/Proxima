@@ -218,6 +218,30 @@ pub async fn direct_group_relations(
         .map_err(|err| resolution_error(&err))
 }
 
+/// The direct parent of `group` and its edge relation, on the caller's connection.
+///
+/// Returns `None` when no parent edge is visible, including an unattached or
+/// absent group. Like [`direct_group_relations`], it takes no membership fence,
+/// controls no transaction and sets no scope. It reads only rows admitted by
+/// the connection's scope and snapshot, including the caller's uncommitted
+/// changes. Pass a `Transaction` as `&mut *tx`.
+///
+/// The result is a display fact, not an authorization witness. Committing
+/// operations use [`PgAuthorityGroup::parent`] under their authority session's
+/// fences instead.
+///
+/// # Errors
+///
+/// Returns [`AccessError::Resolution`] when the query fails.
+pub async fn group_parent(
+    conn: &mut PgConnection,
+    group: GroupId,
+) -> Result<Option<DirectGroupMembership>, AccessError> {
+    authority::parent_of(conn, group)
+        .await
+        .map_err(|err| resolution_error(&err))
+}
+
 fn resolution_error(err: &StorageError) -> AccessError {
     AccessError::Resolution(err.to_string())
 }

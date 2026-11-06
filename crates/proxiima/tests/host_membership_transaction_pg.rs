@@ -402,6 +402,107 @@ async fn direct_group_relations_read_the_callers_rows_without_a_fence() -> TestR
     Ok(())
 }
 
+#[tokio::test]
+async fn topology_reads_use_the_callers_snapshot_without_the_tree_fence() -> TestResult {
+    let db = clone_db().await;
+    let scope = platform_scope(&db).await;
+    let [parent, next_parent, child] = std::array::from_fn(|_| GroupId::new(Uuid::now_v7()));
+    let person = UserId::new(Uuid::now_v7());
+    let edge = |group, relation| proxiima::DirectGroupMembership { group, relation };
+    let before = edge(parent, Relation::Viewer);
+    let after = edge(next_parent, Relation::Editor);
+    let direct_before = vec![edge(child, Relation::Viewer)];
+    let mut setup = scope.begin().await?;
+    for group in [parent, next_parent, child] {
+        proxiima::register_group(&mut setup, group).await?;
+    }
+    proxiima::add_group_member(&mut setup, parent, child.into(), before.relation).await?;
+    proxiima::add_group_member(&mut setup, child, person.into(), Relation::Viewer).await?;
+    setup.commit().await?;
+
+    let pool = PgPool::connect(db.platform_url()).await?;
+    let mut snapshot = pool
+        .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        .await?;
+    sqlx::query("SET LOCAL app.proxiima_scope = 'platform'")
+        .execute(&mut *snapshot)
+        .await?;
+    assert_eq!(
+        proxiima::group_parent(&mut snapshot, child).await?,
+        Some(before)
+    );
+
+    let mut writer = scope.begin().await?;
+    {
+        let mut authority = scope
+            .authority_on(
+                &mut writer,
+                AuthorityTargets {
+                    groups: vec![parent, next_parent, child],
+                    people: vec![person],
+                    ..AuthorityTargets::default()
+                },
+            )
+            .await?;
+        assert_eq!(authority.group(child)?.parent().await?, Some(before));
+    }
+    // Dropping the authority borrow retains the tree fence until commit.
+    proxiima::remove_group_member(&mut writer, parent, child.into()).await?;
+    proxiima::add_group_member(&mut writer, next_parent, child.into(), after.relation).await?;
+    proxiima::remove_group_member(&mut writer, child, person.into()).await?;
+    proxiima::add_group_member(&mut writer, next_parent, person.into(), after.relation).await?;
+    assert_eq!(
+        proxiima::group_parent(&mut writer, child).await?,
+        Some(after)
+    );
+    assert_eq!(
+        proxiima::direct_group_relations(&mut writer, person).await?,
+        vec![after]
+    );
+
+    let mut display = scope.begin().await?;
+    let committed = tokio::time::timeout(Duration::from_secs(5), async {
+        Ok::<_, proxiima::AccessError>((
+            proxiima::group_parent(&mut display, child).await?,
+            proxiima::direct_group_relations(&mut display, person).await?,
+        ))
+    })
+    .await
+    .expect("display reads must finish while the writer holds the tree fence")?;
+    assert_eq!(committed, (Some(before), direct_before.clone()));
+    for unattached in [parent, next_parent, GroupId::new(Uuid::now_v7())] {
+        assert_eq!(
+            proxiima::group_parent(&mut display, unattached).await?,
+            None
+        );
+    }
+    display.rollback().await?;
+
+    writer.commit().await?;
+    assert_eq!(
+        proxiima::group_parent(&mut snapshot, child).await?,
+        Some(before)
+    );
+    assert_eq!(
+        proxiima::direct_group_relations(&mut snapshot, person).await?,
+        direct_before
+    );
+    snapshot.rollback().await?;
+
+    let mut current = scope.begin().await?;
+    assert_eq!(
+        proxiima::group_parent(&mut current, child).await?,
+        Some(after)
+    );
+    assert_eq!(
+        proxiima::direct_group_relations(&mut current, person).await?,
+        vec![after]
+    );
+    current.rollback().await?;
+    pool.close().await;
+    Ok(())
+}
+
 async fn wait_for_authority_lock(pool: &PgPool, pid: i32) -> TestResult {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {

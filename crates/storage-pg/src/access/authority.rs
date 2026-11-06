@@ -390,18 +390,7 @@ impl PgAuthorityGroup<'_> {
     ///
     /// Returns database failures.
     pub async fn parent(&mut self) -> Result<Option<DirectGroupMembership>, StorageError> {
-        let row: Option<(Uuid, Relation)> = sqlx::query_as(
-            "SELECT parent_group_id, relation FROM proxiima_core.group_edges
-              WHERE child_group_id = $1",
-        )
-        .bind(self.group.into_inner())
-        .fetch_optional(&mut *self.conn)
-        .await
-        .map_err(map_err)?;
-        Ok(row.map(|(group, relation)| DirectGroupMembership {
-            group: GroupId::new(group),
-            relation,
-        }))
+        parent_of(self.conn, self.group).await
     }
 
     /// Each parent step from the immediate parent to the root. Each relation
@@ -499,6 +488,24 @@ pub(super) async fn direct_groups_of(
     .await
     .map_err(map_err)?;
     Ok(group_memberships(rows))
+}
+
+pub(super) async fn parent_of(
+    conn: &mut PgConnection,
+    group: GroupId,
+) -> Result<Option<DirectGroupMembership>, StorageError> {
+    let row: Option<(Uuid, Relation)> = sqlx::query_as(
+        "SELECT parent_group_id, relation FROM proxiima_core.group_edges
+          WHERE child_group_id = $1",
+    )
+    .bind(group.into_inner())
+    .fetch_optional(conn)
+    .await
+    .map_err(map_err)?;
+    Ok(row.map(|(group, relation)| DirectGroupMembership {
+        group: GroupId::new(group),
+        relation,
+    }))
 }
 
 fn group_memberships(rows: Vec<(Uuid, Relation)>) -> Vec<DirectGroupMembership> {
