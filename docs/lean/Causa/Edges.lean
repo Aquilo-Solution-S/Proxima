@@ -20,7 +20,7 @@ E1 existence   — origin and refs t are a stored Memory.t, live or forgotten;
   E3 layering    — OriginKindValid (UML CHECKs)
   E4 kind follows — origins vs refs; no verb writes a pin
   E5 / E6        — there is no pin row, so no pin id and no pin payload
-  E7 rebuild     — derivePins m = (m.origins, m.refs, m.goal_refs, m.guided_by)
+  E7 rebuild     — derivePins m = (m.origins, memory_reference_ids m, m.goal_refs, m.guided_by)
 -/
 
 import Causa.Prelude
@@ -41,7 +41,7 @@ inductive EdgeKind where
     explicit guidance references, kept separate from F/A/P origins. -/
 def derivePins (m : Memory) :
     List MemoryId × List MemoryId × List GoalId × List GoalId :=
-  (memory_origins m, memory_refs m ++ (memory_forked_from m).toList,
+  (memory_origins m, memory_reference_ids m,
     memory_goal_refs m, memory_guided_by m)
 
 /- The new causal fields are still ordinary source-owned Reference pins, but
@@ -237,7 +237,7 @@ theorem pins_are_node_content (m : Memory) :
 
 theorem derived_table_rebuildable (m : Memory) :
     derivePins m =
-      (memory_origins m, memory_refs m ++ (memory_forked_from m).toList,
+      (memory_origins m, memory_reference_ids m,
         memory_goal_refs m, memory_guided_by m) :=
   pins_are_node_content m
 

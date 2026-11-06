@@ -230,6 +230,9 @@ def memory_refs : Memory → List MemoryId := Memory.refs
 def memory_goal_refs : Memory → List GoalId := Memory.goal_refs
 def memory_guided_by : Memory → List GoalId := Memory.guided_by
 def memory_forked_from : Memory → Option MemoryId := Memory.forked_from
+/-- Memory reference pins, including the optional fork anchor. -/
+def memory_reference_ids (m : Memory) : List MemoryId :=
+  memory_refs m ++ (memory_forked_from m).toList
 def memory_blob_id : Memory → Option BlobId := Memory.blob_id
 def memory_content_id : Memory → Option ContentId := Memory.content_id
 def memory_tick : Memory → Instant := Memory.tick

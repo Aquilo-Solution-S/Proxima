@@ -32,7 +32,17 @@ theorem drop_personal_abandoned (u : User) :
 /-- No stored row, live or forgotten, still pins this `t`. -/
 def unreferenced (memories : Set Memory) (id : MemoryId) : Prop :=
   ∀ m : Memory, m ∈ memories →
-    id ∉ memory_origins m ∧ id ∉ memory_refs m
+    id ∉ memory_origins m ∧ id ∉ memory_reference_ids m
+
+theorem fork_anchor_prevents_unreferenced
+    (memories : Set Memory) (m : Memory) (id : MemoryId)
+    (hm : m ∈ memories)
+    (hfork : memory_forked_from m = some id) :
+    ¬ unreferenced memories id := by
+  intro hu
+  have hrefs := (hu m hm).2
+  apply hrefs
+  simp [memory_reference_ids, hfork]
 
 /-- No remaining admission names this Content. A forgotten row is still an
     admission and keeps its payload; Content GC is admission-set emptiness. -/
