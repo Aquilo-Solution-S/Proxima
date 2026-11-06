@@ -8,7 +8,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::list_schemas::SchemaItem;
+use super::list_schemas::{SchemaItem, schema_item};
 use super::list_substrate_tools::{SubstrateToolItem, scoped_substrate_tools};
 use crate::engine::GetGraphReadRequest;
 use crate::mcp::{McpToolCtx, McpToolError};
@@ -62,14 +62,7 @@ pub async fn get_graph(
         .registry
         .list()
         .into_iter()
-        .map(|info| SchemaItem {
-            schema_id: info.schema_id.as_str().to_string(),
-            schema_version: info.schema_version.into_inner(),
-            kind: info.kind,
-            listenable: info.listenable,
-            change: None,
-            consumer_action: None,
-        })
+        .map(|info| schema_item(&ctx.registry, &info))
         .collect();
 
     let substrate_tools = scoped_substrate_tools(&ctx);

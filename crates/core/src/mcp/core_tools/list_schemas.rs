@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::verbs::schema::PayloadKind;
+use crate::verbs::schema::{PayloadKind, SchemaInfo, SpiiceRegistryFrozen};
 use crate::{SchemaId, SchemaVersion};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -30,6 +30,18 @@ pub struct SchemaItem {
     pub consumer_action: Option<String>,
 }
 
+pub(crate) fn schema_item(registry: &SpiiceRegistryFrozen, info: &SchemaInfo) -> SchemaItem {
+    let metadata = registry.evolution_metadata(&info.schema_id, info.schema_version, info.kind);
+    SchemaItem {
+        schema_id: info.schema_id.as_str().to_string(),
+        schema_version: info.schema_version.into_inner(),
+        kind: info.kind,
+        listenable: info.listenable,
+        change: metadata.map(|(change, _)| change.to_owned()),
+        consumer_action: metadata.map(|(_, action)| action.to_owned()),
+    }
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListSchemasOutput {
     pub schemas: Vec<SchemaItem>,
@@ -48,19 +60,7 @@ pub async fn list_schemas(
         .list()
         .into_iter()
         .filter(|info| args.kind.is_none_or(|k| info.kind == k))
-        .map(|info| {
-            let metadata =
-                ctx.registry
-                    .evolution_metadata(&info.schema_id, info.schema_version, info.kind);
-            SchemaItem {
-                schema_id: info.schema_id.as_str().to_string(),
-                schema_version: info.schema_version.into_inner(),
-                kind: info.kind,
-                listenable: info.listenable,
-                change: metadata.map(|(change, _)| change.to_owned()),
-                consumer_action: metadata.map(|(_, action)| action.to_owned()),
-            }
-        })
+        .map(|info| schema_item(&ctx.registry, &info))
         .collect();
     Ok(ListSchemasOutput { schemas })
 }

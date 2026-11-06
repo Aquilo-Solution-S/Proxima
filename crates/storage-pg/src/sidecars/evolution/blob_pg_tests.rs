@@ -51,6 +51,10 @@ static EVOLUTION: SchemaEvolution = SchemaEvolution::new(
 fn frozen_registry() -> super::PgSidecarRegistryFrozen {
     let schemas = PgMigrationSchemas::new();
     let program = PgSchemaEvolution::new(&EVOLUTION, schemas, |input, plan| {
+        assert!(
+            !input.blobs().is_empty(),
+            "an evolution callback must not run for an owner with only an unrelated kind"
+        );
         for source in input.blobs() {
             let target = plan.blob(source, TARGET.id, super::MigrationAdmission::New);
             let secondary = plan.blob(source, SECONDARY.id, super::MigrationAdmission::New);
@@ -93,6 +97,7 @@ async fn cited_object_replacement_preserves_bytes_and_moves_only_primary_upload(
         let (_, platform_url) = split_role_urls(&database).await?;
         let platform = PgPool::connect(&platform_url).await?;
         let owner = owner(&platform).await?;
+        let unrelated_owner = self::owner(&platform).await?;
         let source = Uuid::now_v7();
         let upload = Uuid::now_v7();
         let hash = vec![0x5a_u8; 32];
@@ -112,6 +117,22 @@ async fn cited_object_replacement_preserves_bytes_and_moves_only_primary_upload(
             .bind(owner)
             .bind(source)
             .bind(&hash)
+            .execute(&mut *tx)
+            .await?;
+        let unrelated_handle = Uuid::now_v7();
+        let unrelated_t = Uuid::now_v7();
+        sqlx::query("INSERT INTO proxiima_core.memory_head (handle,kind,schema_id,owner_id,t) VALUES ($1,'fact',$2,$3,$4)")
+            .bind(unrelated_handle)
+            .bind(SOURCE_SCHEMA)
+            .bind(unrelated_owner)
+            .bind(unrelated_t)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO proxiima_core.memory (handle,t,kind,owner_id,schema_id,occurred_at,origins,refs,goal_refs,sidecar_tables,\"by\") VALUES ($1,$2,'fact',$3,$4,now(),'{}','{}','{}','{}',$3)")
+            .bind(unrelated_handle)
+            .bind(unrelated_t)
+            .bind(unrelated_owner)
+            .bind(SOURCE_SCHEMA)
             .execute(&mut *tx)
             .await?;
         let metadata: serde_json::Value = sqlx::query_scalar("SELECT to_jsonb(upload)-'blob_id' FROM proxiima_core.blob_uploads upload WHERE upload_id=$1")

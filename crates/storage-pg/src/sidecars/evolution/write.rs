@@ -65,7 +65,10 @@ async fn memory_targets(
             entry.projection_table.as_deref(),
         )
         .await?;
-        if entry.projection_insert.is_some() {
+        // Forget keeps the typed sidecar for restore, but its derived search
+        // projection is intentionally absent.  Do not recreate that state
+        // while replaying the forgotten source row into a new schema.
+        if target.source.row.forgotten_at.is_none() && entry.projection_insert.is_some() {
             registry
                 .rebuild_projection_for_table(
                     tx,

@@ -293,6 +293,8 @@ pub enum MigrationError {
     CorePreflight(#[source] StorageError),
     #[error("sidecar owner RLS deployment failed: {0}")]
     SidecarOwnerRls(#[source] StorageError),
+    #[error("schema evolution failed: {0}")]
+    SchemaEvolution(#[source] StorageError),
     #[error(
         "composed search definitions are not current; run the host migration command before serving: {0}"
     )]
@@ -647,7 +649,7 @@ pub async fn preflight_without_migrations_with_policy<P: MigrationStorage>(
         sidecars
             .ensure_schema_evolutions(snapshot.as_mut())
             .await
-            .map_err(MigrationError::SidecarOwnerRls)
+            .map_err(MigrationError::SchemaEvolution)
     }
     .await;
     let ended = snapshot.rollback().await;
@@ -900,7 +902,7 @@ async fn plan_snapshot(
     let pending_evolutions = sidecars
         .pending_schema_evolutions(snapshot)
         .await
-        .map_err(MigrationError::SidecarOwnerRls)?;
+        .map_err(MigrationError::SchemaEvolution)?;
     let pending_ids = pending_evolutions
         .iter()
         .map(|evolution| evolution.id)
@@ -1294,16 +1296,16 @@ async fn run_evolution_sources(
         sidecars
             .run_schema_evolution(&mut transaction, evolution)
             .await
-            .map_err(MigrationError::SidecarOwnerRls)?;
+            .map_err(MigrationError::SchemaEvolution)?;
         sidecars
             .checkpoint_schema_evolution(&mut transaction)
             .await
-            .map_err(MigrationError::SidecarOwnerRls)?;
+            .map_err(MigrationError::SchemaEvolution)?;
     }
     sidecars
         .finish_schema_evolutions(&mut transaction)
         .await
-        .map_err(MigrationError::SidecarOwnerRls)?;
+        .map_err(MigrationError::SchemaEvolution)?;
     // Source rows and deferred sidecar obligations are drained before a
     // trailing spiice migration may remove their obsolete tables.
     for source in sources.iter().filter(|source| source.source != CORE_SOURCE) {

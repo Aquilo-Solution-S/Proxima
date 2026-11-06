@@ -1,15 +1,40 @@
 use super::*;
 
 use proxiima::spiice::SpiiceBundle;
+use proxiima_core::payload::SearchProjectionColumnKind;
+use proxiima_core::spiice::{BandComparability, ProjectionSpec, RankSource};
 use proxiima_core::spiice::{EmbedUnit, EmbeddingRecipe, SLOT_DEFAULT};
+use proxiima_core::spiice::{LanguagePolicy, SubstringArm, WEIGHT_UNIFORM, WeightedField};
+use sqlx::migrate::{Migration, MigrationType, Migrator};
+use std::borrow::Cow;
+
+const EMBEDDED_PROJECTION: ProjectionSpec = ProjectionSpec {
+    table: "evolution_test.projection",
+    index: "evolution_test_projection_owner_tsv_gin",
+    overfetch_k: 1000,
+    band_comparability: BandComparability::CoreBands,
+    rank_source: RankSource::Projection,
+};
+const EMBEDDED_ANCHOR: i64 = ANCHOR + 1;
 
 static V2_EMBEDDED: SchemaContract = SchemaContract {
     id: SchemaRef::new(SPIICE, "fact", 2),
     kind: PayloadKind::Fact,
     sidecar_table: Some(TABLE_V2),
-    search: SearchProjectionDecl::None {
-        why: "embedding migration receipt",
+    search: SearchProjectionDecl::Projected {
+        fields: &[WeightedField {
+            column: "text",
+            kind: SearchProjectionColumnKind::Text,
+            weight: WEIGHT_UNIFORM,
+        }],
         tag_column: None,
+        language: LanguagePolicy::Pinned("simple"),
+        bands: &[
+            proxiima_core::spiice0::BAND_EXACT,
+            proxiima_core::spiice0::BAND_RESCUE,
+            proxiima_core::spiice0::BAND_SUBSTRING,
+        ],
+        substring: SubstringArm::MemoryFirstNestedLoop,
     },
     embedding: EmbeddingRecipe::Units(&[EmbedUnit::stored("text", SLOT_DEFAULT)]),
     transfer: TransferRule::StaysOnKey,
@@ -22,7 +47,7 @@ static EVOLUTION_EMBEDDED: SchemaEvolution = SchemaEvolution::new(
     "fact-v1-to-v2-embedded",
     &[V1],
     &[V2_EMBEDDED],
-    ANCHOR,
+    EMBEDDED_ANCHOR,
     &[],
     "change fact representation with embeddings",
     "redeploy the v2 consumer",
@@ -38,9 +63,7 @@ static CONTRACT_V2_EMBEDDED: SpiiceContract = SpiiceContract {
     kernel_surfaces: &[],
     tools: &[],
     resources: &[],
-    projection: ProjectionDecl::None {
-        why: "embedding migration receipt",
-    },
+    projection: ProjectionDecl::Table(EMBEDDED_PROJECTION),
     bespoke_erase_legs: &[],
     bespoke_transfer_legs: &[],
 };
@@ -65,8 +88,24 @@ impl SpiiceBundle for AppV2Embedded {
     }
 
     fn migrators() -> Vec<NamedMigrator> {
-        vec![NamedMigrator::new(SPIICE, migrator(embedded_transform))]
+        vec![NamedMigrator::new(SPIICE, embedded_migrator())]
     }
+}
+
+fn embedded_migrator() -> Migrator {
+    let mut migrations = migrator(embedded_transform);
+    let projection = proxiima::spiice::projection_artifacts(&CONTRACT_V2_EMBEDDED)
+        .unwrap()
+        .unwrap();
+    migrations.migrations.to_mut().push(Migration::new(
+        EMBEDDED_ANCHOR,
+        Cow::Borrowed("evolution test projection"),
+        MigrationType::Simple,
+        // SQL-POLICY: generated — the projection declaration owns all DDL.
+        sqlx::AssertSqlSafe(projection.render()).into_sql_str(),
+        false,
+    ));
+    migrations
 }
 
 fn embedded_transform(
@@ -198,6 +237,15 @@ async fn embedded_migration_invalidates_sources_and_requeues_each_space_once() {
     .await
     .unwrap();
     assert_eq!(target_jobs, 1);
+    let target_projection: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM evolution_test.projection WHERE memory_id=$1 AND schema_id=$2",
+    )
+    .bind(target)
+    .bind(TARGET_ID)
+    .fetch_one(&admin)
+    .await
+    .unwrap();
+    assert_eq!(target_projection, 1, "live migrated target is projected");
     let status: String = sqlx::query_scalar(
         "SELECT status::text FROM proxiima_core.embedding_jobs
          WHERE entity_id=$1 AND model_id='test-embed'",
@@ -227,6 +275,31 @@ async fn forgotten_embedded_target_is_not_requeued() {
         .await
         .unwrap();
     migrate_embedded(&seeded).await.unwrap();
+    let target: Uuid = sqlx::query_scalar("SELECT t FROM proxiima_core.memory WHERE schema_id=$1")
+        .bind(TARGET_ID)
+        .fetch_one(&admin)
+        .await
+        .unwrap();
+    let target_forgotten: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM proxiima_core.memory WHERE t=$1 AND forgotten_at IS NOT NULL",
+    )
+    .bind(target)
+    .fetch_one(&admin)
+    .await
+    .unwrap();
+    assert_eq!(target_forgotten, 1);
+    let target_projection: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM evolution_test.projection WHERE memory_id=$1 AND schema_id=$2",
+    )
+    .bind(target)
+    .bind(TARGET_ID)
+    .fetch_one(&admin)
+    .await
+    .unwrap();
+    assert_eq!(
+        target_projection, 0,
+        "forgotten migrated target has no projection"
+    );
     let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM proxiima_core.embedding_jobs")
         .fetch_one(&admin)
         .await

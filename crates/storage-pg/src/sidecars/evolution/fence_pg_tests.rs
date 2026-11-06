@@ -9,6 +9,59 @@ use uuid::Uuid;
 const SOURCE: &str = "example/source-v1";
 const TARGET: &str = "example/target-v2";
 
+#[tokio::test]
+async fn goal_writer_finishes_before_waiting_migration_locks_its_revision_table() {
+    let database = format!("proxiima_test_{}", Uuid::now_v7().simple());
+    create_core_db(&database)
+        .await
+        .expect("PG required for test");
+    let result = async {
+        let (_, platform_url) = split_role_urls(&database).await?;
+        let pool = PgPool::connect(&platform_url).await?;
+        let owner = owner_id(&pool).await?;
+        let handle = Uuid::now_v7();
+        let revision = Uuid::now_v7();
+        let mut writer = pool.begin().await?;
+        sqlx::query("SELECT set_config('app.proxiima_scope','platform',true)").execute(&mut *writer).await?;
+        sqlx::query("INSERT INTO proxiima_core.goal_head(handle,schema_id,owner_id,t) VALUES($1,$2,$3,$4)")
+            .bind(handle).bind(SOURCE).bind(owner).bind(revision).execute(&mut *writer).await?;
+
+        let mut migration = pool.begin().await?;
+        sqlx::query("SELECT set_config('app.proxiima_scope','platform',true)").execute(&mut *migration).await?;
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *migration).await?;
+        let migrating = tokio::spawn(async move {
+            super::execute::lock_sources(&mut migration, &[SOURCE.to_owned()]).await?;
+            migration.commit().await.map_err(crate::error::map_err)
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND NOT granted)")
+                    .bind(pid).fetch_one(&pool).await?;
+                if blocked { return Ok::<(), sqlx::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("migration reaches writer fence")?;
+        let premature_lock: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND relation='proxiima_core.goal'::regclass AND mode='ShareRowExclusiveLock' AND granted)")
+            .bind(pid).fetch_one(&pool).await?;
+        assert!(!premature_lock, "migration must wait on goal_head before locking goal");
+        sqlx::query("INSERT INTO proxiima_core.goal(handle,t,owner_id,title,text,state,request_id,\"by\") VALUES($1,$2,$3,'Goal','Body','Active','concurrent-create',$3)")
+            .bind(handle).bind(revision).bind(owner).execute(&mut *writer).await?;
+        writer.commit().await?;
+        tokio::time::timeout(Duration::from_secs(5), migrating).await
+            .expect("migration resumes after Goal commit").expect("migration task")
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        let mut read = pool.begin().await?;
+        sqlx::query("SELECT set_config('app.proxiima_scope','platform',true)").execute(&mut *read).await?;
+        let schema: String = sqlx::query_scalar("SELECT schema_id FROM proxiima_core.goal WHERE t=$1")
+            .bind(revision).fetch_one(&mut *read).await?;
+        assert_eq!(schema, SOURCE, "the writer committed before the migration fence");
+        read.commit().await?;
+        Ok::<(), sqlx::Error>(())
+    }.await;
+    drop_db(&database).await.expect("drop test database");
+    result.expect("concurrent Goal writer and schema migration");
+}
+
 async fn owner_id(pool: &PgPool) -> Result<Uuid, sqlx::Error> {
     let owner = Uuid::now_v7();
     let mut tx = pool.begin().await?;

@@ -214,6 +214,27 @@ pub(super) async fn ensure(
     Ok(())
 }
 
+/// Fence source writes in the same order as Goal persistence: a head first,
+/// then its revision. Table locks precede the schema advisory locks because
+/// an INSERT acquires its table lock before entering the schema trigger.
+pub(super) async fn lock_sources(
+    tx: &mut Transaction<'_, Postgres>,
+    source_ids: &[String],
+) -> Result<(), StorageError> {
+    sqlx::query("LOCK TABLE proxiima_core.memory, proxiima_core.goal_head, proxiima_core.goal, proxiima_core.blob IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut **tx).await.map_err(map_err)?;
+    let mut locked = source_ids.to_vec();
+    locked.sort_unstable();
+    for schema in locked {
+        sqlx::query("SELECT proxiima_core.lock_schema_evolution_exclusive($1)")
+            .bind(schema)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+    }
+    Ok(())
+}
+
 pub(super) async fn run(
     registry: &PgSidecarRegistryFrozen,
     tx: &mut Transaction<'_, Postgres>,
@@ -233,6 +254,11 @@ pub(super) async fn run(
         .iter()
         .map(|schema| schema.id.render())
         .collect();
+    let source_kinds: Vec<_> = declaration
+        .sources
+        .iter()
+        .map(|schema| super::kind_name(schema.kind))
+        .collect();
     let completed = completions(&mut *tx).await?;
     if !pending_steps(registry, &completed)?
         .iter()
@@ -240,23 +266,30 @@ pub(super) async fn run(
     {
         return Ok(());
     }
-    // Table locks are taken before advisory locks: an INSERT already owns its
-    // table lock when its schema trigger takes the shared advisory lock.
-    sqlx::query("LOCK TABLE proxiima_core.memory, proxiima_core.goal, proxiima_core.blob IN SHARE ROW EXCLUSIVE MODE")
-        .execute(&mut **tx).await.map_err(map_err)?;
-    let mut locked = source_ids.clone();
-    locked.sort_unstable();
-    for schema in locked {
-        sqlx::query("SELECT proxiima_core.lock_schema_evolution_exclusive($1)")
-            .bind(schema)
-            .execute(&mut **tx)
-            .await
-            .map_err(map_err)?;
-    }
-    let owners:Vec<Uuid>=sqlx::query_scalar("SELECT owner_id FROM proxiima_core.memory /* FORGET-POLICY: includes-forgotten (all persisted representations migrate) */ WHERE schema_id=ANY($1::text[])
-        UNION SELECT g.owner_id FROM proxiima_core.goal g WHERE g.schema_id=ANY($1::text[])
-        UNION SELECT owner_id FROM proxiima_core.blob WHERE schema_id=ANY($1::text[]) ORDER BY owner_id")
-        .bind(&source_ids).fetch_all(&mut **tx).await.map_err(map_err)?;
+    lock_sources(tx, &source_ids).await?;
+    let owners: Vec<Uuid> = sqlx::query_scalar(
+        "WITH source_pairs(schema_id, kind) AS (
+             SELECT * FROM unnest($1::text[], $2::text[])
+         )
+         SELECT m.owner_id
+           FROM proxiima_core.memory m
+           JOIN source_pairs s ON s.schema_id = m.schema_id AND s.kind = m.kind::text
+          /* FORGET-POLICY: includes-forgotten (all persisted representations migrate) */
+         UNION
+         SELECT g.owner_id
+           FROM proxiima_core.goal g
+           JOIN source_pairs s ON s.schema_id = g.schema_id AND s.kind = 'goal'
+         UNION
+         SELECT b.owner_id
+           FROM proxiima_core.blob b
+           JOIN source_pairs s ON s.schema_id = b.schema_id AND s.kind = 'cited_object'
+         ORDER BY owner_id",
+    )
+    .bind(&source_ids)
+    .bind(&source_kinds)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
     if owners.is_empty() {
         return apply::record_completion(tx, program).await;
     }

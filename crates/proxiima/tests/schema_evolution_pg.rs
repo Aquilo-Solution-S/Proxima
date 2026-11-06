@@ -1268,6 +1268,10 @@ async fn incomplete_fact_schema_evolution_rolls_back_everything() {
     let error = proxiima::run_core_and_spiice_migrations(&pg, AppV2Incomplete::migrators(), &f2)
         .await
         .expect_err("an omitted source mapping must abort the migration");
+    assert!(matches!(
+        error,
+        proxiima::MigrationError::SchemaEvolution(_)
+    ));
     assert!(
         error
             .to_string()

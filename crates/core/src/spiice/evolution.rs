@@ -256,13 +256,20 @@ fn has_initial_path(
         return false;
     };
     if !seen.insert(id) {
+        // `seen` is the current recursion stack, not a global visit mark.
+        // A split may reach the same producer through two sibling sources;
+        // that is valid after the first branch removes it, while a producer
+        // still on the stack is a real cycle.
         return false;
     }
     let step = steps.get(id).expect("producer indexed with its step");
-    step.evolution
+    let reaches_initial = step
+        .evolution
         .sources
         .iter()
-        .all(|source| has_initial_path(schema_key(source), producers, steps, seen))
+        .all(|source| has_initial_path(schema_key(source), producers, steps, seen));
+    seen.remove(id);
+    reaches_initial
 }
 
 #[must_use]
@@ -366,6 +373,28 @@ mod tests {
             projection: ProjectionDecl::None { why: "test" },
         };
         validate_evolutions(&[&CONTRACT]).expect("F/A paths do not collide");
+    }
+
+    #[test]
+    fn split_then_merge_reuses_the_split_producer() {
+        static SPLIT: SchemaEvolution = step("split", &[FACT_V1], &[FACT_V2, ABS_V2], &[]);
+        static MERGE: SchemaEvolution = step("merge", &[FACT_V2, ABS_V2], &[FACT_V3], &[]);
+        static CONTRACT: SpiiceContract = SpiiceContract {
+            spiice_id: "test-evolution",
+            ordinal: 7,
+            schemas: &[FACT_V3],
+            evolutions: &[MERGE, SPLIT],
+            retired_facts: &[],
+            state_surfaces: &[],
+            scopes: &[],
+            kernel_surfaces: &[],
+            tools: &[],
+            resources: &[],
+            bespoke_erase_legs: &[],
+            bespoke_transfer_legs: &[],
+            projection: ProjectionDecl::None { why: "test" },
+        };
+        validate_evolutions(&[&CONTRACT]).expect("split-then-merge reaches v1");
     }
 
     #[test]
