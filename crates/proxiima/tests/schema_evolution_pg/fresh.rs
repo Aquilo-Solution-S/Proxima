@@ -6,9 +6,7 @@ use proxiima_pg_testkit::SplitRoleDb;
 
 #[tokio::test]
 async fn fresh_database_migrates_directly_to_v2_before_serving() {
-    let db = SplitRoleDb::create("proxiima_evolution_fresh_v2", &[])
-        .await
-        .expect("PG required");
+    let (db, admin) = empty_database().await;
     let pg = PgMigrationStorage::connect_with_config(
         db.platform_url(),
         PgPoolConfig::default(),
@@ -22,16 +20,11 @@ async fn fresh_database_migrates_directly_to_v2_before_serving() {
     let sidecars = sidecars_v2()
         .freeze_against(&registry)
         .expect("fresh sidecars");
-    proxiima::run_core_and_spiice_migrations(&pg, AppV2::migrators(), &sidecars)
-        .await
-        .expect("explicit v2 migration");
+    migrate_after_failed_first_install(&pg, &admin, &sidecars).await;
     pg.initialize_store_number(0)
         .await
         .expect("store identity initialization");
 
-    let admin = sqlx::PgPool::connect(&db.admin_url())
-        .await
-        .expect("admin pool");
     let counts: (i64, i64, i64) = sqlx::query_as(
         "SELECT
            (SELECT count(*) FROM proxiima_core.memory),
@@ -93,4 +86,67 @@ async fn fresh_database_migrates_directly_to_v2_before_serving() {
             .expect("written target"),
         1
     );
+}
+
+async fn empty_database() -> (SplitRoleDb, sqlx::PgPool) {
+    let db = SplitRoleDb::create("proxiima_evolution_fresh_v2", &[])
+        .await
+        .expect("PG required");
+    let admin = sqlx::PgPool::connect(&db.admin_url())
+        .await
+        .expect("admin pool");
+    sqlx::query("DROP TABLE IF EXISTS public._sqlx_migrations")
+        .execute(&admin)
+        .await
+        .expect("remove pre-created core ledger");
+    let ledger_exists: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations')::text")
+            .fetch_one(&admin)
+            .await
+            .expect("core ledger probe");
+    assert_eq!(ledger_exists, None, "fresh database has no core ledger");
+    (db, admin)
+}
+
+async fn migrate_after_failed_first_install(
+    pg: &PgMigrationStorage,
+    admin: &sqlx::PgPool,
+    sidecars: &proxiima_storage_pg::PgSidecarRegistryFrozen,
+) {
+    let mut failing = migrator(evolve_retain);
+    failing.migrations.to_mut().push(Migration::new(
+        ANCHOR + 1,
+        Cow::Borrowed("fail after schema evolution"),
+        MigrationType::Simple,
+        sqlx::AssertSqlSafe("SELECT 1 / 0;").into_sql_str(),
+        false,
+    ));
+    let error = proxiima::run_core_and_spiice_migrations(
+        pg,
+        vec![NamedMigrator::spiice(SPIICE, failing)],
+        sidecars,
+    )
+    .await
+    .expect_err("a trailing migration failure rolls back the first install");
+    assert!(error.to_string().contains("division by zero"), "{error}");
+    let absent: (bool, bool, bool) = sqlx::query_as(
+        "SELECT to_regclass('public._sqlx_migrations') IS NULL,
+                to_regclass('public._sqlx_migrations_evolution_test') IS NULL,
+                to_regclass('proxiima_core.memory') IS NULL",
+    )
+    .fetch_one(admin)
+    .await
+    .unwrap();
+    assert_eq!(
+        absent,
+        (true, true, true),
+        "no partial first install remains"
+    );
+    proxiima::run_core_and_spiice_migrations(
+        pg,
+        vec![NamedMigrator::spiice(SPIICE, migrator(evolve_retain))],
+        sidecars,
+    )
+    .await
+    .expect("explicit v2 migration after a rolled-back first install");
 }

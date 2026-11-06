@@ -1243,9 +1243,6 @@ async fn run_evolution_sources(
     sidecars: &PgSidecarRegistryFrozen,
     vectors: VectorStorage,
 ) -> Result<(), MigrationError> {
-    for source in sources {
-        prepare_ledger(conn, source).await?;
-    }
     let source_refs = sources.iter().collect::<Vec<_>>();
     let schedule = schema_evolution_schedule(&source_refs, sidecars.schema_evolutions())?;
     let mut transaction = proxiima_storage_pg::begin_migration_transaction(conn)
@@ -1268,6 +1265,11 @@ async fn run_evolution_sources(
         )
         .await
         .map_err(MigrationError::CorePreflight)?;
+    }
+    // Core creates the ledger on a first install. Spiice ledgers derive their
+    // shape from it, and their preparation belongs to this same transaction.
+    for source in sources {
+        prepare_ledger(transaction.as_mut(), source).await?;
     }
     let mut applied = BTreeMap::<&'static str, i64>::new();
     sidecars
