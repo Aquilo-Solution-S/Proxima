@@ -65,21 +65,23 @@ pub(super) async fn finish(
     super::graph::validate(tx).await?;
     // All deferred sidecar constraints must see the still-live narrow permits.
     // The authority-drain constraint itself is checked after removing permits.
-    enforce_data_constraints(tx).await?;
+    let constraints = data_constraints(tx, registry).await?;
+    enforce_data_constraints(tx, &constraints).await?;
+    restore_data_constraints(tx, &constraints).await?;
     sqlx::query(
         "DELETE FROM proxiima_core.schema_evolution_authority WHERE xact=pg_current_xact_id()",
     )
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
-    sqlx::query("SET CONSTRAINTS ALL IMMEDIATE")
+    sqlx::query("SET CONSTRAINTS proxiima_core.schema_evolution_authority_drained IMMEDIATE")
         .execute(&mut **tx)
         .await
-        .map_err(|err| {
-            refused(format!(
-                "final migration constraints after permit removal: {err}"
-            ))
-        })?;
+        .map_err(map_err)?;
+    sqlx::query("SET CONSTRAINTS proxiima_core.schema_evolution_authority_drained DEFERRED")
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
     Ok(())
 }
 
@@ -97,29 +99,40 @@ pub(super) async fn remove_unused_content(
 }
 
 pub(super) async fn checkpoint_data_constraints(
+    registry: &PgSidecarRegistryFrozen,
     tx: &mut Transaction<'_, Postgres>,
 ) -> Result<(), StorageError> {
-    enforce_data_constraints(tx).await?;
-    defer_data_constraints(tx).await
+    let constraints = data_constraints(tx, registry).await?;
+    enforce_data_constraints(tx, &constraints).await?;
+    restore_data_constraints(tx, &constraints).await
 }
 
 async fn data_constraints(
     tx: &mut Transaction<'_, Postgres>,
-) -> Result<Vec<(String, String)>, StorageError> {
-    sqlx::query_as("SELECT DISTINCT n.nspname,c.conname FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE c.condeferrable AND c.conrelid<>'proxiima_core.schema_evolution_authority'::regclass")
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(map_err)
+    registry: &PgSidecarRegistryFrozen,
+) -> Result<Vec<(String, bool)>, StorageError> {
+    let mut schemas = registry.spiice_schema_names().to_vec();
+    schemas.push("proxiima_core".to_owned());
+    sqlx::query_as(
+        "SELECT DISTINCT format('%I.%I', n.nspname, c.conname), c.condeferred
+           FROM pg_constraint c
+           JOIN pg_namespace n ON n.oid=c.connamespace
+          WHERE c.condeferrable AND n.nspname=ANY($1::text[])
+            AND c.conrelid<>'proxiima_core.schema_evolution_authority'::regclass",
+    )
+    .bind(schemas)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)
 }
 
-async fn enforce_data_constraints(tx: &mut Transaction<'_, Postgres>) -> Result<(), StorageError> {
-    let constraints = data_constraints(tx).await?;
-    for (schema, name) in constraints {
-        let qualified = format!("{schema}.{name}");
-        let name = crate::pg_ident::PgIdent::table(&qualified)?;
-        // SQL-POLICY: PgIdent
-        let statement = format!("SET CONSTRAINTS {} IMMEDIATE", name.as_str());
-        // SQL-POLICY: PgIdent
+async fn enforce_data_constraints(
+    tx: &mut Transaction<'_, Postgres>,
+    constraints: &[(String, bool)],
+) -> Result<(), StorageError> {
+    for (qualified, _) in constraints {
+        // SQL-POLICY: generated — PostgreSQL format('%I') quotes catalog identifiers.
+        let statement = format!("SET CONSTRAINTS {qualified} IMMEDIATE");
         sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
             .execute(&mut **tx)
             .await
@@ -128,14 +141,19 @@ async fn enforce_data_constraints(tx: &mut Transaction<'_, Postgres>) -> Result<
     Ok(())
 }
 
-async fn defer_data_constraints(tx: &mut Transaction<'_, Postgres>) -> Result<(), StorageError> {
-    let constraints = data_constraints(tx).await?;
-    for (schema, name) in constraints {
-        let qualified = format!("{schema}.{name}");
-        let name = crate::pg_ident::PgIdent::table(&qualified)?;
-        // SQL-POLICY: PgIdent
-        let statement = format!("SET CONSTRAINTS {} DEFERRED", name.as_str());
-        // SQL-POLICY: PgIdent
+async fn restore_data_constraints(
+    tx: &mut Transaction<'_, Postgres>,
+    constraints: &[(String, bool)],
+) -> Result<(), StorageError> {
+    for (qualified, initially_deferred) in constraints {
+        let mode = if *initially_deferred {
+            "DEFERRED"
+        } else {
+            "IMMEDIATE"
+        };
+        // SQL-POLICY: generated — catalog identifiers are quoted by PostgreSQL;
+        // mode is selected from the two fixed constraint-timing keywords.
+        let statement = format!("SET CONSTRAINTS {qualified} {mode}");
         sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
             .execute(&mut **tx)
             .await

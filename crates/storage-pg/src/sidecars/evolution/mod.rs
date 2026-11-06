@@ -234,7 +234,7 @@ impl PgSidecarRegistryFrozen {
         &self,
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<(), StorageError> {
-        finish::checkpoint_data_constraints(transaction).await
+        finish::checkpoint_data_constraints(self, transaction).await
     }
 
     /// Verify the complete mapping closure before activating any target.

@@ -124,11 +124,11 @@ impl NamedMigrator {
     }
 }
 
-/// Validate and topologically order the explicit evolution steps for one
-/// composed host. The order is deterministic: dependencies first, then the
-/// declaration order supplied by the frozen composition. SQL execution uses
-/// `after_migration` as the owning lane's anchor; this helper only proves that
-/// every anchor and dependency is present before the first write.
+/// Validate and topologically order the evolution steps for one composed host.
+/// Steps in one spiice lane are implicitly ordered by their migration anchor;
+/// explicit dependencies and cross-schema producers add edges on top. SQL
+/// execution uses `after_migration` as the owning lane's anchor; this helper
+/// proves every anchor and dependency before the first write.
 pub(crate) fn schema_evolution_schedule<'a>(
     sources: &[&NamedMigrator],
     evolutions: &'a [SchemaEvolution],
@@ -169,6 +169,16 @@ pub(crate) fn schema_evolution_schedule<'a>(
                         .any(|source| source.id == target.id && source.kind == target.kind)
                 })
             {
+                entry.insert(prior.id);
+            }
+            let same_lane = prior
+                .sources
+                .first()
+                .zip(evolution.sources.first())
+                .is_some_and(|(prior_source, current_source)| {
+                    prior_source.id.spiice == current_source.id.spiice
+                });
+            if same_lane && prior.after_migration < evolution.after_migration {
                 entry.insert(prior.id);
             }
         }
@@ -1055,6 +1065,8 @@ fn order_current_evolution_operations(
     let mut ordered = core;
     let mut cursors = BTreeMap::<&'static str, usize>::new();
     for evolution in schedule {
+        // check_lineup rejects duplicate versions across all source ledgers,
+        // so this anchor identifies exactly one owning source.
         let Some(source) = lineup.iter().find(|source| {
             source.source != CORE_SOURCE && source.has_version(evolution.after_migration)
         }) else {
@@ -1277,6 +1289,8 @@ async fn run_evolution_sources(
         .await
         .map_err(MigrationError::SidecarOwnerRls)?;
     for evolution in schedule {
+        // check_lineup rejects duplicate versions across all source ledgers,
+        // so this anchor identifies exactly one owning source.
         let Some(source) = sources.iter().find(|source| {
             source.source != CORE_SOURCE && source.has_version(evolution.after_migration)
         }) else {
@@ -2407,6 +2421,72 @@ mod tests {
             ordered.iter().map(|step| step.id).collect::<Vec<_>>(),
             ["first", "second"]
         );
+    }
+
+    #[test]
+    fn evolution_schedule_orders_independent_same_lane_steps_by_anchor() {
+        const FIRST_ANCHOR: i64 = TEST_SPIICE_VERSION + 6;
+        const SECOND_ANCHOR: i64 = TEST_SPIICE_VERSION + 7;
+        const OTHER_V1: SchemaContract = evolution_schema("other-record", 1);
+        const OTHER_V2: SchemaContract = evolution_schema("other-record", 2);
+        static OTHER_SOURCES: &[SchemaContract] = &[OTHER_V1];
+        static OTHER_TARGETS: &[SchemaContract] = &[OTHER_V2];
+        static SECOND: SchemaEvolution = SchemaEvolution::new(
+            "anchor-second",
+            OTHER_SOURCES,
+            OTHER_TARGETS,
+            SECOND_ANCHOR,
+            &[],
+            "test",
+            "test",
+        );
+        static FIRST: SchemaEvolution = SchemaEvolution::new(
+            "anchor-first",
+            OWNER_V1_SOURCES,
+            OWNER_V2_TARGETS,
+            FIRST_ANCHOR,
+            &[],
+            "test",
+            "test",
+        );
+        let source = NamedMigrator::spiice("owner", migrator(&[FIRST_ANCHOR, SECOND_ANCHOR]));
+        let steps = [SECOND, FIRST];
+        let ordered = schema_evolution_schedule(&[&source], &steps)
+            .expect("same-lane anchors provide an implicit order");
+        assert_eq!(
+            ordered.iter().map(|step| step.id).collect::<Vec<_>>(),
+            [FIRST.id, SECOND.id]
+        );
+    }
+
+    #[test]
+    fn evolution_schedule_rejects_dependency_backwards_against_lane_anchor() {
+        const FIRST_ANCHOR: i64 = TEST_SPIICE_VERSION + 8;
+        const SECOND_ANCHOR: i64 = TEST_SPIICE_VERSION + 9;
+        static SECOND: SchemaEvolution = SchemaEvolution::new(
+            "backwards-second",
+            &[evolution_schema("other-record", 1)],
+            &[evolution_schema("other-record", 2)],
+            SECOND_ANCHOR,
+            &[],
+            "test",
+            "test",
+        );
+        static FIRST: SchemaEvolution = SchemaEvolution::new(
+            "backwards-first",
+            OWNER_V1_SOURCES,
+            OWNER_V2_TARGETS,
+            FIRST_ANCHOR,
+            &["backwards-second"],
+            "test",
+            "test",
+        );
+        let source = NamedMigrator::spiice("owner", migrator(&[FIRST_ANCHOR, SECOND_ANCHOR]));
+        let steps = [FIRST, SECOND];
+        assert!(matches!(
+            schema_evolution_schedule(&[&source], &steps),
+            Err(MigrationError::EvolutionCycle { .. })
+        ));
     }
 
     #[test]

@@ -1,8 +1,9 @@
 //! `PostgreSQL` receipts for the schema-evolution completion fence.
 
+use crate::sidecars::PgSidecarRegistryFrozen;
 use crate::test_fixtures::create_core_db;
 use proxiima_pg_testkit::{drop_db, split_role_urls};
-use sqlx::PgPool;
+use sqlx::{Acquire, PgPool};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -241,4 +242,94 @@ async fn same_schema_string_is_kind_scoped() {
     }.await;
     drop_db(&database).await.expect("drop test database");
     result.expect("kind-scoped schema fence assertion");
+}
+
+#[tokio::test]
+async fn migration_constraint_checkpoint_scopes_and_restores_modes() {
+    let database = format!("proxiima_test_{}", Uuid::now_v7().simple());
+    create_core_db(&database)
+        .await
+        .expect("PG required for test");
+    let result = async {
+        let (_, platform_url) = split_role_urls(&database).await?;
+        let pool = PgPool::connect(&platform_url).await?;
+        let mut setup = pool.begin().await?;
+        sqlx::query("SELECT set_config('app.proxiima_scope','platform',true)")
+            .execute(&mut *setup)
+            .await?;
+        sqlx::query("CREATE SCHEMA composed_constraints").execute(&mut *setup).await?;
+        sqlx::query("CREATE SCHEMA unrelated_constraints")
+            .execute(&mut *setup)
+            .await?;
+        sqlx::query("CREATE TABLE composed_constraints.\"MixedParent\" (id integer PRIMARY KEY)")
+            .execute(&mut *setup)
+            .await?;
+        sqlx::query("CREATE TABLE composed_constraints.\"MixedDeferredChild\" (parent_id integer, CONSTRAINT \"MixedDeferred\" FOREIGN KEY(parent_id) REFERENCES composed_constraints.\"MixedParent\"(id) DEFERRABLE INITIALLY DEFERRED)")
+            .execute(&mut *setup)
+            .await?;
+        sqlx::query("CREATE TABLE composed_constraints.\"MixedImmediateChild\" (parent_id integer, CONSTRAINT \"MixedImmediate\" FOREIGN KEY(parent_id) REFERENCES composed_constraints.\"MixedParent\"(id) DEFERRABLE INITIALLY IMMEDIATE)")
+            .execute(&mut *setup)
+            .await?;
+        sqlx::query("CREATE TABLE unrelated_constraints.parent (id integer PRIMARY KEY)")
+            .execute(&mut *setup)
+            .await?;
+        sqlx::query("CREATE TABLE unrelated_constraints.child (parent_id integer, CONSTRAINT \"Unrelated FK\" FOREIGN KEY(parent_id) REFERENCES unrelated_constraints.parent(id) DEFERRABLE INITIALLY DEFERRED)")
+            .execute(&mut *setup)
+            .await?;
+        setup.commit().await?;
+
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('app.proxiima_scope','platform',true)")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO unrelated_constraints.child(parent_id) VALUES (1)")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO composed_constraints.\"MixedDeferredChild\"(parent_id) VALUES (1)")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO composed_constraints.\"MixedParent\"(id) VALUES (1)")
+            .execute(&mut *tx)
+            .await?;
+        let registry = PgSidecarRegistryFrozen {
+            spiice_schema_names: std::sync::Arc::from(["composed_constraints".to_owned()]),
+            ..Default::default()
+        };
+        let mut invalid = tx.begin().await?;
+        sqlx::query("INSERT INTO composed_constraints.\"MixedDeferredChild\"(parent_id) VALUES (9)")
+            .execute(&mut *invalid).await?;
+        let error = registry.checkpoint_schema_evolution(&mut invalid).await
+            .expect_err("the composed quoted constraint must actually be checked");
+        assert!(error.to_string().contains("MixedDeferred")
+            && error.to_string().contains("foreign key"), "{error}");
+        invalid.rollback().await?;
+        registry
+            .checkpoint_schema_evolution(&mut tx)
+            .await
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        registry
+            .finish_schema_evolutions(&mut tx)
+            .await
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        // These writes are in the SAME transaction after finish; a new
+        // transaction would silently reset the leaked constraint modes.
+        sqlx::query("INSERT INTO composed_constraints.\"MixedDeferredChild\"(parent_id) VALUES (2)")
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO composed_constraints.\"MixedParent\"(id) VALUES (2)")
+            .execute(&mut *tx).await?;
+        let mut immediate = tx.begin().await?;
+        let error = sqlx::query("INSERT INTO composed_constraints.\"MixedImmediateChild\"(parent_id) VALUES (3)")
+            .execute(&mut *immediate)
+            .await
+            .expect_err("initially immediate constraint must remain immediate");
+        assert_eq!(error.as_database_error().and_then(sqlx::error::DatabaseError::code).as_deref(), Some("23503"));
+        immediate.rollback().await?;
+        sqlx::query("INSERT INTO unrelated_constraints.parent(id) VALUES (1)")
+            .execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok::<(), sqlx::Error>(())
+    }
+    .await;
+    drop_db(&database).await.expect("drop test database");
+    result.expect("migration constraint checkpoint");
 }

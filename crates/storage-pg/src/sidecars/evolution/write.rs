@@ -108,7 +108,7 @@ async fn goal_targets(
     goals.sort_by_key(|target| target.id);
     for target in goals {
         if target.id == target.source.id().into_inner() {
-            remove_replaced_goal_sidecars(tx, program, target).await?;
+            remove_replaced_goal_sidecars(tx, program, &target.source).await?;
         }
         target_rows::goal(tx, target).await?;
         if let Some(payload) = target.payload.sidecar_payload.as_ref() {
@@ -362,18 +362,21 @@ fn memory_entry<'a>(
 async fn remove_replaced_goal_sidecars(
     tx: &mut Transaction<'_, Postgres>,
     program: &PgSchemaEvolution,
-    target: &super::plan::GoalTarget,
+    source: &super::MigrationGoal,
 ) -> Result<(), StorageError> {
-    let source = program
+    let contract = program
         .declaration
         .sources
         .iter()
-        .find(|schema| schema.schema_id().as_str() == target.source.schema_id())
+        .find(|schema| {
+            schema.kind == proxiima_core::verbs::schema::PayloadKind::Goal
+                && schema.schema_id().as_str() == source.schema_id()
+        })
         .ok_or_else(|| refused("retained Goal source has no declared contract"))?;
-    for surface in source.surfaces {
+    for surface in contract.surfaces {
         let (column, value) = match surface.key {
-            proxiima_core::spiice::KeyShape::GoalT { column } => (column, target.id),
-            proxiima_core::spiice::KeyShape::GoalHandle { column, .. } => (column, target.series),
+            proxiima_core::spiice::KeyShape::GoalT { column } => (column, source.id().into_inner()),
+            proxiima_core::spiice::KeyShape::GoalHandle { column, .. } => (column, source.series()),
             _ => continue,
         };
         let table = PgIdent::table(surface.table)?;
